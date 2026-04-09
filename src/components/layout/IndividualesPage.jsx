@@ -270,12 +270,11 @@ function fmtAmt(n) {
   if (typeof n !== "number" || isNaN(n)) return "—";
   return n.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
-
-/* ═══════════════════════════════════════════════════════════════
+/*
    FIELD ACCESSOR
    The API field names may come back in different casings.
    This helper reads a field case-insensitively from a row object.
-═══════════════════════════════════════════════════════════════ */
+*/
 function normalizeKey(str) {
   return String(str).replace(/[_\s-]/g, "").toLowerCase();
 }
@@ -332,7 +331,7 @@ function getField(obj, ...names) {
    ORDERING: all siblings sorted numerically by accountCode ascending.
    AMOUNTS:  each node shows the rolled-up sum of all descendant rows.
 ═══════════════════════════════════════════════════════════════ */
-function buildTree(groupAccounts, uploadedAccounts) {
+function buildTree(groupAccounts, uploadedAccounts, skipSumAccounts = true) {
   if (!groupAccounts.length || !uploadedAccounts.length) return [];
 
   const gaByCode = new Map();
@@ -368,9 +367,8 @@ function buildTree(groupAccounts, uploadedAccounts) {
 uploadedAccounts.forEach(row => {
     const gac    = String(getField(row, "accountCode") ?? "");
 
-    // Skip pre-aggregated sum account rows to avoid double-counting
-    const ga = gaByCode.get(gac);
-    if (ga && getField(ga, "isSumAccount")) return;
+const ga = gaByCode.get(gac);
+    if (skipSumAccounts && ga && getField(ga, "isSumAccount")) return;
 
     const lacRaw = getField(row, "localAccountCode");
     const lac    = lacRaw && String(lacRaw) !== "—" && String(lacRaw) !== "null" && String(lacRaw) !== "" ? String(lacRaw) : null;
@@ -2184,8 +2182,8 @@ function PLStatement({
   cmp2Filters, onCmp2FilterChange,
   sources = [], structures = [], companies = [],
   dimGroups = [], cmpFilteredDims = [], cmp2FilteredDims = [],
-  loading, error, month, year, source, structure,
-  journalEntries = [],
+loading, error, month, year, source, structure,
+  journalEntries = [], dimensionActive = false,
 }) {
 const [expandedMap, setExpandedMap] = useState({});
   const [summaryMode, setSummaryMode] = useState(true);
@@ -2193,7 +2191,7 @@ const [expandedMap, setExpandedMap] = useState({});
 const [jrnPopup, setJrnPopup] = useState(null);
 const [dimPopup, setDimPopup] = useState(null);
   
-  const tree = useMemo(() => buildTree(groupAccounts, uploadedAccounts), [groupAccounts, uploadedAccounts]);
+  const tree = useMemo(() => buildTree(groupAccounts, uploadedAccounts, !dimensionActive), [groupAccounts, uploadedAccounts, dimensionActive]);
 
   const toggle = (code) => setExpandedMap(prev => ({ ...prev, [code]: !prev[code] }));
 
@@ -2213,9 +2211,9 @@ const [dimPopup, setDimPopup] = useState(null);
     return result;
   }, [tree]);
 
-  const prevTree = useMemo(
-  () => buildTree(groupAccounts, prevUploadedAccounts),
-  [groupAccounts, prevUploadedAccounts]
+const prevTree = useMemo(
+  () => buildTree(groupAccounts, prevUploadedAccounts, !dimensionActive),
+  [groupAccounts, prevUploadedAccounts, dimensionActive]
 );
 
 const prevLeafIndex = useMemo(() => {
@@ -2274,12 +2272,12 @@ const getPrevYtd = useCallback((code) => {
 
 // ── Compare period trees ────────────────────────────────────
 const cmpTree = useMemo(
-  () => compareMode ? buildTree(groupAccounts, cmpUploadedAccounts) : [],
-  [groupAccounts, cmpUploadedAccounts, compareMode]
+  () => compareMode ? buildTree(groupAccounts, cmpUploadedAccounts, !dimensionActive) : [],
+  [groupAccounts, cmpUploadedAccounts, compareMode, dimensionActive]
 );
 const cmpPrevTree = useMemo(
-  () => compareMode ? buildTree(groupAccounts, cmpPrevUploadedAccounts) : [],
-  [groupAccounts, cmpPrevUploadedAccounts, compareMode]
+  () => compareMode ? buildTree(groupAccounts, cmpPrevUploadedAccounts, !dimensionActive) : [],
+  [groupAccounts, cmpPrevUploadedAccounts, compareMode, dimensionActive]
 );
 const cmpNodeByCode = useMemo(() => {
   const map = new Map();
@@ -2303,12 +2301,12 @@ const getCmpPrev = useCallback((code) => {
 
 // ── Compare period 2 trees ──────────────────────────────────
 const cmp2Tree = useMemo(
-  () => compareMode ? buildTree(groupAccounts, cmp2UploadedAccounts) : [],
-  [groupAccounts, cmp2UploadedAccounts, compareMode]
+  () => compareMode ? buildTree(groupAccounts, cmp2UploadedAccounts, !dimensionActive) : [],
+  [groupAccounts, cmp2UploadedAccounts, compareMode, dimensionActive]
 );
 const cmp2PrevTree = useMemo(
-  () => compareMode ? buildTree(groupAccounts, cmp2PrevUploadedAccounts) : [],
-  [groupAccounts, cmp2PrevUploadedAccounts, compareMode]
+  () => compareMode ? buildTree(groupAccounts, cmp2PrevUploadedAccounts, !dimensionActive) : [],
+  [groupAccounts, cmp2PrevUploadedAccounts, compareMode, dimensionActive]
 );
 const cmp2NodeByCode = useMemo(() => {
   const map = new Map();
@@ -2987,7 +2985,7 @@ const PL_HIGHLIGHTED_CODES = new Set([
 
 
 
-function BalanceSheet({ groupAccounts, uploadedAccounts, loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], onCompareChange,
+function BalanceSheet({ groupAccounts, uploadedAccounts, loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], onCompareChange, dimensionActive = false, upDimGroup = "", upDimension = "", filteredDims = [],
   compareMode, setCompareMode,
   cmpYear, setCmpYear, cmpMonth, setCmpMonth, cmpSource, setCmpSource, cmpStructure, setCmpStructure, cmpCompany, setCmpCompany,
   cmpData, setCmpData,
@@ -3029,10 +3027,10 @@ const [allCompaniesLoading, setAllCompaniesLoading] = useState(false);
 
 
 const fetchAllCompanies = useCallback(async () => {
-  if (!year || !month || !source || !structure) return;
+  if (!year || !month || !source || !structure || !company) return;
   setAllCompaniesLoading(true);
   try {
-    const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+    const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
     const res = await fetch(
       `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
       { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }
@@ -3041,7 +3039,7 @@ const fetchAllCompanies = useCallback(async () => {
     setAllCompaniesData(json.value ?? (Array.isArray(json) ? json : []));
   } catch { setAllCompaniesData([]); }
   finally { setAllCompaniesLoading(false); }
-}, [year, month, source, structure, token]);
+}, [year, month, source, structure, company, token]);
 
 useEffect(() => {
   if (bsView !== "summary") fetchAllCompanies();
@@ -3083,10 +3081,20 @@ useEffect(() => {
   }
 }, [bsView, compareMode, fetchAllCompaniesCmp, fetchAllCompaniesCmp2]);
 
+const filteredAllCompaniesData = useMemo(() => {
+  if (!allCompaniesData.length) return [];
+  if (upDimension) return allCompaniesData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === upDimension);
+  if (upDimGroup) return allCompaniesData.filter(r => filteredDims.some(d => {
+    const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d);
+    return String(r.dimensionCode ?? r.DimensionCode ?? "") === v;
+  }));
+  return allCompaniesData;
+}, [allCompaniesData, upDimension, upDimGroup, filteredDims]);
+
 const companyColumns = useMemo(() => {
   const seen = new Set();
   const cols = [];
-  allCompaniesData.forEach(r => {
+  filteredAllCompaniesData.forEach(r => {
     const co = String(r.CompanyShortName ?? r.companyShortName ?? "");
     const cur = String(r.CurrencyCode ?? r.currencyCode ?? "");
     const key = `${co}|||${cur}`;
@@ -3095,10 +3103,12 @@ const companyColumns = useMemo(() => {
   return cols.sort((a, b) => a.company.localeCompare(b.company));
 }, [allCompaniesData]);
 
+
+
 const companyTree = useMemo(() => {
-  if (!allCompaniesData.length) return [];
-  return buildTree(groupAccounts, allCompaniesData);
-}, [groupAccounts, allCompaniesData]);
+  if (!filteredAllCompaniesData.length) return [];
+  return buildTree(groupAccounts, filteredAllCompaniesData, !dimensionActive);
+}, [groupAccounts, filteredAllCompaniesData, dimensionActive]);
 
 
 function renderBSDrill(node, parentKey) {
@@ -3502,9 +3512,9 @@ useEffect(() => {
     );
   }, [compareMode, cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany, cmpData, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, cmp2Data]);
 
-  const tree = useMemo(() => buildTree(groupAccounts, uploadedAccounts), [groupAccounts, uploadedAccounts]);
-  const cmpTree = useMemo(() => compareMode ? buildTree(groupAccounts, cmpData) : [], [groupAccounts, cmpData, compareMode]);
-  const cmp2Tree = useMemo(() => compareMode ? buildTree(groupAccounts, cmp2Data) : [], [groupAccounts, cmp2Data, compareMode]);
+const tree = useMemo(() => buildTree(groupAccounts, uploadedAccounts, !dimensionActive), [groupAccounts, uploadedAccounts, dimensionActive]);
+  const cmpTree = useMemo(() => compareMode ? buildTree(groupAccounts, cmpData, !dimensionActive) : [], [groupAccounts, cmpData, compareMode, dimensionActive]);
+  const cmp2Tree = useMemo(() => compareMode ? buildTree(groupAccounts, cmp2Data, !dimensionActive) : [], [groupAccounts, cmp2Data, compareMode, dimensionActive]);
 
   const bsRoots = useMemo(() => tree.filter(n => hasData(n) && n.accountType === "B/S")
     .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true })), [tree]);
@@ -4520,9 +4530,28 @@ return (
 {activeTab === "pl" && (
 <div key={`pl-${animKey}`} className="tab-content" style={{ "--slide-from": TAB_ORDER.indexOf("pl") > TAB_ORDER.indexOf(prevTab ?? "pl") ? "30px" : "-30px" }}>
 <PLStatement
+ dimensionActive={!!upDimension || !!upDimGroup}
   groupAccounts={grpData}
-uploadedAccounts={upDimension ? upData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === upDimension) : upData}
-  prevUploadedAccounts={upDimension ? prevData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === upDimension) : prevData}
+uploadedAccounts={
+  upDimension
+    ? upData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === upDimension)
+    : upDimGroup
+      ? upData.filter(r => filteredDims.some(d => {
+          const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d);
+          return String(r.dimensionCode ?? r.DimensionCode ?? "") === v;
+        }))
+      : upData
+}
+prevUploadedAccounts={
+  upDimension
+    ? prevData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === upDimension)
+    : upDimGroup
+      ? prevData.filter(r => filteredDims.some(d => {
+          const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d);
+          return String(r.dimensionCode ?? r.DimensionCode ?? "") === v;
+        }))
+      : prevData
+}
   compareMode={compareMode}
   onToggleCompare={() => {
     if (!compareMode) {
@@ -4602,8 +4631,21 @@ cmpFilters={{
 {activeTab === "bs" && (
 <div key={`bs-${animKey}`} className="tab-content" style={{ "--slide-from": TAB_ORDER.indexOf("bs") > TAB_ORDER.indexOf(prevTab ?? "bs") ? "30px" : "-30px" }}>
 <BalanceSheet
+  dimensionActive={!!upDimension || !!upDimGroup}
+  upDimension={upDimension}
+  upDimGroup={upDimGroup}
+  filteredDims={filteredDims}
   groupAccounts={grpData}
-  uploadedAccounts={upData}
+  uploadedAccounts={
+    upDimension
+      ? upData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === upDimension)
+      : upDimGroup
+        ? upData.filter(r => filteredDims.some(d => {
+            const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d);
+            return String(r.dimensionCode ?? r.DimensionCode ?? "") === v;
+          }))
+        : upData
+  }
   loading={anyLoading && (!upData.length || !grpData.length)}
   error={upError || grpError || null}
   month={upMonth}

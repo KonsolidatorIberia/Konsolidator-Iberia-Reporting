@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 import {
   Home, Network, FileText, Layers, SlidersHorizontal,
   PieChart, Table, BookOpen, TrendingUp, BarChart3,
-  ChevronRight, Eye, RefreshCw,
+  ChevronRight, Eye, RefreshCw, Filter,
 } from "lucide-react";
 
 const NAV = [
@@ -12,8 +12,9 @@ const NAV = [
     key: "individual", label: "Individual", icon: FileText,
     children: [
       { key: "individual-data",         label: "Data",         icon: Table    },
-      { key: "individual-contributive", label: "Contributive", icon: PieChart },
-      { key: "individual-kpis",         label: "KPIs",         icon: BarChart3 },
+     { key: "individual-contributive", label: "Contributive", icon: PieChart },
+{ key: "individual-kpis",         label: "KPIs",         icon: BarChart3 },
+{ key: "individual-dimensiones",  label: "Dimensiones",  icon: Filter },
     ],
   },
   {
