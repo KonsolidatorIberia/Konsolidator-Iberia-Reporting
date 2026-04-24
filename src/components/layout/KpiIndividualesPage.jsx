@@ -1,33 +1,41 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { createRoot } from "react-dom/client";
 import {
-  FileText, Search, Loader2, AlertCircle, Filter,
-  ChevronDown, ChevronRight, Hash, Calendar, Database, Network,
-  RefreshCw, X, GitMerge, BookOpen, Upload, BarChart2, TrendingUp,
+  ChevronDown, Loader2, X, Plus, Trash2, Edit3,
+  GripVertical, Hash, Percent, DollarSign,
+  Check, Sigma, BarChart3, Building2, Layers
 } from "lucide-react";
+import ExcelJS from "exceljs";
+import { saveAs } from "file-saver";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import html2canvas from "html2canvas";
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid,
+  Tooltip, Legend, ResponsiveContainer
+} from "recharts";
+
+function ExcelLogoIcon({ size = 20 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+      <path d="M19 4H7a2 2 0 0 0-2 2v20a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V12l-8-8z" fill="#107C41"/>
+      <path d="M19 4v8h8" fill="#0B5E30"/>
+      <path d="M14.5 15.5 17 19l-2.5 3.5h1.8L18 20.1l1.7 2.4h1.8L19 19l2.5-3.5h-1.8L18 17.9l-1.7-2.4z" fill="#FFFFFF"/>
+    </svg>
+  );
+}
+
+function PdfLogoIcon({ size = 20 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+      <path d="M19 4H7a2 2 0 0 0-2 2v20a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V12l-8-8z" fill="#D93025"/>
+      <path d="M19 4v8h8" fill="#A1271B"/>
+      <text x="9" y="23" fill="#FFFFFF" fontSize="7" fontWeight="700" fontFamily="Arial, sans-serif">PDF</text>
+    </svg>
+  );
+}
 
 const BASE_URL = "";
-
-/* ═══════════════════════════════════════════════════════════════
-   SHARED UTILITIES
-═══════════════════════════════════════════════════════════════ */
-function formatCellValue(val) {
-  if (val === null || val === undefined || val === "")
-    return <span className="text-gray-300 italic text-xs">—</span>;
-  if (typeof val === "boolean")
-    return val
-      ? <span className="text-emerald-600 font-semibold text-xs">Yes</span>
-      : <span className="text-gray-400 text-xs">No</span>;
-  if (typeof val === "number")
-    return <span className="font-mono text-xs">{val.toLocaleString()}</span>;
-  if (typeof val === "string" && val.match(/^\d{4}-\d{2}-\d{2}T/))
-    return <span className="text-xs font-mono text-gray-500">{new Date(val).toLocaleDateString()}</span>;
-  return <span className="text-xs">{String(val)}</span>;
-}
-
-function formatColumnLabel(key) {
-  return key.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase()).trim();
-}
-
 const MONTHS = [
   { value: 1, label: "January" }, { value: 2, label: "February" },
   { value: 3, label: "March" }, { value: 4, label: "April" },
@@ -36,178 +44,593 @@ const MONTHS = [
   { value: 9, label: "September" }, { value: 10, label: "October" },
   { value: 11, label: "November" }, { value: 12, label: "December" },
 ];
+const YEARS = Array.from({ length: 6 }, (_, i) => new Date().getFullYear() - i);
 
-const currentYear = new Date().getFullYear();
-const YEARS = Array.from({ length: 6 }, (_, i) => currentYear - i);
+// ── Formula node types ────────────────────────────────────────────────────────
+// { type: "account",      accountCode, dimCode? }
+// { type: "accountGroup", prefix }
+// { type: "manual",       value }
+// { type: "op",           op: "+"|"-"|"*"|"/", left, right }
+// { type: "fn",           fn: "abs"|"neg"|"pct", arg }
+// { type: "ref",          kpiId }
 
-const _now = new Date();
-const _prevMonth = _now.getMonth() === 0 ? 12 : _now.getMonth();
-const _prevYear  = _now.getMonth() === 0 ? _now.getFullYear() - 1 : _now.getFullYear();
-const DEFAULT_MONTH = String(_prevMonth);
-const DEFAULT_YEAR  = String(_prevYear);
-console.log("RAW:", new Date().getMonth(), new Date().toISOString());
-function Select({ label, icon: Icon, value, onChange, options, placeholder }) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <label className="text-xs font-black text-gray-400 uppercase tracking-widest flex items-center gap-1.5">
-        {Icon && <Icon size={11} />}{label}
-      </label>
-      <div className="relative">
-        <select value={value} onChange={(e) => onChange(e.target.value)}
-          className="w-full appearance-none bg-white border-2 border-gray-100 rounded-xl px-3 py-2.5 text-sm text-gray-700 font-medium outline-none focus:border-[#1a2f8a] transition-all pr-8 cursor-pointer">
-          <option value="">{placeholder}</option>
-          {options.map((o) => {
-            const val = typeof o === "object" ? o.value : o;
-            const lbl = typeof o === "object" ? o.label : o;
-            return <option key={val} value={val}>{lbl}</option>;
-          })}
-        </select>
-        <ChevronDown size={13} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-      </div>
-    </div>
-  );
+function makeId() { return Math.random().toString(36).slice(2, 10); }
+
+// ── Default KPI library ───────────────────────────────────────────────────────
+const DEFAULT_KPIS = [
+  {
+    id: "revenue", label: "Revenue", description: "Importe neto de la cifra de negocios (A.01)", format: "currency", category: "P&L",
+    formula: { type: "account", accountCode: "A.01" },
+  },
+  {
+    id: "contribution", label: "Contribution", description: "Revenue − Variable costs (A.04.S)", format: "currency", category: "P&L",
+    formula: { type: "account", accountCode: "A.04.S" },
+  },
+  {
+    id: "personnel", label: "Personnel Costs", description: "Gastos de personal (A.06)", format: "currency", category: "P&L",
+    formula: { type: "account", accountCode: "A.06" },
+  },
+  {
+    id: "ebitda", label: "EBITDA", description: "Earnings before interest, tax, D&A (A.07.S)", format: "currency", category: "P&L",
+    formula: { type: "account", accountCode: "A.07.S" },
+  },
+  {
+    id: "ebit", label: "EBIT", description: "Operating result (A.13.S)", format: "currency", category: "P&L",
+    formula: { type: "account", accountCode: "A.13.S" },
+  },
+  {
+    id: "ebt", label: "EBT", description: "Earnings before tax (A.21.S)", format: "currency", category: "P&L",
+    formula: { type: "account", accountCode: "A.21.S" },
+  },
+  {
+    id: "net_result", label: "Net Result", description: "Resultado del ejercicio (A.24.S)", format: "currency", category: "P&L",
+    formula: { type: "account", accountCode: "A.24.S" },
+  },
+  {
+    id: "ebitda_margin", label: "EBITDA Margin", description: "EBITDA ÷ Revenue × 100", format: "percent", category: "Ratios",
+    formula: {
+      type: "fn", fn: "pct", arg: {
+        type: "op", op: "/",
+        left: { type: "ref", kpiId: "ebitda" },
+        right: { type: "fn", fn: "abs", arg: { type: "ref", kpiId: "revenue" } },
+      }
+    },
+  },
+  {
+    id: "ebit_margin", label: "EBIT Margin", description: "EBIT ÷ Revenue × 100", format: "percent", category: "Ratios",
+    formula: {
+      type: "fn", fn: "pct", arg: {
+        type: "op", op: "/",
+        left: { type: "ref", kpiId: "ebit" },
+        right: { type: "fn", fn: "abs", arg: { type: "ref", kpiId: "revenue" } },
+      }
+    },
+  },
+];
+
+// ── Formula evaluator ─────────────────────────────────────────────────────────
+function evalFormula(node, pivot, cache, kpiList) {
+  if (!node) return 0;
+  switch (node.type) {
+ case "account": {
+      let total = 0;
+      pivot.forEach((val, ac) => { if (ac === node.accountCode) total += val; });
+      return -total;
+    }
+    case "accountGroup": {
+      let total = 0;
+      pivot.forEach((val, ac) => { if (node.prefix && ac.startsWith(node.prefix)) total += val; });
+      return -total;
+    }
+    case "manual": return Number(node.value) || 0;
+    case "op": {
+      const l = evalFormula(node.left, pivot, cache, kpiList);
+      const r = evalFormula(node.right, pivot, cache, kpiList);
+      if (node.op === "+") return l + r;
+      if (node.op === "-") return l - r;
+      if (node.op === "*") return l * r;
+      if (node.op === "/") return r === 0 ? null : l / r;
+      return 0;
+    }
+    case "fn": {
+      const a = evalFormula(node.arg, pivot, cache, kpiList);
+      if (a === null) return null;
+      if (node.fn === "abs") return Math.abs(a);
+      if (node.fn === "neg") return -a;
+      if (node.fn === "pct") return a * 100;
+      return a;
+    }
+    case "ref": {
+      if (cache.has(node.kpiId)) return cache.get(node.kpiId);
+      const ref = kpiList.find(k => k.id === node.kpiId);
+      if (!ref) return 0;
+      const val = evalFormula(ref.formula, pivot, cache, kpiList);
+      cache.set(node.kpiId, val);
+      return val;
+    }
+case "text": {
+      if (!node.expression || !node.variables) return 0;
+      try {
+        let expr = node.expression;
+        Object.entries(node.variables).forEach(([letter, varNode]) => {
+          const val = varNode ? evalFormula(varNode, pivot, cache, kpiList) : 0;
+          expr = expr.replaceAll(letter, `(${val ?? 0})`);
+        });
+        // eslint-disable-next-line no-new-func
+        return Function(`"use strict"; return (${expr})`)() ?? 0;
+      } catch { return null; }
+    }
+    default: return 0;
+  }
 }
 
-function DataTable({ data, hiddenCols = new Set(), search, setSearch, onRefresh, subTab, onSubTabChange }) {
-  const cols = data.length > 0 ? Object.keys(data[0]).filter((c) => !hiddenCols.has(c)) : [];
-  const filtered = search.trim()
-    ? data.filter((row) => Object.values(row).some((v) => String(v ?? "").toLowerCase().includes(search.toLowerCase())))
-    : data;
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-1 p-1 bg-gray-100/70 rounded-xl">
-  {["uploaded","mapped","group","report"].map(t => (
-    <button key={t} onClick={() => onSubTabChange(t)}
-      className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all capitalize
-        ${subTab === t ? "bg-white text-[#1a2f8a] shadow-sm" : "text-gray-400 hover:text-gray-600"}`}>
-      {t}
-    </button>
-  ))}
-</div>
-        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-[#eef1fb] text-[#1a2f8a]">
-          <Hash size={11} />{data.length} records
-        </div>
-        {search && (
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-50 text-amber-600">
-            {filtered.length} matching
-          </div>
-        )}
-        <div className="ml-auto flex items-center gap-2 bg-white border border-gray-100 rounded-xl px-3 py-2 shadow-sm">
-          <Search size={13} className="text-gray-400" />
-          <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search results…"
-            className="text-xs outline-none text-gray-700 w-40 bg-transparent placeholder:text-gray-300" />
-          {search && <button onClick={() => setSearch("")}><X size={12} className="text-gray-400 hover:text-gray-600" /></button>}
-        </div>
-        <button onClick={onRefresh}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-gray-100 shadow-sm text-xs font-bold text-gray-400 hover:text-[#1a2f8a] hover:border-[#1a2f8a]/20 transition-all">
-          <RefreshCw size={12} /> Refresh
-        </button>
-      </div>
-      {filtered.length > 0 ? (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-          <div className="overflow-auto" style={{ maxHeight: 'calc(115vh - 320px)' }}>
-            <table className="w-full">
-              <thead className="sticky top-0 z-10">
-                <tr className="border-b border-gray-100 bg-[#1a2f8a]/5">
-                  <th className="text-left px-4 py-3 text-xs font-black text-gray-400 uppercase tracking-widest w-10 bg-[#eef1fb]">#</th>
-                  {cols.map((col) => (
-<th key={col} className="text-left px-4 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest whitespace-nowrap bg-[#eef1fb]">                      {formatColumnLabel(col)}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((row, i) => (
-                  <tr key={i} className={`border-b border-gray-50 last:border-0 hover:bg-gray-50/60 transition-colors ${i % 2 !== 0 ? "bg-gray-50/30" : ""}`}>
-                    <td className="px-4 py-2.5 text-gray-300 text-xs font-mono">{i + 1}</td>
-                    {cols.map((col, j) => (
-                      <td key={j} className="px-4 py-2.5 text-gray-700 whitespace-nowrap">{formatCellValue(row[col])}</td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ) : (
-        <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center">
-          <FileText size={28} className="text-gray-200 mx-auto mb-3" />
-          <p className="text-gray-400 text-sm font-semibold">No records found</p>
-          <p className="text-gray-300 text-xs mt-1">{search ? "Try a different search term" : "No data for the selected filters"}</p>
-        </div>
-      )}
-    </div>
-  );
+function computeAllKpis(kpiList, pivot) {
+  const cache = new Map();
+  kpiList.forEach(kpi => {
+    if (!cache.has(kpi.id)) {
+      const val = evalFormula(kpi.formula, pivot, cache, kpiList);
+      cache.set(kpi.id, val);
+    }
+  });
+  return cache;
 }
 
-function EmptyState({ message = "Loading…", sub = "" }) {
-  return (
-    <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
-      <div className="w-14 h-14 bg-[#eef1fb] rounded-2xl flex items-center justify-center mx-auto mb-4">
-        <FileText size={24} className="text-[#1a2f8a]" />
-      </div>
-      <p className="text-gray-400 text-sm font-semibold">{message}</p>
-      {sub && <p className="text-gray-300 text-xs mt-1">{sub}</p>}
-    </div>
-  );
+// ── Formatters ────────────────────────────────────────────────────────────────
+function fmtValue(val, format) {
+  if (val === null || val === undefined || isNaN(val)) return "—";
+  if (format === "percent") return val.toFixed(1) + "%";
+  if (format === "currency") return val.toLocaleString("de-DE", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  return val.toFixed(2);
 }
 
-function ErrorBox({ error, onRetry }) {
-  return (
-    <div className="bg-red-50 border border-red-100 rounded-2xl p-5 flex items-start gap-3">
-      <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
-      <div>
-        <p className="text-sm font-bold text-red-600">Failed to load data</p>
-        <p className="text-xs text-red-400 mt-1 font-mono break-all">{error}</p>
-        {onRetry && <button onClick={onRetry} className="mt-2 text-xs font-bold text-red-500 underline underline-offset-2">Retry</button>}
-      </div>
-    </div>
-  );
+function parseAmt(val) {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === "number") return isNaN(val) ? 0 : val;
+  const s = String(val).trim();
+  if (!s || s === "—" || s === "-") return 0;
+  if (/\d\.\d{3},\d/.test(s)) return parseFloat(s.replace(/\./g, "").replace(",", ".")) || 0;
+  if (/,/.test(s) && /\./.test(s) && s.indexOf(",") < s.indexOf(".")) return parseFloat(s.replace(/,/g, "")) || 0;
+  if (/,/.test(s) && !/\./.test(s)) return parseFloat(s.replace(",", ".")) || 0;
+  return parseFloat(s) || 0;
 }
 
-function FilterPill({ label, value, onChange, options, dark = false, labelStyle = "", valueStyle = "" }) {
+// ── Export helpers ────────────────────────────────────────────────────────────
+const EXPORT_COLORS = {
+  primary:    "FF1A2F8A",
+  primaryDk:  "FF1A2B6B",
+  highlight:  "FFEEF1FB",
+  compareB:   "FFCF305D",
+  compareC:   "FF57AA78",
+  band1:      "FFFFFFFF",
+  band2:      "FFF8F9FF",
+  band3:      "FFFAFBFF",
+  finalGray:  "FF374151",
+  white:      "FFFFFFFF",
+  gray400:    "FF9CA3AF",
+  gray500:    "FF6B7280",
+  green:      "FF059669",
+  red:        "FFDC2626",
+};
+
+function monthLabel(m) {
+  const n = parseInt(m);
+  return isNaN(n) ? String(m) : (MONTHS[n - 1]?.label ?? String(m));
+}
+
+function buildFilterString(f) {
+  const parts = [];
+  if (f.source) parts.push(f.source);
+  if (f.structure) parts.push(f.structure);
+  if (f.year && f.month) parts.push(`${monthLabel(f.month)} ${f.year}`);
+  if (f.dimGroup) parts.push(`Dim Group: ${f.dimGroup}`);
+  if (f.dim) parts.push(`Dim: ${f.dim}`);
+  return parts.join(" · ");
+}
+
+async function exportKpisToXlsx({
+  kpiList, companyCodes, companyResults,
+  dimensionCodes, dimensionResults, dimensionPivots,
+  graphSections, filters,
+}) {
+  const C = EXPORT_COLORS;
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "Konsolidator";
+  wb.created = new Date();
+
+  const addKpiMatrixSheet = (sheetName, titleText, cols, colLabels, resultsMap) => {
+    const ws = wb.addWorksheet(sheetName, { views: [{ state: "frozen", xSplit: 1, ySplit: 4 }] });
+    const totalCols = 2 + cols.length;
+
+    ws.mergeCells(1, 1, 1, totalCols);
+    const titleCell = ws.getCell(1, 1);
+    titleCell.value = titleText;
+    titleCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+    titleCell.font = { name: "Calibri", size: 16, bold: true, color: { argb: C.white } };
+    titleCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+    ws.getRow(1).height = 28;
+
+    ws.mergeCells(2, 1, 2, totalCols);
+    const filtCell = ws.getCell(2, 1);
+    filtCell.value = buildFilterString(filters) || "—";
+    filtCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+    filtCell.font = { name: "Calibri", size: 10, color: { argb: C.white } };
+    filtCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+    ws.getRow(2).height = 18;
+
+    ws.getRow(3).height = 6;
+
+    const headerRow = ws.getRow(4);
+    headerRow.height = 24;
+    const headerCells = ["KPI", ...colLabels, "Total / Avg"];
+    headerCells.forEach((label, i) => {
+      const cell = headerRow.getCell(i + 1);
+      cell.value = label;
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+      cell.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+      cell.alignment = { vertical: "middle", horizontal: i === 0 ? "left" : "right", indent: i === 0 ? 1 : 0 };
+    });
+
+    kpiList.forEach((kpi, rowIdx) => {
+      const rowNum = 5 + rowIdx;
+      const bandColor = rowIdx % 2 === 0 ? C.band1 : C.band2;
+
+      const values = cols.map(col => {
+        const res = resultsMap.get(col);
+        if (!res) return null;
+        const v = res.get(kpi.id);
+        return (v === undefined || v === null || isNaN(v)) ? null : v;
+      });
+      const validVals = values.filter(v => v !== null);
+      const aggregate = validVals.length === 0 ? null
+        : kpi.format === "percent"
+          ? validVals.reduce((a, b) => a + b, 0) / validVals.length
+          : validVals.reduce((a, b) => a + b, 0);
+
+      const labelCell = ws.getCell(rowNum, 1);
+      labelCell.value = kpi.label + (kpi.description ? `\n${kpi.description}` : "");
+      labelCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: bandColor } };
+      labelCell.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.primary } };
+      labelCell.alignment = { vertical: "middle", horizontal: "left", indent: 1, wrapText: true };
+      labelCell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+
+      values.forEach((val, i) => {
+        const cell = ws.getCell(rowNum, 2 + i);
+        if (val === null) {
+          cell.value = "—";
+          cell.font = { name: "Calibri", size: 10, color: { argb: C.gray400 } };
+        } else {
+          cell.value = val;
+          cell.numFmt = kpi.format === "percent" ? '0.0"%"' : '#,##0;[Red]-#,##0';
+          cell.font = {
+            name: "Calibri", size: 10,
+            color: { argb: val < 0 ? C.red : (kpi.format === "percent" && val >= 0 ? C.green : C.primary) },
+          };
+        }
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: bandColor } };
+        cell.alignment = { vertical: "middle", horizontal: "right", indent: 1 };
+        cell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+      });
+
+      const aggCell = ws.getCell(rowNum, 2 + cols.length);
+      if (aggregate === null) {
+        aggCell.value = "—";
+        aggCell.font = { name: "Calibri", size: 10, color: { argb: C.gray400 }, bold: true };
+      } else {
+        aggCell.value = aggregate;
+        aggCell.numFmt = kpi.format === "percent" ? '0.0"%"' : '#,##0;[Red]-#,##0';
+        aggCell.font = {
+          name: "Calibri", size: 10, bold: true,
+          color: { argb: aggregate < 0 ? C.red : C.primary },
+        };
+      }
+      aggCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.highlight } };
+      aggCell.alignment = { vertical: "middle", horizontal: "right", indent: 1 };
+      aggCell.border = {
+        left:   { style: "thin", color: { argb: "FFE5E7EB" } },
+        bottom: { style: "thin", color: { argb: "FFE5E7EB" } },
+      };
+    });
+
+    ws.getColumn(1).width = 38;
+    for (let i = 2; i <= 2 + cols.length; i++) ws.getColumn(i).width = 18;
+  };
+
+  if (companyCodes && companyCodes.length > 0 && companyResults) {
+    addKpiMatrixSheet("KPIs by Company", "KPI Dashboard — By Company",
+      companyCodes, companyCodes, companyResults);
+  }
+
+  if (dimensionCodes && dimensionCodes.length > 0 && dimensionResults) {
+    const dimLabels = dimensionCodes.map(dc => dimensionPivots?.get(dc)?.name ?? dc);
+    addKpiMatrixSheet("KPIs by Dimension", "KPI Dashboard — By Dimension",
+      dimensionCodes, dimLabels, dimensionResults);
+  }
+
+// Graphs tab — one sheet per section: chart image on left, data table on right
+  if (graphSections && graphSections.length > 0) {
+    for (let secIdx = 0; secIdx < graphSections.length; secIdx++) {
+  const section = graphSections[secIdx];
+      const { sectionId, company, startY, startM, endY, endM, source: secSource, structure: secStructure,
+              dimGroup, dim, mode, kpiIds, chartData } = section;
+
+      const sheetName = `Graph ${sectionId}`;
+      const ws = wb.addWorksheet(sheetName, { views: [{ state: "frozen", ySplit: 4 }] });
+
+      // Title
+      ws.mergeCells(1, 1, 1, 20);
+      const t = ws.getCell(1, 1);
+      t.value = `Section ${sectionId} — ${company || "—"}`;
+      t.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+      t.font = { name: "Calibri", size: 16, bold: true, color: { argb: C.white } };
+      t.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+      ws.getRow(1).height = 28;
+
+      // Filter subtitle
+      ws.mergeCells(2, 1, 2, 20);
+      const s = ws.getCell(2, 1);
+      const rangeStr = `${monthLabel(startM)} ${startY} → ${monthLabel(endM)} ${endY}`;
+      const descParts = [rangeStr, secSource, secStructure, mode === "ytd" ? "YTD" : "Monthly"];
+      if (dimGroup) descParts.push(`Dim Group: ${dimGroup}`);
+      if (dim) descParts.push(`Dim: ${dim}`);
+      s.value = descParts.join(" · ");
+      s.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+      s.font = { name: "Calibri", size: 10, color: { argb: C.white } };
+      s.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+      ws.getRow(2).height = 18;
+      ws.getRow(3).height = 6;
+
+      const kpis = (kpiIds || []).map(id => kpiList.find(k => k.id === id)).filter(Boolean);
+
+const imageDataUrl = section.imageDataUrl;
+      if (imageDataUrl) {
+        try {
+          const imageId = wb.addImage({ base64: imageDataUrl, extension: "png" });
+          ws.addImage(imageId, {
+            tl: { col: 0, row: 3 },
+            br: { col: 10, row: 22 },
+            editAs: "oneCell",
+          });
+        } catch (e) {
+          console.warn(`Chart embed failed for section ${sectionId}:`, e);
+        }
+      }
+
+      // Data table on right half, starting column 12 (L)
+      const tableStartCol = 12;
+      const tableStartRow = 4;
+      const headerRow = ws.getRow(tableStartRow);
+      headerRow.height = 22;
+      headerRow.getCell(tableStartCol).value = "Period";
+      kpis.forEach((kpi, i) => headerRow.getCell(tableStartCol + 1 + i).value = kpi.label);
+      for (let i = 0; i <= kpis.length; i++) {
+        const c = headerRow.getCell(tableStartCol + i);
+        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+        c.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+        c.alignment = { vertical: "middle", horizontal: i === 0 ? "left" : "right", indent: 1 };
+      }
+
+      (chartData || []).forEach((d, idx) => {
+        const r = ws.getRow(tableStartRow + 1 + idx);
+        r.height = 18;
+        const band = idx % 2 === 0 ? C.band1 : C.band2;
+        r.getCell(tableStartCol).value = d.period;
+        r.getCell(tableStartCol).fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
+        r.getCell(tableStartCol).font = { name: "Calibri", size: 10, color: { argb: C.primary }, bold: true };
+        r.getCell(tableStartCol).alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+
+        kpis.forEach((kpi, i) => {
+          const val = d[kpi.id];
+          const c = r.getCell(tableStartCol + 1 + i);
+          if (val === null || val === undefined || isNaN(val)) {
+            c.value = null;
+            c.font = { name: "Calibri", size: 10, color: { argb: C.gray400 } };
+          } else {
+            c.value = val;
+            c.numFmt = kpi.format === "percent" ? '0.0"%"' : '#,##0;[Red]-#,##0';
+            c.font = {
+              name: "Calibri", size: 10,
+              color: { argb: val < 0 ? C.red : C.primary },
+            };
+          }
+          c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
+          c.alignment = { vertical: "middle", horizontal: "right", indent: 1 };
+        });
+      });
+
+      // Column widths: leave cols 1-10 for chart image, 11 as spacer, 12+ for table
+      for (let i = 1; i <= 10; i++) ws.getColumn(i).width = 10;
+      ws.getColumn(11).width = 2;
+      ws.getColumn(tableStartCol).width = 14;
+      kpis.forEach((_, i) => { ws.getColumn(tableStartCol + 1 + i).width = 16; });
+    }
+  }
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const fname = `Konsolidator_KPIs_${filters?.year ?? ""}_${String(filters?.month ?? "").padStart(2, "0")}.xlsx`;
+  saveAs(blob, fname);
+}
+
+async function exportKpisToPdf({
+  kpiList, companyCodes, companyResults,
+  dimensionCodes, dimensionResults, dimensionPivots,
+  graphSections, filters,
+}) {
+  const H = {
+    primary:   "#1A2F8A",
+    primaryDk: "#1A2B6B",
+    highlight: "#EEF1FB",
+    band1:     "#FFFFFF",
+    band2:     "#F8F9FF",
+    white:     "#FFFFFF",
+    gray400:   "#9CA3AF",
+    gray500:   "#6B7280",
+    green:     "#059669",
+    red:       "#DC2626",
+  };
+
+  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  const drawHeader = (title, subtitle) => {
+    doc.setFillColor(H.primary);
+    doc.rect(0, 0, pageWidth, 60, "F");
+    doc.setTextColor(H.white);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(16);
+    doc.text(title, 24, 28);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.text(subtitle, 24, 46);
+  };
+
+  const addKpiMatrix = (title, cols, colLabels, resultsMap, isFirst) => {
+    if (!isFirst) doc.addPage();
+    drawHeader(title, buildFilterString(filters) || "—");
+
+    const head = [["KPI", ...colLabels, "Total / Avg"]];
+    const body = kpiList.map(kpi => {
+      const values = cols.map(col => {
+        const res = resultsMap.get(col);
+        if (!res) return null;
+        const v = res.get(kpi.id);
+        return (v === undefined || v === null || isNaN(v)) ? null : v;
+      });
+      const validVals = values.filter(v => v !== null);
+      const aggregate = validVals.length === 0 ? null
+        : kpi.format === "percent"
+          ? validVals.reduce((a, b) => a + b, 0) / validVals.length
+          : validVals.reduce((a, b) => a + b, 0);
+
+      return [
+        kpi.label,
+        ...values.map(v => v === null ? "—" : fmtValue(v, kpi.format)),
+        aggregate === null ? "—" : fmtValue(aggregate, kpi.format),
+      ];
+    });
+
+ autoTable(doc, {
+      head, body,
+      startY: 80,
+      theme: "plain",
+      styles: { font: "helvetica", fontSize: 8, cellPadding: 5, textColor: H.primary },
+      headStyles: { fillColor: H.primary, textColor: H.white, fontStyle: "bold", halign: "right" },
+      columnStyles: {
+        0: { halign: "left", fontStyle: "bold", cellWidth: 140 },
+        [cols.length + 1]: { fillColor: H.highlight, fontStyle: "bold" },
+      },
+      alternateRowStyles: { fillColor: H.band2 },
+      didParseCell: (data) => {
+        if (data.section === "body" && data.column.index > 0) {
+          data.cell.styles.halign = "right";
+          const raw = data.cell.raw;
+          if (typeof raw === "string" && raw.startsWith("-")) {
+            data.cell.styles.textColor = H.red;
+          }
+        }
+      },
+    });
+  };
+
+  let firstPage = true;
+  if (companyCodes && companyCodes.length > 0 && companyResults) {
+    addKpiMatrix("KPI Dashboard — By Company", companyCodes, companyCodes, companyResults, firstPage);
+    firstPage = false;
+  }
+
+  if (dimensionCodes && dimensionCodes.length > 0 && dimensionResults) {
+    const dimLabels = dimensionCodes.map(dc => dimensionPivots?.get(dc)?.name ?? dc);
+    addKpiMatrix("KPI Dashboard — By Dimension", dimensionCodes, dimLabels, dimensionResults, firstPage);
+    firstPage = false;
+  }
+
+ if (graphSections && graphSections.length > 0) {
+ for (const section of graphSections) {
+      const { sectionId, company, startY, startM, endY, endM, source: secSource, structure: secStructure,
+              dimGroup, dim, mode, kpiIds, chartData, imageDataUrl } = section;
+
+      doc.addPage();
+      const rangeStr = `${monthLabel(startM)} ${startY} → ${monthLabel(endM)} ${endY}`;
+      const descParts = [rangeStr, secSource, secStructure, mode === "ytd" ? "YTD" : "Monthly"];
+      if (dimGroup) descParts.push(`Dim Group: ${dimGroup}`);
+      if (dim) descParts.push(`Dim: ${dim}`);
+
+      drawHeader(`Graphs — Section ${sectionId} · ${company || "—"}`, descParts.join(" · "));
+
+      // Embed pre-rendered chart image (from either live DOM or headless render)
+      let hasImage = false;
+      if (imageDataUrl) {
+        try {
+          doc.addImage(imageDataUrl, "PNG", 24, 80, 400, 240);
+          hasImage = true;
+        } catch (e) {
+          console.warn(`PDF chart embed failed for section ${sectionId}:`, e);
+        }
+      }
+
+      const kpis = (kpiIds || []).map(id => kpiList.find(k => k.id === id)).filter(Boolean);
+      const head = [["Period", ...kpis.map(k => k.label)]];
+      const body = (chartData || []).map(d => [
+        d.period,
+        ...kpis.map(k => {
+          const v = d[k.id];
+          return (v === null || v === undefined || isNaN(v)) ? "—" : fmtValue(v, k.format);
+        }),
+      ]);
+
+    autoTable(doc, {
+        head, body,
+        startY: 80,
+        margin: { left: hasImage ? 440 : 24, right: 24 },
+        theme: "plain",
+        styles: { font: "helvetica", fontSize: 7, cellPadding: 3, textColor: H.primary },
+        headStyles: { fillColor: H.primary, textColor: H.white, fontStyle: "bold", halign: "right" },
+        columnStyles: { 0: { halign: "left", fontStyle: "bold" } },
+        alternateRowStyles: { fillColor: H.band2 },
+        didParseCell: (data) => {
+          if (data.section === "body" && data.column.index > 0) {
+            data.cell.styles.halign = "right";
+            const raw = data.cell.raw;
+            if (typeof raw === "string" && raw.startsWith("-")) {
+              data.cell.styles.textColor = H.red;
+            }
+          }
+        },
+      });
+    }
+  }
+
+  const fname = `Konsolidator_KPIs_${filters?.year ?? ""}_${String(filters?.month ?? "").padStart(2, "0")}.pdf`;
+  doc.save(fname);
+}
+
+// ── FilterPill ────────────────────────────────────────────────────────────────
+function FilterPill({ label, value, onChange, options }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
-  const display = options.find(o => o.value === value)?.label ?? null;
-
+  const display = options.find(o => String(o.value) === String(value))?.label ?? "—";
   useEffect(() => {
-    function handler(e) {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
-    }
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
   }, []);
-
   return (
     <div ref={ref} className="relative flex-shrink-0">
       <button onClick={() => setOpen(o => !o)}
-className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold transition-all select-none
-          ${value
-            ? dark
-              ? "bg-[#474b70] border-white/30 text-white hover:bg-white/30"
-              : "bg-[#ffffff] border-[#c2c2c2] text-[#505050] shadow-[0_2px_8px_rgba(0,0,0,0.10)]"
-            : dark
-              ? "bg-[#474b70] border-white/30 text-white hover:bg-white/30"
-              : "bg-[#ffffff] border-[#c2c2c2] text-[#505050] shadow-[0_2px_8px_rgba(0,0,0,0.10)]"
-          }`}>
-<span className={`text-[9px] font-black uppercase tracking-widest ${labelStyle || (value ? (dark ? "text-white/50" : "text-[#1a2f8a]/50") : dark ? "text-white/50" : "text-[#1a2f8a]/50")}`}>{label}</span>
-<span className={valueStyle || (value ? (dark ? "text-white" : "text-[#1a2f8a]") : dark ? "text-white/100" : "text-[#1a2f8a]")}>{display ?? "—"}</span>
-<ChevronDown size={10} className={`transition-transform duration-200 ${open ? "rotate-180" : ""} ${value ? (dark ? "text-white/50" : "text-[#1a2f8a]/40") : dark ? "text-white/30" : "text-gray-300"}`} />
+        className="flex items-center gap-2 px-3 py-2 rounded-2xl border text-xs font-bold transition-all select-none bg-white border-[#c2c2c2] text-[#505050] shadow-xl hover:border-[#1a2f8a]/40">
+        <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50">{label}</span>
+        <span className="text-[#1a2f8a]">{display}</span>
+        <ChevronDown size={10} className={`transition-transform duration-200 text-[#1a2f8a]/40 ${open ? "rotate-180" : ""}`} />
       </button>
-
       {open && (
-        <div className="absolute top-full left-0 mt-2 z-50 min-w-[160px] bg-white rounded-2xl border border-gray-100 shadow-xl shadow-black/5 overflow-hidden">
+        <div className="absolute top-full left-0 mt-2 z-50 min-w-[160px] bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden">
           <div className="p-1.5 max-h-64 overflow-y-auto">
             {options.map(o => (
-              <button
-                key={o.value}
-                onClick={() => { onChange(o.value); setOpen(false); }}
+              <button key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
                 className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-between gap-3
-                  ${value === o.value ? "bg-[#1a2f8a] text-white" : "text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]"}`}>
+                  ${String(o.value) === String(value) ? "bg-[#1a2f8a] text-white" : "text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]"}`}>
                 {o.label}
-                {value === o.value && <span className="w-1.5 h-1.5 rounded-full bg-white/60 flex-shrink-0" />}
+                {String(o.value) === String(value) && <span className="w-1.5 h-1.5 rounded-full bg-white/60" />}
               </button>
             ))}
           </div>
@@ -217,2035 +640,2088 @@ className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bol
   );
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   AMOUNT PARSING
-   Handles all formats the API may return:
-     number  → 12345.67
-     string  → "-35.495,37"  (European: dot=thousands, comma=decimal)
-     string  → "-35495.37"   (Standard: dot=decimal)
-     string  → "—" / null / undefined → 0
-═══════════════════════════════════════════════════════════════ */
-function parseAmt(val) {
-  if (val === null || val === undefined) return 0;
-  if (typeof val === "number") return isNaN(val) ? 0 : val;
-  const s = String(val).trim();
-  if (s === "" || s === "—" || s === "-") return 0;
-
-  // Detect European format: has dots before comma  e.g. "1.234,56"
-  const hasEuropeanFormat = /\d\.\d{3},\d/.test(s) || (/,/.test(s) && /\./.test(s) && s.indexOf(".") < s.indexOf(","));
-  if (hasEuropeanFormat) {
-    return parseFloat(s.replace(/\./g, "").replace(",", ".")) || 0;
-  }
-  // Has comma as thousands separator  e.g. "1,234.56"
-  if (/,/.test(s) && /\./.test(s) && s.indexOf(",") < s.indexOf(".")) {
-    return parseFloat(s.replace(/,/g, "")) || 0;
-  }
-  // Only comma, treat as decimal separator  e.g. "1234,56"
-  if (/,/.test(s) && !/\./.test(s)) {
-    return parseFloat(s.replace(",", ".")) || 0;
-  }
-  return parseFloat(s) || 0;
-}
-
-function fmtAmt(n) {
-  if (typeof n !== "number" || isNaN(n)) return "—";
-  return n.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   FIELD ACCESSOR
-   The API field names may come back in different casings.
-   This helper reads a field case-insensitively from a row object.
-═══════════════════════════════════════════════════════════════ */
-function normalizeKey(str) {
-  return String(str).replace(/[_\s-]/g, "").toLowerCase();
-}
-
-function getField(obj, ...names) {
-  if (!obj || typeof obj !== "object") return undefined;
-
-  const normalizedMap = new Map();
-  Object.keys(obj).forEach((key) => {
-    normalizedMap.set(normalizeKey(key), obj[key]);
-  });
-
-  for (const name of names) {
-    if (obj[name] !== undefined) return obj[name];
-
-    const val = normalizedMap.get(normalizeKey(name));
-    if (val !== undefined) return val;
-  }
-
-  return undefined;
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   FINANCIAL REPORT TREE BUILDER
-   ───────────────────────────────────────────────────────────────
-   Builds a hierarchical tree purely from API data — no hardcoding.
-
-   DATA SOURCES:
-   ┌─ Group Accounts  (/v2/group-accounts)
-   │   accountCode       → unique node ID
-   │   sumAccountCode    → parent node ID (builds the hierarchy)
-   │   isSumAccount      → true = header/subtotal row (displayed bold)
-   │   level             → numeric depth hint
-   │
-   ├─ Uploaded Accounts (/v2/reports/uploaded-accounts)
-   │   accountCode       → which group account this row belongs to
-   │   localAccountCode  → the source-system line code (depth 2)
-   │   localAccountName  → label for the local line
-   │   dimensionCode     → optional drill dimension (depth 3)
-   │   dimensionName     → label for the dimension
-   │   amountPeriod      → the monetary value (European or standard format)
-   │   companyShortName  → company identifier
-   │
-   └─ Mapped Accounts   (/v2/mapped-accounts)
-       Not needed for tree construction — the uploaded rows already
-       carry both localAccountCode and accountCode (group code).
-
-   TREE LEVELS (matches Konsolidator drill-down exactly):
-     Depth 0  Sum account     "11999 Revenue"              bold header
-     Depth 1  Group account   "10500 Subscription fees IC" normal group row
-     Depth 2  Local account   "011110 Intercompany Rev"    italic source line
-     Depth 3  Dimension       "Department: 5. Shared"      dim badge row
-
-   ORDERING: all siblings sorted numerically by accountCode ascending.
-   AMOUNTS:  each node shows the rolled-up sum of all descendant rows.
-═══════════════════════════════════════════════════════════════ */
-function buildTree(groupAccounts, uploadedAccounts) {
-  if (!groupAccounts.length || !uploadedAccounts.length) return [];
-
-  const gaByCode = new Map();
-  groupAccounts.forEach(ga => {
-    const code = String(getField(ga, "accountCode") ?? "");
-    if (code) gaByCode.set(code, ga);
-  });
-
-  const childrenOf = new Map();
-  const roots = [];
-
-  groupAccounts.forEach(ga => {
-    const code   = String(getField(ga, "accountCode") ?? "");
-    const parent = String(getField(ga, "sumAccountCode") ?? "");
-    if (!code) return;
-    if (!gaByCode.has(parent) || parent === code) {
-      roots.push(ga);
-    } else {
-      if (!childrenOf.has(parent)) childrenOf.set(parent, []);
-      childrenOf.get(parent).push(ga);
-    }
-  });
-
-  const numSort = (a, b) =>
-    String(getField(a, "accountCode") ?? "").localeCompare(
-      String(getField(b, "accountCode") ?? ""), undefined, { numeric: true }
+// ── Formula Node Builder ──────────────────────────────────────────────────────
+function NodeBuilder({ node, onChange, onRemove, depth = 0, kpiList, accountCodes, dimCodes }) {
+  if (!node || !node.type) {
+    return (
+      <div className="flex items-center gap-1 flex-wrap">
+        {[
+          { t: "accountGroup", label: "Account Group", color: "bg-blue-50 text-blue-700 hover:bg-blue-700 hover:text-white" },
+          { t: "account", label: "Single Account", color: "bg-[#eef1fb] text-[#1a2f8a] hover:bg-[#1a2f8a] hover:text-white" },
+          { t: "manual", label: "Fixed Number", color: "bg-amber-50 text-amber-700 hover:bg-amber-700 hover:text-white" },
+          { t: "ref", label: "KPI Reference", color: "bg-purple-50 text-purple-700 hover:bg-purple-700 hover:text-white" },
+          { t: "op", label: "Math Operation", color: "bg-orange-50 text-orange-700 hover:bg-orange-700 hover:text-white" },
+          { t: "fn", label: "Function", color: "bg-emerald-50 text-emerald-700 hover:bg-emerald-700 hover:text-white" },
+        ].map(({ t, label, color }) => (
+          <button key={t} onClick={() => {
+            const defaults = {
+              accountGroup: { type: "accountGroup", prefix: "" },
+              account: { type: "account", accountCode: "" },
+              manual: { type: "manual", value: 0 },
+              ref: { type: "ref", kpiId: "" },
+              op: { type: "op", op: "+", left: null, right: null },
+              fn: { type: "fn", fn: "neg", arg: null },
+            };
+            onChange(defaults[t]);
+          }}
+            className={`px-2 py-1 rounded-lg text-[10px] font-black transition-all ${color}`}>
+            {label}
+          </button>
+        ))}
+      </div>
     );
-  childrenOf.forEach(arr => arr.sort(numSort));
-  roots.sort(numSort);
-
-  const uploadIdx = new Map();
-
-uploadedAccounts.forEach(row => {
-    const gac    = String(getField(row, "accountCode") ?? "");
-
-    // Skip pre-aggregated sum account rows to avoid double-counting
-    const ga = gaByCode.get(gac);
-    if (ga && getField(ga, "isSumAccount")) return;
-
-    const lacRaw = getField(row, "localAccountCode");
-    const lac    = lacRaw && String(lacRaw) !== "—" && String(lacRaw) !== "null" && String(lacRaw) !== "" ? String(lacRaw) : null;
-    const laName = getField(row, "localAccountName");
-    const laNameC = laName && String(laName) !== "—" && String(laName) !== "" ? String(laName) : null;
-    const dimCodeRaw = getField(row, "dimensionCode");
-    const dimCode = dimCodeRaw != null && String(dimCodeRaw) !== "" && String(dimCodeRaw) !== "null" ? String(dimCodeRaw) : null;
-    const dimName = getField(row, "dimensionName") ?? null;
-    const amt    = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
-    const co     = String(getField(row, "companyShortName", "CompanyShortName") ?? "");
-
-    if (!gac) return;
-
-    if (!uploadIdx.has(gac)) uploadIdx.set(gac, new Map());
-    const byLoc  = uploadIdx.get(gac);
-    const locKey = lac ?? "__none__";
-
-    if (!byLoc.has(locKey)) byLoc.set(locKey, { code: lac, name: laNameC, dims: new Map() });
-    const locEntry = byLoc.get(locKey);
-
-    const dimKey = dimCode ?? "__none__";
-    if (!locEntry.dims.has(dimKey))
-      locEntry.dims.set(dimKey, { code: dimCode, name: String(dimName ?? ""), amount: 0, company: co });
-    locEntry.dims.get(dimKey).amount += amt;
-  });
-
-  function makeNode(ga) {
-    const code     = String(getField(ga, "accountCode") ?? "");
-    const children = (childrenOf.get(code) || []).map(makeNode).filter(Boolean);
-
-    const uploadLeaves = [];
-    if (uploadIdx.has(code)) {
-      uploadIdx.get(code).forEach((locEntry, locKey) => {
-        const dims     = [...locEntry.dims.values()];
-        const localAmt = dims.reduce((s, d) => s + d.amount, 0);
-
-        if (locKey === "__none__") {
-          uploadLeaves.push({ type: "plain", amount: localAmt, company: "" });
-        } else {
-          const dimChildren = dims
-            .filter(d => d.code !== null)
-            .map(d => ({ type: "dimension", code: d.code, name: d.name, amount: d.amount, company: d.company }));
-          uploadLeaves.push({ type: "localAccount", code: locEntry.code, name: locEntry.name, amount: localAmt, children: dimChildren });
-        }
-      });
-    }
-
-    return {
-      type: "groupAccount",
-      code,
-      name: String(getField(ga, "accountName") ?? ""),
-      accountType: String(getField(ga, "accountType") ?? ""),
-      isSumAccount: !!getField(ga, "isSumAccount"),
-      level: Number(getField(ga, "level") ?? 0),
-      children,
-      uploadLeaves,
-    };
   }
 
-  return roots.map(makeNode).filter(Boolean);
-}
-
-function sumNode(node) {
-  if (node.type === "localAccount" || node.type === "dimension" || node.type === "plain")
-    return node.amount ?? 0;
-
-  let s = 0;
-  node.uploadLeaves?.forEach(l => { s += sumNode(l); });
-  node.children?.forEach(c => { s += sumNode(c); });
-  return s;
-}
-
-// A node "has data" if it or any descendant has any uploaded rows attached
-function hasData(node) {
-  if (node.type !== "groupAccount") return true; // leaf nodes always count
-  if (node.uploadLeaves?.length > 0) return true;
-  return node.children?.some(hasData) ?? false;
-}
-
-/* ── Tree row components ──────────────────────────────────── */
-const INDENT = 18;
-
-function AmountCell({ value, bold }) {
-  const n = typeof value === "number" ? value : 0;
-  const color = n < 0 ? "text-emerald-700" : n > 0 ? "text-[#1a2f8a]" : "text-gray-300";
-  return (
-    <td className={`px-4 py-1.5 text-right font-mono text-xs whitespace-nowrap w-36 ${bold ? "font-bold" : ""} ${color}`}>
-      {fmtAmt(n)}
-    </td>
+  const wrap = (children) => (
+    <div className={`flex items-start gap-1.5 ${depth > 0 ? "mt-1 pl-3 border-l-2 border-[#eef1fb]" : ""}`}>
+      <div className="flex-1 min-w-0 flex flex-col gap-1.5">{children}</div>
+      {onRemove && (
+        <button onClick={onRemove} className="flex-shrink-0 w-5 h-5 rounded-md bg-red-50 text-red-400 hover:bg-red-500 hover:text-white flex items-center justify-center transition-all">
+          <X size={9} />
+        </button>
+      )}
+    </div>
   );
-}
 
-function DimensionRow({ node, depth }) {
-  return (
-    <tr className="hover:bg-amber-50/40 transition-colors">
-      <td className="py-1" style={{ paddingLeft: depth * INDENT + 8 }}>
-        <div className="flex items-center gap-1.5">
-          <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded flex-shrink-0">dim</span>
-          <span className="text-xs text-gray-400 italic">{node.name || node.code}</span>
-          {node.company && <span className="text-[10px] text-gray-300 ml-1">· {node.company}</span>}
+  if (node.type === "accountGroup") return wrap(
+    <div className="flex items-center gap-1.5 flex-wrap">
+      <span className="text-[10px] font-black text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md">GROUP</span>
+      <div className="flex items-center gap-1">
+        <span className="text-[10px] text-gray-400">prefix</span>
+        <input value={node.prefix ?? ""} onChange={e => onChange({ ...node, prefix: e.target.value })}
+          placeholder="e.g. 42"
+          className="text-[10px] border border-gray-200 rounded-lg px-2 py-0.5 text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-white w-20" />
+      </div>
+      <span className="text-[10px] text-gray-300">→ sums all accounts with that prefix</span>
+    </div>
+  );
+
+  if (node.type === "account") return wrap(
+    <div className="flex items-center gap-1.5 flex-wrap">
+      <span className="text-[10px] font-black text-[#1a2f8a] bg-[#eef1fb] px-2 py-0.5 rounded-md">ACCOUNT</span>
+      <select value={node.accountCode ?? ""} onChange={e => onChange({ ...node, accountCode: e.target.value })}
+        className="text-[10px] border border-gray-200 rounded-lg px-2 py-0.5 text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-white max-w-[180px]">
+        <option value="">— select account —</option>
+        {accountCodes.map(ac => <option key={ac} value={ac}>{ac}</option>)}
+      </select>
+      {dimCodes.length > 0 && (
+        <select value={node.dimCode ?? ""} onChange={e => onChange({ ...node, dimCode: e.target.value || undefined })}
+          className="text-[10px] border border-gray-200 rounded-lg px-2 py-0.5 text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-white max-w-[140px]">
+          <option value="">All dimensions</option>
+          {dimCodes.map(d => <option key={d} value={d}>{d}</option>)}
+        </select>
+      )}
+    </div>
+  );
+
+  if (node.type === "manual") return wrap(
+    <div className="flex items-center gap-1.5">
+      <span className="text-[10px] font-black text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md">NUMBER</span>
+      <input type="number" value={node.value ?? 0} onChange={e => onChange({ ...node, value: parseFloat(e.target.value) || 0 })}
+        className="text-[10px] border border-gray-200 rounded-lg px-2 py-0.5 text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-white w-32" />
+    </div>
+  );
+
+  if (node.type === "ref") return wrap(
+    <div className="flex items-center gap-1.5 flex-wrap">
+      <span className="text-[10px] font-black text-purple-700 bg-purple-50 px-2 py-0.5 rounded-md">KPI REF</span>
+      <select value={node.kpiId ?? ""} onChange={e => onChange({ ...node, kpiId: e.target.value })}
+        className="text-[10px] border border-gray-200 rounded-lg px-2 py-0.5 text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-white">
+        <option value="">— select KPI —</option>
+        {kpiList.map(k => <option key={k.id} value={k.id}>{k.label}</option>)}
+      </select>
+    </div>
+  );
+
+  if (node.type === "fn") return wrap(
+    <>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md">FUNC</span>
+        <select value={node.fn ?? "neg"} onChange={e => onChange({ ...node, fn: e.target.value })}
+          className="text-[10px] border border-gray-200 rounded-lg px-2 py-0.5 text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-white">
+          <option value="neg">Negate (−x)</option>
+          <option value="abs">Absolute (|x|)</option>
+          <option value="pct">To Percent (×100)</option>
+        </select>
+        <span className="text-[10px] text-gray-400">applied to:</span>
+      </div>
+      <NodeBuilder node={node.arg} onChange={arg => onChange({ ...node, arg })}
+        onRemove={node.arg ? () => onChange({ ...node, arg: null }) : null}
+        depth={depth + 1} kpiList={kpiList} accountCodes={accountCodes} dimCodes={dimCodes} />
+    </>
+  );
+
+  if (node.type === "op") return wrap(
+    <>
+      <div className="flex items-center gap-1.5">
+        <span className="text-[10px] font-black text-orange-700 bg-orange-50 px-2 py-0.5 rounded-md">OPERATION</span>
+        <select value={node.op ?? "+"} onChange={e => onChange({ ...node, op: e.target.value })}
+          className="text-[10px] border border-gray-200 rounded-lg px-2 py-0.5 text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-white">
+          <option value="+">Add (+)</option>
+          <option value="-">Subtract (−)</option>
+          <option value="*">Multiply (×)</option>
+          <option value="/">Divide (÷)</option>
+        </select>
+      </div>
+      <div className="flex flex-col gap-1.5 pl-2">
+        <div>
+          <span className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-0.5 block">Left operand</span>
+          <NodeBuilder node={node.left} onChange={left => onChange({ ...node, left })}
+            onRemove={node.left ? () => onChange({ ...node, left: null }) : null}
+            depth={depth + 1} kpiList={kpiList} accountCodes={accountCodes} dimCodes={dimCodes} />
         </div>
-      </td>
-      <AmountCell value={node.amount} />
-    </tr>
-  );
-}
-
-function PlainRow({ node, depth }) {
-  return (
-    <tr className="hover:bg-gray-50/40 transition-colors">
-      <td className="py-1" style={{ paddingLeft: depth * INDENT + 8 }}>
-        <span className="text-xs text-gray-400 italic"></span>
-      </td>
-      <AmountCell value={node.amount} />
-    </tr>
-  );
-}
-
-function LocalAccountRow({ node, depth, expanded, onToggle }) {
-  const hasDims = node.children?.length > 0;
-  return (
-    <>
-      <tr className={`hover:bg-blue-50/20 transition-colors ${hasDims ? "cursor-pointer" : ""}`}
-        onClick={hasDims ? onToggle : undefined}>
-        <td className="py-1.5" style={{ paddingLeft: depth * INDENT + 8 }}>
-          <div className="flex items-center gap-1.5">
-            {hasDims
-              ? <span className="text-gray-300 flex-shrink-0">{expanded ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
-              : <span className="w-3 flex-shrink-0" />}
-            <span className="text-[10px] font-mono text-gray-400 flex-shrink-0">{node.code}</span>
-            <span className="text-xs text-gray-500">{node.name}</span>
-          </div>
-        </td>
-        <AmountCell value={node.amount} />
-      </tr>
-      {expanded && hasDims && node.children.map((dim, i) =>
-        <DimensionRow key={i} node={dim} depth={depth + 1} />
-      )}
+        <div>
+          <span className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-0.5 block">Right operand</span>
+          <NodeBuilder node={node.right} onChange={right => onChange({ ...node, right })}
+            onRemove={node.right ? () => onChange({ ...node, right: null }) : null}
+            depth={depth + 1} kpiList={kpiList} accountCodes={accountCodes} dimCodes={dimCodes} />
+        </div>
+      </div>
     </>
   );
+
+  return null;
 }
 
-function GroupAccountRow({ node, depth, expanded, onToggle, expandedMap, dispatch }) {
-  const visibleChildren = node.children?.filter(hasData) ?? [];
-  const hasContent = visibleChildren.length > 0 || node.uploadLeaves?.length > 0;
-const total = sumNode(node);
-  const bold  = node.isSumAccount;
-  
+// ── KPI Editor Modal ──────────────────────────────────────────────────────────
+const PRESETS = [
+  { label: "Account Group sum",          formula: { type: "text", expression: "A",           variables: { A: null } } },
+  { label: "Single account",             formula: { type: "text", expression: "A",           variables: { A: null } } },
+  { label: "A ÷ B (ratio/margin)",       formula: { type: "text", expression: "A / B",       variables: { A: null, B: null } } },
+  { label: "A − B (variance)",           formula: { type: "text", expression: "A - B",       variables: { A: null, B: null } } },
+  { label: "(A ÷ B) × 100 (percent)",    formula: { type: "text", expression: "(A / B) * 100", variables: { A: null, B: null } } },
+  { label: "Negate value (−A)",          formula: { type: "text", expression: "-A",          variables: { A: null } } },
+  { label: "KPI reference",              formula: { type: "text", expression: "A",           variables: { A: null } } },
+  { label: "Fixed number",               formula: { type: "text", expression: "0",           variables: {} } },
+];
 
-  const rowBg = bold
-    ? depth === 0
-      ? "bg-[#1a2f8a]/[0.06] border-b border-[#1a2f8a]/10"
-      : depth === 1
-        ? "bg-[#1a2f8a]/[0.03]"
-        : ""
-    : "";
+const LIBRARY_SECTIONS = [
+  {
+    key: "liquidez",
+    label: "Liquidez",
+    color: "bg-emerald-700",
+    kpis: [
+      { label: "Ratio Liquidez", description: "Mide cuántos pesos de activos líquidos respaldan cada peso de deuda a corto plazo.", benchmark: "> 1.5 saludable; entre 1 y 1.5 aceptable", format: "number", category: "Liquidez", formula: { type: "op", op: "/", left: null, right: null } },
+      { label: "Prueba Ácida (Quick Ratio)", description: "Excluye inventarios por ser el activo menos líquido. Medida más estricta de la liquidez real.", benchmark: "> 1.0 ideal", format: "number", category: "Liquidez", formula: { type: "op", op: "/", left: null, right: null } },
+      { label: "Ratio de Tesorería (Cash Ratio)", description: "Solo considera el efectivo y equivalentes disponibles de inmediato.", benchmark: "> 0.2 aceptable", format: "number", category: "Liquidez", formula: { type: "op", op: "/", left: null, right: null } },
+      { label: "Capital Circulante (Working Capital)", description: "Recursos disponibles para operar la empresa luego de cubrir todas las obligaciones a corto plazo.", benchmark: "Positivo y creciente", format: "currency", category: "Liquidez", formula: { type: "op", op: "-", left: null, right: null } },
+    ],
+  },
+  {
+    key: "solvencia",
+    label: "Solvencia / Endeudamiento",
+    color: "bg-blue-700",
+    kpis: [
+      { label: "Razón de Endeudamiento", description: "Porcentaje de los activos financiados con deuda. A mayor valor, más apalancada y riesgosa la empresa.", benchmark: "< 50% conservador", format: "percent", category: "Solvencia", formula: { type: "fn", fn: "pct", arg: { type: "op", op: "/", left: null, right: null } } },
+      { label: "Apalancamiento Financiero (D/E)", description: "Compara la deuda total con el capital propio. Indica el nivel de riesgo financiero asumido.", benchmark: "< 1.0 conservador; varía por sector", format: "number", category: "Solvencia", formula: { type: "op", op: "/", left: null, right: null } },
+      { label: "Cobertura de Intereses", description: "Cuántas veces puede la empresa pagar sus intereses con su utilidad operativa.", benchmark: "> 3x saludable", format: "number", category: "Solvencia", formula: { type: "op", op: "/", left: null, right: null } },
+      { label: "Deuda Neta / EBITDA", description: "Cuántos años le tomaría pagar su deuda neta con el flujo operativo generado.", benchmark: "< 3x manejable; > 5x elevado", format: "number", category: "Solvencia", formula: { type: "op", op: "/", left: null, right: null } },
+    ],
+  },
+  {
+    key: "rentabilidad",
+    label: "Rentabilidad",
+    color: "bg-[#1a2f8a]",
+    kpis: [
+      { label: "Margen Bruto", description: "Porcentaje de las ventas que queda tras el costo directo de producción o compra.", benchmark: "Depende del sector", format: "percent", category: "Rentabilidad", formula: { type: "fn", fn: "pct", arg: { type: "op", op: "/", left: null, right: null } } },
+      { label: "Margen Operativo (EBIT %)", description: "Utilidad generada por la operación principal antes de intereses e impuestos.", benchmark: "> 10% generalmente bueno", format: "percent", category: "Rentabilidad", formula: { type: "fn", fn: "pct", arg: { type: "op", op: "/", left: null, right: null } } },
+      { label: "Margen Neto", description: "Cuántos centavos de utilidad neta genera cada peso de ventas.", benchmark: "Depende del sector", format: "percent", category: "Rentabilidad", formula: { type: "fn", fn: "pct", arg: { type: "op", op: "/", left: null, right: null } } },
+      { label: "ROA — Rentabilidad sobre Activos", description: "Eficiencia con que la empresa usa todos sus activos para generar utilidad.", benchmark: "> 5% bueno; > 10% excelente", format: "percent", category: "Rentabilidad", formula: { type: "fn", fn: "pct", arg: { type: "op", op: "/", left: null, right: null } } },
+      { label: "ROE — Rentabilidad sobre Patrimonio", description: "Retorno generado para los accionistas sobre su inversión en la empresa.", benchmark: "> 15% atractivo", format: "percent", category: "Rentabilidad", formula: { type: "fn", fn: "pct", arg: { type: "op", op: "/", left: null, right: null } } },
+      { label: "EBITDA", description: "Aproximación al flujo de caja operativo antes de estructura financiera e impuestos.", benchmark: "Positivo y creciente", format: "currency", category: "Rentabilidad", formula: { type: "fn", fn: "neg", arg: { type: "account", accountCode: "53999" } } },
+      { label: "EBIT", description: "Earnings before interest and tax.", benchmark: "Positivo y creciente", format: "currency", category: "Rentabilidad", formula: { type: "fn", fn: "neg", arg: { type: "account", accountCode: "57999" } } },
+    ],
+  },
+  {
+    key: "eficiencia",
+    label: "Eficiencia",
+    color: "bg-amber-600",
+    kpis: [
+      { label: "Rotación de Inventarios", description: "Cuántas veces al año se renueva el inventario.", benchmark: "Mayor es mejor; varía por sector", format: "number", category: "Eficiencia", formula: { type: "op", op: "/", left: null, right: null } },
+      { label: "Días de Inventario (DIO)", description: "Promedio de días que el inventario permanece almacenado antes de venderse.", benchmark: "Menor = más eficiente", format: "number", category: "Eficiencia", formula: { type: "op", op: "/", left: null, right: null } },
+      { label: "Rotación de Cuentas por Cobrar", description: "Cuántas veces al año se cobran las ventas realizadas a crédito.", benchmark: "Mayor es mejor", format: "number", category: "Eficiencia", formula: { type: "op", op: "/", left: null, right: null } },
+      { label: "Días de Cobro (DSO)", description: "Días promedio que tarda la empresa en cobrar sus ventas a crédito.", benchmark: "Menor = más eficiente", format: "number", category: "Eficiencia", formula: { type: "op", op: "/", left: null, right: null } },
+      { label: "Días de Pago a Proveedores (DPO)", description: "Días promedio que la empresa demora en pagar a sus proveedores.", benchmark: "Mayor puede ser favorable", format: "number", category: "Eficiencia", formula: { type: "op", op: "/", left: null, right: null } },
+      { label: "Ciclo de Conversión de Efectivo (CCC)", description: "Días que tarda el efectivo en circular desde la compra de insumos hasta el cobro al cliente.", benchmark: "Menor o negativo = óptimo", format: "number", category: "Eficiencia", formula: { type: "op", op: "+", left: null, right: null } },
+      { label: "Rotación de Activos Totales", description: "Cuántos pesos en ventas genera cada peso invertido en activos.", benchmark: "> 1x generalmente bueno", format: "number", category: "Eficiencia", formula: { type: "op", op: "/", left: null, right: null } },
+    ],
+  },
+  {
+    key: "mercado",
+    label: "Mercado",
+    color: "bg-rose-800",
+    kpis: [
+      { label: "EPS — Utilidad por Acción", description: "Cuánta utilidad corresponde a cada acción emitida.", benchmark: "Positivo y creciente", format: "number", category: "Mercado", formula: { type: "op", op: "/", left: null, right: null } },
+      { label: "P/E — Precio / Utilidad", description: "Cuántas veces paga el mercado la utilidad anual de la empresa.", benchmark: "10x–20x común; varía por sector", format: "number", category: "Mercado", formula: { type: "op", op: "/", left: null, right: null } },
+      { label: "P/BV — Precio / Valor en Libros", description: "Compara el valor de mercado con el patrimonio contable.", benchmark: "> 1x indica prima; < 1x posible subvaloración", format: "number", category: "Mercado", formula: { type: "op", op: "/", left: null, right: null } },
+      { label: "Dividend Yield", description: "Retorno anual en dividendos respecto al precio actual de la acción.", benchmark: "> 3% atractivo para renta", format: "percent", category: "Mercado", formula: { type: "fn", fn: "pct", arg: { type: "op", op: "/", left: null, right: null } } },
+      { label: "EV/EBITDA", description: "Múltiplo de valoración independiente de la estructura de capital y política fiscal.", benchmark: "6x–12x común en industria", format: "number", category: "Mercado", formula: { type: "op", op: "/", left: null, right: null } },
+    ],
+  },
+];
 
-  return (
-    <>
-      <tr className={`${rowBg} hover:bg-[#1a2f8a]/5 transition-colors ${hasContent ? "cursor-pointer" : ""}`}
-        onClick={hasContent ? onToggle : undefined}>
-        <td className="py-2" style={{ paddingLeft: depth * INDENT + 4 }}>
-          <div className="flex items-center gap-1.5">
-            {hasContent
-              ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{expanded ? <ChevronDown size={11}/> : <ChevronRight size={11}/>}</span>
-              : <span className="w-3 flex-shrink-0" />}
-            <span className={`font-mono text-xs flex-shrink-0 ${bold ? "font-bold text-[#1a2f8a]" : "text-gray-400"}`}>{node.code}</span>
-            <span className={`text-xs ${bold ? "font-bold text-[#1a2f8a]" : "text-gray-600"}`}>{node.name}</span>
-          </div>
-        </td>
-        <AmountCell value={total} bold={bold} />
-      </tr>
-      {expanded && (
-        <>
-          {visibleChildren.map(child => {
-            const key = `ga-${child.code}`;
-            return (
-              <GroupAccountRow key={key} node={child} depth={depth + 1}
-                expanded={!!expandedMap[key]} onToggle={() => dispatch(key)}
-                expandedMap={expandedMap} dispatch={dispatch} />
-            );
-          })}
-          {node.uploadLeaves?.map((leaf, i) => {
-            const key = `leaf-${node.code}-${i}`;
-            if (leaf.type === "dimension")
-              return <DimensionRow key={key} node={leaf} depth={depth + 1} />;
-            if (leaf.type === "plain")
-              return <PlainRow key={key} node={leaf} depth={depth + 1} />;
-            return (
-              <LocalAccountRow key={key} node={leaf} depth={depth + 1}
-                expanded={!!expandedMap[key]} onToggle={() => dispatch(key)} />
-            );
-          })}
-        </>
-      )}
-    </>
-  );
-}
 
-function PLAmountCell({ value, bold }) {
-  const isEmpty = value === 0;
-  const isNeg   = value < 0;
-  const color   = isEmpty ? "text-gray-300" : isNeg ? "text-red-500" : "text-gray-800";
-  return (
-    <td className={`pr-6 py-3 text-right font-mono text-xs whitespace-nowrap w-36 ${bold ? "font-bold" : ""} ${color}`}>
-      {isEmpty ? "—" : isNeg ? `(${fmtAmt(Math.abs(value))})` : fmtAmt(value)}
-    </td>
-  );
-}
 
-function deviation(a, b) {
-  const diff = a - b;
-  const pct  = b === 0 ? null : (diff / Math.abs(b)) * 100;
-  return { diff, pct };
-}
+function LibraryPicker({ onSave }) {
+  const [activeSection, setActiveSection] = useState(null);
 
-function DeviationCells({ a, b, bold }) {
-  const { diff, pct } = deviation(a, b);
-  const isNeg  = diff < 0;
-  const color  = diff === 0 ? "text-gray-300" : isNeg ? "text-red-400" : "text-emerald-600";
-  const pctStr = pct === null ? "—" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
-  const diffStr = diff === 0 ? "—"
-    : isNeg ? `(${fmtAmt(Math.abs(diff))})` : fmtAmt(diff);
-  return (
-    <>
-      <td className={`pr-6 py-3 text-right font-mono text-xs whitespace-nowrap w-28 ${bold ? "font-bold" : ""} ${color}`}>
-        {diffStr}
-      </td>
-      <td className={`pr-6 py-3 text-right font-mono text-xs whitespace-nowrap w-20 ${bold ? "font-bold" : ""} ${color}`}>
-        {pctStr}
-      </td>
-    </>
-  );
-}
-
-function generatePLXlsx({
-  groupAccounts, uploadedAccounts, prevUploadedAccounts,
-  compareMode,
-  cmpUploadedAccounts, cmpPrevUploadedAccounts, cmpFilters,
-  cmp2UploadedAccounts, cmp2PrevUploadedAccounts, cmp2Filters,
-  month, year, source, structure,
-  summaryRows,
-}) {
-  async function doGenerate(ExcelJS) {
-    const monthLabel  = MONTHS.find(m => String(m.value) === String(month))?.label ?? month;
-    const cmpMoLabel  = MONTHS.find(m => String(m.value) === String(cmpFilters?.month))?.label ?? cmpFilters?.month;
-    const cmp2MoLabel = MONTHS.find(m => String(m.value) === String(cmp2Filters?.month))?.label ?? cmp2Filters?.month;
-
-    const tree      = buildTree(groupAccounts, uploadedAccounts);
-    const prevTree  = buildTree(groupAccounts, prevUploadedAccounts);
-    const cmpTree   = compareMode ? buildTree(groupAccounts, cmpUploadedAccounts) : [];
-    const cmpPrevT  = compareMode ? buildTree(groupAccounts, cmpPrevUploadedAccounts) : [];
-    const cmp2Tree  = compareMode ? buildTree(groupAccounts, cmp2UploadedAccounts) : [];
-    const cmp2PrevT = compareMode ? buildTree(groupAccounts, cmp2PrevUploadedAccounts) : [];
-
-    const nodeMap = t => { const m = new Map(); const w = n => { m.set(n.code, n); n.children?.forEach(w); }; t.forEach(w); return m; };
-    const prevMap     = nodeMap(prevTree);
-    const cmpMap      = nodeMap(cmpTree);
-    const cmpPrevMap  = nodeMap(cmpPrevT);
-    const cmp2Map     = nodeMap(cmp2Tree);
-    const cmp2PrevMap = nodeMap(cmp2PrevT);
-
-    const getYtd  = (map, code) => { const n = map.get(code); return n ? sumNode(n) : 0; };
-    const getPrev = (map, code, mo) => Number(mo) === 1 ? 0 : getYtd(map, code);
-
-    const buildRow = node => {
-      const ytdV      = -sumNode(node);
-      const prevV     = -getPrev(prevMap, node.code, month);
-      const monV      = ytdV - prevV;
-      const cmpYtdV   = compareMode ? -getYtd(cmpMap, node.code) : null;
-      const cmpPrevV  = compareMode ? -getPrev(cmpPrevMap, node.code, cmpFilters?.month) : null;
-      const cmpMonV   = compareMode ? cmpYtdV - cmpPrevV : null;
-      const cmp2YtdV  = compareMode ? -getYtd(cmp2Map, node.code) : null;
-      const cmp2PrevV = compareMode ? -getPrev(cmp2PrevMap, node.code, cmp2Filters?.month) : null;
-      const cmp2MonV  = compareMode ? cmp2YtdV - cmp2PrevV : null;
-      const dA = (a, b) => (a != null && b != null) ? a - b : 0;
-      const dP = (a, b) => (a != null && b != null && b !== 0) ? (a - b) / Math.abs(b) : 0;
-      return compareMode
-        ? { account: node.name, monA: monV, monB: cmpMonV, monBDev: dA(monV, cmpMonV), monBPct: dP(monV, cmpMonV),
-            monC: cmp2MonV, monCDev: dA(monV, cmp2MonV), monCPct: dP(monV, cmp2MonV),
-            ytdA: ytdV, ytdB: cmpYtdV, ytdBDev: dA(ytdV, cmpYtdV), ytdBPct: dP(ytdV, cmpYtdV),
-            ytdC: cmp2YtdV, ytdCDev: dA(ytdV, cmp2YtdV), ytdCPct: dP(ytdV, cmp2YtdV), _bold: node.isSumAccount }
-        : { account: node.name, monthly: monV, ytd: ytdV, _bold: node.isSumAccount };
+  if (!activeSection) {
+const SECTION_META = {
+      liquidez:      { icon: "💧", hint: "Capacidad de pagar obligaciones a corto plazo" },
+      solvencia:     { icon: "🏦", hint: "Nivel de deuda y solidez financiera estructural" },
+      rentabilidad:  { icon: "📈", hint: "Márgenes, retornos y generación de beneficios" },
+      eficiencia:    { icon: "⚙️", hint: "Gestión de activos, cobros, pagos e inventarios" },
+      mercado:       { icon: "📊", hint: "Valoración bursátil y métricas para inversores" },
     };
 
-    const collectDetailed = nodes => {
-      const rows = [];
-      const walk = node => {
-        if (!hasData(node) || !["P/L","DIS"].includes(node.accountType)) return;
-        node.children?.forEach(c => walk(c));
-        if (node.isSumAccount) rows.push(buildRow(node));
-      };
-      nodes.filter(n => hasData(n) && ["P/L","DIS"].includes(n.accountType))
-        .sort((a,b) => String(a.code).localeCompare(String(b.code), undefined, {numeric:true}))
-        .forEach(n => walk(n));
-      return rows;
-    };
-
-    const summaryData  = summaryRows.map(buildRow);
-    const detailedData = collectDetailed(tree);
-
-    const wb = new ExcelJS.Workbook();
-    wb.creator = "Konsolidator";
-    wb.created = new Date();
-
-    const NAVY  = "FF1A2F8A";
-    const RED   = "FFCF305D";
-    const GREEN = "FF57AA78";
-    const LIGHT = "FFEEF1FB";
-    const STRIPE= "FFF8F9FF";
-    const WHITE = "FFFFFFFF";
-    const BGRD  = "FF0F1F5E";
-
-    const mkFill = argb => ({ type: "pattern", pattern: "solid", fgColor: { argb } });
-    const mkFont = (bold, argb, sz = 9) => ({ bold, color: { argb }, name: "Arial", size: sz });
-    const mkAlign = (h, v = "middle", wrap = false) => ({ horizontal: h, vertical: v, wrapText: wrap });
-    const mkBorder = (style = "hair") => ({ bottom: { style, color: { argb: "FFE5E7EB" } } });
-    const mkBorderThick = () => ({ bottom: { style: "thin", color: { argb: "FFCCCCCC" } } });
-
-    const NUM_FMT  = '#,##0.00;(#,##0.00);"-"';
-    const PCT_FMT  = '0.0%;(0.0%);"-"';
-
-    const buildSheet = (dataRows, sheetTitle) => {
-      const ws = wb.addWorksheet(sheetTitle, { views: [{ state: "frozen", ySplit: compareMode ? 7 : 6 }] });
-
-      const totalCols = compareMode ? 15 : 3;
-
-      // ── Row 1: main title ──
-      ws.addRow([]);
-      const r1 = ws.lastRow;
-      r1.height = 28;
-      r1.getCell(1).value = `Profit & Loss — ${sheetTitle}`;
-      r1.getCell(1).font = mkFont(true, "FFFFFFFF", 13);
-      r1.getCell(1).fill = mkFill(NAVY);
-      r1.getCell(1).alignment = mkAlign("left");
-      for (let c = 1; c <= totalCols; c++) {
-        r1.getCell(c).fill = mkFill(NAVY);
-      }
-      ws.mergeCells(1, 1, 1, totalCols);
-
-      // ── Row 2: subtitle ──
-      ws.addRow([]);
-      const r2 = ws.lastRow;
-      r2.height = 16;
-      r2.getCell(1).value = `${monthLabel} ${year}  ·  ${source}  ·  ${structure}`;
-      r2.getCell(1).font = mkFont(false, "FFB4C6EE", 9);
-      r2.getCell(1).fill = mkFill(NAVY);
-      r2.getCell(1).alignment = mkAlign("left");
-      for (let c = 1; c <= totalCols; c++) r2.getCell(c).fill = mkFill(NAVY);
-      ws.mergeCells(2, 1, 2, totalCols);
-
-      if (compareMode) {
-        // ── Row 3: compare period labels ──
-        ws.addRow([]);
-        const r3 = ws.lastRow;
-        r3.height = 16;
-        r3.getCell(1).value = `▸ B: ${cmpMoLabel} ${cmpFilters?.year} · ${cmpFilters?.source} · ${cmpFilters?.structure}${cmpFilters?.dimension ? " · " + cmpFilters.dimension : ""}`;
-        r3.getCell(1).font = mkFont(false, "FFFCD34D", 9);
-        r3.getCell(1).fill = mkFill(NAVY);
-        r3.getCell(1).alignment = mkAlign("left");
-        r3.getCell(9).value = `▸ C: ${cmp2MoLabel} ${cmp2Filters?.year} · ${cmp2Filters?.source} · ${cmp2Filters?.structure}${cmp2Filters?.dimension ? " · " + cmp2Filters.dimension : ""}`;
-        r3.getCell(9).font = mkFont(false, "FFA7F3D0", 9);
-        r3.getCell(9).fill = mkFill(NAVY);
-        r3.getCell(9).alignment = mkAlign("left");
-        for (let c = 1; c <= totalCols; c++) r3.getCell(c).fill = mkFill(NAVY);
-        ws.mergeCells(3, 1, 3, 8);
-        ws.mergeCells(3, 9, 3, totalCols);
-      }
-
-      // ── Spacer row ──
-      ws.addRow([]);
-      ws.lastRow.height = 6;
-      for (let c = 1; c <= totalCols; c++) ws.lastRow.getCell(c).fill = mkFill("FFF5F5F5");
-
-      if (compareMode) {
-        // ── Row 5: parent group headers ──
-        ws.addRow([]);
-        const r5 = ws.lastRow;
-        r5.height = 20;
-
-        const parentGroups = [
-          { col: 1, span: 1, label: "",          fill: LIGHT,   font: NAVY },
-          { col: 2, span: 1, label: "Monthly A",  fill: LIGHT,   font: NAVY },
-          { col: 3, span: 3, label: `B: ${cmpMoLabel} ${cmpFilters?.year}`,  fill: "FFCF305D", font: "FFFFFFFF" },
-          { col: 6, span: 3, label: `C: ${cmp2MoLabel} ${cmp2Filters?.year}`, fill: "FF57AA78", font: "FFFFFFFF" },
-          { col: 9, span: 1, label: "YTD A",      fill: LIGHT,   font: NAVY },
-          { col: 10, span: 3, label: `B: ${cmpMoLabel} ${cmpFilters?.year}`, fill: "FFCF305D", font: "FFFFFFFF" },
-          { col: 13, span: 3, label: `C: ${cmp2MoLabel} ${cmp2Filters?.year}`, fill: "FF57AA78", font: "FFFFFFFF" },
-        ];
-
-        const parentRowNum = compareMode ? 5 : 4;
-        parentGroups.forEach(({ col, span, label, fill: f, font: ft }) => {
-          const cell = r5.getCell(col);
-          cell.value = label;
-          cell.font = mkFont(true, ft, 9);
-          cell.fill = mkFill(f);
-          cell.alignment = mkAlign("center");
-          cell.border = mkBorderThick();
-          for (let i = col; i < col + span; i++) {
-            r5.getCell(i).fill = mkFill(f);
-            r5.getCell(i).border = mkBorderThick();
-          }
-          if (span > 1) ws.mergeCells(parentRowNum, col, parentRowNum, col + span - 1);
-        });
-
-        // ── Row 6: column headers ──
-        const hdrs = ["Account","Monthly A","Monthly B","Mon Δ","Mon Δ%","Monthly C","Mon Δ","Mon Δ%",
-                       "YTD A","YTD B","YTD Δ","YTD Δ%","YTD C","YTD Δ","YTD Δ%"];
-        ws.addRow(hdrs);
-        const r6 = ws.lastRow;
-        r6.height = 20;
-        hdrs.forEach((_, i) => {
-          const cell = r6.getCell(i + 1);
-          cell.font = mkFont(true, "FFFFFFFF", 9);
-          cell.fill = mkFill(NAVY);
-          cell.alignment = mkAlign("center");
-          cell.border = mkBorderThick();
-        });
-
-      } else {
-        // ── Simple column headers ──
-        ws.addRow(["Account", "Monthly", "YTD"]);
-        const rh = ws.lastRow;
-        rh.height = 20;
-        [1,2,3].forEach(i => {
-          rh.getCell(i).font = mkFont(true, "FFFFFFFF", 9);
-          rh.getCell(i).fill = mkFill(NAVY);
-          rh.getCell(i).alignment = mkAlign("center");
-          rh.getCell(i).border = mkBorderThick();
-        });
-      }
-
-      // ── Data rows ──
-      dataRows.forEach((row, idx) => {
-        const isBold = row._bold;
-        const bgArgb = isBold ? LIGHT : (idx % 2 === 0 ? WHITE : STRIPE);
-
-        ws.addRow([]);
-        const dr = ws.lastRow;
-        dr.height = 16;
-
-        const applyCell = (colIdx, value, fmt, colorArgb, alignH = "right") => {
-          const cell = dr.getCell(colIdx);
-          cell.value = value ?? 0;
-          cell.numFmt = fmt;
-          cell.font = mkFont(isBold, colorArgb, 9);
-          cell.fill = mkFill(bgArgb);
-          cell.alignment = mkAlign(alignH);
-          cell.border = mkBorder("hair");
-        };
-
-        if (compareMode) {
-          applyCell(1,  row.account,  "@",      isBold ? NAVY : "FF1F2937", "left");
-          applyCell(2,  row.monA,     NUM_FMT,  "FF1F2937");
-          applyCell(3,  row.monB,     NUM_FMT,  "FFCF305D");
-          applyCell(4,  row.monBDev,  NUM_FMT,  row.monBDev >= 0 ? "FF057A55" : "FFCF305D");
-          applyCell(5,  row.monBPct,  PCT_FMT,  row.monBPct >= 0 ? "FF057A55" : "FFCF305D");
-          applyCell(6,  row.monC,     NUM_FMT,  "FF57AA78");
-          applyCell(7,  row.monCDev,  NUM_FMT,  row.monCDev >= 0 ? "FF057A55" : "FFCF305D");
-          applyCell(8,  row.monCPct,  PCT_FMT,  row.monCPct >= 0 ? "FF057A55" : "FFCF305D");
-          applyCell(9,  row.ytdA,     NUM_FMT,  "FF1F2937");
-          applyCell(10, row.ytdB,     NUM_FMT,  "FFCF305D");
-          applyCell(11, row.ytdBDev,  NUM_FMT,  row.ytdBDev >= 0 ? "FF057A55" : "FFCF305D");
-          applyCell(12, row.ytdBPct,  PCT_FMT,  row.ytdBPct >= 0 ? "FF057A55" : "FFCF305D");
-          applyCell(13, row.ytdC,     NUM_FMT,  "FF57AA78");
-          applyCell(14, row.ytdCDev,  NUM_FMT,  row.ytdCDev >= 0 ? "FF057A55" : "FFCF305D");
-          applyCell(15, row.ytdCPct,  PCT_FMT,  row.ytdCPct >= 0 ? "FF057A55" : "FFCF305D");
-        } else {
-          applyCell(1, row.account, "@",     isBold ? NAVY : "FF1F2937", "left");
-          applyCell(2, row.monthly, NUM_FMT, "FF1F2937");
-          applyCell(3, row.ytd,     NUM_FMT, "FF1F2937");
-        }
-      });
-
-      // ── Column widths ──
-      if (compareMode) {
-        const widths = [36, 14, 14, 12, 9, 14, 12, 9, 14, 14, 12, 9, 14, 12, 9];
-        widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
-      } else {
-        ws.getColumn(1).width = 42;
-        ws.getColumn(2).width = 18;
-        ws.getColumn(3).width = 18;
-      }
-    };
-
-    buildSheet(summaryData,  "Summary");
-    buildSheet(detailedData, "Detailed");
-
-    const buf = await wb.xlsx.writeBuffer();
-    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `PL_${year}_${String(month).padStart(2,"0")}.xlsx`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  const load = src => new Promise((res, rej) => {
-    if (document.querySelector(`script[src="${src}"]`)) { res(); return; }
-    const s = document.createElement("script");
-    s.src = src; s.onload = res; s.onerror = rej;
-    document.head.appendChild(s);
-  });
-
-  load("https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js")
-    .then(() => doGenerate(window.ExcelJS))
-    .catch(e => alert("Could not load Excel library: " + e.message));
-}
-function generatePLPdf({
-  groupAccounts, uploadedAccounts, prevUploadedAccounts,
-  compareMode,
-  cmpUploadedAccounts, cmpPrevUploadedAccounts, cmpFilters,
-  cmp2UploadedAccounts, cmp2PrevUploadedAccounts, cmp2Filters,
-  month, year, source, structure,
-  summaryRows,
-}) {
-  function doGenerate(jsPDF, autoTable) {
-    const NAVY     = [20,  36, 112];
-    const NAVYMID  = [30,  50, 140];
-    const NAVYDK   = [10,  20,  70];
-    const RED      = [207, 48,  93];
-    const REDDK    = [160, 30,  65];
-    const REDLT    = [255, 230, 238];
-    const GRN      = [52,  168, 113];
-    const GRNDK    = [30,  110,  70];
-    const GRNLT    = [220, 250, 235];
-    const LIGHT    = [238, 241, 251];
-    const STRIPE   = [248, 249, 255];
-    const WHITE    = [255, 255, 255];
-    const OFFWHITE = [250, 251, 255];
-    const GRAY     = [140, 150, 175];
-    const GRAYLT   = [210, 215, 230];
-    const TEXTDK   = [20,  35,  80];
-
-    const monthLabel  = MONTHS.find(m => String(m.value) === String(month))?.label ?? month;
-    const cmpMoLabel  = MONTHS.find(m => String(m.value) === String(cmpFilters?.month))?.label ?? cmpFilters?.month;
-    const cmp2MoLabel = MONTHS.find(m => String(m.value) === String(cmp2Filters?.month))?.label ?? cmp2Filters?.month;
-
-    const tree      = buildTree(groupAccounts, uploadedAccounts);
-    const prevTree  = buildTree(groupAccounts, prevUploadedAccounts);
-    const cmpTree   = compareMode ? buildTree(groupAccounts, cmpUploadedAccounts) : [];
-    const cmpPrevT  = compareMode ? buildTree(groupAccounts, cmpPrevUploadedAccounts) : [];
-    const cmp2Tree  = compareMode ? buildTree(groupAccounts, cmp2UploadedAccounts) : [];
-    const cmp2PrevT = compareMode ? buildTree(groupAccounts, cmp2PrevUploadedAccounts) : [];
-
-    const nodeMap = t => { const m = new Map(); const w = n => { m.set(n.code, n); n.children?.forEach(w); }; t.forEach(w); return m; };
-    const prevMap     = nodeMap(prevTree);
-    const cmpMap      = nodeMap(cmpTree);
-    const cmpPrevMap  = nodeMap(cmpPrevT);
-    const cmp2Map     = nodeMap(cmp2Tree);
-    const cmp2PrevMap = nodeMap(cmp2PrevT);
-
-    const getYtd  = (map, code) => { const n = map.get(code); return n ? sumNode(n) : 0; };
-    const getPrev = (map, code, mo) => Number(mo) === 1 ? 0 : getYtd(map, code);
-    const fmtN    = n => typeof n === "number" && !isNaN(n)
-      ? n.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—";
-    const plAmt   = n => n === 0 ? "—" : n < 0 ? `(${fmtN(Math.abs(n))})` : fmtN(n);
-    const devPct  = (a, b) => {
-      if (b === 0) return "—";
-      const p = (a - b) / Math.abs(b) * 100;
-      return `${p >= 0 ? "+" : ""}${p.toFixed(1)}%`;
-    };
-    const devAmt  = (a, b) => {
-      const d = a - b;
-      return d === 0 ? "—" : d < 0 ? `(${fmtN(Math.abs(d))})` : fmtN(d);
-    };
-
-    const buildRowData = node => {
-      const ytdV      = -sumNode(node);
-      const prevV     = -getPrev(prevMap, node.code, month);
-      const monV      = ytdV - prevV;
-      const cmpYtdV   = compareMode ? -getYtd(cmpMap, node.code) : 0;
-      const cmpPrevV  = compareMode ? -getPrev(cmpPrevMap, node.code, cmpFilters?.month) : 0;
-      const cmpMonV   = cmpYtdV - cmpPrevV;
-      const cmp2YtdV  = compareMode ? -getYtd(cmp2Map, node.code) : 0;
-      const cmp2PrevV = compareMode ? -getPrev(cmp2PrevMap, node.code, cmp2Filters?.month) : 0;
-      const cmp2MonV  = cmp2YtdV - cmp2PrevV;
-      return { node, monV, cmpMonV, cmp2MonV, ytdV, cmpYtdV, cmp2YtdV, isBold: node.isSumAccount };
-    };
-
-    const collectDetailed = nodes => {
-      const rows = [];
-      const walk = node => {
-        if (!hasData(node) || !["P/L","DIS"].includes(node.accountType)) return;
-        node.children?.forEach(c => walk(c));
-        if (node.isSumAccount) rows.push(buildRowData(node));
-      };
-      nodes.filter(n => hasData(n) && ["P/L","DIS"].includes(n.accountType))
-        .sort((a,b) => String(a.code).localeCompare(String(b.code), undefined, {numeric:true}))
-        .forEach(n => walk(n));
-      return rows;
-    };
-
-    const summaryData  = summaryRows.map(buildRowData);
-    const detailedData = collectDetailed(tree);
-
-    const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
-    const W = doc.internal.pageSize.getWidth();
-    const H = doc.internal.pageSize.getHeight();
-    let pageNum = 0;
-
-    // ─────────────────────────────────────────────────────────
-    // PAGE HEADER
-    // ─────────────────────────────────────────────────────────
-    const drawPageHeader = (isFirst, section, view) => {
-      if (!isFirst) doc.addPage();
-      pageNum++;
-
-      // Full navy background header
-      doc.setFillColor(...NAVY);
-      doc.rect(0, 0, W, 38, "F");
-
-      // Left bold accent bar
-      doc.setFillColor(...RED);
-      doc.rect(0, 0, 5, 38, "F");
-
-      // Top-left: main title
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(17);
-      doc.setTextColor(...WHITE);
-      doc.text("PROFIT & LOSS", 12, 14);
-
-      // Subtitle: period info
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(8.5);
-      doc.setTextColor(180, 200, 255);
-      doc.text(`${monthLabel} ${year}  ·  ${source}  ·  ${structure}`, 12, 22);
-
-      if (compareMode) {
-        // Period B pill
-        doc.setFillColor(...REDDK);
-        doc.roundedRect(12, 25, 95, 6.5, 1.5, 1.5, "F");
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(6.5);
-        doc.setTextColor(...WHITE);
-        doc.text("B", 16, 29.8);
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(6.5);
-        doc.text(`${cmpMoLabel} ${cmpFilters?.year}  ·  ${cmpFilters?.source}  ·  ${cmpFilters?.structure}${cmpFilters?.dimension ? "  ·  " + cmpFilters.dimension : ""}`, 21, 29.8);
-
-        // Period C pill
-        doc.setFillColor(...GRNDK);
-        doc.roundedRect(112, 25, 95, 6.5, 1.5, 1.5, "F");
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(6.5);
-        doc.setTextColor(...WHITE);
-        doc.text("C", 116, 29.8);
-        doc.setFont("helvetica", "normal");
-        doc.text(`${cmp2MoLabel} ${cmp2Filters?.year}  ·  ${cmp2Filters?.source}  ·  ${cmp2Filters?.structure}${cmp2Filters?.dimension ? "  ·  " + cmp2Filters.dimension : ""}`, 121, 29.8);
-      }
-
-      // Top-right: section + view badges
-      const rightX = W - 8;
-
-      // View badge (Monthly / YTD)
-      const viewLabel = view.toUpperCase();
-      const viewW = 28;
-      doc.setFillColor(...NAVYDK);
-      doc.roundedRect(rightX - viewW, 6, viewW, 9, 2, 2, "F");
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(7.5);
-      doc.setTextColor(160, 185, 255);
-      doc.text(viewLabel, rightX - viewW / 2, 11.8, { align: "center" });
-
-      // Section badge (Summary / Detailed)
-      const secLabel = section.toUpperCase();
-      const secW = 28;
-      doc.setFillColor(...RED);
-      doc.roundedRect(rightX - viewW - secW - 3, 6, secW, 9, 2, 2, "F");
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(7.5);
-      doc.setTextColor(...WHITE);
-      doc.text(secLabel, rightX - viewW - secW / 2 - 3, 11.8, { align: "center" });
-
-      // Generated date
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(6);
-      doc.setTextColor(...GRAY);
-      doc.text(`Generated ${new Date().toLocaleDateString()}`, rightX, 22, { align: "right" });
-
-      // Thin separator line below header
-      doc.setDrawColor(...NAVYMID);
-      doc.setLineWidth(0.4);
-      doc.line(0, 38, W, 38);
-
-      return 40; // startY
-    };
-
-    // ─────────────────────────────────────────────────────────
-    // FOOTER
-    // ─────────────────────────────────────────────────────────
-    const drawFooter = (section, view) => {
-      // Footer bar
-      doc.setFillColor(...LIGHT);
-      doc.rect(0, H - 10, W, 10, "F");
-      doc.setDrawColor(...GRAYLT);
-      doc.setLineWidth(0.3);
-      doc.line(0, H - 10, W, H - 10);
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(6.5);
-      doc.setTextColor(...NAVY);
-      doc.text("PROFIT & LOSS", 10, H - 4.5);
-
-      doc.setFont("helvetica", "normal");
-      doc.setTextColor(...GRAY);
-      doc.text(`${section}  ·  ${view}  ·  ${monthLabel} ${year}  ·  ${source}`, 38, H - 4.5);
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(7);
-      doc.setTextColor(...NAVY);
-      doc.text(`${pageNum}`, W - 10, H - 4.5, { align: "right" });
-    };
-
-    // ─────────────────────────────────────────────────────────
-    // TABLE RENDERER
-    // ─────────────────────────────────────────────────────────
-
-    // ─────────────────────────────────────────────────────────
-    // BUILD TABLE DATA
-    // ─────────────────────────────────────────────────────────
-    const monCols = compareMode ? [
-      { header: "ACCOUNT",   dataKey: "name" },
-      { header: "MONTHLY",   dataKey: "mainVal" },
-      { header: "MONTHLY B", dataKey: "bVal" },
-      { header: "Δ",         dataKey: "bDev" },
-      { header: "Δ %",       dataKey: "bPct" },
-      { header: "MONTHLY C", dataKey: "cVal" },
-      { header: "Δ",         dataKey: "cDev" },
-      { header: "Δ %",       dataKey: "cPct" },
-    ] : [
-      { header: "ACCOUNT", dataKey: "name" },
-      { header: "MONTHLY", dataKey: "mainVal" },
-    ];
-
-    const ytdCols = compareMode ? [
-      { header: "ACCOUNT", dataKey: "name" },
-      { header: "YTD",     dataKey: "mainVal" },
-      { header: "YTD B",   dataKey: "bVal" },
-      { header: "Δ",       dataKey: "bDev" },
-      { header: "Δ %",     dataKey: "bPct" },
-      { header: "YTD C",   dataKey: "cVal" },
-      { header: "Δ",       dataKey: "cDev" },
-      { header: "Δ %",     dataKey: "cPct" },
-    ] : [
-      { header: "ACCOUNT", dataKey: "name" },
-      { header: "YTD",     dataKey: "mainVal" },
-    ];
-
-    const toRow = (d, isMonthly) => ({
-      name:     d.node.name,
-      mainVal:  plAmt(isMonthly ? d.monV : d.ytdV),
-      bVal:     compareMode ? plAmt(isMonthly ? d.cmpMonV : d.cmpYtdV)  : "",
-      bDev:     compareMode ? devAmt(isMonthly ? d.monV : d.ytdV, isMonthly ? d.cmpMonV : d.cmpYtdV) : "",
-      bPct:     compareMode ? devPct(isMonthly ? d.monV : d.ytdV, isMonthly ? d.cmpMonV : d.cmpYtdV) : "",
-      cVal:     compareMode ? plAmt(isMonthly ? d.cmp2MonV : d.cmp2YtdV) : "",
-      cDev:     compareMode ? devAmt(isMonthly ? d.monV : d.ytdV, isMonthly ? d.cmp2MonV : d.cmp2YtdV) : "",
-      cPct:     compareMode ? devPct(isMonthly ? d.monV : d.ytdV, isMonthly ? d.cmp2MonV : d.cmp2YtdV) : "",
-      _isBold:  d.isBold,
-      _bDevRaw: isMonthly ? (d.monV - d.cmpMonV) : (d.ytdV - d.cmpYtdV),
-      _cDevRaw: isMonthly ? (d.monV - d.cmp2MonV) : (d.ytdV - d.cmp2YtdV),
-    });
-
-    // ─────────────────────────────────────────────────────────
-    // COLUMN WIDTHS — set per view
-    // ─────────────────────────────────────────────────────────
-    const setColWidths = (cols, nameW, mainW, otherW) => {
-      const styles = {};
-      cols.forEach(c => {
-        if (c.dataKey === "name")    styles[c.dataKey] = { cellWidth: nameW };
-        else if (c.dataKey === "mainVal") styles[c.dataKey] = { cellWidth: mainW, halign: "right" };
-        else if (["bPct","cPct"].includes(c.dataKey)) styles[c.dataKey] = { cellWidth: otherW * 0.85, halign: "right" };
-        else styles[c.dataKey] = { cellWidth: otherW, halign: "right" };
-      });
-      return styles;
-    };
-
-    // ─────────────────────────────────────────────────────────
-    // RENDER 4 PAGES
-    // ─────────────────────────────────────────────────────────
-    const pages = [
-      { section: "Summary",  view: "Monthly",  data: summaryData,  cols: monCols, isMonthly: true  },
-      { section: "Summary",  view: "YTD",      data: summaryData,  cols: ytdCols, isMonthly: false },
-      { section: "Detailed", view: "Monthly",  data: detailedData, cols: monCols, isMonthly: true  },
-      { section: "Detailed", view: "YTD",      data: detailedData, cols: ytdCols, isMonthly: false },
-    ];
-
-    pages.forEach(({ section, view, data, cols, isMonthly }, i) => {
-      const startY = drawPageHeader(i === 0, section, view);
-      const body   = data.map(d => toRow(d, isMonthly));
-      const usable = W - 16;
-      const nameW  = compareMode ? usable * 0.30 : usable * 0.55;
-      const mainW  = compareMode ? usable * 0.13 : usable * 0.225;
-      const otherW = compareMode ? usable * 0.12 : mainW;
-
-      // inject columnStyles
-      const colStyles = setColWidths(cols, nameW, mainW, otherW);
-      autoTable(doc, {
-        startY,
-        columns: cols,
-        body,
-        margin: { left: 8, right: 8, bottom: 14 },
-        tableWidth: usable,
-        styles: {
-          fontSize: 7.8,
-          cellPadding: { top: 3.5, bottom: 3.5, left: 5, right: 5 },
-          overflow: "ellipsize",
-          lineColor: GRAYLT,
-          lineWidth: 0.15,
-          font: "helvetica",
-          textColor: TEXTDK,
-        },
-        headStyles: {
-          fillColor: NAVY,
-          textColor: WHITE,
-          fontStyle: "bold",
-          fontSize: 7.2,
-          cellPadding: { top: 4.5, bottom: 4.5, left: 5, right: 5 },
-          halign: "right",
-          lineWidth: 0,
-        },
-        columnStyles: colStyles,
-        didParseCell: data => {
-          const raw = data.row.raw;
-          const col = data.column.dataKey;
-          if (data.section === "head") {
-            if (col === "name")    { data.cell.styles.fillColor = NAVYDK; data.cell.styles.halign = "left"; }
-            if (col === "mainVal") { data.cell.styles.fillColor = NAVYMID; }
-            if (["bVal","bDev","bPct"].includes(col)) {
-              data.cell.styles.fillColor = REDDK;
-              data.cell.styles.textColor = [255, 200, 215];
-            }
-            if (["cVal","cDev","cPct"].includes(col)) {
-              data.cell.styles.fillColor = GRNDK;
-              data.cell.styles.textColor = [180, 255, 215];
-            }
-            return;
-          }
-          if (raw._isBold) {
-            data.cell.styles.fillColor  = LIGHT;
-            data.cell.styles.fontStyle  = "bold";
-            data.cell.styles.fontSize   = 8;
-            if (col === "name") data.cell.styles.textColor = NAVY;
-          }
-          if (col === "bVal") data.cell.styles.textColor = raw._isBold ? REDDK : RED;
-          if (col === "cVal") data.cell.styles.textColor = raw._isBold ? GRNDK : GRN;
-          if (col === "bDev") { const v = raw._bDevRaw ?? 0; data.cell.styles.textColor = v > 0 ? GRN : v < 0 ? RED : GRAY; }
-          if (col === "cDev") { const v = raw._cDevRaw ?? 0; data.cell.styles.textColor = v > 0 ? GRN : v < 0 ? RED : GRAY; }
-          if (col === "bPct") { const v = raw._bDevRaw ?? 0; data.cell.styles.textColor = v > 0 ? GRN : v < 0 ? RED : GRAY; data.cell.styles.fontStyle = "bold"; }
-          if (col === "cPct") { const v = raw._cDevRaw ?? 0; data.cell.styles.textColor = v > 0 ? GRN : v < 0 ? RED : GRAY; data.cell.styles.fontStyle = "bold"; }
-        },
-        alternateRowStyles: { fillColor: OFFWHITE },
-        didDrawPage: () => drawFooter(section, view),
-      });
-    });
-
-    doc.save(`PL_${year}_${String(month).padStart(2,"0")}.pdf`);
-  }
-
-  const load = src => new Promise((res, rej) => {
-    if (document.querySelector(`script[src="${src}"]`)) { res(); return; }
-    const s = document.createElement("script");
-    s.src = src; s.onload = res; s.onerror = rej;
-    document.head.appendChild(s);
-  });
-
-  load("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js")
-    .then(() => load("https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"))
-    .then(() => {
-      const { jsPDF } = window.jspdf;
-      doGenerate(jsPDF, window.jspdf.jsPDF.autoTable ?? ((d, opts) => d.autoTable(opts)));
-    })
-    .catch(e => alert("Could not load PDF library: " + e.message));
-}
-
-function PLStatement({
-  groupAccounts, uploadedAccounts, prevUploadedAccounts = [],
-  compareMode, onToggleCompare,
-  cmpUploadedAccounts = [], cmpPrevUploadedAccounts = [],
-  cmpFilters, onCmpFilterChange,
-  cmp2UploadedAccounts = [], cmp2PrevUploadedAccounts = [],
-  cmp2Filters, onCmp2FilterChange,
-  sources = [], structures = [], companies = [],
-  dimGroups = [], cmpFilteredDims = [], cmp2FilteredDims = [],
-  loading, error, month, year, source, structure
-}) {
-const [expandedMap, setExpandedMap] = useState({});
-  const [summaryMode, setSummaryMode] = useState(true);
-  const [filtersOpen, setFiltersOpen] = useState(true);
-  const tree = useMemo(() => buildTree(groupAccounts, uploadedAccounts), [groupAccounts, uploadedAccounts]);
-
-  const toggle = (code) => setExpandedMap(prev => ({ ...prev, [code]: !prev[code] }));
-
-  // Collect all sum account nodes from P/L tree in ascending code order (post-order = leaves first)
-  const allSumRows = useMemo(() => {
-    const result = [];
-    function walk(node) {
-      if (!hasData(node)) return;
-      if (!["P/L", "DIS"].includes(node.accountType)) return;
-      (node.children || []).forEach(c => walk(c));
-      if (node.isSumAccount) result.push(node);
-    }
-    tree
-      .filter(n => hasData(n) && ["P/L","DIS"].includes(n.accountType))
-      .sort((a,b) => String(a.code).localeCompare(String(b.code), undefined, {numeric:true}))
-      .forEach(n => walk(n));
-    return result;
-  }, [tree]);
-  console.log("allSumRows:", allSumRows.map(n => `${n.code} ${n.name} type:${n.accountType}`));
-
-  const prevTree = useMemo(
-  () => buildTree(groupAccounts, prevUploadedAccounts),
-  [groupAccounts, prevUploadedAccounts]
-);
-
-const prevNodeByCode = useMemo(() => {
-  const map = new Map();
-  function walk(node) { map.set(node.code, node); node.children?.forEach(walk); }
-  prevTree.forEach(walk);
-  return map;
-}, [prevTree]);
-
-const getPrevYtd = useCallback((code) => {
-  if (Number(month) === 1) return 0;
-  const node = prevNodeByCode.get(code);
-  return node ? sumNode(node) : 0;
-}, [prevNodeByCode, month]);
-
-// ── Compare period trees ────────────────────────────────────
-const cmpTree = useMemo(
-  () => compareMode ? buildTree(groupAccounts, cmpUploadedAccounts) : [],
-  [groupAccounts, cmpUploadedAccounts, compareMode]
-);
-const cmpPrevTree = useMemo(
-  () => compareMode ? buildTree(groupAccounts, cmpPrevUploadedAccounts) : [],
-  [groupAccounts, cmpPrevUploadedAccounts, compareMode]
-);
-const cmpNodeByCode = useMemo(() => {
-  const map = new Map();
-  function walk(node) { map.set(node.code, node); node.children?.forEach(walk); }
-  cmpTree.forEach(walk);
-  return map;
-}, [cmpTree]);
-const cmpPrevNodeByCode = useMemo(() => {
-  const map = new Map();
-  function walk(node) { map.set(node.code, node); node.children?.forEach(walk); }
-  cmpPrevTree.forEach(walk);
-  return map;
-}, [cmpPrevTree]);
-
-const getCmpYtd  = useCallback((code) => { const n = cmpNodeByCode.get(code);     return n ? sumNode(n) : 0; }, [cmpNodeByCode]);
-
-const getCmpPrev = useCallback((code) => {
-  if (Number(cmpFilters?.month) === 1) return 0;
-  const n = cmpPrevNodeByCode.get(code); return n ? sumNode(n) : 0;
-}, [cmpPrevNodeByCode, cmpFilters]);
-
-// ── Compare period 2 trees ──────────────────────────────────
-const cmp2Tree = useMemo(
-  () => compareMode ? buildTree(groupAccounts, cmp2UploadedAccounts) : [],
-  [groupAccounts, cmp2UploadedAccounts, compareMode]
-);
-const cmp2PrevTree = useMemo(
-  () => compareMode ? buildTree(groupAccounts, cmp2PrevUploadedAccounts) : [],
-  [groupAccounts, cmp2PrevUploadedAccounts, compareMode]
-);
-const cmp2NodeByCode = useMemo(() => {
-  const map = new Map();
-  function walk(node) { map.set(node.code, node); node.children?.forEach(walk); }
-  cmp2Tree.forEach(walk);
-  return map;
-}, [cmp2Tree]);
-const cmp2PrevNodeByCode = useMemo(() => {
-  const map = new Map();
-  function walk(node) { map.set(node.code, node); node.children?.forEach(walk); }
-  cmp2PrevTree.forEach(walk);
-  return map;
-}, [cmp2PrevTree]);
-
-const getCmp2Ytd = useCallback((code) => { const n = cmp2NodeByCode.get(code); return n ? sumNode(n) : 0; }, [cmp2NodeByCode]);
-const getCmp2Prev = useCallback((code) => {
-  if (Number(cmp2Filters?.month) === 1) return 0;
-  const n = cmp2PrevNodeByCode.get(code); return n ? sumNode(n) : 0;
-}, [cmp2PrevNodeByCode, cmp2Filters]);
-
-const summaryRows = useMemo(() => {
-  const plRows = allSumRows.filter(n => n.accountType === "P/L");
-  if (!plRows.length) return [];
-  
-
-  // Group by level, keep one node per level (lowest code = main chain)
-  const byLevel = {};
-  plRows.forEach(n => {
-    if (!byLevel[n.level] || Number(n.code) < Number(byLevel[n.level].code)) {
-      byLevel[n.level] = n;
-    }
-  });
-
-  return Object.values(byLevel)
-    .sort((a,b) => String(a.code).localeCompare(String(b.code), undefined, {numeric:true}));
-}, [allSumRows]);
-
-const handleExportPdf = () => {
-  generatePLPdf({
-    groupAccounts, uploadedAccounts, prevUploadedAccounts,
-    compareMode,
-    cmpUploadedAccounts, cmpPrevUploadedAccounts, cmpFilters,
-    cmp2UploadedAccounts, cmp2PrevUploadedAccounts, cmp2Filters,
-    month, year, source, structure,
-    summaryRows,
-  });
-};
-
-const handleExportXlsx = () => {
-  generatePLXlsx({
-    groupAccounts, uploadedAccounts, prevUploadedAccounts,
-    compareMode,
-    cmpUploadedAccounts, cmpPrevUploadedAccounts, cmpFilters,
-    cmp2UploadedAccounts, cmp2PrevUploadedAccounts, cmp2Filters,
-    month, year, source, structure,
-    summaryRows,
-  });
-};
-
-
-
-  function getChildRows(node, depth) {
-    const rows = [];
-    const kids = (node.children || []).filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType));
-    kids.forEach(child => {
-const ytd     = -sumNode(child);
-const prevYtd = -getPrevYtd(child.code);
-const mon     = ytd - prevYtd;
-const isBold  = child.isSumAccount;
-const hasKids = (child.children||[]).filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType)).length > 0;
-const expanded = !!expandedMap[child.code];
-      rows.push(
-        <tr key={child.code}
-          className={`border-b border-gray-50 ${hasKids ? "cursor-pointer hover:bg-blue-50/30" : ""} transition-colors`}
-          onClick={hasKids ? () => toggle(child.code) : undefined}>
-          <td className="py-2" style={{ paddingLeft: 16 + depth * 20 }}>
-            <div className="flex items-center gap-2">
-              {hasKids
-                ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{expanded ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
-                : <span className="w-3 flex-shrink-0"/>}
-              <span className={`text-xs ${isBold ? "font-bold text-[#1a2f8a]" : "text-gray-500"}`}>{child.name}</span>
+// DESPUÉS — añade la tarjeta custom al final del grid:
+return (
+  <div className="overflow-y-auto flex-1 p-5">
+    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-4">Selecciona una categoría</p>
+    <div className="grid grid-cols-2 gap-3">
+      {LIBRARY_SECTIONS.map(sec => {
+        const meta = SECTION_META[sec.key] ?? {};
+        return (
+<button key={sec.key} onClick={() => setActiveSection(sec.key)}
+            className="text-left p-5 rounded-2xl border border-gray-100 hover:border-[#1a2f8a]/25 hover:shadow-md transition-all group bg-white hover:bg-[#f8f9ff]">
+            <div className="flex items-start justify-between gap-2 mb-4">
+              <span className="text-3xl leading-none inline-block group-hover:scale-110 transition-transform duration-200">{meta.icon}</span>
+              <span className="text-[10px] font-black text-gray-300 group-hover:text-[#1a2f8a]/40 transition-colors">
+                {sec.kpis.length} indicadores
+              </span>
             </div>
-          </td>
-<PLAmountCell value={mon} bold={isBold} />
-<PLAmountCell value={ytd} bold={isBold} />
-        </tr>
-      );
-      if (expanded) rows.push(...getChildRows(child, depth + 1));
-      
-    });
-    
-    return rows;
+            <p className="text-sm font-black text-[#1a2f8a] mb-1.5">{sec.label}</p>
+            <p className="text-xs text-gray-400 leading-snug">{meta.hint}</p>
+          </button>
+        );
+      })}
+
+{/* Tarjeta Custom KPI */}
+<button onClick={() => onSave("__custom__")}
+className="text-left p-5 rounded-2xl border border-gray-100 hover:border-[#1a2f8a]/25 hover:shadow-md transition-all group bg-white hover:bg-[#f8f9ff]">
+        <div className="flex items-start justify-between gap-2 mb-4">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#1a2f8a] to-[#4f63c2] flex items-center justify-center flex-shrink-0 shadow-md shadow-[#1a2f8a]/20 group-hover:scale-110 transition-transform">
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+        <path d="M9 4v10M4 9h10" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
+      </svg>
+    </div>
+    <span className="text-[9px] font-black text-gray-300 group-hover:text-[#1a2f8a]/40 transition-colors">
+      desde cero
+    </span>
+  </div>
+  <p className="text-xs font-black text-[#1a2f8a] mb-1">KPI personalizado</p>
+  <p className="text-[10px] text-gray-400 leading-snug">Crea tu propia fórmula con cuentas, grupos y operaciones</p>
+</button>
+    </div>
+  </div>
+);
   }
 
-  if (loading) return (
-    <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
-      <Loader2 size={28} className="text-[#1a2f8a] animate-spin mx-auto mb-3" />
-      <p className="text-gray-400 text-sm">Loading P&L data…</p>
-    </div>
-  );
-  if (error) return <ErrorBox error={error} />;
-  if (!uploadedAccounts.length || !groupAccounts.length) return (
-    <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
-      <div className="w-14 h-14 bg-[#eef1fb] rounded-2xl flex items-center justify-center mx-auto mb-4">
-        <TrendingUp size={24} className="text-[#1a2f8a]" />
-      </div>
-      <p className="text-gray-400 text-sm font-semibold">Waiting for data…</p>
-    </div>
-  );
-
-
+  const sec = LIBRARY_SECTIONS.find(s => s.key === activeSection);
   return (
-    <div className="space-y-4">
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-<div className="bg-[#1a2f8a] px-6 py-4 flex items-center justify-between">
-  <div>
-    <p className="text-white/60 text-xs font-bold uppercase tracking-widest">Profit & Loss</p>
-  </div>
-  {/* Hidden export trigger */}
-  <button id="__plExportTrigger" onClick={handleExportPdf} className="hidden" />
-  <button id="__plXlsxTrigger" onClick={handleExportXlsx} className="hidden" />
-  <div className="flex items-center gap-3">
-{compareMode && (
-      <button onClick={() => setFiltersOpen(o => !o)}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all bg-white/10 text-white/60 hover:text-white hover:bg-white/20">
-        <ChevronDown size={12} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
-        {filtersOpen ? "Hide filters" : "Show filters"}
-      </button>
-    )}
-    <button onClick={onToggleCompare}
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all
-        ${compareMode ? "bg-amber-400 text-[#1a2f8a]" : "bg-white/10 text-white/60 hover:text-white hover:bg-white/20"}`}>
-      <GitMerge size={12} /> Compare
-    </button>
-    <div className="flex items-center gap-1 p-1 bg-white/10 rounded-xl">
-      <button onClick={() => setSummaryMode(false)}
-        className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all ${!summaryMode ? "bg-white text-[#1a2f8a]" : "text-white/60 hover:text-white"}`}>
-        Detailed
-      </button>
-      <button onClick={() => setSummaryMode(true)}
-        className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all ${summaryMode ? "bg-white text-[#1a2f8a]" : "text-white/60 hover:text-white"}`}>
-        Summary
-      </button>
-    </div>
-  </div>
-</div>
-
-{compareMode && filtersOpen && (
-  <div className="border-t border-white/10">
-    <div className="bg-[#0f1f5e] px-6 py-3 flex items-center gap-2 flex-wrap">
-      <span className="text-white/40 text-[9px] font-black uppercase tracking-widest flex-shrink-0"></span>
-      <FilterPill dark label="Yr" value={cmpFilters.year} onChange={v => onCmpFilterChange("year", v)}
-        options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-      <FilterPill dark label="Mnth" value={cmpFilters.month} onChange={v => onCmpFilterChange("month", v)}
-        options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-      <FilterPill dark label="Src" value={cmpFilters.source} onChange={v => onCmpFilterChange("source", v)}
-        options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
-      <FilterPill dark label="Struct" value={cmpFilters.structure} onChange={v => onCmpFilterChange("structure", v)}
-        options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-      <FilterPill dark label="Comp" value={cmpFilters.company} onChange={v => onCmpFilterChange("company", v)}
-        options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); return { value: v, label: v }; })} />
-      <FilterPill dark label="Dim Grp" value={cmpFilters.dimGroup} onChange={v => onCmpFilterChange("dimGroup", v)}
-        options={[{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))]} />
-      <FilterPill dark label="Dim" value={cmpFilters.dimension} onChange={v => onCmpFilterChange("dimension", v)}
-        options={[{ value: "", label: "All" }, ...cmpFilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })]} />
-    </div>
-    <div className="bg-[#0f1f5e] px-6 py-3 flex items-center gap-2 flex-wrap border-t border-white/10">
-      <span className="text-white/40 text-[9px] font-black uppercase tracking-widest flex-shrink-0"></span>
-      <FilterPill dark label="Yr" value={cmp2Filters?.year} onChange={v => onCmp2FilterChange("year", v)}
-        options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-      <FilterPill dark label="Mnth" value={cmp2Filters?.month} onChange={v => onCmp2FilterChange("month", v)}
-        options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-      <FilterPill dark label="Src" value={cmp2Filters?.source} onChange={v => onCmp2FilterChange("source", v)}
-        options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
-      <FilterPill dark label="Struct" value={cmp2Filters?.structure} onChange={v => onCmp2FilterChange("structure", v)}
-        options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-      <FilterPill dark label="Comp" value={cmp2Filters?.company} onChange={v => onCmp2FilterChange("company", v)}
-        options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); return { value: v, label: v }; })} />
-      <FilterPill dark label="Dim Grp" value={cmp2Filters?.dimGroup} onChange={v => onCmp2FilterChange("dimGroup", v)}
-        options={[{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))]} />
-      <FilterPill dark label="Dim" value={cmp2Filters?.dimension} onChange={v => onCmp2FilterChange("dimension", v)}
-        options={[{ value: "", label: "All" }, ...cmp2FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })]} />
-    </div>
-  </div>
-)}
-
-
-
-
-<div className="overflow-auto" style={{ maxHeight: !compareMode ? "calc(113vh - 320px)" : filtersOpen ? "calc(123vh - 530px)" : "calc(120.5vh - 390px)" }}>
-          <table className="w-full">
-<thead className="sticky top-0 z-10">
-  {compareMode && (() => {
-    const cmpLabel  = [cmpFilters.year, MONTHS.find(m => String(m.value) === String(cmpFilters.month))?.label, cmpFilters.source, cmpFilters.structure, cmpFilters.dimension].filter(Boolean).join(" · ") || "Period B";
-    const cmp2Label = [cmp2Filters?.year, MONTHS.find(m => String(m.value) === String(cmp2Filters?.month))?.label, cmp2Filters?.source, cmp2Filters?.structure, cmp2Filters?.dimension].filter(Boolean).join(" · ") || "Period C";
-    return (
-      <tr className="bg-[#1a2f8a]">
-        <th className="bg-[#eef1fb]" />
-        <th className="bg-[#eef1fb]" />
-        <th colSpan={3} className="text-center py-2 text-[9px] font-black uppercase tracking-widest text-[#CF305D] bg-[#dae1ff] whitespace-nowrap px-3 border-l border-white/10">{cmpLabel}</th>
-        <th colSpan={3} className="text-center py-2 text-[9px] font-black uppercase tracking-widest text-[#57aa78] bg-[#dae1ff] whitespace-nowrap px-3 border-l border-white/10">{cmp2Label}</th>
-        <th className="bg-[#eef1fb]" />
-        <th colSpan={3} className="text-center py-2 text-[9px] font-black uppercase tracking-widest text-[#CF305D] bg-[#dae1ff] whitespace-nowrap px-3 border-l border-white/10">{cmpLabel}</th>
-        <th colSpan={3} className="text-center py-2 text-[9px] font-black uppercase tracking-widest text-[#57aa78] bg-[#dae1ff] whitespace-nowrap px-3 border-l border-white/10">{cmp2Label}</th>
-      </tr>
-    );
-  })()}
-  <tr className="border-b border-gray-100 bg-[#eef1fb]">
-    <th className="text-left px-6 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest bg-[#eef1fb]">Account</th>
-    <th className="text-right pr-6 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest w-36 bg-[#eef1fb]">Monthly</th>
-    {compareMode && <th className="text-right pr-6 py-3 text-xs font-black text-[#CF305D] uppercase tracking-widest w-36 bg-[#eef1fb]">Month (B)</th>}
-    {compareMode && <th className="text-right pr-6 py-3 text-xs font-black text-[#CF305D] uppercase tracking-widest w-28 bg-[#eef1fb]">Month Δ</th>}
-    {compareMode && <th className="text-right pr-6 py-3 text-xs font-black text-[#CF305D] uppercase tracking-widest w-20 bg-[#eef1fb]">Δ%</th>}
-    {compareMode && <th className="text-right pr-6 py-3 text-xs font-black text-[#57aa78] uppercase tracking-widest w-36 bg-[#eef1fb]">Month (C)</th>}
-    {compareMode && <th className="text-right pr-6 py-3 text-xs font-black text-[#57aa78] uppercase tracking-widest w-28 bg-[#eef1fb]">Month Δ</th>}
-    {compareMode && <th className="text-right pr-6 py-3 text-xs font-black text-[#57aa78] uppercase tracking-widest w-20 bg-[#eef1fb]">Δ%</th>}
-    <th className="text-right pr-6 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest w-36 bg-[#eef1fb]">YTD</th>
-    {compareMode && <th className="text-right pr-6 py-3 text-xs font-black text-[#CF305D] uppercase tracking-widest w-36 bg-[#eef1fb]">YTD (B)</th>}
-    {compareMode && <th className="text-right pr-6 py-3 text-xs font-black text-[#CF305D] uppercase tracking-widest w-28 bg-[#eef1fb]">YTD Δ</th>}
-    {compareMode && <th className="text-right pr-6 py-3 text-xs font-black text-[#CF305D] uppercase tracking-widest w-20 bg-[#eef1fb]">Δ%</th>}
-    {compareMode && <th className="text-right pr-6 py-3 text-xs font-black text-[#57aa78] uppercase tracking-widest w-36 bg-[#eef1fb]">YTD (C)</th>}
-    {compareMode && <th className="text-right pr-6 py-3 text-xs font-black text-[#57aa78] uppercase tracking-widest w-28 bg-[#eef1fb]">YTD Δ</th>}
-    {compareMode && <th className="text-right pr-6 py-3 text-xs font-black text-[#57aa78] uppercase tracking-widest w-20 bg-[#eef1fb]">Δ%</th>}
-  </tr>
-</thead>
-            <tbody>
-{(summaryMode ? summaryRows : allSumRows).map(node => {
-const ytd      = -sumNode(node);
-const prevYtd  = -getPrevYtd(node.code);
-const cmpYtd = compareMode ? -getCmpYtd(node.code) : 0;
-const cmpMon = compareMode ? -getCmpYtd(node.code) - (-getCmpPrev(node.code)) : 0;
-const mon      = ytd - prevYtd;
-const expanded = !!expandedMap[node.code];
-const hasKids  = !summaryMode && (node.children||[]).filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType)).length > 0;
-
-  return [
-    <tr key={node.code}
-      className={`border-b border-gray-100 bg-[#1a2f8a]/[0.04] ${hasKids ? "cursor-pointer hover:bg-[#1a2f8a]/10" : ""} transition-colors`}
-      onClick={hasKids ? () => toggle(node.code) : undefined}>
-      <td className="py-3 px-6">
-        <div className="flex items-center gap-2">
-          {hasKids
-            ? <span className="text-[#1a2f8a]/50">{expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
-            : <span className="w-3"/>}
-          <span className="text-xs font-bold text-[#1a2f8a]">{node.name}</span>
-        </div>
-      </td>
-<PLAmountCell value={mon} bold />
-{compareMode && <PLAmountCell value={cmpMon} bold />}
-{compareMode && <DeviationCells a={mon} b={cmpMon} bold />}
-{compareMode && (() => {
-  const cmp2Ytd = -getCmp2Ytd(node.code);
-  const cmp2Mon = cmp2Ytd - (-getCmp2Prev(node.code));
-  return <>
-    <PLAmountCell value={cmp2Mon} bold />
-    <DeviationCells a={mon} b={cmp2Mon} bold />
-  </>;
-})()}
-<PLAmountCell value={ytd} bold />
-{compareMode && <PLAmountCell value={cmpYtd} bold />}
-{compareMode && <DeviationCells a={ytd} b={cmpYtd} bold />}
-{compareMode && (() => {
-  const cmp2Ytd = -getCmp2Ytd(node.code);
-  return <>
-    <PLAmountCell value={cmp2Ytd} bold />
-    <DeviationCells a={ytd} b={cmp2Ytd} bold />
-  </>;
-})()}
-
-    </tr>,
-    ...(expanded && !summaryMode ? getChildRows(node, 1) : [])
-  ];
-})}
-            </tbody>
-          </table>
-        </div>
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+      <div className="px-5 pt-4 pb-2 flex items-center gap-2 flex-shrink-0">
+        <button onClick={() => setActiveSection(null)}
+          className="flex items-center gap-1.5 text-[10px] font-black text-gray-400 hover:text-[#1a2f8a] transition-colors">
+          <ChevronDown size={11} className="rotate-90" /> Volver
+        </button>
+        <span className="text-[10px] text-gray-300">·</span>
+        <span className={`text-[10px] font-black px-2 py-0.5 rounded-md text-white ${sec.color}`}>{sec.label}</span>
+      </div>
+      <div className="overflow-y-auto flex-1 px-5 pb-5 grid grid-cols-2 gap-2 content-start">
+        {sec.kpis.map((k, i) => (
+          <button key={i} onClick={() => onSave({ ...k })}
+className="text-left p-4 rounded-xl border border-gray-100 hover:border-[#1a2f8a]/30 hover:bg-[#eef1fb] transition-all group">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-black text-[#1a2f8a] leading-snug">{k.label}</p>
+                <p className="text-xs text-gray-700 mt-1 leading-snug">{k.description}</p>
+              </div>
+              <span className={`flex-shrink-0 text-[10px] font-black px-2 py-1 rounded-md ${k.format === "percent" ? "bg-emerald-50 text-emerald-700" : k.format === "currency" ? "bg-[#eef1fb] text-[#1a2f8a]" : "bg-gray-50 text-gray-500"}`}>
+                {k.format === "percent" ? "%" : k.format === "currency" ? "€" : "#"}
+              </span>
+            </div>
+            {k.benchmark && (
+              <p className="text-[10px] text-gray-600 mt-2 italic">{k.benchmark}</p>
+            )}
+          </button>
+        ))}
       </div>
     </div>
   );
 }
 
-/* ── Financial Report panel ───────────────────────────────── */
-function FinancialReport({ groupAccounts, uploadedAccounts, loading, error }) {
-  const [expandedMap, setExpandedMap] = useState({});
-  const [typeFilter, setTypeFilter]   = useState("ALL");
-  const [search, setSearch]           = useState("");
-
-  const dispatch = (key) => setExpandedMap(prev => ({ ...prev, [key]: !prev[key] }));
-
-  const tree = useMemo(
-    () => buildTree(groupAccounts, uploadedAccounts),
-    [groupAccounts, uploadedAccounts]
+function SearchableList({ items, value, onChange, placeholder = "Buscar..." }) {
+  const [search, setSearch] = useState("");
+  const filtered = items.filter(i =>
+    i.toLowerCase().includes(search.toLowerCase())
   );
-
-  const visibleRoots = useMemo(() => {
-    let roots = tree.filter(hasData);
-   if (typeFilter !== "ALL") roots = roots.filter(n => typeFilter === "P/L" ? ["P/L","DIS"].includes(n.accountType) : n.accountType === typeFilter);
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      const matches = (node) =>
-        String(node.code).toLowerCase().includes(q) ||
-        String(node.name ?? "").toLowerCase().includes(q) ||
-        node.children?.some(matches) ||
-        node.uploadLeaves?.some(l =>
-          String(l.code ?? "").toLowerCase().includes(q) ||
-          String(l.name ?? "").toLowerCase().includes(q)
-        );
-      roots = roots.filter(matches);
-    }
-    return roots;
-  }, [tree, typeFilter, search]);
-
-  function expandAll() {
-    const next = {};
-    function walk(node) {
-      next[`ga-${node.code}`] = true;
-      node.children?.forEach(c => walk(c, node.code));
-      node.uploadLeaves?.forEach((l, i) => {
-        next[`leaf-${node.code}-${i}`] = true;
-      });
-    }
-    visibleRoots.forEach(n => walk(n, null));
-    setExpandedMap(next);
-  }
-
-  if (loading) {
-    return (
-      <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
-        <Loader2 size={28} className="text-[#1a2f8a] animate-spin mx-auto mb-3" />
-        <p className="text-gray-400 text-sm">Loading financial data…</p>
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="relative">
+        <input
+          autoFocus
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder={placeholder}
+          className="w-full border border-gray-200 rounded-xl px-3 py-2 text-xs text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-[#f8f9ff] pr-7"
+        />
+        {search && (
+          <button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500">
+            <X size={10} />
+          </button>
+        )}
       </div>
-    );
-  }
-
-  if (error) return <ErrorBox error={error} />;
-
-  if (!uploadedAccounts.length || !groupAccounts.length) {
-    return (
-      <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
-        <div className="w-14 h-14 bg-[#eef1fb] rounded-2xl flex items-center justify-center mx-auto mb-4">
-          <TrendingUp size={24} className="text-[#1a2f8a]" />
-        </div>
-        <p className="text-gray-400 text-sm font-semibold">Waiting for data…</p>
-        <p className="text-gray-300 text-xs mt-1">Data is being loaded automatically.</p>
+      <div className="max-h-44 overflow-y-auto flex flex-col gap-0.5 border border-gray-100 rounded-xl bg-white">
+        {filtered.length === 0 ? (
+          <p className="text-[10px] text-gray-300 text-center py-4">Sin resultados</p>
+        ) : filtered.map(item => (
+          <button key={item} onClick={() => onChange(item)}
+            className={`text-left px-3 py-2 text-xs transition-all flex items-center justify-between ${value === item ? "bg-[#1a2f8a] text-white font-black" : "text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a] font-medium"}`}>
+            {item}
+            {value === item && <Check size={10} />}
+          </button>
+        ))}
       </div>
-    );
-  }
+    </div>
+  );
+}
+
+function SlotPicker({ onSelect, onClose, kpiList, accountCodes }) {
+  const [step, setStep] = useState("type");
+  const [type, setType] = useState(null);
+  const [prefix, setPrefix] = useState("");
+  const [accountCode, setAccountCode] = useState("");
+  const [kpiId, setKpiId] = useState("");
+  const [manualVal, setManualVal] = useState(0);
+
+  // derive group prefixes from accountCodes (unique 1-2 char prefixes)
+  const groupPrefixes = useMemo(() => {
+    const seen = new Set();
+    accountCodes.forEach(ac => {
+      for (let len = 1; len <= 4; len++) {
+        const p = ac.slice(0, len);
+        if (accountCodes.filter(c => c.startsWith(p)).length > 1) seen.add(p);
+      }
+    });
+    return [...seen].sort();
+  }, [accountCodes]);
+
+  const TYPES = [
+    { id: "accountGroup", label: "Grupo de cuentas", desc: "Suma por prefijo", color: "bg-blue-50 text-blue-700 border-blue-200" },
+    { id: "account",      label: "Cuenta individual", desc: "Código exacto",   color: "bg-[#eef1fb] text-[#1a2f8a] border-[#1a2f8a]/20" },
+    { id: "ref",          label: "KPI existente",     desc: "Referencia",      color: "bg-purple-50 text-purple-700 border-purple-200" },
+    { id: "manual",       label: "Número fijo",       desc: "Valor constante", color: "bg-amber-50 text-amber-700 border-amber-200" },
+  ];
+
+  const confirm = () => {
+    if (type === "accountGroup") onSelect({ type: "accountGroup", prefix });
+    else if (type === "account")  onSelect({ type: "account", accountCode });
+    else if (type === "ref")      onSelect({ type: "ref", kpiId });
+    else if (type === "manual")   onSelect({ type: "manual", value: manualVal });
+    onClose();
+  };
 
   return (
-    <div className="space-y-4">
-      {/* Toolbar */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-1 p-1 bg-gray-100/70 rounded-xl">
-          {["ALL", "P/L", "B/S",].map(t => (
-            <button key={t} onClick={() => setTypeFilter(t)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all ${typeFilter === t ? "bg-white text-[#1a2f8a] shadow-sm" : "text-gray-400 hover:text-gray-600"}`}>
-              {t}
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="bg-[#1a2f8a] px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {step === "detail" && (
+              <button onClick={() => setStep("type")} className="w-6 h-6 rounded-md bg-white/10 hover:bg-white/20 flex items-center justify-center">
+                <ChevronDown size={11} className="text-white/70 rotate-90" />
+              </button>
+            )}
+            <p className="text-white text-xs font-black">
+              {step === "type" ? "Selecciona tipo de variable" : TYPES.find(t => t.id === type)?.label}
+            </p>
+          </div>
+          <button onClick={onClose} className="w-6 h-6 rounded-md bg-white/10 hover:bg-white/20 flex items-center justify-center">
+            <X size={11} className="text-white/70" />
+          </button>
+        </div>
+
+        {step === "type" && (
+          <div className="p-3 flex flex-col gap-2">
+            {TYPES.map(t => (
+              <button key={t.id} onClick={() => { setType(t.id); setStep("detail"); }}
+                className={`text-left px-3 py-2.5 rounded-xl border text-xs font-black transition-all hover:shadow-sm ${t.color}`}>
+                {t.label}
+                <span className="block text-[10px] font-normal opacity-60 mt-0.5">{t.desc}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {step === "detail" && (
+          <div className="p-3 flex flex-col gap-3">
+            {type === "accountGroup" && (
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Prefijo de grupo</label>
+                <p className="text-[10px] text-gray-300">Suma todas las cuentas que empiecen por este prefijo</p>
+                <SearchableList
+                  items={groupPrefixes.length > 0 ? groupPrefixes : accountCodes}
+                  value={prefix}
+                  onChange={setPrefix}
+                  placeholder="Buscar prefijo..."
+                />
+                <div className="flex items-center gap-2 pt-1">
+                  <span className="text-[10px] text-gray-400">O escribe manualmente:</span>
+                  <input value={prefix} onChange={e => setPrefix(e.target.value)}
+                    placeholder="e.g. 42"
+                    className="flex-1 border border-gray-200 rounded-lg px-2 py-1 text-xs font-mono text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-[#f8f9ff]" />
+                </div>
+              </div>
+            )}
+            {type === "account" && (
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Cuenta individual</label>
+                <SearchableList
+                  items={accountCodes}
+                  value={accountCode}
+                  onChange={setAccountCode}
+                  placeholder="Buscar cuenta..."
+                />
+              </div>
+            )}
+            {type === "ref" && (
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">KPI de referencia</label>
+                <SearchableList
+                  items={kpiList.map(k => k.id)}
+                  value={kpiId}
+                  onChange={setKpiId}
+                  placeholder="Buscar KPI..."
+                />
+                {kpiId && (
+                  <p className="text-[10px] text-[#1a2f8a] font-black">
+                    {kpiList.find(k => k.id === kpiId)?.label}
+                  </p>
+                )}
+              </div>
+            )}
+            {type === "manual" && (
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5 block">Valor fijo</label>
+                <input autoFocus type="number" value={manualVal} onChange={e => setManualVal(parseFloat(e.target.value) || 0)}
+                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-xs text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-[#f8f9ff]" />
+              </div>
+            )}
+            <button onClick={confirm}
+              disabled={(type === "accountGroup" && !prefix) || (type === "account" && !accountCode) || (type === "ref" && !kpiId)}
+              className="w-full py-2 rounded-xl bg-[#1a2f8a] text-white text-[10px] font-black hover:bg-[#1a2f8a]/90 transition-all disabled:opacity-40">
+              Confirmar
             </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SlotLabel({ node, kpiList }) {
+  if (!node) return <span className="text-gray-300 italic">vacío</span>;
+  if (node.type === "accountGroup") return <span>Grupo <span className="font-black">{node.prefix || "?"}</span></span>;
+  if (node.type === "account") return <span className="font-black">{node.accountCode || "?"}</span>;
+  if (node.type === "ref") {
+    const k = kpiList.find(k => k.id === node.kpiId);
+    return <span className="font-black">{k?.label || node.kpiId || "?"}</span>;
+  }
+  if (node.type === "manual") return <span className="font-black">{node.value}</span>;
+  return <span className="text-gray-400 text-[10px]">complejo</span>;
+}
+
+function Slot({ node, onChange, kpiList, accountCodes, color = "bg-[#eef1fb] text-[#1a2f8a] border-[#1a2f8a]/20" }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button onClick={() => setOpen(true)}
+        className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all hover:shadow-sm ${node ? color : "bg-gray-50 text-gray-400 border-gray-200 border-dashed hover:border-[#1a2f8a]/30 hover:bg-[#f8f9ff]"}`}>
+        {node ? <SlotLabel node={node} kpiList={kpiList} /> : <>
+          <Plus size={10} className="opacity-50" /> variable
+        </>}
+      </button>
+      {open && <SlotPicker onSelect={onChange} onClose={() => setOpen(false)} kpiList={kpiList} accountCodes={accountCodes} />}
+    </>
+  );
+}
+
+const OP_SYMBOL = { "+": "+", "-": "−", "*": "×", "/": "÷" };
+
+function VisualFormula({ formula, onChange, kpiList, accountCodes }) {
+  if (!formula) return null;
+
+  const updateLeft  = left  => onChange({ ...formula, left });
+  const updateRight = right => onChange({ ...formula, right });
+  const updateArg   = arg   => onChange({ ...formula, arg });
+
+  if (formula.type === "op") return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <Slot node={formula.left}  onChange={updateLeft}  kpiList={kpiList} accountCodes={accountCodes} />
+      <span className="text-lg font-black text-[#1a2f8a]/50 px-1">{OP_SYMBOL[formula.op]}</span>
+      <Slot node={formula.right} onChange={updateRight} kpiList={kpiList} accountCodes={accountCodes} />
+    </div>
+  );
+
+  if (formula.type === "fn" && formula.fn === "pct") return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg">( </span>
+      {formula.arg?.type === "op" ? (
+        <>
+          <Slot node={formula.arg.left}  onChange={l => onChange({ ...formula, arg: { ...formula.arg, left: l } })}  kpiList={kpiList} accountCodes={accountCodes} />
+          <span className="text-lg font-black text-[#1a2f8a]/50 px-1">{OP_SYMBOL[formula.arg.op]}</span>
+          <Slot node={formula.arg.right} onChange={r => onChange({ ...formula, arg: { ...formula.arg, right: r } })} kpiList={kpiList} accountCodes={accountCodes} />
+        </>
+      ) : (
+        <Slot node={formula.arg} onChange={updateArg} kpiList={kpiList} accountCodes={accountCodes} />
+      )}
+      <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg"> ) × 100</span>
+    </div>
+  );
+
+  if (formula.type === "fn" && formula.fn === "neg") return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className="text-lg font-black text-[#1a2f8a]/50 px-1">−</span>
+      <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg">( </span>
+      <Slot node={formula.arg} onChange={updateArg} kpiList={kpiList} accountCodes={accountCodes} />
+      <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg"> )</span>
+    </div>
+  );
+
+  if (formula.type === "fn" && formula.fn === "abs") return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg">|</span>
+      <Slot node={formula.arg} onChange={updateArg} kpiList={kpiList} accountCodes={accountCodes} />
+      <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg">|</span>
+    </div>
+  );
+
+  // fallback for single node types
+  return (
+    <Slot node={formula} onChange={onChange} kpiList={kpiList} accountCodes={accountCodes} />
+  );
+}
+
+// ── Text Formula Builder ──────────────────────────────────────────────────────
+const VARIABLE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+
+function TextFormulaBuilder({ formula, onChange, kpiList, accountCodes }) {
+  const [expression, setExpression] = useState(() => {
+    if (formula?.type === "text") return formula.expression ?? "";
+    return "";
+  });
+  const [variables, setVariables] = useState(() => {
+    if (formula?.type === "text") return formula.variables ?? {};
+    return {};
+  });
+  const [editingVar, setEditingVar] = useState(null);
+  const inputRef = useRef(null);
+  const lastSyncRef = useRef(formula);
+
+  // Sync internal state when the incoming formula changes (e.g. preset selected)
+  useEffect(() => {
+    if (formula === lastSyncRef.current) return;
+    lastSyncRef.current = formula;
+    if (formula?.type === "text") {
+      setExpression(formula.expression ?? "");
+      setVariables(formula.variables ?? {});
+    } else if (!formula) {
+      setExpression("");
+      setVariables({});
+    }
+  }, [formula]);
+
+  const usedLetters = Object.keys(variables);
+  const nextLetter = VARIABLE_LETTERS.find(l => !usedLetters.includes(l)) ?? "?";
+
+  const insertVariable = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    const start = el.selectionStart ?? expression.length;
+    const end = el.selectionEnd ?? expression.length;
+    const newExpr = expression.slice(0, start) + nextLetter + expression.slice(end);
+    const newVars = { ...variables, [nextLetter]: null };
+    setExpression(newExpr);
+    setVariables(newVars);
+    onChange({ type: "text", expression: newExpr, variables: newVars });
+    setTimeout(() => { el.focus(); el.setSelectionRange(start + 1, start + 1); }, 0);
+  };
+
+  const updateExpr = (val) => {
+    // remove variables no longer in expression
+    const newVars = { ...variables };
+    Object.keys(newVars).forEach(l => { if (!val.includes(l)) delete newVars[l]; });
+    setExpression(val);
+    setVariables(newVars);
+    onChange({ type: "text", expression: val, variables: newVars });
+  };
+
+  const updateVar = (letter, node) => {
+    const newVars = { ...variables, [letter]: node };
+    setVariables(newVars);
+    onChange({ type: "text", expression, variables: newVars });
+    setEditingVar(null);
+  };
+
+  const removeVar = (letter) => {
+    const newVars = { ...variables };
+    delete newVars[letter];
+    const newExpr = expression.replaceAll(letter, "");
+    setExpression(newExpr);
+    setVariables(newVars);
+    onChange({ type: "text", expression: newExpr, variables: newVars });
+  };
+
+  const VAR_COLORS = [
+    "bg-blue-50 text-blue-700 border-blue-200",
+    "bg-purple-50 text-purple-700 border-purple-200",
+    "bg-emerald-50 text-emerald-700 border-emerald-200",
+    "bg-amber-50 text-amber-700 border-amber-200",
+    "bg-rose-50 text-rose-700 border-rose-200",
+    "bg-orange-50 text-orange-700 border-orange-200",
+  ];
+
+  const colorFor = (letter) => VAR_COLORS[VARIABLE_LETTERS.indexOf(letter) % VAR_COLORS.length];
+
+  return (
+    <div className="flex flex-col gap-3">
+
+      {/* Expression input */}
+      <div className="relative">
+        <div className="flex items-center gap-2 mb-1.5">
+          <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Expresión</label>
+          <span className="text-[10px] text-gray-300">usa letras como variables, números y símbolos</span>
+        </div>
+        <div className="flex gap-2">
+          <input
+            ref={inputRef}
+            value={expression}
+            onChange={e => updateExpr(e.target.value)}
+            placeholder="e.g.  (A - B) / C * 100"
+            className="flex-1 border border-gray-200 rounded-xl px-3 py-2.5 text-sm font-mono text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-white tracking-wide"
+          />
+          <button onClick={insertVariable}
+            title={`Insertar variable ${nextLetter}`}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#1a2f8a] text-white text-xs font-black hover:bg-[#1a2f8a]/90 transition-all flex-shrink-0">
+            <Plus size={11} />
+            <span className="font-mono">{nextLetter}</span>
+          </button>
+        </div>
+        <p className="text-[10px] text-gray-300 mt-1">
+          Operadores: <span className="font-mono">+ − * / ( ) ^ %</span>
+        </p>
+      </div>
+
+      {/* Variable mapping */}
+      {usedLetters.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Mapping de variables</label>
+          {usedLetters.sort().map(letter => (
+            <div key={letter} className={`flex items-center gap-2 p-2.5 rounded-xl border ${colorFor(letter)}`}>
+              <span className="font-mono font-black text-sm w-5 text-center flex-shrink-0">{letter}</span>
+              <span className="text-[10px] font-black opacity-40">=</span>
+              <div className="flex-1 min-w-0">
+                {variables[letter] ? (
+                  <button onClick={() => setEditingVar(letter)}
+                    className="text-xs font-black truncate hover:opacity-70 transition-opacity text-left w-full">
+                    <SlotLabel node={variables[letter]} kpiList={kpiList} />
+                  </button>
+                ) : (
+                  <button onClick={() => setEditingVar(letter)}
+                    className="text-[10px] font-bold opacity-50 hover:opacity-80 transition-opacity italic">
+                    sin asignar — click para definir
+                  </button>
+                )}
+              </div>
+              <button onClick={() => setEditingVar(letter)}
+                className="flex-shrink-0 w-6 h-6 rounded-lg bg-white/50 hover:bg-white flex items-center justify-center transition-all">
+                <Edit3 size={9} />
+              </button>
+              <button onClick={() => removeVar(letter)}
+                className="flex-shrink-0 w-6 h-6 rounded-lg bg-white/50 hover:bg-red-100 hover:text-red-500 flex items-center justify-center transition-all">
+                <X size={9} />
+              </button>
+            </div>
           ))}
         </div>
-        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-[#eef1fb] text-[#1a2f8a]">
-          <Hash size={11} />{visibleRoots.length} sections · {uploadedAccounts.length} rows · {groupAccounts.length} group accs
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-          <div className="flex items-center gap-2 bg-white border border-gray-100 rounded-xl px-3 py-2 shadow-sm">
-            <Search size={13} className="text-gray-400" />
-            <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search accounts…"
-              className="text-xs outline-none text-gray-700 w-36 bg-transparent placeholder:text-gray-300" />
-            {search && <button onClick={() => setSearch("")}><X size={12} className="text-gray-400" /></button>}
+      )}
+
+      {/* SlotPicker popover for editing a variable */}
+      {editingVar && (
+        <SlotPicker
+          onSelect={(node) => updateVar(editingVar, node)}
+          onClose={() => setEditingVar(null)}
+          kpiList={kpiList}
+          accountCodes={accountCodes}
+        />
+      )}
+    </div>
+  );
+}
+
+function KpiEditorModal({ kpi, onSave, onClose, kpiList, accountCodes, dimCodes }) {
+  const [mode, setMode] = useState(kpi ? "custom" : "library"); // "library" | "custom" | "customList"
+
+  const [label, setLabel] = useState(kpi?.label ?? "");
+  const [description, setDescription] = useState(kpi?.description ?? "");
+  const [format, setFormat] = useState(kpi?.format ?? "currency");
+  const [category, setCategory] = useState(kpi?.category ?? "P&L");
+  const [formula, setFormula] = useState(kpi?.formula ?? null);
+const [tab, setTab] = useState(kpi?.formula ? "builder" : "presets");
+const [customCategoryLabel, setCustomCategoryLabel] = useState("");
+const [benchmark, setBenchmark] = useState(kpi?.benchmark ?? {
+    unhealthy: { min: "", max: "" },
+    healthy:   { min: "", max: "" },
+    vhealthy:  { min: "", max: "" },
+  });
+  const [tag, setTag] = useState(kpi?.tag ?? "");
+
+  const otherKpis = kpiList.filter(k => k.id !== kpi?.id);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+
+{/* Header */}
+        <div className="bg-[#1a2f8a] px-5 py-4 flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <Sigma size={14} className="text-white/70" />
+            <p className="text-white font-black text-sm">{kpi ? `Edit: ${kpi.label}` : mode === "library" ? "KPI SELECTOR" : "Create Custom KPI"}</p>
           </div>
-          <button onClick={expandAll}
-            className="px-3 py-2 rounded-xl bg-white border border-gray-100 shadow-sm text-xs font-bold text-gray-400 hover:text-[#1a2f8a] hover:border-[#1a2f8a]/20 transition-all">
-            Expand all
+          <div className="flex items-center gap-2">
+            <button onClick={onClose} className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center">
+              <X size={13} className="text-white/70" />
+            </button>
+          </div>
+        </div>
+
+{/* Library mode */}
+{mode === "library" && (
+<LibraryPicker onSave={(data) => {
+    if (data === "__custom__") {
+      setMode("customList");
+    } else {
+      onSave(data);
+    }
+  }} />
+)}
+{/* Custom KPI list mode */}
+        {mode === "customList" && (
+          <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+            <div className="px-5 pt-4 pb-2 flex items-center gap-2 flex-shrink-0">
+              <button onClick={() => setMode("library")}
+                className="flex items-center gap-1.5 text-[10px] font-black text-gray-400 hover:text-[#1a2f8a] transition-colors">
+                <ChevronDown size={11} className="rotate-90" /> Volver
+              </button>
+              <span className="text-[10px] text-gray-300">·</span>
+              <span className="text-[10px] font-black px-2 py-0.5 rounded-md text-white bg-[#1a2f8a]">KPI personalizado</span>
+            </div>
+            <div className="overflow-y-auto flex-1 px-5 pb-5">
+              {kpiList.filter(k => !DEFAULT_KPIS.find(d => d.id === k.id)).length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-center">
+                  <div className="w-12 h-12 rounded-2xl bg-[#eef1fb] flex items-center justify-center mb-3">
+                    <Sigma size={20} className="text-[#1a2f8a]/40" />
+                  </div>
+                  <p className="text-xs font-black text-gray-400">Aún no hay KPIs personalizados</p>
+                  <p className="text-[10px] text-gray-300 mt-1">Crea tu primero con el botón de abajo</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-2 mb-4 pt-2">
+                  {kpiList.filter(k => !DEFAULT_KPIS.find(d => d.id === k.id)).map(k => (
+                    <button key={k.id} onClick={() => onSave(k)}
+                      className="text-left p-4 rounded-xl border border-gray-100 hover:border-[#1a2f8a]/30 hover:bg-[#eef1fb] transition-all group">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-black text-[#1a2f8a] leading-snug">{k.label}</p>
+                          <p className="text-xs text-gray-400 mt-1 leading-snug">{k.description}</p>
+                        </div>
+                        <span className={`flex-shrink-0 text-[10px] font-black px-2 py-1 rounded-md ${k.format === "percent" ? "bg-emerald-50 text-emerald-700" : k.format === "currency" ? "bg-[#eef1fb] text-[#1a2f8a]" : "bg-gray-50 text-gray-500"}`}>
+                          {k.format === "percent" ? "%" : k.format === "currency" ? "€" : "#"}
+                        </span>
+                      </div>
+                      {k.category && (
+                        <p className="text-[10px] text-gray-300 mt-2">{k.category}</p>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="flex-shrink-0 px-5 py-4 border-t border-gray-100">
+              <button onClick={() => setMode("custom")}
+                className="w-full py-2.5 rounded-xl bg-[#1a2f8a] text-white text-xs font-black hover:bg-[#1a2f8a]/90 transition-all flex items-center justify-center gap-2">
+                <Plus size={12} /> Crear nuevo KPI personalizado
+              </button>
+            </div>
+          </div>
+        )}
+
+{/* Custom builder mode */}
+        {mode === "custom" && (
+        <div className="overflow-y-auto flex-1 p-5 flex flex-col gap-4">
+
+{/* Label + Category side by side */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5 block">Label *</label>
+              <input value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. EBITDA Margin"
+                className="w-full border border-gray-100 rounded-xl px-3 py-2 text-xs text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-[#f8f9ff]" />
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5 block">Category</label>
+              <select value={category} onChange={e => { setCategory(e.target.value); if (e.target.value !== "__custom__") setCustomCategoryLabel(""); }}
+                className="w-full border border-gray-100 rounded-xl px-3 py-2 text-xs text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-[#f8f9ff]">
+                {["Liquidez", "Solvencia", "Rentabilidad", "Eficiencia", "Mercado", "Custom"].map(opt => (
+                  <option key={opt} value={opt === "Custom" ? "__custom__" : opt}>{opt}</option>
+                ))}
+              </select>
+              {category === "__custom__" && (
+                <input value={customCategoryLabel} onChange={e => setCustomCategoryLabel(e.target.value)}
+                  placeholder="Nombre de categoría personalizada"
+                  className="w-full border border-gray-100 rounded-xl px-3 py-2 text-xs text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-[#f8f9ff] mt-2" />
+              )}
+            </div>
+          </div>
+{/* Description + Tag side by side */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5 block">Description</label>
+              <input value={description} onChange={e => setDescription(e.target.value)} placeholder="Short description of what this KPI measures"
+                className="w-full border border-gray-100 rounded-xl px-3 py-2 text-xs text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-[#f8f9ff]" />
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5 block">Tag</label>
+              <input value={tag} onChange={e => setTag(e.target.value)}
+                placeholder="e.g. Rentabilidad, Core, Deuda…"
+                className="w-full border border-gray-100 rounded-xl px-3 py-2 text-xs text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-[#f8f9ff]" />
+              <p className="text-[10px] text-gray-300 mt-1">Etiqueta para filtrar KPIs</p>
+            </div>
+          </div>
+
+
+
+{/* Formula */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Formula / Equation</label>
+              <div className="flex gap-1 bg-[#f0f0f0] rounded-lg p-0.5">
+                <button onClick={() => setTab("presets")} className={`px-2.5 py-1 rounded-md text-[10px] font-black transition-all ${tab === "presets" ? "bg-white text-[#1a2f8a] shadow-sm" : "text-gray-500"}`}>Presets</button>
+                <button onClick={() => setTab("builder")} className={`px-2.5 py-1 rounded-md text-[10px] font-black transition-all ${tab === "builder" ? "bg-white text-[#1a2f8a] shadow-sm" : "text-gray-500"}`}>Builder</button>
+              </div>
+            </div>
+
+{tab === "presets" ? (
+              <div className="grid grid-cols-2 gap-2">
+                {PRESETS.map((p, i) => (
+                  <button key={i} onClick={() => { setFormula(JSON.parse(JSON.stringify(p.formula))); setTab("builder"); }}
+                    className="text-left p-3 rounded-xl border border-gray-100 hover:border-[#1a2f8a]/30 hover:bg-[#eef1fb] transition-all group">
+                    <p className="text-xs font-black text-[#1a2f8a]">{p.label}</p>
+                  </button>
+                ))}
+              </div>
+) : (
+              <div className="bg-[#f8f9ff] rounded-xl border border-gray-100 p-4 min-h-[80px]">
+                <TextFormulaBuilder
+                  formula={formula?.type === "text" ? formula : null}
+                  onChange={setFormula}
+                  kpiList={otherKpis}
+                  accountCodes={accountCodes}
+                />
+              </div>
+            )}
+          </div>
+
+
+
+{/* Benchmark ranges */}
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2 block">Benchmark</label>
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { key: "unhealthy", label: "Poco saludable", color: "border-red-200 bg-red-50", dot: "bg-red-400", textColor: "text-red-700", inputBorder: "focus:border-red-300" },
+                { key: "healthy",   label: "Saludable",      color: "border-emerald-200 bg-emerald-50", dot: "bg-emerald-400", textColor: "text-emerald-700", inputBorder: "focus:border-emerald-300" },
+                { key: "vhealthy",  label: "Muy saludable",  color: "border-blue-200 bg-[#eef1fb]", dot: "bg-[#1a2f8a]", textColor: "text-[#1a2f8a]", inputBorder: "focus:border-[#1a2f8a]/40" },
+              ].map(({ key, label, color, dot, textColor, inputBorder }) => (
+                <div key={key} className={`flex flex-col gap-2 px-3 py-3 rounded-xl border ${color}`}>
+                  <div className="flex items-center gap-1.5">
+                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${dot}`} />
+                    <span className={`text-[10px] font-black ${textColor}`}>{label}</span>
+                  </div>
+<div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1 flex-1">
+                      <span className="text-[10px] font-black text-gray-400 flex-shrink-0">&gt;</span>
+                      <input
+                        value={benchmark[key].min}
+                        onChange={e => setBenchmark(prev => ({ ...prev, [key]: { ...prev[key], min: e.target.value } }))}
+                        placeholder="nd"
+                        className={`w-full border border-white/60 rounded-lg px-1.5 py-1.5 text-xs font-mono text-gray-700 outline-none bg-white/70 text-center ${inputBorder}`}
+                      />
+                    </div>
+                    <div className="flex items-center gap-1 flex-1">
+                      <span className="text-[10px] font-black text-gray-400 flex-shrink-0">&lt;</span>
+                      <input
+                        value={benchmark[key].max}
+                        onChange={e => setBenchmark(prev => ({ ...prev, [key]: { ...prev[key], max: e.target.value } }))}
+                        placeholder="nd"
+                        className={`w-full border border-white/60 rounded-lg px-1.5 py-1.5 text-xs font-mono text-gray-700 outline-none bg-white/70 text-center ${inputBorder}`}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="text-[10px] text-gray-300 mt-1.5">Deja en blanco (nd) si no hay límite por ese lado</p>
+          </div>
+
+        </div>
+        )}
+
+        {/* Footer — only for custom mode */}
+        {mode === "custom" && (
+        <div className="flex-shrink-0 px-5 py-4 border-t border-gray-100">
+<button onClick={() => onSave({ label, description, format, tag, benchmark, category: category === "__custom__" ? customCategoryLabel || "Custom" : category, formula })}
+            disabled={!label || !formula}
+            className="w-full py-2.5 rounded-xl bg-[#1a2f8a] text-white text-xs font-black hover:bg-[#1a2f8a]/90 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
+            <Check size={12} /> {kpi ? "Save Changes" : "Create KPI"}
           </button>
-          <button onClick={() => setExpandedMap({})}
-            className="px-3 py-2 rounded-xl bg-white border border-gray-100 shadow-sm text-xs font-bold text-gray-400 hover:text-[#1a2f8a] hover:border-[#1a2f8a]/20 transition-all">
-            Collapse all
+        </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Graph Section Component ───────────────────────────────────────────────────
+// ── Graph Section Component ───────────────────────────────────────────────────
+function GraphSection({
+  sectionId, token, source, structure, year, month,
+  sourceOpts, structureOpts, companyCodes, dimensions,
+  kpiList, allAccountCodes,
+  defaultCompany, defaultKpiIds,
+  onStateChange,
+}) {
+  // Default: end = anchor year/month, start = 12 months earlier
+  const anchorY = parseInt(year) || new Date().getFullYear();
+  const anchorM = parseInt(month) || new Date().getMonth() + 1;
+  let startY = anchorY, startM = anchorM - 11;
+  while (startM < 1) { startM += 12; startY -= 1; }
+
+  const [secCompany, setSecCompany] = useState(defaultCompany || "");
+  const [secStartYear, setSecStartYear] = useState(String(startY));
+  const [secStartMonth, setSecStartMonth] = useState(String(startM));
+  const [secEndYear, setSecEndYear] = useState(String(anchorY));
+  const [secEndMonth, setSecEndMonth] = useState(String(anchorM));
+  const [secSource, setSecSource] = useState(source);
+  const [secStructure, setSecStructure] = useState(structure);
+  const [secDimGroup, setSecDimGroup] = useState("");
+  const [secDim, setSecDim] = useState("");
+  const [secMode, setSecMode] = useState("monthly"); // "monthly" | "ytd"
+  const [secXAxis, setSecXAxis] = useState("month"); // "month" | "year"
+  const [secKpiIds, setSecKpiIds] = useState(defaultKpiIds || []);
+  const [kpiPickerOpen, setKpiPickerOpen] = useState(false);
+  const kpiPickerRef = useRef(null);
+
+  const [chartData, setChartData] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [tableOpen, setTableOpen] = useState(false);
+  const chartContainerRef = useRef(null);
+
+  useEffect(() => {
+    const h = e => { if (kpiPickerRef.current && !kpiPickerRef.current.contains(e.target)) setKpiPickerOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  // Dim groups from available dimensions
+  const secDimGroups = useMemo(() => {
+    const seen = new Set();
+    const groups = [];
+    dimensions.forEach(d => {
+      const g = d.DimensionGroup ?? d.dimensionGroup ?? "";
+      if (g && !seen.has(g)) { seen.add(g); groups.push(g); }
+    });
+    return groups.sort();
+  }, [dimensions]);
+
+  const secGroupDimOptions = useMemo(() => {
+    if (!secDimGroup) return [];
+    return dimensions
+      .filter(d => (d.DimensionGroup ?? d.dimensionGroup ?? "") === secDimGroup)
+      .map(d => ({ code: d.DimensionCode ?? d.dimensionCode ?? "", name: d.DimensionName ?? d.dimensionName ?? "" }))
+      .filter(d => d.code);
+  }, [dimensions, secDimGroup]);
+
+  const secGroupDimCodes = useMemo(() => {
+    if (secDim) return new Set([secDim]);
+    if (!secDimGroup) return null;
+    return new Set(secGroupDimOptions.map(d => d.code));
+  }, [secDimGroup, secDim, secGroupDimOptions]);
+
+  // Adapted KPI list (alpha vs numeric)
+  const secAdaptedKpis = useMemo(() => {
+    const alpha = allAccountCodes.some(ac => /^[A-Z]\.\d/.test(ac));
+    if (alpha) return kpiList;
+    const codeMap = {
+      "A.01": "11999", "A.04.S": "29999", "A.06": "42999",
+      "A.07.S": "53999", "A.13.S": "57999", "A.21.S": "69999", "A.24.S": "89999",
+    };
+    const remap = (node) => {
+      if (!node) return node;
+      if (node.type === "account") {
+        const mapped = codeMap[node.accountCode];
+        return mapped ? { ...node, accountCode: mapped } : node;
+      }
+      if (node.type === "op") return { ...node, left: remap(node.left), right: remap(node.right) };
+      if (node.type === "fn") return { ...node, arg: remap(node.arg) };
+      if (node.type === "text") {
+        const newVars = {};
+        Object.entries(node.variables || {}).forEach(([k, v]) => { newVars[k] = remap(v); });
+        return { ...node, variables: newVars };
+      }
+      return node;
+    };
+    return kpiList.map(k => ({ ...k, formula: remap(k.formula) }));
+  }, [kpiList, allAccountCodes]);
+
+  // Build list of periods [start..end] inclusive (oldest first), plus one prior for monthly deltas
+  const periods = useMemo(() => {
+    const sY = parseInt(secStartYear), sM = parseInt(secStartMonth);
+    const eY = parseInt(secEndYear),   eM = parseInt(secEndMonth);
+    if (!sY || !sM || !eY || !eM) return [];
+    const list = [];
+    // Prior period (for monthly delta at first displayed month)
+    let pY = sY, pM = sM - 1;
+    if (pM < 1) { pM = 12; pY -= 1; }
+    list.push({ y: pY, m: pM, isPrior: true });
+    // Main range
+    let y = sY, m = sM;
+    while (y < eY || (y === eY && m <= eM)) {
+      list.push({ y, m, isPrior: false });
+      m += 1;
+      if (m > 12) { m = 1; y += 1; }
+      if (list.length > 120) break; // safety
+    }
+    return list;
+  }, [secStartYear, secStartMonth, secEndYear, secEndMonth]);
+
+  const fetchChartData = useCallback(async () => {
+    if (!token || !secSource || !secStructure || !secCompany || periods.length < 2) { setChartData([]); return; }
+    setLoading(true);
+
+    try {
+      const results = await Promise.all(periods.map(async ({ y, m, isPrior }) => {
+        const filter = `Year eq ${y} and Month eq ${m} and Source eq '${secSource}' and GroupStructure eq '${secStructure}' and CompanyShortName eq '${secCompany}'`;
+        const res = await fetch(
+          `/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
+          { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }
+        );
+        if (!res.ok) return { y, m, isPrior, pivot: new Map(), hasData: false };
+        const json = await res.json();
+        const rows = json.value ?? (Array.isArray(json) ? json : []);
+        const p = new Map();
+        rows.forEach(r => {
+          const ac = r.AccountCode ?? r.accountCode ?? "";
+          const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
+          const acType = r.AccountType ?? r.accountType ?? "";
+          const dc = r.DimensionCode ?? r.dimensionCode ?? "";
+          if (!ac) return;
+          if (lac && lac !== "—") return;
+          if (acType && acType !== "P/L") return;
+          // Dim filter
+          if (secGroupDimCodes) {
+            if (!dc || !secGroupDimCodes.has(dc)) return;
+          } else {
+            if (dc) return; // undimensioned totals only when no dim filter
+          }
+          const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+          p.set(ac, (p.get(ac) ?? 0) + amt);
+        });
+        return { y, m, isPrior, pivot: p, hasData: rows.length > 0 };
+      }));
+
+      // Build chart series
+      const series = [];
+      for (let i = 1; i < results.length; i++) {
+        const curr = results[i];
+        if (curr.isPrior) continue;
+
+        let pivotForKpi;
+        if (secMode === "ytd") {
+          pivotForKpi = curr.pivot;
+        } else {
+          // monthly delta
+          const prev = results[i - 1];
+          const mp = new Map();
+          const allCodes = new Set([...curr.pivot.keys(), ...prev.pivot.keys()]);
+          allCodes.forEach(ac => {
+            const currYTD = curr.pivot.get(ac) ?? 0;
+            const prevYTD = curr.m === 1 ? 0 : (prev.pivot.get(ac) ?? 0);
+            mp.set(ac, currYTD - prevYTD);
+          });
+          pivotForKpi = mp;
+        }
+
+        const kpis = computeAllKpis(secAdaptedKpis, pivotForKpi);
+        const label = `${String(curr.m).padStart(2, "0")}/${String(curr.y).slice(-2)}`;
+        const row = { period: label, _hasData: curr.hasData };
+        secKpiIds.forEach(kid => {
+          const v = kpis.get(kid);
+          row[kid] = (v === null || v === undefined || isNaN(v)) ? null : v;
+        });
+        series.push(row);
+      }
+
+      setChartData(series);
+    } catch (e) {
+      console.error("Graph fetch error:", e);
+    } finally {
+      setLoading(false);
+    }
+  }, [token, secSource, secStructure, secCompany, periods, secKpiIds, secAdaptedKpis, secMode, secGroupDimCodes]);
+
+ useEffect(() => { fetchChartData(); }, [fetchChartData]);
+
+  // Expose state up to parent for export
+  useEffect(() => {
+    if (onStateChange) {
+      onStateChange(sectionId, {
+        sectionId,
+        company: secCompany,
+        startY: secStartYear, startM: secStartMonth,
+        endY: secEndYear, endM: secEndMonth,
+        source: secSource, structure: secStructure,
+        dimGroup: secDimGroup, dim: secDim,
+        mode: secMode, kpiIds: secKpiIds,
+        chartData,
+        chartContainerRef,
+      });
+    }
+  }, [sectionId, secCompany, secStartYear, secStartMonth, secEndYear, secEndMonth,
+      secSource, secStructure, secDimGroup, secDim, secMode, secKpiIds, chartData, onStateChange]);
+
+  const COLORS = ["#1a2f8a", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"];
+
+  const toggleKpi = (id) => {
+    setSecKpiIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+return (
+    <div className={`flex flex-col bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden ${tableOpen ? "flex-shrink-0" : "flex-1 min-h-[200px]"}`}>
+      {/* Section filter bar */}
+      <div className="flex items-center gap-1.5 flex-wrap px-4 py-2.5 bg-[#f8f9ff] border-b border-gray-100">
+        <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50 mr-1">§{sectionId}</span>
+
+        <FilterPill label="Company" value={secCompany} onChange={setSecCompany} options={companyCodes.map(c => ({ value: c, label: c }))} />
+
+        <span className="text-[9px] font-black text-gray-300 mx-1">│</span>
+        <FilterPill label="Start M" value={secStartMonth} onChange={setSecStartMonth} options={MONTHS.map(m => ({ value: String(m.value), label: m.label.slice(0,3) }))} />
+        <FilterPill label="Start Y" value={secStartYear} onChange={setSecStartYear} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+        <FilterPill label="End M" value={secEndMonth} onChange={setSecEndMonth} options={MONTHS.map(m => ({ value: String(m.value), label: m.label.slice(0,3) }))} />
+        <FilterPill label="End Y" value={secEndYear} onChange={setSecEndYear} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+
+        <span className="text-[9px] font-black text-gray-300 mx-1">│</span>
+        {sourceOpts.length > 0 && <FilterPill label="Source" value={secSource} onChange={setSecSource} options={sourceOpts} />}
+        {structureOpts.length > 0 && <FilterPill label="Structure" value={secStructure} onChange={setSecStructure} options={structureOpts} />}
+
+        {secDimGroups.length > 0 && <FilterPill label="Dim Grp" value={secDimGroup} onChange={v => { setSecDimGroup(v); setSecDim(""); }} options={[{ value: "", label: "None" }, ...secDimGroups.map(g => ({ value: g, label: g }))]} />}
+        {secDimGroup && secGroupDimOptions.length > 0 && <FilterPill label="Dim" value={secDim} onChange={setSecDim} options={[{ value: "", label: "All" }, ...secGroupDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))]} />}
+
+        <span className="text-[9px] font-black text-gray-300 mx-1">│</span>
+        <FilterPill label="Mode" value={secMode} onChange={setSecMode} options={[{ value: "monthly", label: "Monthly" }, { value: "ytd", label: "YTD" }]} />
+
+        {/* KPI multiselect */}
+        <div ref={kpiPickerRef} className="relative flex-shrink-0">
+          <button onClick={() => setKpiPickerOpen(o => !o)}
+            className="flex items-center gap-2 px-3 py-2 rounded-2xl border text-xs font-bold transition-all select-none bg-white border-[#c2c2c2] text-[#505050] shadow-sm hover:border-[#1a2f8a]/40">
+            <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50">KPIs</span>
+            <span className="text-[#1a2f8a]">{secKpiIds.length}</span>
+            <ChevronDown size={10} className={`transition-transform duration-200 text-[#1a2f8a]/40 ${kpiPickerOpen ? "rotate-180" : ""}`} />
+          </button>
+          {kpiPickerOpen && (
+            <div className="absolute top-full right-0 mt-2 z-50 min-w-[240px] bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden">
+              <div className="p-1.5 max-h-72 overflow-y-auto">
+                {kpiList.map(k => (
+                  <button key={k.id} onClick={() => toggleKpi(k.id)}
+                    className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-between gap-3
+                      ${secKpiIds.includes(k.id) ? "bg-[#eef1fb] text-[#1a2f8a]" : "text-gray-600 hover:bg-[#f8f9ff]"}`}>
+                    <span className="truncate">{k.label}</span>
+                    {secKpiIds.includes(k.id) && <Check size={10} className="flex-shrink-0" />}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {loading && <Loader2 size={12} className="animate-spin text-[#1a2f8a] ml-auto" />}
+      </div>
+
+   {/* Chart (full width) */}
+       <div ref={chartContainerRef}
+        className={tableOpen ? "relative flex-shrink-0" : "relative flex-1 min-h-0"}
+        style={tableOpen ? { height: "260px" } : undefined}>
+
+        <div className="absolute inset-0 px-4 py-3">
+          {/* X-axis granularity toggle */}
+          <div className="absolute bottom-3 left-4 z-10 flex items-center gap-0.5 bg-white border border-gray-100 rounded-lg p-0.5 shadow-sm">
+            <button onClick={() => setSecXAxis("month")}
+              className={`px-2 py-0.5 rounded-md text-[9px] font-black transition-all ${secXAxis === "month" ? "bg-[#1a2f8a] text-white" : "text-gray-400 hover:text-[#1a2f8a]"}`}>
+              Month
+            </button>
+            <button onClick={() => setSecXAxis("year")}
+              className={`px-2 py-0.5 rounded-md text-[9px] font-black transition-all ${secXAxis === "year" ? "bg-[#1a2f8a] text-white" : "text-gray-400 hover:text-[#1a2f8a]"}`}>
+              Year
+            </button>
+          </div>
+
+          {chartData.length === 0 || secKpiIds.length === 0 ? (
+            <div className="flex items-center justify-center h-full text-xs text-gray-300 font-bold">
+              {secKpiIds.length === 0 ? "Select at least one KPI" : loading ? "Loading…" : "No data for selected range"}
+            </div>
+          ) : (() => {
+            let displayData = chartData;
+            if (secXAxis === "year") {
+              const byYear = new Map();
+              chartData.forEach(d => {
+                const [, yy] = d.period.split("/");
+                if (!byYear.has(yy)) byYear.set(yy, { period: `20${yy}`, _months: [] });
+                byYear.get(yy)._months.push(d);
+              });
+              displayData = [...byYear.values()].map(entry => {
+                const row = { period: entry.period };
+                secKpiIds.forEach(kid => {
+                  const kpi = kpiList.find(k => k.id === kid);
+                  if (secMode === "ytd") {
+                    const last = entry._months[entry._months.length - 1];
+                    row[kid] = last[kid];
+                  } else {
+                    const vals = entry._months.map(m => m[kid]).filter(v => v !== null && v !== undefined && !isNaN(v));
+                    if (vals.length === 0) row[kid] = null;
+                    else if (kpi?.format === "percent") row[kid] = vals.reduce((a, b) => a + b, 0) / vals.length;
+                    else row[kid] = vals.reduce((a, b) => a + b, 0);
+                  }
+                });
+                return row;
+              });
+            }
+
+            return (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={displayData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#eef1fb" />
+                  <XAxis dataKey="period" tick={{ fontSize: 10, fill: "#6b7280" }} interval={0} />
+                  <YAxis tick={{ fontSize: 10, fill: "#6b7280" }} tickFormatter={v => Math.abs(v) >= 1000 ? `${(v/1000).toFixed(0)}k` : v.toFixed(0)} />
+                  <Tooltip
+                    contentStyle={{ fontSize: 11, borderRadius: 8, border: "1px solid #eef1fb" }}
+                    formatter={(value, name) => {
+                      const kpi = kpiList.find(k => k.id === name);
+                      return [fmtValue(value, kpi?.format), kpi?.label ?? name];
+                    }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 10 }} formatter={(value) => kpiList.find(k => k.id === value)?.label ?? value} />
+                  {secKpiIds.map((kid, i) => (
+                    <Line key={kid} type="monotone" dataKey={kid}
+                      stroke={COLORS[i % COLORS.length]} strokeWidth={2}
+                      dot={{ r: 3 }} activeDot={{ r: 5 }} connectNulls />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            );
+          })()}
+        </div>
+      </div>
+
+      {/* Expand/collapse data bar */}
+      <div className="border-t border-gray-100 bg-[#fafbff]">
+        <button onClick={() => setTableOpen(o => !o)}
+          className="w-full flex items-center justify-end gap-1.5 px-4 py-1.5 text-[10px] font-black text-[#1a2f8a]/60 hover:text-[#1a2f8a] hover:bg-[#eef1fb]/50 transition-colors">
+          <span>{tableOpen ? "Hide data" : "Show data"}</span>
+          <ChevronDown size={11} className={`transition-transform duration-200 ${tableOpen ? "rotate-180" : ""}`} />
+        </button>
+
+ {tableOpen && (
+          <div className="border-t border-gray-100">
+            {chartData.length === 0 || secKpiIds.length === 0 ? (
+              <div className="flex items-center justify-center py-8 text-[10px] text-gray-300 font-bold px-3 text-center">
+                {secKpiIds.length === 0 ? "Select KPIs to view data" : "—"}
+              </div>
+            ) : (
+<table className="w-full text-[10px]">
+                <thead className="bg-[#1a2f8a] text-white">
+                  <tr>
+                    <th className="text-left px-3 py-2 font-black uppercase tracking-wider">Period</th>
+                    {secKpiIds.map(kid => {
+                      const k = kpiList.find(k => k.id === kid);
+                      return <th key={kid} className="text-right px-3 py-2 font-black whitespace-nowrap">{k?.label ?? kid}</th>;
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {chartData.map((d, i) => (
+                    <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-[#f8f9ff]"}>
+                      <td className="text-left px-3 py-1.5 font-black text-[#1a2f8a]">{d.period}</td>
+                      {secKpiIds.map(kid => {
+                        const k = kpiList.find(k => k.id === kid);
+                        const v = d[kid];
+                        const color = v === null || v === undefined || isNaN(v) ? "text-gray-300"
+                                    : v < 0 ? "text-red-500" : "text-[#1a2f8a]";
+                        return (
+                          <td key={kid} className={`text-right px-3 py-1.5 font-mono whitespace-nowrap ${color}`}>
+                            {v === null || v === undefined || isNaN(v) ? "—" : fmtValue(v, k?.format)}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
+async function renderChartToImage({ data, kpiIds, kpiList, width = 900, height = 420 }) {
+  const COLORS = ["#1a2f8a", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"];
+  const host = document.createElement("div");
+  host.style.position = "fixed";
+  host.style.left = "-99999px";
+  host.style.top = "0";
+  host.style.width = `${width}px`;
+  host.style.height = `${height}px`;
+  host.style.background = "#ffffff";
+  document.body.appendChild(host);
+
+  const root = createRoot(host);
+  try {
+    root.render(
+      <div style={{ width, height, background: "#fff", padding: 12 }}>
+        <LineChart data={data} width={width - 24} height={height - 24} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#eef1fb" />
+          <XAxis dataKey="period" tick={{ fontSize: 11, fill: "#6b7280" }} interval={0} />
+          <YAxis tick={{ fontSize: 11, fill: "#6b7280" }}
+            tickFormatter={v => Math.abs(v) >= 1000 ? `${(v/1000).toFixed(0)}k` : v.toFixed(0)} />
+          <Legend wrapperStyle={{ fontSize: 11 }}
+            formatter={(value) => kpiList.find(k => k.id === value)?.label ?? value} />
+          {kpiIds.map((kid, i) => (
+            <Line key={kid} type="monotone" dataKey={kid} isAnimationActive={false}
+              stroke={COLORS[i % COLORS.length]} strokeWidth={2}
+              dot={{ r: 3 }} activeDot={{ r: 5 }} connectNulls />
+          ))}
+        </LineChart>
+      </div>
+    );
+
+    // Wait two animation frames for recharts to actually paint the SVG
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    await new Promise(r => setTimeout(r, 150));
+
+    const canvas = await html2canvas(host, { backgroundColor: "#ffffff", scale: 2, logging: false });
+    return canvas.toDataURL("image/png");
+  } finally {
+    root.unmount();
+    document.body.removeChild(host);
+  }
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
+export default function KpiIndividualesPage({ token, sources = [], structures = [], companies = [], dimensions = [] }) {
+  const [year, setYear] = useState("");
+  const [month, setMonth] = useState("");
+  const [source, setSource] = useState("");
+  const [structure, setStructure] = useState("");
+  const [metaReady, setMetaReady] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [companyData, setCompanyData] = useState(new Map());
+const [kpiList, setKpiList] = useState(DEFAULT_KPIS);
+  const [editingKpi, setEditingKpi] = useState(null);
+const [viewMode, setViewMode] = useState("company"); // "company" | "dimension"
+  const [dragIdx, setDragIdx] = useState(null);
+  const [dragOverIdx, setDragOverIdx] = useState(null);
+  const [colDragIdx, setColDragIdx] = useState(null);
+  const [colDragOverIdx, setColDragOverIdx] = useState(null);
+  const [colOrder, setColOrder] = useState(null);
+  const [selGroup, setSelGroup] = useState("");
+  const [selDim, setSelDim] = useState("");
+  const graphSectionsRef = useRef({}); // { 1: {...}, 2: {...}, 3: {...} }
+  const [exporting, setExporting] = useState(false);
+  const handleGraphSectionState = useCallback((sid, state) => {
+    graphSectionsRef.current[sid] = state;
+  }, []);
+  useEffect(() => { setColOrder(null); }, [viewMode]);
+
+  // Auto-find the latest period with data once source/structure/company are known
+const autoPeriodDone = useRef(false);
+
+  useEffect(() => {
+    if (sources.length > 0 && !source) {
+      const s = sources[0];
+      // eslint-disable-next-line
+      setSource(typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s));
+    }
+  }, [sources, source]);
+
+  useEffect(() => {
+    if (structures.length > 0 && !structure) {
+      const s = structures[0];
+      // eslint-disable-next-line
+      setStructure(typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s));
+    }
+}, [structures, structure]);
+
+  const companyCodes = useMemo(() =>
+    [...new Set(companies.map(c => typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : String(c)).filter(Boolean))],
+    [companies]
+  );
+
+  // Auto-find the latest period with data once source/structure/company are known
+  useEffect(() => {
+    if (autoPeriodDone.current) return;
+    if (!token || !source || !structure || companyCodes.length === 0) return;
+    autoPeriodDone.current = true;
+
+    (async () => {
+      const now = new Date();
+      let y = now.getFullYear();
+      let m = now.getMonth() + 1;
+      const co = companyCodes[0];
+      for (let i = 0; i < 24; i++) {
+        try {
+          const filter = `Year eq ${y} and Month eq ${m} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${co}'`;
+          const res = await fetch(
+            `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}&$top=1`,
+            { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }
+          );
+          if (res.ok) {
+            const json = await res.json();
+            const rows = json.value ?? (Array.isArray(json) ? json : []);
+            if (rows.length > 0) {
+              setYear(String(y));
+              setMonth(String(m));
+              setMetaReady(true);
+              return;
+            }
+          }
+        } catch { /* keep probing */ }
+        m -= 1;
+        if (m < 1) { m = 12; y -= 1; }
+      }
+      setMetaReady(true);
+    })();
+  }, [token, source, structure, companyCodes]);
+
+  const dimGroups = useMemo(() => {
+    const seen = new Set();
+    const groups = [];
+    dimensions.forEach(d => {
+      const g = d.DimensionGroup ?? d.dimensionGroup ?? "";
+      if (g && !seen.has(g)) { seen.add(g); groups.push(g); }
+    });
+    return groups.sort();
+  }, [dimensions]);
+
+const groupDimOptions = useMemo(() => {
+    if (!selGroup) return [];
+    return dimensions
+      .filter(d => (d.DimensionGroup ?? d.dimensionGroup ?? "") === selGroup)
+      .map(d => ({ code: d.DimensionCode ?? d.dimensionCode ?? "", name: d.DimensionName ?? d.dimensionName ?? "" }))
+      .filter(d => d.code);
+  }, [dimensions, selGroup]);
+
+  const groupDimCodes = useMemo(() => {
+    if (selDim) return new Set([selDim]);
+    if (!selGroup) return null;
+    return new Set(groupDimOptions.map(d => d.code));
+  }, [selGroup, selDim, groupDimOptions]);
+
+  const fetchAllCompanies = useCallback(async () => {
+    if (!metaReady || !year || !month || !source || !structure || companyCodes.length === 0) return;
+    setLoading(true);
+    const newData = new Map();
+    await Promise.all(companyCodes.map(async co => {
+      try {
+        const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${co}'`;
+        const res = await fetch(
+          `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
+          { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Cache-Control": "no-cache" } }
+        );
+        if (!res.ok) return;
+        const json = await res.json();
+        newData.set(co, json.value ?? (Array.isArray(json) ? json : []));
+      } catch { newData.set(co, []); }
+    }));
+    setCompanyData(newData);
+    setLoading(false);
+  }, [metaReady, year, month, source, structure, companyCodes, token]);
+
+  useEffect(() => { fetchAllCompanies(); }, [fetchAllCompanies]); // eslint-disable-line
+
+  // Build flat pivot per company (account code → YTD sum, P/L summary rows only)
+  const companyPivots = useMemo(() => {
+    const pivots = new Map();
+    companyData.forEach((rows, co) => {
+      const p = new Map();
+      rows.forEach(r => {
+        const ac = r.AccountCode ?? r.accountCode ?? "";
+        const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
+        const acType = r.AccountType ?? r.accountType ?? "";
+        const dc = r.DimensionCode ?? r.dimensionCode ?? "";
+        if (!ac) return;
+        if (lac && lac !== "—") return;
+        if (acType && acType !== "P/L") return;
+        if (groupDimCodes && !groupDimCodes.has(dc)) return;
+        if (groupDimCodes && !dc) return;
+        const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+        p.set(ac, (p.get(ac) ?? 0) + amt);
+      });
+      pivots.set(co, p);
+    });
+    return pivots;
+  }, [companyData, groupDimCodes]);
+
+ // Dimension-level pivots: one flat pivot per dimension code, aggregating across all companies
+  const dimensionPivots = useMemo(() => {
+    const pivots = new Map();
+    companyData.forEach(rows => {
+      rows.forEach(r => {
+        const ac = r.AccountCode ?? r.accountCode ?? "";
+        const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
+        const acType = r.AccountType ?? r.accountType ?? "";
+        const dc = r.DimensionCode ?? r.dimensionCode ?? "";
+        const dn = r.DimensionName ?? r.dimensionName ?? "";
+        if (!ac || !dc) return;
+        if (lac && lac !== "—") return;
+        if (acType && acType !== "P/L") return;
+        if (groupDimCodes && !groupDimCodes.has(dc)) return;
+        const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+        const key = dc;
+        if (!pivots.has(key)) pivots.set(key, { name: dn || dc, pivot: new Map() });
+        const entry = pivots.get(key);
+        entry.pivot.set(ac, (entry.pivot.get(ac) ?? 0) + amt);
+      });
+    });
+    return pivots;
+  }, [companyData, groupDimCodes]);
+
+const dimensionCodes = useMemo(() => [...dimensionPivots.keys()].sort(), [dimensionPivots]);
+
+  // Collect all account codes and dim codes available
+  const allAccountCodes = useMemo(() => {
+    const codes = new Set();
+    companyPivots.forEach(p => p.forEach((_, ac) => codes.add(ac)));
+    return [...codes].sort();
+  }, [companyPivots]);
+
+  const allDimCodes = useMemo(() => {
+    const codes = new Set();
+    companyData.forEach(rows => rows.forEach(r => {
+      const dc = r.DimensionCode ?? r.dimensionCode ?? "";
+      if (dc) codes.add(dc);
+    }));
+    return [...codes].sort();
+  }, [companyData]);
+
+  // Detect structure type from available account codes
+  const isAlphaStructure = useMemo(() => {
+    return allAccountCodes.some(ac => /^[A-Z]\.\d/.test(ac));
+  }, [allAccountCodes]);
+
+  // Adapt DEFAULT_KPIS to the active structure
+  const adaptedKpiList = useMemo(() => {
+    if (isAlphaStructure) return kpiList;
+    const codeMap = {
+      "A.01":   "11999",
+      "A.04.S": "29999",
+      "A.06":   "42999",
+      "A.07.S": "53999",
+      "A.13.S": "57999",
+      "A.21.S": "69999",
+      "A.24.S": "89999",
+    };
+    const remap = (node) => {
+      if (!node) return node;
+      if (node.type === "account") {
+        const mapped = codeMap[node.accountCode];
+        return mapped ? { ...node, accountCode: mapped } : node;
+      }
+      if (node.type === "op") return { ...node, left: remap(node.left), right: remap(node.right) };
+      if (node.type === "fn") return { ...node, arg: remap(node.arg) };
+      if (node.type === "text") {
+        const newVars = {};
+        Object.entries(node.variables || {}).forEach(([k, v]) => { newVars[k] = remap(v); });
+        return { ...node, variables: newVars };
+      }
+      return node;
+    };
+    return kpiList.map(k => ({ ...k, formula: remap(k.formula) }));
+  }, [kpiList, isAlphaStructure]);
+
+  // Compute all KPI results per company
+  const companyResults = useMemo(() => {
+    const results = new Map();
+    companyPivots.forEach((pivot, co) => {
+      results.set(co, computeAllKpis(adaptedKpiList, pivot));
+    });
+    return results;
+  }, [companyPivots, adaptedKpiList]);
+
+  const dimensionResults = useMemo(() => {
+    const results = new Map();
+    dimensionPivots.forEach((entry, dc) => {
+      results.set(dc, computeAllKpis(adaptedKpiList, entry.pivot));
+    });
+    return results;
+  }, [dimensionPivots, adaptedKpiList]);
+
+
+  // KPI CRUD
+  const saveKpi = (data) => {
+    if (editingKpi === "new") {
+      setKpiList(prev => [...prev, { id: makeId(), ...data }]);
+    } else {
+      setKpiList(prev => prev.map(k => k.id === editingKpi.id ? { ...k, ...data } : k));
+    }
+    setEditingKpi(null);
+  };
+  const deleteKpi = (id) => setKpiList(prev => prev.filter(k => k.id !== id));
+
+ const fetchSectionData = useCallback(async (sectionConfig) => {
+    const { company, startY, startM, endY, endM, source: secSource, structure: secStructure,
+            dimGroupCodes, mode, kpiIds } = sectionConfig;
+
+    if (!token || !secSource || !secStructure || !company) return [];
+
+    // Build period list
+    const periods = [];
+    let pY = parseInt(startY), pM = parseInt(startM) - 1;
+    if (pM < 1) { pM = 12; pY -= 1; }
+    periods.push({ y: pY, m: pM, isPrior: true });
+    let y = parseInt(startY), m = parseInt(startM);
+    const eY = parseInt(endY), eM = parseInt(endM);
+    while (y < eY || (y === eY && m <= eM)) {
+      periods.push({ y, m, isPrior: false });
+      m += 1;
+      if (m > 12) { m = 1; y += 1; }
+      if (periods.length > 120) break;
+    }
+
+    const results = await Promise.all(periods.map(async ({ y, m, isPrior }) => {
+      const filter = `Year eq ${y} and Month eq ${m} and Source eq '${secSource}' and GroupStructure eq '${secStructure}' and CompanyShortName eq '${company}'`;
+      try {
+        const res = await fetch(
+          `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
+          { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }
+        );
+        if (!res.ok) return { y, m, isPrior, pivot: new Map(), hasData: false };
+        const json = await res.json();
+        const rows = json.value ?? (Array.isArray(json) ? json : []);
+        const p = new Map();
+        rows.forEach(r => {
+          const ac = r.AccountCode ?? r.accountCode ?? "";
+          const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
+          const acType = r.AccountType ?? r.accountType ?? "";
+          const dc = r.DimensionCode ?? r.dimensionCode ?? "";
+          if (!ac) return;
+          if (lac && lac !== "—") return;
+          if (acType && acType !== "P/L") return;
+          if (dimGroupCodes) {
+            if (!dc || !dimGroupCodes.has(dc)) return;
+          } else {
+            if (dc) return;
+          }
+          const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+          p.set(ac, (p.get(ac) ?? 0) + amt);
+        });
+        return { y, m, isPrior, pivot: p, hasData: rows.length > 0 };
+      } catch {
+        return { y, m, isPrior, pivot: new Map(), hasData: false };
+      }
+    }));
+
+    const series = [];
+    for (let i = 1; i < results.length; i++) {
+      const curr = results[i];
+      if (curr.isPrior) continue;
+      let pivotForKpi;
+      if (mode === "ytd") {
+        pivotForKpi = curr.pivot;
+      } else {
+        const prev = results[i - 1];
+        const mp = new Map();
+        const allCodes = new Set([...curr.pivot.keys(), ...prev.pivot.keys()]);
+        allCodes.forEach(ac => {
+          const currYTD = curr.pivot.get(ac) ?? 0;
+          const prevYTD = curr.m === 1 ? 0 : (prev.pivot.get(ac) ?? 0);
+          mp.set(ac, currYTD - prevYTD);
+        });
+        pivotForKpi = mp;
+      }
+      const kpis = computeAllKpis(adaptedKpiList, pivotForKpi);
+      const label = `${String(curr.m).padStart(2, "0")}/${String(curr.y).slice(-2)}`;
+      const row = { period: label };
+      kpiIds.forEach(kid => {
+        const v = kpis.get(kid);
+        row[kid] = (v === null || v === undefined || isNaN(v)) ? null : v;
+      });
+      series.push(row);
+    }
+    return series;
+  }, [token, adaptedKpiList]);
+
+  // Build graph sections — use live refs if user visited Graphs tab, else synthesize defaults
+  const buildGraphSections = useCallback(async () => {
+    const result = [];
+    for (const sid of [1, 2, 3]) {
+      const live = graphSectionsRef.current[sid];
+      if (live && live.chartData && live.chartData.length > 0) {
+        // Use the live section's data and render image headlessly from it (for Excel consistency)
+        const imageDataUrl = await renderChartToImage({
+          data: live.chartData,
+          kpiIds: live.kpiIds,
+          kpiList: adaptedKpiList,
+        }).catch(e => { console.warn("Chart render failed:", e); return null; });
+        result.push({ ...live, imageDataUrl });
+        continue;
+      }
+
+      // Synthesize defaults: same logic as GraphSection defaults
+      const anchorY = parseInt(year) || new Date().getFullYear();
+      const anchorM = parseInt(month) || new Date().getMonth() + 1;
+      let startY = anchorY, startM = anchorM - 11;
+      while (startM < 1) { startM += 12; startY -= 1; }
+
+      const defaultKpiIds = ["revenue", "ebitda", "net_result"];
+      const config = {
+        sectionId: sid,
+        company: companyCodes[0] || "",
+        startY: String(startY), startM: String(startM),
+        endY: String(anchorY), endM: String(anchorM),
+        source, structure,
+        dimGroup: "", dim: "",
+        mode: "monthly",
+        kpiIds: defaultKpiIds,
+        dimGroupCodes: null,
+      };
+      const chartData = await fetchSectionData(config);
+      const imageDataUrl = chartData.length > 0
+        ? await renderChartToImage({
+            data: chartData, kpiIds: defaultKpiIds, kpiList: adaptedKpiList,
+          }).catch(e => { console.warn("Chart render failed:", e); return null; })
+        : null;
+      result.push({ ...config, chartData, imageDataUrl });
+    }
+    return result;
+  }, [companyCodes, source, structure, year, month, adaptedKpiList, fetchSectionData]);
+
+  const buildExportPayload = async () => ({
+    kpiList: adaptedKpiList,
+    companyCodes,
+    companyResults,
+    dimensionCodes,
+    dimensionResults,
+    dimensionPivots,
+    graphSections: await buildGraphSections(),
+    filters: {
+      source, structure, year, month,
+      dimGroup: selGroup, dim: selDim,
+    },
+  });
+
+  const handleExportXlsx = async () => {
+    setExporting(true);
+    try {
+      const payload = await buildExportPayload();
+      await exportKpisToXlsx(payload);
+    } catch (e) { console.error("Excel export failed:", e); alert("Excel export failed — check console"); }
+    finally { setExporting(false); }
+  };
+
+  const handleExportPdf = async () => {
+    setExporting(true);
+    try {
+      const payload = await buildExportPayload();
+      await exportKpisToPdf(payload);
+    } catch (e) { console.error("PDF export failed:", e); alert("PDF export failed — check console"); }
+    finally { setExporting(false); }
+  };
+
+const handleDragEnd = () => {
+    if (dragIdx !== null && dragOverIdx !== null && dragIdx !== dragOverIdx) {
+      const newRows = [...kpiList];
+      const [moved] = newRows.splice(dragIdx, 1);
+      newRows.splice(dragOverIdx, 0, moved);
+      setKpiList(newRows);
+    }
+    setDragIdx(null); setDragOverIdx(null);
+  };
+
+  const handleColDragEnd = () => {
+    if (colDragIdx !== null && colDragOverIdx !== null && colDragIdx !== colDragOverIdx) {
+      const cols = orderedCols;
+      const newCols = [...cols];
+      const [moved] = newCols.splice(colDragIdx, 1);
+      newCols.splice(colDragOverIdx, 0, moved);
+      setColOrder(newCols);
+    }
+    setColDragIdx(null); setColDragOverIdx(null);
+  };
+
+  const getColor = (val, format) => {
+    if (val === null || val === undefined || isNaN(val)) return "text-gray-300";
+    if (format === "percent") return val >= 0 ? "text-emerald-600" : "text-red-500";
+    return val >= 0 ? "text-[#1a2f8a]" : "text-red-500";
+  };
+
+const activeCols = viewMode === "company" ? companyCodes : dimensionCodes;
+const activeResults = viewMode === "company" ? companyResults : dimensionResults;
+const orderedCols = colOrder && colOrder.length === activeCols.length ? colOrder : activeCols;
+
+  const sourceOpts = [...new Set(sources.map(s => typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
+  const structureOpts = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
+
+  return (
+    <div className="flex flex-col gap-4 h-full min-h-0">
+
+      {/* Header */}
+      <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          <div className="w-1.5 h-10 rounded-full bg-[#1a2f8a]" />
+          <div>
+            <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Individual</p>
+            <h1 className="text-[29px] font-black text-[#1a2f8a] leading-none">KPIs</h1>
+          </div>
+        </div>
+{viewMode !== "graphs" && (
+          <>
+            <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
+            <div className="flex items-center gap-2 flex-wrap">
+              {sourceOpts.length > 0 && <FilterPill label="Source" value={source} onChange={setSource} options={sourceOpts} />}
+              <FilterPill label="Year" value={year} onChange={setYear} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+              <FilterPill label="Month" value={month} onChange={setMonth} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+              {structureOpts.length > 0 && <FilterPill label="Structure" value={structure} onChange={setStructure} options={structureOpts} />}
+              {dimGroups.length > 0 && <FilterPill label="Dim Group" value={selGroup} onChange={v => { setSelGroup(v); setSelDim(""); }} options={[{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))]} />}
+              {selGroup && groupDimOptions.length > 0 && <FilterPill label="Dimension" value={selDim} onChange={setSelDim} options={[{ value: "", label: "All" }, ...groupDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))]} />}
+            </div>
+          </>
+        )}
+<div className="ml-auto flex items-center gap-3 flex-shrink-0 mr-6">
+          {loading && <Loader2 size={13} className="animate-spin text-[#1a2f8a]" />}
+          <div className="flex items-center gap-0.5 bg-[#f0f0f0] rounded-xl p-0.5">
+            <button onClick={() => setViewMode("company")}
+              title="By Company"
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-black transition-all ${viewMode === "company" ? "bg-[#1a2f8a] text-white shadow-sm" : "text-gray-500 hover:text-[#1a2f8a]"}`}>
+              <Building2 size={11} /> Company
+            </button>
+            <button onClick={() => setViewMode("dimension")}
+              title="By Dimension"
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-black transition-all ${viewMode === "dimension" ? "bg-[#1a2f8a] text-white shadow-sm" : "text-gray-500 hover:text-[#1a2f8a]"}`}>
+              <Layers size={11} /> Dimension
+            </button>
+            <button onClick={() => setViewMode("graphs")}
+              title="Graphs"
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-black transition-all ${viewMode === "graphs" ? "bg-[#1a2f8a] text-white shadow-sm" : "text-gray-500 hover:text-[#1a2f8a]"}`}>
+              <BarChart3 size={11} /> Graphs
+            </button>
+          </div>
+        <button onClick={() => setEditingKpi("new")}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black bg-white border border-[#1a2f8a]/20 text-[#1a2f8a] hover:bg-[#eef1fb] transition-all">
+            <Plus size={12} /> New KPI
+          </button>
+ <button onClick={handleExportXlsx} disabled={exporting}
+            title="Export to Excel"
+            className="transition-all hover:opacity-80 hover:scale-105 disabled:opacity-40">
+            {exporting
+              ? <Loader2 size={20} className="animate-spin text-[#107C41]" />
+              : <img
+                  src="https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png"
+                  width="40" height="36" alt="Excel" />}
+          </button>
+          <button onClick={handleExportPdf} disabled={exporting}
+            title="Export to PDF"
+            className="transition-all hover:opacity-80 hover:scale-105 disabled:opacity-40">
+            {exporting
+              ? <Loader2 size={20} className="animate-spin text-[#D93025]" />
+              : <img
+                  src="https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png"
+                  width="27" height="36" alt="PDF" />}
           </button>
         </div>
       </div>
 
-      {visibleRoots.length === 0 ? (
-        <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center">
-          <p className="text-gray-400 text-sm font-semibold">No accounts match this filter</p>
-          <p className="text-gray-300 text-xs mt-1">Try a different type filter or clear the search</p>
+
+
+{!metaReady || (loading && companyData.size === 0) ? (
+        <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center flex-1 flex items-center justify-center">
+          <div>
+            <Loader2 size={28} className="text-[#1a2f8a] animate-spin mx-auto mb-3" />
+            <p className="text-gray-400 text-sm">
+              {!metaReady ? "Finding latest period with data…" : `Loading KPIs for ${companyCodes.length} ${companyCodes.length === 1 ? "company" : "companies"}…`}
+            </p>
+          </div>
+        </div>
+      ) : viewMode === "graphs" ? (
+        <div className="flex flex-col gap-3 flex-1 min-h-0 overflow-auto pr-1">
+ {[1, 2, 3].map(sid => (
+            <GraphSection
+              key={sid}
+              sectionId={sid}
+              token={token}
+              source={source}
+              structure={structure}
+              year={year}
+              month={month}
+              sourceOpts={sourceOpts}
+              structureOpts={structureOpts}
+              companyCodes={companyCodes}
+              dimensions={dimensions}
+              kpiList={kpiList}
+              allAccountCodes={allAccountCodes}
+              defaultCompany={companyCodes[0] || ""}
+              defaultKpiIds={["revenue", "ebitda", "net_result"]}
+              onStateChange={handleGraphSectionState}
+            />
+          ))}
+        </div>
+      ) : loading ? (
+        <div className="flex items-center justify-center flex-1">
+          <div className="flex flex-col items-center gap-3">
+            <Loader2 size={28} className="animate-spin text-[#1a2f8a]" />
+            <p className="text-xs text-gray-400">Loading data for {companyCodes.length} {companyCodes.length === 1 ? "company" : "companies"}…</p>
+          </div>
         </div>
       ) : (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-gray-100 bg-[#1a2f8a]/5">
-                  <th className="text-left px-4 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest">Account</th>
-                  <th className="text-right px-4 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest whitespace-nowrap w-36">Amount Period</th>
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
+          <div className="overflow-auto flex-1">
+            <table className="w-full text-xs border-collapse">
+              <thead className="sticky top-0 z-10">
+<tr style={{ backgroundColor: "#1a2f8a" }}>
+                  <th className="sticky left-0 z-30 text-left px-5 py-3 text-white font-black uppercase tracking-widest text-xs border-r border-white/20 min-w-[250px]" style={{ backgroundColor: "#1a2f8a" }}>
+                    KPI
+                  </th>
+      {orderedCols.map((col, ci) => {
+                    const label = viewMode === "dimension" ? (dimensionPivots.get(col)?.name ?? col) : col;
+                    return (
+                      <th key={col}
+                        draggable
+                        onDragStart={() => setColDragIdx(ci)}
+                        onDragOver={e => { e.preventDefault(); setColDragOverIdx(ci); }}
+                        onDragEnd={handleColDragEnd}
+                        className={`text-right px-4 py-3 text-white font-black text-xs whitespace-nowrap min-w-[140px] cursor-grab select-none transition-all ${colDragOverIdx === ci ? "opacity-50" : ""}`}
+                        style={{ backgroundColor: "#1a2f8a" }}>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <GripVertical size={10} className="opacity-40 rotate-90" />
+                          {label}
+                        </div>
+                      </th>
+                    );
+                  })}
+                  <th className="sticky right-0 text-right px-4 py-3 text-white font-black text-xs whitespace-nowrap border-l border-white/20 min-w-[130px]" style={{ backgroundColor: "#0f1f5c" }}>
+                    Total / Avg
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {visibleRoots.map(node => {
-                  const key = `ga-${node.code}`;
+                {kpiList.map((kpi) => {
+                  const globalIdx = kpiList.findIndex(k => k.id === kpi.id);
+ const values = orderedCols.map(col => {
+                    const res = activeResults.get(col);
+                    if (!res) return null;
+                    const v = res.get(kpi.id);
+                    return (v === undefined || v === null || isNaN(v)) ? null : v;
+                  });
+                  const validVals = values.filter(v => v !== null);
+                  const aggregate = validVals.length === 0 ? null
+                    : kpi.format === "percent"
+                      ? validVals.reduce((a, b) => a + b, 0) / validVals.length
+                      : validVals.reduce((a, b) => a + b, 0);
+
                   return (
-                    <GroupAccountRow key={key} node={node} depth={0}
-                      expanded={!!expandedMap[key]} onToggle={() => dispatch(key)}
-                      expandedMap={expandedMap} dispatch={dispatch} />
+                    <tr key={kpi.id}
+                      draggable
+                      onDragStart={() => setDragIdx(globalIdx)}
+                      onDragOver={e => { e.preventDefault(); setDragOverIdx(globalIdx); }}
+                      onDragEnd={handleDragEnd}
+                      className={`border-b border-gray-50 hover:bg-[#f8f9ff] transition-colors group ${dragOverIdx === globalIdx ? "bg-[#eef1fb]" : ""}`}>
+
+                      <td className="sticky left-0 z-10 px-4 py-3 bg-white border-r border-gray-100 group-hover:bg-[#f8f9ff]">
+                        <div className="flex items-center gap-2">
+                          <div className="opacity-0 group-hover:opacity-40 transition-opacity cursor-grab text-gray-400 flex-shrink-0">
+                            <GripVertical size={11} />
+                          </div>
+                          <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-black text-xs text-[#1a2f8a] truncate">{kpi.label}</span>
+                              {kpi.category && (
+                                <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-[#eef1fb] text-[#1a2f8a]/60 flex-shrink-0">{kpi.category}</span>
+                              )}
+                            </div>
+                            {kpi.description && <span className="text-[10px] text-gray-400 truncate">{kpi.description}</span>}
+                          </div>
+                          <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 flex-shrink-0">
+                            <button onClick={() => setEditingKpi(kpi)}
+                              className="w-6 h-6 rounded-lg bg-[#eef1fb] hover:bg-[#1a2f8a] hover:text-white text-[#1a2f8a] flex items-center justify-center transition-all">
+                              <Edit3 size={10} />
+                            </button>
+                            <button onClick={() => deleteKpi(kpi.id)}
+                              className="w-6 h-6 rounded-lg bg-red-50 hover:bg-red-500 hover:text-white text-red-400 flex items-center justify-center transition-all">
+                              <Trash2 size={10} />
+                            </button>
+                          </div>
+                        </div>
+                      </td>
+
+{values.map((val, ci) => (
+                        <td key={orderedCols[ci]} className={`px-4 py-3 text-right font-mono text-xs whitespace-nowrap ${getColor(val, kpi.format)}`}>
+                          {val === null ? <span className="text-gray-200">—</span> : fmtValue(val, kpi.format)}
+                        </td>
+                      ))}
+
+                      <td className={`sticky right-0 px-4 py-3 text-right font-mono text-xs whitespace-nowrap font-bold border-l border-gray-100 bg-[#eef1fb] group-hover:bg-[#e4e8f8] ${getColor(aggregate, kpi.format)}`}>
+                        {aggregate === null ? <span className="text-gray-300">—</span> : (
+                          <>
+                            {fmtValue(aggregate, kpi.format)}
+                            <span className="text-[9px] font-normal text-gray-400 ml-1">{kpi.format === "percent" ? "avg" : "Σ"}</span>
+                          </>
+                        )}
+                      </td>
+                    </tr>
                   );
                 })}
+
+                {/* Add row prompt */}
+<tr>
+  <td className="sticky left-0 bg-white px-5 py-3">
+    <button onClick={() => setEditingKpi("new")}
+      className="flex items-center gap-1.5 text-[11px] font-bold text-gray-300 hover:text-[#1a2f8a] transition-colors">
+      <Plus size={11} /> Add KPI row
+    </button>
+  </td>
+</tr>
               </tbody>
             </table>
           </div>
+
+          {/* Footer */}
+
         </div>
       )}
-    </div>
-  );
-}
 
-/* ═══════════════════════════════════════════════════════════════
-   TABS CONFIG
-═══════════════════════════════════════════════════════════════ */
-const UPLOADED_HIDDEN = new Set(["dimensions", "journalType", "journalLayer", "origin",
-  "counterpartyShortName", "branchShortName", "branchLegalName"]);
-
-const TABS = [
-  { id: "pl",       label: "P&L",    icon: TrendingUp, accent: "#1a2f8a", desc: "Profit & Loss statement" },
-  { id: "uploaded", label: "Uploaded", icon: Upload,    accent: "#e8394a", desc: "Raw uploaded account data" },
-];
-
-/* ═══════════════════════════════════════════════════════════════
-   ROOT COMPONENT
-   Auto-loads all three data sources on mount (once valid
-   source/structure props are available). The Financial Report
-   tab is shown first by default.
-═══════════════════════════════════════════════════════════════ */
-export default function AccountsDashboard({ token, sources = [], structures = [], companies = [], dimensions = [] }) {
-  const [activeTab, setActiveTab] = useState("pl");
-  const [dataSubTab, setDataSubTab] = useState("uploaded");
-
-  // ── Filter state (shared — used by Uploaded and Report tabs) ──
-  const [upYear, setUpYear] = useState(DEFAULT_YEAR);
-  const [upMonth, setUpMonth] = useState(DEFAULT_MONTH);
-  const [upSource, setUpSource] = useState("");
-  const [upStructure, setUpStructure] = useState("");
-  const [upCompany, setUpCompany] = useState("");
-const [upDimGroup, setUpDimGroup] = useState("");
-const [upDimension, setUpDimension] = useState("");
-
-  // ── Data state ─────────────────────────────────────────────
-  const [upData, setUpData] = useState([]);
-  const [upLoading, setUpLoading] = useState(false);
-  const [upError, setUpError] = useState(null);
-  const [upFetched, setUpFetched] = useState(false);
-  const [upSearch, setUpSearch] = useState("");
-  const [prevData, setPrevData] = useState([]);
-  const [prevLoading, setPrevLoading] = useState(false);
-
-  const [mapData, setMapData] = useState([]);
-  const [mapLoading, setMapLoading] = useState(false);
-  const [mapError, setMapError] = useState(null);
-  const [mapFetched, setMapFetched] = useState(false);
-  const [mapSearch, setMapSearch] = useState("");
-
-  const [grpData, setGrpData] = useState([]);
-  const [grpLoading, setGrpLoading] = useState(false);
-  const [grpError, setGrpError] = useState(null);
-  const [grpFetched, setGrpFetched] = useState(false);
-  const [grpSearch, setGrpSearch] = useState("");
-
-  // ── Compare mode state ─────────────────────────────────────
-
-  const headers = useCallback(() => ({
-    Authorization: `Bearer ${token}`,
-    Accept: "application/json",
-    "Cache-Control": "no-cache, no-store",
-    Pragma: "no-cache",
-  }), [token]);
-
-  useEffect(() => {
-    if (sources.length > 0 && !upSource) {
-      const s = sources[0];
-      setUpSource(typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s));
-    }
-  }, [sources, upSource]);
-
-  useEffect(() => {
-    if (structures.length > 0 && !upStructure) {
-      const s = structures[0];
-      setUpStructure(typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s));
-    }
-  }, [structures, upStructure]);
-
-  console.log("sources:", sources);
-console.log("structures:", structures);
-console.log("companies:", companies);
-
-  useEffect(() => {
-    if (companies.length > 0 && !upCompany) {
-      const c = companies[0];
-      setUpCompany(
-        typeof c === "object"
-          ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "")
-          : String(c)
-      );
-    }
-  }, [companies, upCompany]);
-
-  // ── Fetch functions ────────────────────────────────────────
-const fetchUploaded = useCallback(async (year, month, source, structure, company) => {
-  if (!year || !month || !source || !structure || !company) return;
-    setUpLoading(true); setUpError(null); setUpFetched(false);
-    try {
-      const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
-      const res = await fetch(
-        `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
-        { headers: headers() }
-      );
-      if (!res.ok) { const t = await res.text(); throw new Error(`HTTP ${res.status} – ${t.slice(0, 200)}`); }
-      const json = await res.json();
-      console.log("ROW 0:", JSON.stringify((json.value ?? json)[0]));
-      setUpData(json.value ?? (Array.isArray(json) ? json : [json]));
-      setUpFetched(true);
-    } catch (e) { setUpError(e.message); }
-    finally { setUpLoading(false); }
-    
-  }, [headers]);
-
-const fetchPrev = useCallback(async (year, month, source, structure, company) => {
-  if (!year || !month || !source || !structure || !company) return;
-  if (Number(month) === 1) { setPrevData([]); return; }
-  const prevMonth = Number(month) - 1;
-  setPrevLoading(true);
-  try {
-    const filter = `Year eq ${year} and Month eq ${prevMonth} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
-    const res = await fetch(
-      `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
-      { headers: headers() }
-    );
-    if (!res.ok) { setPrevData([]); return; }
-    const json = await res.json();
-    setPrevData(json.value ?? (Array.isArray(json) ? json : []));
-  } catch { setPrevData([]); }
-  finally { setPrevLoading(false); }
-}, [headers]);
-
-const fetchCmp = useCallback(async (year, month, source, structure, company) => {
-  if (!year || !month || !source || !structure || !company) return;
-  setCmpLoading(true);
-  try {
-    // Current period
-    const filterA = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
-    const resA = await fetch(
-      `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filterA)}`,
-      { headers: headers() }
-    );
-    const jsonA = resA.ok ? await resA.json() : { value: [] };
-    setCmpData(jsonA.value ?? (Array.isArray(jsonA) ? jsonA : []));
-
-    // Previous period (for monthly)
-    if (Number(month) === 1) { setCmpPrevData([]); }
-    else {
-      const filterB = `Year eq ${year} and Month eq ${Number(month) - 1} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
-      const resB = await fetch(
-        `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filterB)}`,
-        { headers: headers() }
-      );
-      const jsonB = resB.ok ? await resB.json() : { value: [] };
-      setCmpPrevData(jsonB.value ?? (Array.isArray(jsonB) ? jsonB : []));
-    }
-  } catch { setCmpData([]); setCmpPrevData([]); }
-  finally { setCmpLoading(false); }
-}, [headers]);
-  
-
-  const fetchMapped = useCallback(async () => {
-    setMapLoading(true); setMapError(null); setMapFetched(false);
-    try {
-      const res = await fetch(`${BASE_URL}/v2/mapped-accounts`, { headers: headers() });
-      if (!res.ok) { const t = await res.text(); throw new Error(`HTTP ${res.status} – ${t.slice(0, 200)}`); }
-      const json = await res.json();
-      setMapData(json.value ?? (Array.isArray(json) ? json : [json]));
-      setMapFetched(true);
-    } catch (e) { setMapError(e.message); }
-    finally { setMapLoading(false); }
-  }, [headers]);
-
-  const fetchGroup = useCallback(async () => {
-    setGrpLoading(true); setGrpError(null); setGrpFetched(false);
-    try {
-      const res = await fetch(`${BASE_URL}/v2/group-accounts`, { headers: headers() });
-      if (!res.ok) { const t = await res.text(); throw new Error(`HTTP ${res.status} – ${t.slice(0, 200)}`); }
-      const json = await res.json();
-      setGrpData(json.value ?? (Array.isArray(json) ? json : [json]));
-      setGrpFetched(true);
-    } catch (e) { setGrpError(e.message); }
-    finally { setGrpLoading(false); }
-  }, [headers]);
-
-  // ── AUTO-LOAD: fire all three fetches once source+structure are known ──
-useEffect(() => {
-  if (upSource && upStructure && upYear && upMonth && upCompany) {
-    fetchUploaded(upYear, upMonth, upSource, upStructure, upCompany);
-    fetchPrev(upYear, upMonth, upSource, upStructure, upCompany);
-  }
-}, [upSource, upStructure, upYear, upMonth, upCompany]);
-
-const fetchCmp2 = useCallback(async (year, month, source, structure, company) => {
-  if (!year || !month || !source || !structure || !company) return;
-  setCmp2Loading(true);
-  try {
-    const filterA = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
-    const resA = await fetch(
-      `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filterA)}`,
-      { headers: headers() }
-    );
-    const jsonA = resA.ok ? await resA.json() : { value: [] };
-    setCmp2Data(jsonA.value ?? (Array.isArray(jsonA) ? jsonA : []));
-
-    if (Number(month) === 1) { setCmp2PrevData([]); }
-    else {
-      const filterB = `Year eq ${year} and Month eq ${Number(month) - 1} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
-      const resB = await fetch(
-        `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filterB)}`,
-        { headers: headers() }
-      );
-      const jsonB = resB.ok ? await resB.json() : { value: [] };
-      setCmp2PrevData(jsonB.value ?? (Array.isArray(jsonB) ? jsonB : []));
-    }
-  } catch { setCmp2Data([]); setCmp2PrevData([]); }
-  finally { setCmp2Loading(false); }
-}, [headers]);
-
-  useEffect(() => {
-    fetchMapped();
-    fetchGroup();
-  }, []); // fire once on mount regardless of filters
-
-  // ── Manual re-fetch for uploaded when filters change ───────
-const handleLoadUploaded = () => {
-  fetchUploaded(upYear, upMonth, upSource, upStructure, upCompany);
-  fetchPrev(upYear, upMonth, upSource, upStructure, upCompany);
-};
-
-// ── Compare mode state ─────────────────────────────────────
-const [compareMode, setCompareMode] = useState(false);
-const [cmpYear,      setCmpYear]      = useState("");
-const [cmpMonth,     setCmpMonth]     = useState("");
-const [cmpSource,    setCmpSource]    = useState("");
-const [cmpStructure, setCmpStructure] = useState("");
-const [cmpCompany,   setCmpCompany]   = useState("");
-const [cmpDimGroup, setCmpDimGroup] = useState("");
-const [cmpDimension, setCmpDimension] = useState("");
-const [cmpData,     setCmpData]       = useState([]);
-const [cmpPrevData, setCmpPrevData]   = useState([]);
-const [cmpLoading,  setCmpLoading]    = useState(false);
-
-// ── Compare period 2 ──────────────────────────────────────
-const [cmp2Year,      setCmp2Year]      = useState("");
-const [cmp2Month,     setCmp2Month]     = useState("");
-const [cmp2Source,    setCmp2Source]    = useState("");
-const [cmp2Structure, setCmp2Structure] = useState("");
-const [cmp2Company,   setCmp2Company]   = useState("");
-const [cmp2DimGroup,  setCmp2DimGroup]  = useState("");
-const [cmp2Dimension, setCmp2Dimension] = useState("");
-const [cmp2Data,      setCmp2Data]      = useState([]);
-const [cmp2PrevData,  setCmp2PrevData]  = useState([]);
-const [cmp2Loading,   setCmp2Loading]   = useState(false);
-  useEffect(() => {
-  if (compareMode && cmpSource && cmpStructure && cmpYear && cmpMonth && cmpCompany) {
-    fetchCmp(cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany);
-  }
-}, [compareMode, cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany]);
-
-useEffect(() => {
-  if (compareMode && cmp2Source && cmp2Structure && cmp2Year && cmp2Month && cmp2Company) {
-    fetchCmp2(cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company);
-  }
-}, [compareMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company]);
-
-
-  const tab        = TABS.find(t => t.id === activeTab);
-  const anyLoading = upLoading || prevLoading || cmpLoading || cmp2Loading || mapLoading || grpLoading;
-
-  const dimGroups = useMemo(() => {
-  const seen = new Set();
-  return dimensions
-    .map(d => typeof d === "object" ? (d.dimensionGroup ?? d.DimensionGroup ?? "") : "")
-    .filter(g => g && !seen.has(g) && seen.add(g));
-}, [dimensions]);
-
-const filteredDims = useMemo(() => {
-  return dimensions.filter(d => {
-    if (!upDimGroup) return true;
-    const g = typeof d === "object" ? (d.dimensionGroup ?? d.DimensionGroup ?? "") : "";
-    return g === upDimGroup;
-  });
-}, [dimensions, upDimGroup]);
-
-const cmpFilteredDims = useMemo(() => {
-  return dimensions.filter(d => {
-    if (!cmpDimGroup) return true;
-    const g = typeof d === "object" ? (d.dimensionGroup ?? d.DimensionGroup ?? "") : "";
-    return g === cmpDimGroup;
-  });
-}, [dimensions, cmpDimGroup]);
-
-const cmp2FilteredDims = useMemo(() => {
-  return dimensions.filter(d => {
-    if (!cmp2DimGroup) return true;
-    const g = typeof d === "object" ? (d.dimensionGroup ?? d.DimensionGroup ?? "") : "";
-    return g === cmp2DimGroup;
-  });
-}, [dimensions, cmp2DimGroup]);
-
-  return (
-    <div className="space-y-6">
-
-{/* Page header + Tab switcher + Filters — all in one row */}
-<div className="flex items-center gap-4 flex-wrap">
-  {/* Left: title */}
-  <div className="flex items-center gap-1.5 flex-shrink-0">
-    <div className="w-1.5 h-10 rounded-full" style={{ background: tab.accent }} />
-    <div>
-      <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Accounts</p>
-      <h1 className="text-[29px] font-black text-[#1a2f8a] leading-none">{tab.label}</h1>
-    </div>
-  </div>
-
-  {/* Divider */}
-  <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
-
-  {/* Tab pills */}
-  <div className="flex items-center gap-1 p-1 bg-[#e6e6e6] rounded-xl flex-shrink-0" >
-    {TABS.map(t => {
-      const Icon = t.icon;
-      const active = activeTab === t.id;
-      return (
-        <button key={t.id} onClick={() => setActiveTab(t.id)}
-          className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-black transition-all ${active ? "bg-white text-[#1a2f8a] shadow-sm" : "text-[#636363] hover:text-gray-600"}`}>
-          <Icon size={14} style={active ? { color: t.accent } : {}} />
-          {t.label}
-        </button>
-      );
-    })}
-  </div>
-
-  {/* Divider */}
-  <div className="w-px h-6 bg-gray-100 flex-shrink-0" />
-
-  {/* Filters */}
-  <div className="flex items-center gap-2 flex-wrap">
-    <FilterPill label="Yr"      value={upYear}      onChange={setUpYear}
-      options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-    <FilterPill label="Mnth"     value={upMonth}     onChange={setUpMonth}
-      options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-    <FilterPill label="Src"    value={upSource}    onChange={setUpSource}
-      options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
-    <FilterPill label="Struct" value={upStructure} onChange={setUpStructure}
-      options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-<FilterPill label="Comp"   value={upCompany}   onChange={setUpCompany}
-      options={companies.map(c => {
-        const v = typeof c === "object"
-          ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "")
-          : String(c);
-        return { value: v, label: v };
-      })} />
-<FilterPill label="Dim Grp" value={upDimGroup} onChange={v => { setUpDimGroup(v); setUpDimension(""); }}
-      options={[
-        { value: "", label: "All" },
-        ...dimGroups.map(g => ({ value: g, label: g }))
-      ]} />
-    <FilterPill label="Dim" value={upDimension} onChange={setUpDimension}
-      options={[
-        { value: "", label: "All" },
-        ...filteredDims.map(d => {
-          const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d);
-          const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d);
-          return { value: v, label: l };
-        })
-      ]} />
-  </div>
-
-<div className="ml-auto flex items-center gap-3 flex-shrink-0 pr-6 mt-1">
-    {anyLoading && (
-      <span className="flex items-center gap-1 text-xs text-[#1a2f8a] font-semibold">
-        <Loader2 size={11} className="animate-spin" /> Loading…
-      </span>
-    )}
-{activeTab === "pl" && (
-      <>
-<button
-          onClick={() => document.getElementById("__plXlsxTrigger")?.click()}
-          className="transition-all hover:opacity-80 hover:scale-105"
-          title="Export Excel"
-        >
-<img
-            src="https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png"
-            width="44"
-            height="36"
-            alt="Excel"
-          />
-        </button>
-<button
-          onClick={() => document.getElementById("__plExportTrigger")?.click()}
-          className="transition-all hover:opacity-80 hover:scale-105"
-          title="Export PDF"
-        >
-<img
-            src="https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png"
-            width="30"
-            height="36"
-            alt="PDF"
-          />
-        </button>
-      </>
-    )}
-  </div>
-</div>
-
-{/* ── P&L STATEMENT */}
-<div className={activeTab === "pl" ? "" : "hidden"}>
-<PLStatement
-  groupAccounts={grpData}
-uploadedAccounts={upDimension ? upData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === upDimension) : upData}
-  prevUploadedAccounts={upDimension ? prevData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === upDimension) : prevData}
-  compareMode={compareMode}
-  onToggleCompare={() => {
-    if (!compareMode) {
-      setCmpYear(upYear);
-      setCmpMonth(upMonth);
-      setCmpSource(upSource);
-      setCmpStructure(upStructure);
-      setCmpCompany(upCompany);
-      setCmpDimGroup(upDimGroup);
-      setCmpDimension(upDimension);
-      setCmp2Year(upYear);
-      setCmp2Month(upMonth);
-      setCmp2Source(upSource);
-      setCmp2Structure(upStructure);
-      setCmp2Company(upCompany);
-      setCmp2DimGroup(upDimGroup);
-      setCmp2Dimension(upDimension);
-
-    }
-    setCompareMode(c => !c);
-  }}
-cmpUploadedAccounts={cmpDimension ? cmpData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === cmpDimension) : cmpData}
-  cmpPrevUploadedAccounts={cmpDimension ? cmpPrevData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === cmpDimension) : cmpPrevData}
-cmpFilters={{
-    year: cmpYear,
-    month: cmpMonth,
-    source: cmpSource,
-    structure: cmpStructure,
-    company: cmpCompany,
-    dimGroup: cmpDimGroup,
-    dimension: cmpDimension,
-  }}
-  onCmpFilterChange={(key, val) => {
-    if (key === "year")      setCmpYear(val);
-    if (key === "month")     setCmpMonth(val);
-    if (key === "source")    setCmpSource(val);
-    if (key === "structure") setCmpStructure(val);
-    if (key === "company")   setCmpCompany(val);
-    if (key === "dimGroup")  { setCmpDimGroup(val); setCmpDimension(""); }
-    if (key === "dimension") setCmpDimension(val);
-  }}
-
-  sources={sources}
-  structures={structures}
-  companies={companies}
-  dimGroups={dimGroups}
-  cmpFilteredDims={cmpFilteredDims}
-  cmp2UploadedAccounts={cmp2Dimension ? cmp2Data.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === cmp2Dimension) : cmp2Data}
-  cmp2PrevUploadedAccounts={cmp2Dimension ? cmp2PrevData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === cmp2Dimension) : cmp2PrevData}
-  cmp2Filters={{
-    year: cmp2Year, month: cmp2Month, source: cmp2Source,
-    structure: cmp2Structure, company: cmp2Company,
-    dimGroup: cmp2DimGroup, dimension: cmp2Dimension,
-  }}
-  onCmp2FilterChange={(key, val) => {
-    if (key === "year")      setCmp2Year(val);
-    if (key === "month")     setCmp2Month(val);
-    if (key === "source")    setCmp2Source(val);
-    if (key === "structure") setCmp2Structure(val);
-    if (key === "company")   setCmp2Company(val);
-    if (key === "dimGroup")  { setCmp2DimGroup(val); setCmp2Dimension(""); }
-    if (key === "dimension") setCmp2Dimension(val);
-  }}
-  cmp2FilteredDims={cmp2FilteredDims}
-  loading={anyLoading && (!upData.length || !grpData.length)}
-  error={upError || grpError || null}
-  month={upMonth}
-  year={upYear}
-  source={upSource}
-  structure={upStructure}
-/>
-</div>
-
-
-      {/* ── UPLOADED ACCOUNTS */}
-      <div className={activeTab === "uploaded" ? "" : "hidden"}>
-      <div className="space-y-6">
-  {dataSubTab === "uploaded" && upError && <ErrorBox error={upError} onRetry={handleLoadUploaded} />}
-  {dataSubTab === "uploaded" && upFetched && !upError &&
-    <DataTable data={upData} hiddenCols={UPLOADED_HIDDEN} search={upSearch} setSearch={setUpSearch} onRefresh={handleLoadUploaded} subTab={dataSubTab} onSubTabChange={setDataSubTab} />}
-
-  {dataSubTab === "mapped" && mapError && <ErrorBox error={mapError} onRetry={fetchMapped} />}
-  {dataSubTab === "mapped" && mapFetched && !mapError &&
-    <DataTable data={mapData} hiddenCols={new Set()} search={mapSearch} setSearch={setMapSearch} onRefresh={fetchMapped} subTab={dataSubTab} onSubTabChange={setDataSubTab} />}
-
-  {dataSubTab === "group" && grpError && <ErrorBox error={grpError} onRetry={fetchGroup} />}
-  {dataSubTab === "group" && grpFetched && !grpError &&
-    <DataTable data={grpData} hiddenCols={new Set()} search={grpSearch} setSearch={setGrpSearch} onRefresh={fetchGroup} subTab={dataSubTab} onSubTabChange={setDataSubTab} />}
-
-{dataSubTab === "report" && <>
-  <div className="flex items-center gap-1 p-1 bg-gray-100/70 rounded-xl w-fit">
-    {["uploaded","mapped","group","report"].map(t => (
-      <button key={t} onClick={() => setDataSubTab(t)}
-        className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all capitalize
-          ${dataSubTab === t ? "bg-white text-[#1a2f8a] shadow-sm" : "text-gray-400 hover:text-gray-600"}`}>
-        {t}
-      </button>
-    ))}
-  </div>
-  <FinancialReport groupAccounts={grpData} uploadedAccounts={upData}
-    loading={anyLoading && (!upData.length || !grpData.length)}
-    error={upError || grpError || null} />
-</>}
-</div>
-      </div>
-
-
+      {/* Editor modal */}
+      {editingKpi !== null && (
+        <KpiEditorModal
+          kpi={editingKpi === "new" ? null : editingKpi}
+          onSave={saveKpi}
+          onClose={() => setEditingKpi(null)}
+          kpiList={kpiList}
+          accountCodes={allAccountCodes}
+          dimCodes={allDimCodes}
+        />
+      )}
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useState } from "react";
 import Login from "../auth/Login.jsx";
 import Shell from "../components/layout/Shell.jsx";
 import AppRoutes from "./routes.jsx";
+import { SettingsProvider } from "../components/layout/SettingsContext.jsx";
 
 const TOKEN_URL = "https://konsolidatorsignin.b2clogin.com/konsolidatorsignin.onmicrosoft.com/B2C_1_ropc/oauth2/v2.0/token";
 const CLIENT_ID = "20e20379-2661-4066-b297-90c2e089e899";
@@ -64,15 +65,14 @@ export default function App() {
   };
 
   if (!token) return <Login onLogin={handleLogin} />;
-
   return (
-    <>
+    <SettingsProvider>
       {showIntro && <IntroOverlay />}
       <Shell key={refreshKey} user={user} onLogout={handleLogout} onRefresh={handleRefresh}>
         {(activePage, onNavigate) => (
           <AppRoutes token={token} activePage={activePage} onNavigate={onNavigate} />
         )}
       </Shell>
-    </>
+    </SettingsProvider>
   );
 }

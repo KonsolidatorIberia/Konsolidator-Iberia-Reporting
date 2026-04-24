@@ -2,6 +2,14 @@ import { useState } from "react";
 import HomePage from "../components/layout/HomePage.jsx";
 import IndividualesPage from "../components/layout/IndividualesPage.jsx";
 import KpiIndividualesPage from "../components/layout/KpiIndividualesPage";
+import ContributivePage from "../components/layout/ContributivePage.jsx";
+import DimensionesPage from "../components/layout/DimensionesPage.jsx";
+import ConsolidationSheetPage from "../components/layout/ConsolidationSheetPage.jsx";
+import StructurePage from "../components/layout/StructurePage.jsx";
+import SettingsPage from "../components/layout/SettingsPage.jsx";
+
+
+
 
 
 export default function AppRoutes({ token, activePage, onNavigate }) {
@@ -23,7 +31,36 @@ if (activePage === "individual-data") return (
   />
 );
 
-if (activePage === "individual-kpis") return (
+if (activePage === "individual-contributive") return (
+  <ContributivePage token={token} />
+);
+
+// inside AppRoutes:
+if (activePage === "structure") return (
+  <StructurePage
+    token={token}
+    structures={sharedData.structures ?? []}
+    companies={sharedData.companies ?? []}
+  />
+);
+
+if (activePage === "individual-dimensiones") return (
+  <DimensionesPage
+    token={token}
+    sources={sharedData.sources ?? []}
+    structures={sharedData.structures ?? []}
+    companies={sharedData.companies ?? []}
+    dimensions={sharedData.dimensions ?? []}
+  />
+);
+
+
+
+if (activePage === "consolidated-sheet") return (
+    <ConsolidationSheetPage token={token} />
+  );
+
+  if (activePage === "individual-kpis") return (
   <KpiIndividualesPage
     token={token}
     sources={sharedData.sources ?? []}
@@ -33,6 +70,8 @@ if (activePage === "individual-kpis") return (
   />
 );
 
+ if (activePage === "settings") return <SettingsPage />;
+
   return (
     <div className="flex items-center justify-center h-full">
       <div className="text-center">
@@ -41,4 +80,6 @@ if (activePage === "individual-kpis") return (
       </div>
     </div>
   );
+
+  
 }
