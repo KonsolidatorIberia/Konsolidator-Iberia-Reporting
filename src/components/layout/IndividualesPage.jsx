@@ -191,6 +191,7 @@ function FilterPill({ label, value, onChange, options, dark = false, labelStyle 
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const display = options.find(o => o.value === value)?.label ?? null;
+  const filterTypo = useTypo("filter");
 
   useEffect(() => {
     function handler(e) {
@@ -213,7 +214,16 @@ className={`flex items-center gap-2 px-3 py-2 rounded-2xl border text-xs font-bo
               : "bg-[#ffffff] border-[#c2c2c2] text-[#505050] shadow-xl"
           }`}>
 <span className={`text-[9px] font-black uppercase tracking-widest ${labelStyle || (value ? (dark ? "text-black/30" : "text-[#1a2f8a]/50") : dark ? "text-black/30" : "text-[#1a2f8a]/50")}`}>{label}</span>
-<span className={valueStyle || (value ? (dark ? "text-[#1a2f8a]" : "text-[#1a2f8a]") : dark ? "text-[#1a2f8a]" : "text-[#1a2f8a]")}>{display ?? "—"}</span>
+<span
+  className={valueStyle || ""}
+  style={display ? {
+    fontFamily: filterTypo.fontFamily,
+    fontSize: filterTypo.fontSize,
+    fontWeight: filterTypo.fontWeight,
+    color: filterTypo.color,
+  } : { color: "rgba(100,120,180,0.4)" }}>
+  {display ?? "—"}
+</span>
 <ChevronDown size={10} className={`transition-transform duration-200 ${open ? "rotate-180" : ""} ${value ? (dark ? "text-black/50" : "text-[#1a2f8a]/40") : dark ? "text-black/50" : "text-gray-300"}`} />
       </button>
 
@@ -2195,9 +2205,11 @@ function generateKonsolidatorPdf({
   compareMode,
   cmpUploadedAccounts, cmpPrevUploadedAccounts, cmpFilters,
   cmp2UploadedAccounts, cmp2PrevUploadedAccounts, cmp2Filters,
-  bsCompareMode = false,
+ bsCompareMode = false,
   bsCmpUploadedAccounts = [], bsCmpFilters = {},
   bsCmp2UploadedAccounts = [], bsCmp2Filters = {},
+  cmp2Enabled = true,
+  bsCmp2Enabled = true,
   month, year, source, structure,
   journalEntries = [],
   opts = {},
@@ -2397,16 +2409,20 @@ const makePLCols=()=>compareMode?[
       {header:'B Mon',dataKey:'cmpMon'},
       {header:'Diff',dataKey:'devMon'},
       {header:'Diff%',dataKey:'devMonP'},
-      {header:'C Mon',dataKey:'cmp2Mon'},
-      {header:'Diff',dataKey:'devMon2'},
-      {header:'Diff%',dataKey:'devMon2P'},
+      ...(cmp2Enabled?[
+        {header:'C Mon',dataKey:'cmp2Mon'},
+        {header:'Diff',dataKey:'devMon2'},
+        {header:'Diff%',dataKey:'devMon2P'},
+      ]:[]),
       {header:'YTD',dataKey:'ytd'},
       {header:'B YTD',dataKey:'cmpYtd'},
       {header:'Diff',dataKey:'devYtd'},
       {header:'Diff%',dataKey:'devYtdP'},
-      {header:'C YTD',dataKey:'cmp2Ytd'},
-      {header:'Diff',dataKey:'devYtd2'},
-      {header:'Diff%',dataKey:'devYtd2P'},
+      ...(cmp2Enabled?[
+        {header:'C YTD',dataKey:'cmp2Ytd'},
+        {header:'Diff',dataKey:'devYtd2'},
+        {header:'Diff%',dataKey:'devYtd2P'},
+      ]:[]),
     ]:[
       {header:'Account',dataKey:'label'},
       {header:'Monthly',dataKey:'mon'},
@@ -2462,9 +2478,11 @@ const makeBSCols=()=>bsCompareMode?[
       {header:'B',dataKey:'cmp'},
       {header:'Diff',dataKey:'devB'},
       {header:'Diff%',dataKey:'devBP'},
-      {header:'C',dataKey:'cmp2'},
-      {header:'Diff',dataKey:'devC'},
-      {header:'Diff%',dataKey:'devCP'},
+      ...(bsCmp2Enabled?[
+        {header:'C',dataKey:'cmp2'},
+        {header:'Diff',dataKey:'devC'},
+        {header:'Diff%',dataKey:'devCP'},
+      ]:[]),
     ]:[
       {header:'Account',dataKey:'label'},
       {header:'Amount',dataKey:'total'},
@@ -2609,8 +2627,8 @@ const renderPage=(sectionTitle,isFirst,cols,body,didParse,colStyles,useCmp=null,
         node.children?.filter(hasData).forEach(c=>walkBSSum(c,d+1));
       };
       bsRoots.forEach(n=>walkBSSum(n,0));
-      const cmpFL=compareMode?bsFlatRows(bsCmpRoots):[];
-      const cmp2FL=compareMode?bsFlatRows(bsCmp2Roots):[];
+const cmpFL=bsCompareMode?bsFlatRows(bsCmpRoots):[];
+const cmp2FL=bsCompareMode?bsFlatRows(bsCmp2Roots):[];
       const cmpLookup=makeBSRowLookup(cmpFL),cmp2Lookup=makeBSRowLookup(cmp2FL);
 renderPage('Balance Sheet — Summary',isFirst,makeBSCols(),bsSumFl.map(r=>toBSRow(r,cmpLookup,cmp2Lookup)),bsDidParse,bsColStyles(),bsCompareMode,bsCmpLabel,bsCmp2Label);
       isFirst=false;
@@ -2738,9 +2756,11 @@ function PLStatement({
 dimGroups = [], cmpFilteredDims = [], cmp2FilteredDims = [],
 cmp2Enabled = true, onCmp2EnabledChange,
 loading, error, month, year, source, structure,
-  journalEntries = [], dimensionActive = false,
+journalEntries = [], dimensionActive = false,
   breakers = { pl: {}, bs: {}, cf: {} },
+  pgcMapping = null,
 }) {
+const { colors } = useSettings();
 const [expandedMap, setExpandedMap] = useState({});
 const [summaryMode, setSummaryMode] = useState(true);
 const [ytdOnly, setYtdOnly] = useState(false);
@@ -2755,6 +2775,19 @@ const [dimPopup, setDimPopup] = useState(null);
 
   // Collect all sum account nodes from P/L tree in ascending code order (post-order = leaves first)
 const allSumRows = useMemo(() => {
+  // PGC mapping path: order by mapping, filter to is_sum rows
+  if (pgcMapping?.rows) {
+    const treeByCode = new Map();
+    (function index(nodes) {
+      nodes.forEach(n => { treeByCode.set(String(n.code), n); index(n.children || []); });
+    })(tree);
+    return [...pgcMapping.rows.entries()]
+      .filter(([, info]) => info.isSum)
+      .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+      .map(([code]) => treeByCode.get(code))
+      .filter(n => n && hasData(n) && ["P/L", "DIS"].includes(n.accountType));
+  }
+
   const result = [];
   function walk(node) {
     if (!hasData(node)) return;
@@ -2766,7 +2799,7 @@ const allSumRows = useMemo(() => {
     .filter(n => ["P/L", "DIS"].includes(n.accountType))
     .forEach(n => walk(n));
   return result;
-}, [tree]);
+}, [tree, pgcMapping]);
 
 
 // ADD THIS RIGHT HERE:
@@ -2935,6 +2968,19 @@ const getCmp2Prev = useCallback((code) => {
 }, [cmp2PrevNodeByCode, cmp2Filters]);
 
 const summaryRows = useMemo(() => {
+  // PGC mapping path: order by mapping, filter to show_in_summary rows
+  if (pgcMapping?.rows) {
+    const treeByCode = new Map();
+    (function index(nodes) {
+      nodes.forEach(n => { treeByCode.set(String(n.code), n); index(n.children || []); });
+    })(tree);
+    return [...pgcMapping.rows.entries()]
+      .filter(([, info]) => info.showInSummary)
+      .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+      .map(([code]) => treeByCode.get(code))
+      .filter(n => n && hasData(n) && ["P/L", "DIS"].includes(n.accountType));
+  }
+
   const allSums = [];
   function walk(node) {
     if (!hasData(node)) return;
@@ -2978,12 +3024,30 @@ const hasDotS  = plSums.some(n => String(n.code).endsWith(".S"));
     filtered = plSums.filter(n => n.level === 1);
   }
 
-  return filtered.sort((a, b) =>
+return filtered.sort((a, b) =>
     String(a.code).localeCompare(String(b.code), undefined, { numeric: true })
   );
-}, [tree, breakers]);
+}, [tree, breakers, pgcMapping]);
 
 
+
+// When PGC mapping is active, derive the 3 breakers (one per section,
+// placed on the first row of each section in the rendered list).
+const effectiveBreakersPl = useMemo(() => {
+  if (!pgcMapping?.rows || !pgcMapping?.sections) return breakers.pl ?? {};
+  const rowsToRender = summaryMode ? summaryRows : allSumRows;
+  const seen = new Set();
+  const out = {};
+  for (const node of rowsToRender) {
+    const m = pgcMapping.rows.get(String(node.code));
+    if (!m) continue;
+    if (seen.has(m.section)) continue;
+    seen.add(m.section);
+    const sec = pgcMapping.sections.get(m.section);
+    if (sec) out[String(node.code)] = { label: sec.label, color: sec.color };
+  }
+  return out;
+}, [pgcMapping, breakers, summaryMode, summaryRows, allSumRows]);
 
 const handleExportPdf = () => {
   generatePLPdf({
@@ -3126,7 +3190,8 @@ const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.valu
       <div className="bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden">
 <div className="bg-[#1a2f8a] px-6 py-4 flex items-center justify-between">
   <div>
-    <p className="text-white font-black text-base">Profit & Loss</p>
+        <p className="k-panel-title font-black text-base">Profit & Loss</p>
+
   </div>
   {/* Hidden export trigger */}
   <button id="__plExportTrigger" onClick={handleExportPdf} className="hidden" />
@@ -3134,36 +3199,40 @@ const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.valu
   <div className="flex items-center gap-3">
 {compareMode && (
       <button onClick={() => setFiltersOpen(o => !o)}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all bg-white/10 text-white/60 hover:text-white hover:bg-white/20">
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all"
+        style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}80` }}>
         <ChevronDown size={12} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
         {filtersOpen ? "Hide filters" : "Show filters"}
       </button>
     )}
 <button onClick={() => {
-  const hasExpanded = Object.values(expandedMap).some(Boolean);
-  if (hasExpanded) {
+  if (Object.values(expandedMap).some(Boolean)) {
     setExpandedMap({});
     return;
   }
   const next = {};
-  function collectKeys(node, parentCode) {
-    // Key for this node itself (used by summary row expanded check)
-    next[node.code] = true;
-    // Key for this node as a drill child of its parent
-    if (parentCode) next[`drill-${parentCode}-${node.code}`] = true;
-    // Recurse into children
+  const walk = (node, outerCode, depth, parentCode) => {
+    (node.uploadLeaves || []).forEach((leaf, i) => {
+      if (leaf.type !== "plain") {
+        next[`drill-leaf-${outerCode}-${parentCode}-${depth}-${i}`] = true;
+      }
+    });
     (node.children || [])
       .filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType))
-      .forEach(c => collectKeys(c, node.code));
-    // Expand leaves
-    (node.uploadLeaves || []).forEach((leaf, i) => {
-      next[`drill-leaf-${node.code}-0-${i}`] = true;
-    });
-  }
-  (summaryMode ? summaryRows : allSumRows).forEach(n => collectKeys(n, null));
+      .forEach(child => {
+        next[`drill-${outerCode}-${child.code}`] = true;
+        walk(child, outerCode, depth + 1, child.code);
+      });
+  };
+  (summaryMode ? summaryRows : allSumRows).forEach(node => {
+    next[node.code] = true;
+    walk(node, node.code, 0, node.code);
+  });
   setExpandedMap(next);
 }}
-      className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-black transition-all bg-white/10 text-white/60 hover:text-white hover:bg-white/20"
+className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-black transition-all"
+      style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}80` }}
+
       title={Object.values(expandedMap).some(Boolean) ? "Collapse all" : "Expand all"}>
 {Object.values(expandedMap).some(Boolean)
         ? <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
@@ -3171,27 +3240,70 @@ const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.valu
       }
     </button>
     <button onClick={onToggleCompare}
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all
-        ${compareMode ? "bg-amber-400 text-[#1a2f8a]" : "bg-white/10 text-white/60 hover:text-white hover:bg-white/20"}`}>
+      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all"
+      style={compareMode
+        ? { backgroundColor: colors.quaternary ?? "#F59E0B", color: colors.primary ?? "#1a2f8a" }
+        : { background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}80` }}>
       <GitMerge size={12} /> Compare
+
     </button>
-<div className="flex items-center gap-1 p-1 bg-white/10 rounded-xl">
+<div className="relative flex items-center p-1 rounded-xl" style={{ backgroundColor: "rgba(255,255,255,0.1)" }}
+      ref={el => {
+        if (!el) return;
+        const btns = el.querySelectorAll("button");
+        const active = btns[ytdOnly ? 1 : 0];
+        const pill = el.querySelector(".pl-pill-ytd");
+        if (active && pill) {
+          pill.style.left = active.offsetLeft + "px";
+          pill.style.width = active.offsetWidth + "px";
+        }
+      }}>
+      <span className="pl-pill-ytd" style={{
+        position: "absolute",
+        top: 4, bottom: 4,
+        backgroundColor: colors.quaternary ?? "#F59E0B",
+        borderRadius: 8,
+        transition: "left 0.25s cubic-bezier(0.4,0,0.2,1), width 0.25s cubic-bezier(0.4,0,0.2,1)",
+        pointerEvents: "none",
+      }} />
       <button onClick={() => setYtdOnly(false)}
-        className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all ${!ytdOnly ? "bg-white text-[#1a2f8a]" : "text-white/60 hover:text-white"}`}>
+        className="relative z-10 px-3 py-1.5 rounded-lg text-xs font-black transition-colors duration-200"
+        style={{ color: !ytdOnly ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}80` }}>
         Monthly
       </button>
       <button onClick={() => setYtdOnly(true)}
-        className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all ${ytdOnly ? "bg-white text-[#1a2f8a]" : "text-white/60 hover:text-white"}`}>
+        className="relative z-10 px-3 py-1.5 rounded-lg text-xs font-black transition-colors duration-200"
+        style={{ color: ytdOnly ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}80` }}>
         YTD
       </button>
     </div>
-    <div className="flex items-center gap-1 p-1 bg-white/10 rounded-xl">
+    <div className="relative flex items-center p-1 rounded-xl" style={{ backgroundColor: "rgba(255,255,255,0.1)" }}
+      ref={el => {
+        if (!el) return;
+        const btns = el.querySelectorAll("button");
+        const active = btns[summaryMode ? 1 : 0];
+        const pill = el.querySelector(".pl-pill-sum");
+        if (active && pill) {
+          pill.style.left = active.offsetLeft + "px";
+          pill.style.width = active.offsetWidth + "px";
+        }
+      }}>
+      <span className="pl-pill-sum" style={{
+        position: "absolute",
+        top: 4, bottom: 4,
+        backgroundColor: colors.quaternary ?? "#F59E0B",
+        borderRadius: 8,
+        transition: "left 0.25s cubic-bezier(0.4,0,0.2,1), width 0.25s cubic-bezier(0.4,0,0.2,1)",
+        pointerEvents: "none",
+      }} />
       <button onClick={() => setSummaryMode(false)}
-        className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all ${!summaryMode ? "bg-white text-[#1a2f8a]" : "text-white/60 hover:text-white"}`}>
+        className="relative z-10 px-3 py-1.5 rounded-lg text-xs font-black transition-colors duration-200"
+        style={{ color: !summaryMode ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}80` }}>
         Detailed
       </button>
       <button onClick={() => setSummaryMode(true)}
-        className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all ${summaryMode ? "bg-white text-[#1a2f8a]" : "text-white/60 hover:text-white"}`}>
+        className="relative z-10 px-3 py-1.5 rounded-lg text-xs font-black transition-colors duration-200"
+        style={{ color: summaryMode ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}80` }}>
         Summary
       </button>
     </div>
@@ -3210,11 +3322,11 @@ const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.valu
       <FilterPill dark label="Mnth" value={cmpFilters.month} onChange={v => onCmpFilterChange("month", v)}
         options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
       <FilterPill dark label="Src" value={cmpFilters.source} onChange={v => onCmpFilterChange("source", v)}
-        options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+      options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
       <FilterPill dark label="Struct" value={cmpFilters.structure} onChange={v => onCmpFilterChange("structure", v)}
-        options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+      options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
       <FilterPill dark label="Comp" value={cmpFilters.company} onChange={v => onCmpFilterChange("company", v)}
-        options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); return { value: v, label: v }; })} />
+       options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); return { value: v, label: v }; })} />
       <FilterPill dark label="Dim Grp" value={cmpFilters.dimGroup} onChange={v => onCmpFilterChange("dimGroup", v)}
         options={[{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))]} />
 <FilterPill dark label="Dim" value={cmpFilters.dimension} onChange={v => onCmpFilterChange("dimension", v)}
@@ -3232,11 +3344,11 @@ const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.valu
       <FilterPill dark label="Mnth" value={cmp2Filters?.month} onChange={v => onCmp2FilterChange("month", v)}
         options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
       <FilterPill dark label="Src" value={cmp2Filters?.source} onChange={v => onCmp2FilterChange("source", v)}
-        options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+            options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
       <FilterPill dark label="Struct" value={cmp2Filters?.structure} onChange={v => onCmp2FilterChange("structure", v)}
-        options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+       options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
       <FilterPill dark label="Comp" value={cmp2Filters?.company} onChange={v => onCmp2FilterChange("company", v)}
-        options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); return { value: v, label: v }; })} />
+       options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); return { value: v, label: v }; })} />
       <FilterPill dark label="Dim Grp" value={cmp2Filters?.dimGroup} onChange={v => onCmp2FilterChange("dimGroup", v)}
         options={[{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))]} />
       <FilterPill dark label="Dim" value={cmp2Filters?.dimension} onChange={v => onCmp2FilterChange("dimension", v)}
@@ -3251,7 +3363,7 @@ options={[{ value: "", label: "All" }, ...cmp2FilteredDims.map(d => { const v = 
 
 
 
-<div className="overflow-auto" style={{ maxHeight: !compareMode ? "calc(113vh - 320px)" : filtersOpen ? "calc(122.5vh - 530px)" : "calc(120vh - 390px)" }}>
+<div className="overflow-auto" style={{ maxHeight: !compareMode ? "calc(78.5vh)" : filtersOpen ? cmp2Enabled ? "calc(65.5vh)" : "calc(72vh)" : "calc(78.5vh)" }}>
 <table className="w-full">
 <thead className="sticky top-0 z-10">
   {/* cmpLabel/cmp2Label defined as vars above thead */}
@@ -3279,8 +3391,8 @@ const mon      = ytd - prevYtd;
 const expanded = !!expandedMap[node.code];
 const hasKids  = !summaryMode && (node.children||[]).filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType)).length > 0;
 const isHighlighted = PL_HIGHLIGHTED_CODES.has(String(node.code)) || String(node.code).endsWith(".S") || String(node.code).endsWith(".PL");
-const SECTION_DIVIDERS_MAP= Object.keys(breakers.pl).length
-  ? breakers.pl
+const SECTION_DIVIDERS_MAP= Object.keys(effectiveBreakersPl).length
+  ? effectiveBreakersPl
   : summaryRows.some(n => /[a-zA-Z]/.test(String(n.code)))
     ? { "A.04.S": { label: "Ingresos", color: "#1A2B6B" }, "A.13.S": { label: "Gastos operativos", color: "#CF305D" }, "A.24.S": { label: "Resultado final", color: "#374151" } }
     : { "11999": { label: "Ingresos", color: "#1A2B6B" }, "53999": { label: "Gastos operativos", color: "#CF305D" }, "89999": { label: "Resultado final", color: "#374151" } };
@@ -3289,7 +3401,7 @@ const DETAIL_DIVIDERS_BEFORE = (() => {
   const fallback = summaryRows.some(n => /[a-zA-Z]/.test(String(n.code)))
     ? { "A.04.S": { label: "Ingresos", color: "#1A2B6B" }, "A.13.S": { label: "Gastos operativos", color: "#CF305D" }, "A.24.S": { label: "Resultado neto", color: "#374151" } }
     : { "10999": { label: "Ingresos", color: "#1A2B6B" }, "12199": { label: "Gastos operativos", color: "#CF305D" }, "89999": { label: "Resultado final", color: "#374151" } };
-  const source = Object.keys(breakers.pl).length ? breakers.pl : fallback;
+const source = Object.keys(effectiveBreakersPl).length ? effectiveBreakersPl : fallback;
   if (allSumRows.length === 0) return source;
   const remapped = { ...source };
   const positions = Object.keys(remapped)
@@ -3309,7 +3421,7 @@ const DETAIL_DIVIDERS_BEFORE = (() => {
 
 const divider = !summaryMode
   ? (DETAIL_DIVIDERS_BEFORE[String(node.code)] ?? null)
-: ((PL_HIGHLIGHTED_CODES.has(String(node.code)) || String(node.code).endsWith(".S") || String(node.code).endsWith(".PL") || Object.keys(breakers.pl).includes(String(node.code)))
+: ((PL_HIGHLIGHTED_CODES.has(String(node.code)) || String(node.code).endsWith(".S") || String(node.code).endsWith(".PL") || Object.keys(effectiveBreakersPl).includes(String(node.code)))
       ? SECTION_DIVIDERS_MAP[String(node.code)] ?? null
       : null);
 
@@ -3359,7 +3471,8 @@ divider ? (
 })()}
 
     </tr>,
-...(expanded ? (function renderChildren(children, leaves, depth) {
+...(expanded ? (function renderChildren(children, leaves, depth, parentCode) {
+
   const rows = [];
 
   // Group account children
@@ -3403,7 +3516,8 @@ const childBg = depth === 0 ? "bg-[#f4f6fd]" : depth === 1 ? "bg-[#f8f9ff]" : "b
     );
 
 if (childExpanded && hasMore) {
-      rows.push(...renderChildren(grandkids, child.uploadLeaves || [], depth + 1));
+           rows.push(...renderChildren(grandkids, child.uploadLeaves || [], depth + 1, child.code));
+
     }
 
     if (childExpanded) {
@@ -3463,7 +3577,8 @@ if (childExpanded && hasMore) {
 // Upload leaves (local accounts)
   leaves.forEach((leaf, i) => {
     if (leaf.type === "plain") return;
-    const leafKey = `drill-leaf-${node.code}-${depth}-${i}`;
+    const leafKey = `drill-leaf-${node.code}-${parentCode ?? node.code}-${depth}-${i}`;
+
     const leafExpanded = !!expandedMap[leafKey];
     const hasDims = leaf.type === "localAccount" && leaf.children?.length > 0;
     const amt = leaf.amount ?? 0;
@@ -3506,7 +3621,7 @@ if (childExpanded && hasMore) {
     if (leafExpanded && hasDims) {
       leaf.children.forEach((dim, j) => {
         rows.push(
-<tr key={`dim-${depth}-${i}-${j}`}
+<tr key={`dim-${parentCode ?? node.code}-${depth}-${i}-${j}`}
             className="border-b border-[#1a2f8a]/5 hover:bg-amber-50/40 transition-colors bg-amber-50/10 cursor-pointer"
             onClick={(e) => { e.stopPropagation(); setDimPopup(dim); }}>
            <td className="py-1" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
@@ -3529,7 +3644,8 @@ if (childExpanded && hasMore) {
   });
 
   return rows;
-})(node.children || [], node.uploadLeaves || [], 0) : []),
+})(node.children || [], node.uploadLeaves || [], 0, node.code) : []),
+
   ];
 })}
             </tbody>
@@ -3720,13 +3836,14 @@ const PL_HIGHLIGHTED_CODES = new Set([
 
 
 
-function BalanceSheet({ groupAccounts, uploadedAccounts, loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], onCompareChange, dimensionActive = false, upDimGroup = "", upDimension = "", filteredDims = [], externalCmp2Enabled, onBsCmp2EnabledChange, breakers = { pl: {}, bs: {}, cf: {} },
+function BalanceSheet({ groupAccounts, uploadedAccounts, loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], onCompareChange, dimensionActive = false, upDimGroup = "", upDimension = "", filteredDims = [], externalCmp2Enabled, onBsCmp2EnabledChange, breakers = { pl: {}, bs: {}, cf: {} }, pgcBsMapping = null,
   compareMode, setCompareMode,
   cmpYear, setCmpYear, cmpMonth, setCmpMonth, cmpSource, setCmpSource, cmpStructure, setCmpStructure, cmpCompany, setCmpCompany,
   cmpData, setCmpData,
   cmp2Year, setCmp2Year, cmp2Month, setCmp2Month, cmp2Source, setCmp2Source, cmp2Structure, setCmp2Structure, cmp2Company, setCmp2Company,
   cmp2Data, setCmp2Data,
 }) {
+  const { colors } = useSettings();
   const [filtersOpen, setFiltersOpen] = useState(true);
   const [cmpLoading, setCmpLoading] = useState(false);
   const [cmp2Loading, setCmp2Loading] = useState(false);
@@ -3734,7 +3851,11 @@ const [bsView, setBsView] = useState("summary");
 const [cmp2EnabledInternal, setCmp2EnabledInternal] = useState(true);
   const cmp2Enabled = externalCmp2Enabled !== undefined ? externalCmp2Enabled : cmp2EnabledInternal;
   const setCmp2Enabled = (v) => { setCmp2EnabledInternal(v); onBsCmp2EnabledChange?.(v); };
-  const [bsDrillMap, setBsDrillMap] = useState({});
+const [bsDrillMap, setBsDrillMap] = useState({});
+
+useEffect(() => {
+  setBsDrillMap({});
+}, [cmp2Enabled, compareMode]);
   const [jrnPopup, setJrnPopup] = useState(null);
   const [dimPopup, setDimPopup] = useState(null);
 const bsDrill = useCallback((key) => {
@@ -3888,22 +4009,21 @@ function renderBSDrill(node, parentKey) {
   const children = (node.children || []).filter(hasData);
   const leaves = (node.uploadLeaves || []).filter(l => l.type !== "plain");
 
+  // PGC: build a set of codes that are already in the flat list (summary or detailed),
+  // so the drill doesn't repaint them.
+  const pgcRenderedCodes = (() => {
+    if (!pgcBsMapping?.rows) return null;
+    const flatNodes = bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes;
+    return new Set((flatNodes || []).map(n => String(n.code)));
+  })();
+
 const renderDrillChildren = (children, leaves, depth, contextKey) => {
 
     const rows = [];
-    console.log("BS drill children codes:", children.map(c => c.code), "journalByCode keys:", [...journalByCode.keys()]);
-    children.forEach(c => {
-      const jrns = journalByCode.get(c.code);
-      if (jrns) console.log("MATCH FOUND:", c.code, jrns.length, "entries");
-      else console.log("NO MATCH:", c.code, "not in", [...journalByCode.keys()]);
-    });
-    children.forEach(c => {
-      const jrns = journalByCode.get(c.code);
-      if (jrns) console.log("MATCH FOUND:", c.code, jrns.length, "entries");
-      else console.log("NO MATCH:", c.code, "not in", [...journalByCode.keys()]);
-    });
 
     children.filter(hasData).forEach(child => {
+      // PGC: skip children whose code is already shown as a sibling in the flat list
+      if (pgcRenderedCodes && pgcRenderedCodes.has(String(child.code))) return;
       const childKey = `bsdrill-${contextKey}-${child.code}`;
       const childExpanded = !!bsDrillMap[childKey];
       const grandkids = (child.children || []).filter(hasData);
@@ -3956,7 +4076,11 @@ return <>
       );
 
 if (childExpanded && hasMore) {
-rows.push(...renderDrillChildren(grandkids, child.uploadLeaves?.filter(l => l.type !== "plain") || [], depth + 1, childKey));
+        // Also filter grandkids by the same rule
+        const filteredGrandkids = pgcRenderedCodes
+          ? grandkids.filter(g => !pgcRenderedCodes.has(String(g.code)))
+          : grandkids;
+        rows.push(...renderDrillChildren(filteredGrandkids, child.uploadLeaves?.filter(l => l.type !== "plain") || [], depth + 1, childKey));
       }
 
       if (childExpanded) {
@@ -4205,7 +4329,7 @@ function renderNode(node, depth = 0) {
               <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[120px] ${isBold ? "font-bold text-[#1a2f8a]" : "text-gray-600"}`}>
                 {actual === 0 ? "-" : fmtAmt(actual)}
               </td>
-              {compareMode && <>
+{compareMode && <>
 <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[120px] ${isBold ? "font-bold text-[#CF305D]" : "text-[#CF305D]"}`} style={{ borderLeft: "2px solid #e2e8f0" }}>
                   {cmpVal === 0 ? "-" : fmtAmt(cmpVal)}
                 </td>
@@ -4215,15 +4339,17 @@ function renderNode(node, depth = 0) {
                 <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[70px] font-bold ${devColor(devB)}`}>
                   {devBPct === null ? "—" : `${devBPct >= 0 ? "+" : ""}${devBPct.toFixed(1)}%`}
                 </td>
+                {cmp2Enabled && <>
 <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[120px] ${isBold ? "font-bold text-[#57aa78]" : "text-[#57aa78]"}`} style={{ borderLeft: "2px solid #e2e8f0" }}>
-                  {cmp2Val === 0 ? "-" : fmtAmt(cmp2Val)}
-                </td>
-                <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[90px] ${devColor(devC)}`}>
-                  {devC === 0 ? "-" : fmtAmt(devC)}
-                </td>
-                <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[70px] font-bold ${devColor(devC)}`}>
-                  {devCPct === null ? "—" : `${devCPct >= 0 ? "+" : ""}${devCPct.toFixed(1)}%`}
-                </td>
+                    {cmp2Val === 0 ? "-" : fmtAmt(cmp2Val)}
+                  </td>
+                  <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[90px] ${devColor(devC)}`}>
+                    {devC === 0 ? "-" : fmtAmt(devC)}
+                  </td>
+                  <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[70px] font-bold ${devColor(devC)}`}>
+                    {devCPct === null ? "—" : `${devCPct >= 0 ? "+" : ""}${devCPct.toFixed(1)}%`}
+                  </td>
+                </>}
               </>}
             </React.Fragment>
           );
@@ -4250,6 +4376,68 @@ const drillRows = renderBSDrill(
 
 function renderBSRows(nodes) {
   const rows = [];
+
+  // PGC mapping path: render the flat list from pgc_bs_rows
+  if (pgcBsMapping?.rows) {
+    const flatNodes = bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes;
+    if (!flatNodes) return rows;
+
+    const isPGC_BS = (code) => {
+      const m = pgcBsMapping.rows.get(String(code));
+      return m && (m.section === "PASIVO" || m.section === "PATRIMONIO");
+    };
+
+    flatNodes.forEach(node => {
+      const total = isPGC_BS(node.code) ? -sumNode(node) : sumNode(node);
+      const isBold = isBSHighlighted(node);
+      const drillKey = `bsrow-${node.code}`;
+      const hasMore = (node.children || []).filter(hasData).length > 0
+        || node.uploadLeaves?.filter(l => l.type !== "plain").length > 0;
+      const expanded = !!bsDrillMap[drillKey];
+
+      const divider = effectiveBreakersBs[String(node.code)];
+      if (divider) {
+        rows.push(
+          <tr key={`bsdivider-${node.code}`}>
+            <td colSpan={2} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
+              <span className="text-[10px] font-black uppercase tracking-widest text-white/100">{divider.label}</span>
+            </td>
+          </tr>
+        );
+      }
+
+      rows.push(
+        <tr key={node.code}
+          className={`border-b border-gray-100 ${isBold ? "bg-[#eef1fb]" : "bg-white"} ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
+          onClick={hasMore ? () => bsDrill(drillKey) : undefined}>
+          <td className="px-6 py-2.5">
+            <div className="flex items-center gap-2">
+              {hasMore
+                ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{expanded ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
+                : <span className="w-3 flex-shrink-0" />}
+              <span className={`text-xs ${isBold ? "font-bold text-[#1a2f8a] uppercase tracking-wider" : "text-gray-600"}`}>
+                {isBold ? (node.name ?? "") : ((node.name ?? "").charAt(0).toUpperCase() + (node.name ?? "").slice(1).toLowerCase())}
+              </span>
+            </div>
+          </td>
+          <td className={`text-right pr-8 py-2.5 font-mono text-xs whitespace-nowrap w-40 ${isBold ? "font-bold text-[#1a2f8a]" : "text-gray-600"}`}>
+            {total === 0 ? "-" : fmtAmt(total)}
+          </td>
+        </tr>
+      );
+
+     if (expanded && hasMore) {
+        const drillRows = renderBSDrill(node, drillKey);
+        if (drillRows?.length) rows.push(...drillRows);
+      }
+    });
+    return rows;
+  }
+
+  // ⬇⬇⬇ HARD GUARD: if PGC is active, we never reach the legacy renderer.
+  if (pgcBsMapping) return rows;
+
+  // Fallback: original recursive rendering for non-PGC structures
   nodes.filter(hasData).forEach(node => {
     const total = Number(node.code) >= 599999 ? -sumNode(node) : sumNode(node);
     const isBold = isBSHighlighted(node);
@@ -4359,8 +4547,52 @@ const allCmp2Tree = useMemo(
   [groupAccounts, allCompaniesCmp2Data, compareMode, dimensionActive]
 );
 
-  const bsRoots = useMemo(() => tree.filter(n => hasData(n) && n.accountType === "B/S")
+ const bsRoots = useMemo(() => tree.filter(n => hasData(n) && n.accountType === "B/S")
     .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true })), [tree]);
+
+  // PGC mapping: ordered list of nodes for summary or detailed view
+  const bsPgcSummaryNodes = useMemo(() => {
+    if (!pgcBsMapping?.rows) return null;
+    const treeByCode = new Map();
+    (function index(nodes) {
+      nodes.forEach(n => { treeByCode.set(String(n.code), n); index(n.children || []); });
+    })(tree);
+    return [...pgcBsMapping.rows.entries()]
+      .filter(([, info]) => info.showInSummary)
+      .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+      .map(([code]) => treeByCode.get(code))
+      .filter(n => n && hasData(n) && n.accountType === "B/S");
+  }, [tree, pgcBsMapping]);
+
+  const bsPgcAllSumNodes = useMemo(() => {
+    if (!pgcBsMapping?.rows) return null;
+    const treeByCode = new Map();
+    (function index(nodes) {
+      nodes.forEach(n => { treeByCode.set(String(n.code), n); index(n.children || []); });
+    })(tree);
+    return [...pgcBsMapping.rows.entries()]
+      .filter(([, info]) => info.isSum)
+      .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+      .map(([code]) => treeByCode.get(code))
+      .filter(n => n && hasData(n) && n.accountType === "B/S");
+  }, [tree, pgcBsMapping]);
+
+  // Derive the 3 BS breakers (one per section, on the first row of each section)
+  const effectiveBreakersBs = useMemo(() => {
+    if (!pgcBsMapping?.rows || !pgcBsMapping?.sections) return breakers.bs ?? {};
+    const rowsToScan = (bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes) || [];
+    const seen = new Set();
+    const out = {};
+    for (const node of rowsToScan) {
+      const m = pgcBsMapping.rows.get(String(node.code));
+      if (!m) continue;
+      if (seen.has(m.section)) continue;
+      seen.add(m.section);
+      const sec = pgcBsMapping.sections.get(m.section);
+      if (sec) out[String(node.code)] = { label: sec.label, color: sec.color };
+    }
+    return out;
+  }, [pgcBsMapping, breakers, bsView, bsPgcSummaryNodes, bsPgcAllSumNodes]);
 
   const monthLabel = MONTHS.find(m => String(m.value) === String(month))?.label ?? month;
 
@@ -4379,6 +4611,96 @@ const allCmp2Tree = useMemo(
 
 function renderBSCompareRows(nodes, cmpTree, cmp2Tree) {
     const rows = [];
+
+    // PGC mapping path
+    if (pgcBsMapping?.rows) {
+      const flatNodes = bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes;
+      if (!flatNodes) return rows;
+
+      const isPGC_BS = (code) => {
+        const m = pgcBsMapping.rows.get(String(code));
+        return m && (m.section === "PASIVO" || m.section === "PATRIMONIO");
+      };
+
+      flatNodes.forEach(node => {
+        const isBold = isBSHighlighted(node);
+        const actual = isPGC_BS(node.code) ? -sumNode(node) : sumNode(node);
+        const cmpRaw = getNodeValue(cmpTree, node.code);
+        const cmp = isPGC_BS(node.code) ? -cmpRaw : cmpRaw;
+        const cmp2Raw = getNodeValue(cmp2Tree, node.code);
+        const cmp2 = isPGC_BS(node.code) ? -cmp2Raw : cmp2Raw;
+        const devB = actual - cmp;
+        const devBPct = cmp !== 0 ? (devB / Math.abs(cmp)) * 100 : null;
+        const devC = actual - cmp2;
+        const devCPct = cmp2 !== 0 ? (devC / Math.abs(cmp2)) * 100 : null;
+        const devColor = (v) => v === 0 ? "text-gray-300" : v > 0 ? "text-emerald-600" : "text-red-500";
+
+        const drillKeyCmp = `bscmp-${node.code}`;
+        const hasMoreCmp = (node.children || []).filter(hasData).length > 0
+          || node.uploadLeaves?.filter(l => l.type !== "plain").length > 0;
+        const expandedCmp = !!bsDrillMap[drillKeyCmp];
+
+        const divider = effectiveBreakersBs[String(node.code)];
+        if (divider) {
+          rows.push(
+            <tr key={`bsdivider-${node.code}`}>
+              <td colSpan={cmp2Enabled ? 8 : 5} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
+                <span className="text-[10px] font-black uppercase tracking-widest text-white">{divider.label}</span>
+              </td>
+            </tr>
+          );
+        }
+
+        rows.push(
+          <tr key={node.code}
+            className={`border-b border-gray-100 ${isBold ? "bg-[#eef1fb]" : "bg-white"} ${hasMoreCmp ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
+            onClick={hasMoreCmp ? () => bsDrill(drillKeyCmp) : undefined}>
+            <td className="px-6 py-2.5">
+              <div className="flex items-center gap-2">
+                {hasMoreCmp
+                  ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{expandedCmp ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
+                  : <span className="w-3 flex-shrink-0" />}
+                <span className={`text-xs ${isBold ? "font-bold text-[#1a2f8a] uppercase tracking-wider" : "text-gray-600"}`}>
+                  {isBold ? (node.name ?? "") : ((node.name ?? "").charAt(0).toUpperCase() + (node.name ?? "").slice(1).toLowerCase())}
+                </span>
+              </div>
+            </td>
+            <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-36 ${isBold ? "font-bold text-[#1a2f8a]" : "text-gray-600"}`}>
+              {actual === 0 ? "-" : fmtAmt(actual)}
+            </td>
+            <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-36 ${isBold ? "font-bold text-[#CF305D]" : "text-[#CF305D]"}`} style={{ borderLeft: "2px solid #e2e8f0" }}>
+              {cmp === 0 ? "-" : fmtAmt(cmp)}
+            </td>
+            <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-28 ${isBold ? "font-bold" : ""} ${devColor(devB)}`}>
+              {devB === 0 ? "-" : fmtAmt(devB)}
+            </td>
+            <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-20 ${isBold ? "font-bold" : ""} ${devColor(devB)}`}>
+              {devBPct === null ? "—" : `${devBPct >= 0 ? "+" : ""}${devBPct.toFixed(1)}%`}
+            </td>
+            {cmp2Enabled && <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-36 ${isBold ? "font-bold text-[#57aa78]" : "text-[#57aa78]"}`} style={{ borderLeft: "2px solid #e2e8f0" }}>
+              {cmp2 === 0 ? "-" : fmtAmt(cmp2)}
+            </td>}
+            {cmp2Enabled && <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-28 ${isBold ? "font-bold" : ""} ${devColor(devC)}`}>
+              {devC === 0 ? "-" : fmtAmt(devC)}
+            </td>}
+            {cmp2Enabled && <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-20 ${isBold ? "font-bold" : ""} ${devColor(devC)}`}>
+              {devCPct === null ? "—" : `${devCPct >= 0 ? "+" : ""}${devCPct.toFixed(1)}%`}
+            </td>}
+          </tr>
+        );
+
+       if (expandedCmp && hasMoreCmp) {
+          const drillRows = renderBSDrill(node, drillKeyCmp, cmpTree, cmp2Tree);
+          if (drillRows?.length) rows.push(...drillRows);
+        }
+      });
+      return rows;
+    }
+
+    // ⬇⬇⬇ HARD GUARD
+    if (pgcBsMapping) return rows;
+
+    // Fallback: original recursive rendering
     nodes.filter(hasData).forEach(node => {
       const isBold = isBSHighlighted(node);
       const kids = (node.children || []).filter(hasData).filter(c => c.level <= 4);
@@ -4566,13 +4888,14 @@ const BS_DIVIDERS = Object.keys(breakers.bs).length
 {/* Header */}
       <div className="bg-[#1a2f8a] px-6 py-4 flex items-center justify-between">
         <div>
-          <p className="text-white font-black text-base">Balance Sheet</p>
+          <p className="k-panel-title font-black text-base">Balance Sheet</p>
 
         </div>
         <div className="flex items-center gap-3">
 {compareMode && (
             <button onClick={() => setFiltersOpen(o => !o)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all bg-white/10 text-white/60 hover:text-white hover:bg-white/20">
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all"
+              style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}80` }}>
               <ChevronDown size={12} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
               {filtersOpen ? "Hide filters" : "Show filters"}
             </button>
@@ -4591,16 +4914,41 @@ const BS_DIVIDERS = Object.keys(breakers.bs).length
   }
   setCompareMode(c => !c);
 }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all
-              ${compareMode ? "bg-amber-400 text-[#1a2f8a]" : "bg-white/10 text-white/60 hover:text-white hover:bg-white/20"}`}>
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all"
+style={compareMode
+        ? { backgroundColor: colors.quaternary ?? "#F59E0B", color: colors.primary ?? "#1a2f8a" }
+              : { background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}80` }}>
             <GitMerge size={12} /> Compare
           </button>
 
-          <div className="flex items-center gap-1 p-1 bg-white/10 rounded-xl">
-            {[["summary","Summary"],["assets","Assets"],["equity","Equity & Liab."]].map(([v, label]) => (
+<div className="relative flex items-center p-1 rounded-xl" style={{ backgroundColor: "rgba(255,255,255,0.1)" }}
+            ref={el => {
+              if (!el) return;
+              const btns = el.querySelectorAll("button");
+              const tabs = pgcBsMapping ? ["detailed","summary"] : ["summary","assets","equity"];
+              const idx = tabs.indexOf(bsView);
+              const active = btns[idx >= 0 ? idx : 0];
+              const pill = el.querySelector(".bs-pill");
+              if (active && pill) {
+                pill.style.left = active.offsetLeft + "px";
+                pill.style.width = active.offsetWidth + "px";
+              }
+            }}>
+            <span className="bs-pill" style={{
+              position: "absolute",
+              top: 4, bottom: 4,
+              backgroundColor: colors.quaternary ?? "#F59E0B",
+              borderRadius: 8,
+              transition: "left 0.25s cubic-bezier(0.4,0,0.2,1), width 0.25s cubic-bezier(0.4,0,0.2,1)",
+              pointerEvents: "none",
+            }} />
+            {(pgcBsMapping
+              ? [["detailed","Detailed"],["summary","Summary"]]
+              : [["summary","Summary"],["assets","Assets"],["equity","Equity & Liab."]]
+            ).map(([v, label]) => (
               <button key={v} onClick={() => setBsView(v)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all
-                  ${bsView === v ? "bg-white text-[#1a2f8a]" : "text-white/60 hover:text-white"}`}>
+                className="relative z-10 px-3 py-1.5 rounded-lg text-xs font-black transition-colors duration-200"
+                style={{ color: bsView === v ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}80` }}>
                 {label}
               </button>
             ))}
@@ -4644,7 +4992,7 @@ const BS_DIVIDERS = Object.keys(breakers.bs).length
       )}
 
       {/* Table */}
-<div style={{ overflowX: "auto", overflowY: "auto", maxHeight: !compareMode ? "calc(112vh - 320px)" : filtersOpen ? "calc(121.7vh - 530px)" : "calc(120vh - 390px)" }}>
+<div style={{ overflowX: "auto", overflowY: "auto", maxHeight: !compareMode ? "calc(78.5vh)" : filtersOpen ? cmp2Enabled ? "calc(65.5vh)" : "calc(71.5vh)" : "calc(78.5vh)" }}>
 <table className="w-full">
           <colgroup>
             <col style={{ width: "auto" }} />
@@ -4655,7 +5003,7 @@ const BS_DIVIDERS = Object.keys(breakers.bs).length
           <thead>
 
 
-{bsView === "summary" ? (
+{(pgcBsMapping || bsView === "summary") ? (
 <tr className="border-b border-gray-100 bg-white" style={{ position: "sticky", top: 0, zIndex: 10 }}>
                 <th className="text-left px-4 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest">Account</th>
 <th className="text-right pr-4 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest w-36">Actual</th>
@@ -4681,16 +5029,22 @@ const BS_DIVIDERS = Object.keys(breakers.bs).length
 )}
           </thead>
 <tbody>
-            {bsView === "summary" ? (
+            {pgcBsMapping ? (
               bsRoots.length === 0
                 ? <tr><td colSpan={8} className="py-12 text-center text-gray-400 text-sm">No Balance Sheet data found</td></tr>
-                : compareMode ? renderBSCompareRows(bsRoots, cmpTree, cmp2Tree) : renderBSRows(bsRoots)
-            ) : allCompaniesLoading ? (
-              <tr><td colSpan={companyColumns.length + 1} className="py-12 text-center">
-                <Loader2 size={20} className="animate-spin text-[#1a2f8a] mx-auto" />
-              </td></tr>
+                : (compareMode ? renderBSCompareRows(bsRoots, cmpTree, cmp2Tree) : renderBSRows(bsRoots))
             ) : (
-              renderMultiCompanyRows(companyTree, bsView)
+              bsView === "summary" ? (
+                bsRoots.length === 0
+                  ? <tr><td colSpan={8} className="py-12 text-center text-gray-400 text-sm">No Balance Sheet data found</td></tr>
+                  : (compareMode ? renderBSCompareRows(bsRoots, cmpTree, cmp2Tree) : renderBSRows(bsRoots))
+              ) : allCompaniesLoading ? (
+                <tr><td colSpan={companyColumns.length + 1} className="py-12 text-center">
+                  <Loader2 size={20} className="animate-spin text-[#1a2f8a] mx-auto" />
+                </td></tr>
+              ) : (
+                renderMultiCompanyRows(companyTree, bsView)
+              )
             )}
           </tbody>
         </table>
@@ -4712,6 +5066,81 @@ const [plCmpLoading, setPlCmpLoading] = useState(false);
 const [plCmp2Loading, setPlCmp2Loading] = useState(false);
 const [plCmp2Enabled, setPlCmp2Enabled] = useState(true);
 const [bsCmp2Enabled, setBsCmp2Enabled] = useState(true);
+
+// STEP 1 — Add this block inside AccountsDashboard
+// right after: const [bsCmp2Enabled, setBsCmp2Enabled] = useState(true);
+ 
+const [internalSources,    setInternalSources]    = useState([]);
+const [internalStructures, setInternalStructures] = useState([]);
+const [internalCompanies,  setInternalCompanies]  = useState([]);
+const [internalDimensions, setInternalDimensions] = useState([]);
+const [metaLoading,        setMetaLoading]        = useState(false);
+const metaFetchedRef = useRef(false);
+ 
+// Props win when available; internal fallback fills the gap
+const effectiveSources    = sources.length    > 0 ? sources    : internalSources;
+const effectiveStructures = structures.length > 0 ? structures : internalStructures;
+const effectiveCompanies  = companies.length  > 0 ? companies  : internalCompanies;
+const effectiveDimensions = dimensions.length > 0 ? dimensions : internalDimensions;
+ 
+// Mirrors exactly what HomePage.jsx fetches
+const fetchMetadata = useCallback(async () => {
+  if (metaFetchedRef.current || metaLoading || !token) return;
+  metaFetchedRef.current = true;
+  setMetaLoading(true);
+ 
+  const h = {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/json",
+    "Cache-Control": "no-cache, no-store",
+    Pragma: "no-cache",
+  };
+ 
+  const tryGet = async (url) => {
+    try {
+      const res = await fetch(url, { headers: h });
+      if (!res.ok) return null;
+      const json = await res.json();
+      const arr = json.value ?? (Array.isArray(json) ? json : null);
+      return arr?.length > 0 ? arr : null;
+    } catch { return null; }
+  };
+ 
+  const [srcData, strData, coData, dimData] = await Promise.all([
+    tryGet(`${BASE_URL}/v2/sources`),
+    tryGet(`${BASE_URL}/v2/structures`),
+    tryGet(`${BASE_URL}/v2/companies`),
+    tryGet(`${BASE_URL}/v2/dimensions`),
+  ]);
+ 
+  if (srcData) setInternalSources(srcData);
+  if (strData) setInternalStructures(strData);
+  if (coData)  setInternalCompanies(coData);
+  if (dimData) setInternalDimensions(dimData);
+ 
+  setMetaLoading(false);
+}, [token, metaLoading]);
+ 
+// Trigger 1: 1s grace period — if props still empty after mount, self-fetch
+useEffect(() => {
+  if (sources.length > 0 && structures.length > 0 && companies.length > 0) return;
+  const t = setTimeout(() => {
+    if (sources.length === 0 || structures.length === 0 || companies.length === 0) {
+      console.warn("[AccountsDashboard] Filter props empty — self-fetching metadata.");
+      metaFetchedRef.current = false;
+      fetchMetadata();
+    }
+  }, 1000);
+  return () => clearTimeout(t);
+}, [sources.length, structures.length, companies.length, fetchMetadata]);
+ 
+// Trigger 2: token arriving late (slow login / cold start)
+useEffect(() => {
+  if (!token) return;
+  if (sources.length > 0 && structures.length > 0 && companies.length > 0) return;
+  metaFetchedRef.current = false;
+  fetchMetadata();
+}, [token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const TAB_ORDER = ["pl", "bs", "uploaded"];
   const tabsContainerRef = useRef(null);
@@ -4773,6 +5202,8 @@ const [jrnFetched, setJrnFetched] = useState(false);
 const [jrnSearch, setJrnSearch] = useState("");
 
 const [breakers, setBreakers] = useState({ pl: {}, bs: {}, cf: {} });
+const [pgcMapping, setPgcMapping] = useState(null);
+const [pgcBsMapping, setPgcBsMapping] = useState(null);
 
 // AFTER — drop this in its place:
 useEffect(() => {
@@ -4818,7 +5249,90 @@ const isPGC         = grpData.some(n => /[a-zA-Z]/.test(String(n.accountCode ?? 
       });
       setBreakers(grouped);
     })
-    .catch(() => { breakersFetchedRef.current = false; });
+.catch(() => { breakersFetchedRef.current = false; });
+}, [grpData]);
+
+// ── PGC: load the new 3-section mapping (pgc_pl_rows + pgc_pl_sections) ──
+useEffect(() => {
+  if (!grpData.length) { setPgcMapping(null); return; }
+
+  const isPGC = grpData.some(n => {
+    const c = String(n.accountCode ?? n.AccountCode ?? "");
+    return /[a-zA-Z]/.test(c) && c.endsWith(".S");
+  });
+  if (!isPGC) { setPgcMapping(null); return; }
+
+  const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
+  const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
+  const sbHeaders = {
+    apikey:        SUPABASE_APIKEY,
+    Authorization: `Bearer ${SUPABASE_APIKEY}`,
+  };
+
+  Promise.all([
+    fetch(`${SUPABASE_URL}/pgc_pl_rows?select=*&order=sort_order.asc`,    { headers: sbHeaders }).then(r => r.json()),
+    fetch(`${SUPABASE_URL}/pgc_pl_sections?select=*&order=sort_order.asc`, { headers: sbHeaders }).then(r => r.json()),
+  ])
+    .then(([rowsArr, secsArr]) => {
+      if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
+      const rows = new Map();
+      rowsArr.forEach(r => {
+        rows.set(String(r.account_code), {
+          section:       String(r.section_code),
+          sortOrder:     Number(r.sort_order),
+          isSum:         !!r.is_sum,
+          showInSummary: !!r.show_in_summary,
+        });
+      });
+      const sections = new Map();
+      secsArr.forEach(s => {
+        sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) });
+      });
+setPgcMapping({ rows, sections });
+    })
+    .catch(() => setPgcMapping(null));
+}, [grpData]);
+
+// ── PGC: load the new 3-section BALANCE SHEET mapping (pgc_bs_rows + pgc_bs_sections) ──
+useEffect(() => {
+  if (!grpData.length) { setPgcBsMapping(null); return; }
+
+  const isPGC = grpData.some(n => {
+    const c = String(n.accountCode ?? n.AccountCode ?? "");
+    return /[a-zA-Z]/.test(c) && c.endsWith(".S");
+  });
+  if (!isPGC) { setPgcBsMapping(null); return; }
+
+  const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
+  const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
+  const sbHeaders = {
+    apikey:        SUPABASE_APIKEY,
+    Authorization: `Bearer ${SUPABASE_APIKEY}`,
+  };
+
+  Promise.all([
+    fetch(`${SUPABASE_URL}/pgc_bs_rows?select=*&order=sort_order.asc`,    { headers: sbHeaders }).then(r => r.json()),
+    fetch(`${SUPABASE_URL}/pgc_bs_sections?select=*&order=sort_order.asc`, { headers: sbHeaders }).then(r => r.json()),
+  ])
+    .then(([rowsArr, secsArr]) => {
+      if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
+      const rows = new Map();
+      rowsArr.forEach(r => {
+        rows.set(String(r.account_code), {
+          section:       String(r.section_code),
+          sortOrder:     Number(r.sort_order),
+          isSum:         !!r.is_sum,
+          showInSummary: !!r.show_in_summary,
+          level:         Number(r.level ?? 0),
+        });
+      });
+      const sections = new Map();
+      secsArr.forEach(s => {
+        sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) });
+      });
+      setPgcBsMapping({ rows, sections });
+    })
+    .catch(() => setPgcBsMapping(null));
 }, [grpData]);
 
 const [exportModal, setExportModal] = useState(false);
@@ -4838,29 +5352,32 @@ const [exportOpts, setExportOpts] = useState({
   }), [token]);
 
   useEffect(() => {
-    if (sources.length > 0 && !upSource) {
-      const s = sources[0];
+if (effectiveSources.length > 0 && !upSource) {
+  const s = effectiveSources[0];
       setUpSource(typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s));
     }
-  }, [sources, upSource]);
+  }, [effectiveSources, upSource]);
 
-  useEffect(() => {
-    if (structures.length > 0 && !upStructure) {
-      const s = structures[0];
-      setUpStructure(typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s));
-    }
-  }, [structures, upStructure]);
 
  useEffect(() => {
-    if (companies.length > 0 && !upCompany) {
-      const c = companies[0];
+    if (effectiveStructures.length > 0 && !upStructure) {
+      const s = effectiveStructures[0];
+      setUpStructure(typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s));
+    }
+  }, [effectiveStructures, upStructure]);
+
+
+ useEffect(() => {
+    if (effectiveCompanies.length > 0 && !upCompany) {
+      const c = effectiveCompanies[0];
       setUpCompany(
         typeof c === "object"
           ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "")
           : String(c)
       );
     }
-  }, [companies, upCompany]);
+  }, [effectiveCompanies, upCompany]);
+
 
   // Auto-find the latest period with data once source/structure/company are known
 const autoPeriodDone = useRef(false);
@@ -5122,34 +5639,36 @@ useEffect(() => {
 console.log("jrnFetched:", jrnFetched, "jrnLoading:", jrnLoading, "jrnError:", jrnError);
   const dimGroups = useMemo(() => {
   const seen = new Set();
-  return dimensions
+  return effectiveDimensions
+
     .map(d => typeof d === "object" ? (d.dimensionGroup ?? d.DimensionGroup ?? "") : "")
     .filter(g => g && !seen.has(g) && seen.add(g));
-}, [dimensions]);
+}, [effectiveDimensions]);
 
 const filteredDims = useMemo(() => {
-  return dimensions.filter(d => {
+  return effectiveDimensions
+.filter(d => {
     if (!upDimGroup) return true;
     const g = typeof d === "object" ? (d.dimensionGroup ?? d.DimensionGroup ?? "") : "";
     return g === upDimGroup;
   });
-}, [dimensions, upDimGroup]);
+}, [effectiveDimensions, upDimGroup]);
 
 const cmpFilteredDims = useMemo(() => {
-  return dimensions.filter(d => {
+  return effectiveDimensions.filter(d => {
     if (!cmpDimGroup) return true;
     const g = typeof d === "object" ? (d.dimensionGroup ?? d.DimensionGroup ?? "") : "";
     return g === cmpDimGroup;
   });
-}, [dimensions, cmpDimGroup]);
+}, [effectiveDimensions, cmpDimGroup]);
 
 const cmp2FilteredDims = useMemo(() => {
-  return dimensions.filter(d => {
+  return effectiveDimensions.filter(d => {
     if (!cmp2DimGroup) return true;
     const g = typeof d === "object" ? (d.dimensionGroup ?? d.DimensionGroup ?? "") : "";
     return g === cmp2DimGroup;
   });
-}, [dimensions, cmp2DimGroup]);
+}, [effectiveDimensions,cmp2DimGroup]);
 
 const dataSubTabSelector = (
   <div className="flex items-center gap-1 p-1 bg-gray-100/70 rounded-xl">
@@ -5178,7 +5697,7 @@ const ExportModal = exportModal ? (
               <FileText size={13} className="text-white/70" />
             </div>
             <div>
-              <p className="text-white font-black text-sm">Export Report</p>
+              <p className="k-panel-title font-black text-sm">Export Report</p>
               <p className="text-white/50 text-[10px]">{compareMode ? "P&L compare on" : "P&L standard"}{bsCompareMode ? " · BS compare on" : " · BS standard"}</p>
             </div>
           </div>
@@ -5341,7 +5860,7 @@ const ExportModal = exportModal ? (
 
 return (
     <div className="space-y-2">
-      <style>{`
+<style>{`
         .text-\\[\\#1a2f8a\\] { color: ${colors.primary} !important; }
         .bg-\\[\\#1a2f8a\\] { background-color: ${colors.primary} !important; }
         .border-\\[\\#1a2f8a\\] { border-color: ${colors.primary} !important; }
@@ -5351,6 +5870,7 @@ return (
         .text-\\[\\#57aa78\\] { color: ${colors.tertiary} !important; }
         .bg-\\[\\#57aa78\\] { background-color: ${colors.tertiary} !important; }
         .border-\\[\\#57aa78\\] { border-color: ${colors.tertiary} !important; }
+        .k-panel-title { color: ${colors.quaternary ?? "#F59E0B"} !important; }
       `}</style>
       {ExportModal}
       
@@ -5409,11 +5929,11 @@ return (
     <FilterPill label="Mnth"     value={upMonth}     onChange={setUpMonth}
       options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
     <FilterPill label="Src"    value={upSource}    onChange={setUpSource}
-      options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+      options={effectiveSources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
     <FilterPill label="Struct" value={upStructure} onChange={setUpStructure}
-      options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+    options={effectiveStructures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
 <FilterPill label="Comp"   value={upCompany}   onChange={setUpCompany}
-      options={companies.map(c => {
+     options={effectiveCompanies.map(c => {
         const v = typeof c === "object"
           ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "")
           : String(c);
@@ -5536,9 +6056,9 @@ cmpFilters={{
     if (key === "dimension") setCmpDimension(val);
   }}
 
-  sources={sources}
-  structures={structures}
-  companies={companies}
+ sources={effectiveSources}
+  structures={effectiveStructures}
+   companies={effectiveCompanies}
   dimGroups={dimGroups}
   cmpFilteredDims={cmpFilteredDims}
   cmp2UploadedAccounts={cmp2Dimension ? cmp2Data.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === cmp2Dimension) : cmp2Data}
@@ -5569,6 +6089,7 @@ cmpFilters={{
   structure={upStructure}
 journalEntries={jrnData}
   breakers={breakers}
+  pgcMapping={pgcMapping}
 />
 </div>
 )}
@@ -5599,9 +6120,9 @@ journalEntries={jrnData}
   source={upSource}
   structure={upStructure}
   company={upCompany}
-  sources={sources}
-  structures={structures}
-  companies={companies}
+   sources={effectiveSources}
+  structures={effectiveStructures}
+   companies={effectiveCompanies}
   dimGroups={dimGroups}
   journalEntries={jrnData}
   token={token}
@@ -5632,6 +6153,7 @@ journalEntries={jrnData}
 externalCmp2Enabled={bsCmp2Enabled}
   onBsCmp2EnabledChange={setBsCmp2Enabled}
   breakers={breakers}
+  pgcBsMapping={pgcBsMapping}
 />
 </div>
 )}

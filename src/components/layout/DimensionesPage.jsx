@@ -560,14 +560,14 @@ export default function DimensionesPage({ token, sources = [], structures = [], 
   const [year,      setYear]      = useState("");
   const [month,     setMonth]     = useState("");
   const [metaReady, setMetaReady] = useState(false);
-  const [source,    setSource]    = useState("");
+const [source,    setSource]    = useState("");
   const [structure, setStructure] = useState("");
   const [company,   setCompany]   = useState("");
 const [showAccounts, setShowAccounts] = useState(false);
 const [selGroup, setSelGroup] = useState("");
 const [compareMode, setCompareMode] = useState(false);
   const [rawData,   setRawData]   = useState([]);
-  const [loading,   setLoading]   = useState(false);
+const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState(null);
 
   const authHeaders = useCallback(() => ({
@@ -576,7 +576,10 @@ const [compareMode, setCompareMode] = useState(false);
     "Cache-Control": "no-cache",
   }), [token]);
 
-useEffect(() => {
+const autoPeriodDone = useRef(false);
+  const probedRef = useRef({ source: "", structure: "", company: "" });
+
+  useEffect(() => {
     if (!token) return;
     fetch(`${BASE_URL}/v2/periods`, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
@@ -601,7 +604,46 @@ useEffect(() => {
       .catch(() => setMetaReady(true));
   }, [token]);
 
-  useEffect(() => {
+useEffect(() => {
+    if (!source || !structure || !company) return;
+    // Only re-probe when source/structure/company actually change
+    const key = `${source}|${structure}|${company}`;
+    if (probedRef.current.key === key) return;
+    probedRef.current.key = key;
+
+    (async () => {
+      const now = new Date();
+      // Start from the year/month we got from periods, or current date
+      let y = Number(year) || now.getFullYear();
+      let m = Number(month) || now.getMonth() + 1;
+      for (let i = 0; i < 24; i++) {
+        try {
+          const filter = `Year eq ${y} and Month eq ${m} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
+          const res = await fetch(
+            `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}&$top=1`,
+            { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }
+          );
+          if (res.ok) {
+            const json = await res.json();
+            const rows = json.value ?? (Array.isArray(json) ? json : []);
+            if (rows.length > 0) {
+              setYear(String(y));
+              setMonth(String(m));
+              return;
+            }
+          }
+        } catch { /* keep probing */ }
+        m -= 1;
+        if (m < 1) { m = 12; y -= 1; }
+      }
+      // No data found — allow retry on next filter change
+      probedRef.current.key = "";
+    })();
+  }, [metaReady, source, structure, company, token]); // stable size, no year/month
+
+
+
+useEffect(() => {
     if (sources.length > 0 && !source) {
       const s = sources[0];
       setSource(typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s));
@@ -622,7 +664,7 @@ useEffect(() => {
     }
   }, [companies]);
 
-const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async () => {
     if (!metaReady || !year || !month || !source || !structure || !company) return;
     setLoading(true);
     setError(null);

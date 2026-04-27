@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { ChevronDown, ChevronRight, Loader2, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, RefreshCw, Maximize2, Minimize2 } from "lucide-react";
 
 const BASE = "https://api.konsolidator.com/v2";
 const MONTHS = [
@@ -214,8 +214,7 @@ export default function ConsolidationSheetPage({ token }) {
   const [journalData,  setJournalData]  = useState([]);
   const [loading,      setLoading]      = useState(false);
   const [metaReady,    setMetaReady]    = useState(false);
-  const [expanded,     setExpanded]     = useState(new Set());
-  const [view,         setView]         = useState("accounts");
+const [expanded,     setExpanded]     = useState(new Set());
 
   const autoPeriodDone = useRef(false);
 
@@ -506,7 +505,7 @@ if (!metaReady || !year || !month || !source || !structure || !topParent) return
   return (
     <div className="flex flex-col gap-4 h-full min-h-0">
 
-      {/* ── Header ── */}
+{/* ── Header ── */}
       <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <div className="w-1.5 h-10 rounded-full bg-[#1a2f8a]" />
@@ -541,110 +540,20 @@ if (!metaReady || !year || !month || !source || !structure || !topParent) return
               <span className="text-[#1a2f8a]">{displayCurrency}</span>
             </div>
           )}
-          <div className="flex gap-0.5 bg-gray-100 rounded-xl p-1 ml-1">
-            <button onClick={() => setView("consolidations")}
-              className={`text-[10px] px-3 py-1 rounded-lg font-black transition-all ${view === "consolidations" ? "bg-white text-[#1a2f8a] shadow-sm" : "text-gray-400 hover:text-gray-600"}`}>
-              Consolidations
-            </button>
-            <button onClick={() => setView("accounts")}
-              className={`text-[10px] px-3 py-1 rounded-lg font-black transition-all ${view === "accounts" ? "bg-white text-[#1a2f8a] shadow-sm" : "text-gray-400 hover:text-gray-600"}`}>
-              Accounts
-            </button>
-          </div>
         </div>
-        <div className="ml-auto flex items-center gap-2 flex-shrink-0 mr-6">
+        <div className="ml-auto flex items-center gap-3 flex-shrink-0 mr-6">
           {loading && <Loader2 size={13} className="animate-spin text-[#1a2f8a]" />}
-          {view === "accounts" && (
-            <>
-              <button onClick={() => setExpanded(new Set([...accountMap.keys()]))}
-                className="px-3 py-2 rounded-xl text-xs font-black bg-white border border-gray-100 text-gray-400 hover:text-[#1a2f8a] hover:border-[#1a2f8a]/30 transition-all shadow-sm">
-                Expand all
-              </button>
-              <button onClick={() => setExpanded(new Set())}
-                className="px-3 py-2 rounded-xl text-xs font-black bg-white border border-gray-100 text-gray-400 hover:text-[#1a2f8a] hover:border-[#1a2f8a]/30 transition-all shadow-sm">
-                Collapse all
-              </button>
-            </>
-          )}
-          <button onClick={() => { setMetaReady(false); setTimeout(() => setMetaReady(true), 50); }}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black bg-white border border-gray-100 text-gray-400 hover:text-[#1a2f8a] hover:border-[#1a2f8a]/30 transition-all shadow-sm">
-            <RefreshCw size={11} />
+          <button className="transition-all hover:opacity-80 hover:scale-105" title="Export Excel">
+            <img src="https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png" width="44" height="36" alt="Excel" />
+          </button>
+          <button className="transition-all hover:opacity-80 hover:scale-105" title="Export PDF">
+            <img src="https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png" width="30" height="36" alt="PDF" />
           </button>
         </div>
       </div>
 
-      {/* ── View: Consolidations ── */}
-      {view === "consolidations" && (
-        <div className="flex-1 min-h-0 flex flex-col">
-          <div className="flex items-center gap-2 mb-2 flex-shrink-0">
-            <div className="w-1 h-5 rounded-full bg-[#1a2f8a]" />
-            <span className="text-xs font-black text-[#1a2f8a] uppercase tracking-widest">Consolidations</span>
-            <span className="ml-auto text-[10px] font-black text-gray-300 uppercase tracking-widest mr-6">
-              {consolidations.length} records
-            </span>
-          </div>
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden flex-1 min-h-0">
-            {consolidations.length === 0 ? (
-              <div className="flex items-center justify-center h-48 text-xs text-gray-300 font-black uppercase tracking-widest">
-                No consolidations found
-              </div>
-            ) : (
-              <div className="overflow-auto h-full">
-                <table className="w-full text-xs border-collapse">
-                  <thead className="sticky top-0 z-10">
-                    <tr style={{ backgroundColor: "#1a2f8a" }}>
-                      {["Group", "Source", "Year", "Month", "Structure", "Consolidated By", "Consolidated At", "Prev Period"].map(h => (
-                        <th key={h} className="text-left px-4 py-3 text-white font-black text-[10px] uppercase tracking-widest whitespace-nowrap border-r border-white/10 last:border-r-0">
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...consolidations]
-                      .sort((a, b) => {
-                        const ay = a.Year ?? a.year, by = b.Year ?? b.year;
-                        const am = a.Month ?? a.month, bm = b.Month ?? b.month;
-                        return by !== ay ? by - ay : bm - am;
-                      })
-                      .map((c, i) => {
-                        const cy = String(c.Year ?? c.year), cm = String(c.Month ?? c.month);
-                        const cs = c.Source ?? c.source, cg = c.GroupStructure ?? c.groupStructure;
-                        const isActive = cy === year && cm === month && cs === source && cg === structure;
-                        return (
-                          <tr key={i}
-                            onClick={() => { setYear(cy); setMonth(cm); setSource(cs ?? ""); setStructure(cg ?? ""); setView("accounts"); }}
-                            className={`border-b border-gray-50 cursor-pointer transition-colors ${isActive ? "bg-[#eef1fb]" : "hover:bg-[#f8f9ff]"}`}>
-                            <td className="px-4 py-2.5 font-black text-[#1a2f8a]">{c.GroupShortName ?? c.groupShortName}</td>
-                            <td className="px-4 py-2.5 text-gray-500">{cs}</td>
-                            <td className="px-4 py-2.5 text-gray-500 font-mono">{cy}</td>
-                            <td className="px-4 py-2.5 text-gray-500">{MONTHS.find(m => m.value === Number(cm))?.label}</td>
-                            <td className="px-4 py-2.5 text-gray-400 text-[10px]">{cg}</td>
-                            <td className="px-4 py-2.5 text-gray-400">{c.ConsolidatedBy ?? c.consolidatedBy ?? "—"}</td>
-                            <td className="px-4 py-2.5 text-gray-400 font-mono text-[10px]">
-                              {(c.ConsolidatedAt ?? c.consolidatedAt)
-                                ? new Date(c.ConsolidatedAt ?? c.consolidatedAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
-                                : "—"}
-                            </td>
-                            <td className="px-4 py-2.5 text-gray-400 font-mono text-[10px]">
-                              {(c.PrevPeriodYear ?? c.prevPeriodYear)
-                                ? `${c.PrevPeriodYear ?? c.prevPeriodYear} / ${String(c.PrevPeriodMonth ?? c.prevPeriodMonth).padStart(2, "0")}`
-                                : "—"}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ── View: Accounts ── */}
-      {view === "accounts" && (
-        <div className="flex-1 min-h-0 flex flex-col">
+      {/* ── Accounts view ── */}
+      <div className="flex-1 min-h-0 flex flex-col">
           <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
             {loading ? (
               <div className="flex items-center justify-center flex-1 gap-3">
@@ -658,45 +567,53 @@ if (!metaReady || !year || !month || !source || !structure || !topParent) return
             ) : (
               <div className="overflow-auto flex-1 min-h-0">
                 <table className="text-xs border-collapse w-full" style={{ borderSpacing: 0 }}>
-                  <thead className="sticky top-0 z-30">
+<thead className="sticky top-0 z-30">
                     {/* ── Row 1: overarching group headers ── */}
-                    <tr style={{ borderBottom: "1px solid #e5e7eb", backgroundColor: "#f9fafb" }}>
-                      <th className="sticky left-0 z-40 border-r border-gray-100" style={{ minWidth: 220, width: 220, backgroundColor: "#f9fafb" }} rowSpan={2}>
-                        <span className="block px-4 py-2 text-[10px] font-black text-gray-400 uppercase tracking-widest text-left">Account</span>
+                    <tr style={{ backgroundColor: "#1a2f8a" }}>
+<th className="sticky left-0 z-40 border-r border-white/20 text-left px-4 py-3" style={{ minWidth: 220, width: 220, backgroundColor: "#1a2f8a" }} rowSpan={2}>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-black text-white uppercase tracking-widest">Account</span>
+                          <button
+                            onClick={() => {
+                              if (expanded.size > 0) { setExpanded(new Set()); }
+                              else { setExpanded(new Set([...accountMap.keys()])); }
+                            }}
+                            className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white/70 hover:text-white transition-all font-bold normal-case tracking-normal flex-shrink-0">
+                            {expanded.size > 0 ? <Minimize2 size={11}/> : <Maximize2 size={11}/>}
+                          </button>
+                        </div>
                       </th>
-                      <th colSpan={3} className="px-4 py-2 text-center border-l border-gray-200" style={{ backgroundColor: "#eef1fb", boxShadow: "inset 0 3px 0 0 #1a2f8a" }}>
-                        <span style={{ fontSize: 9, fontWeight: 900, color: "#1a2f8a", textTransform: "uppercase", letterSpacing: "0.12em" }}>
+                      <th colSpan={3} className="px-4 py-2 text-center border-l border-white/20" style={{ backgroundColor: "#1a2f8a" }}>
+                        <span className="text-[9px] font-black text-white uppercase tracking-widest">
                           Consolidation · {getLegal(topParent)}
                         </span>
                       </th>
-                      <th colSpan={contributionCompanies.length} className="px-4 py-2 text-center border-l border-gray-200" style={{ backgroundColor: "#f0fdf4", boxShadow: "inset 0 3px 0 0 #059669" }}>
-                        <span style={{ fontSize: 9, fontWeight: 900, color: "#059669", textTransform: "uppercase", letterSpacing: "0.12em" }}>Contribution</span>
+                      <th colSpan={contributionCompanies.length} className="px-4 py-2 text-center border-l border-white/20" style={{ backgroundColor: "#0f1f5c" }}>
+                        <span className="text-[9px] font-black text-white uppercase tracking-widest">Contribution</span>
                       </th>
                     </tr>
                     {/* ── Row 2: individual column headers ── */}
-                    <tr style={{ borderBottom: "2px solid #e5e7eb" }}>
-                      <th className="px-4 py-2 text-right border-l border-gray-200" style={{ minWidth: 100, backgroundColor: "#eef1fb" }}>
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 1 }}>
-                          <span style={{ fontSize: 10, fontWeight: 900, color: "#1a2f8a", textTransform: "uppercase", letterSpacing: "0.05em" }}>{topParent || "Total"}</span>
-                          <span style={{ fontSize: 9, color: "#9ca3af", fontWeight: 600 }}>
-                            {isRootView ? "Consolidated" : "Subgroup"}
-                          </span>
+                    <tr style={{ borderBottom: "2px solid rgba(255,255,255,0.1)" }}>
+                      <th className="px-4 py-2.5 text-right border-l border-white/20" style={{ minWidth: 100, backgroundColor: "#1a2f8a" }}>
+                        <div className="flex flex-col items-end gap-0.5">
+                          <span className="text-[10px] font-black text-white uppercase tracking-widest">{topParent || "Total"}</span>
+                          <span className="text-[9px] text-white/40 font-bold">{isRootView ? "Consolidated" : "Subgroup"}</span>
                         </div>
                       </th>
-                      <th className="px-4 py-2 text-right border-l border-gray-200" style={{ minWidth: 100, backgroundColor: "#eef1fb" }}>
-                        <span style={{ fontSize: 10, fontWeight: 900, color: "#d97706", textTransform: "uppercase", letterSpacing: "0.05em" }}>Eliminations</span>
+                      <th className="px-4 py-2.5 text-right border-l border-white/20" style={{ minWidth: 100, backgroundColor: "#1a2f8a" }}>
+                        <span className="text-[10px] font-black text-amber-300 uppercase tracking-widest">Eliminations</span>
                       </th>
-                      <th className="px-4 py-2 text-right border-l border-gray-200" style={{ minWidth: 110, backgroundColor: "#eef1fb" }}>
-                        <span style={{ fontSize: 10, fontWeight: 900, color: "#1a2f8a", textTransform: "uppercase", letterSpacing: "0.05em" }}>Contribution</span>
-                        <div style={{ fontSize: 9, color: "#9ca3af", fontWeight: 600 }}>Sum</div>
+                      <th className="px-4 py-2.5 text-right border-l border-white/20" style={{ minWidth: 110, backgroundColor: "#1a2f8a" }}>
+                        <span className="text-[10px] font-black text-white uppercase tracking-widest">Contribution</span>
+                        <div className="text-[9px] text-white/40 font-bold">Sum</div>
                       </th>
                       {contributionCompanies.map(c => (
-                        <th key={c} className="px-4 py-2 text-right border-l border-gray-100" style={{ minWidth: 100, backgroundColor: "#f0fdf4" }}>
-                          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 1 }}>
-                            <span style={{ fontSize: 10, fontWeight: 900, color: "#1a2f8a", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }} title={getLegal(c)}>
+                        <th key={c} className="px-4 py-2.5 text-right border-l border-white/20" style={{ minWidth: 100, backgroundColor: "#0f1f5c" }}>
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span className="text-[10px] font-black text-white uppercase tracking-widest block overflow-hidden text-ellipsis whitespace-nowrap max-w-full" title={getLegal(c)}>
                               {getLegal(c)}
                             </span>
-                            <span style={{ fontSize: 9, color: "#9ca3af", fontWeight: 600 }}>{displayCurrency}</span>
+                            <span className="text-[9px] text-white/40 font-bold">{displayCurrency}</span>
                           </div>
                         </th>
                       ))}
@@ -715,8 +632,7 @@ if (!metaReady || !year || !month || !source || !structure || !topParent) return
               </div>
             )}
           </div>
-        </div>
-      )}
-    </div>
+</div>
+      </div>
   );
 }

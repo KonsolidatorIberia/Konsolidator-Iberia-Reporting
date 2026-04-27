@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 
 import {
   Type, Palette, RotateCcw, Check, ChevronDown,
-  Hash, AlignLeft, Minus, Save, Eye,
+  Hash, AlignLeft, Minus, Save, Eye, Filter,
 } from "lucide-react";
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -51,12 +51,14 @@ const DEFAULT_SETTINGS = {
     bodyNum1:     { font: '"JetBrains Mono", "Courier New", monospace', size: 13, weight: 600, color: "#1A2F8A" },
     bodyNum2:     { font: '"JetBrains Mono", "Courier New", monospace', size: 12, weight: 500, color: "#2F3138" },
     bodyNum3:     { font: '"JetBrains Mono", "Courier New", monospace', size: 11, weight: 400, color: "#6B7280" },
-    underNum:     { font: '"JetBrains Mono", "Courier New", monospace', size: 10, weight: 500, color: "#9CA3AF" },
+ underNum:     { font: '"JetBrains Mono", "Courier New", monospace', size: 10, weight: 500, color: "#9CA3AF" },
+    filter:       { font: "Inter, sans-serif", size: 11, weight: 800, color: "#1A2F8A" },
   },
   colors: {
-    primary:   "#1A2F8A",
-    secondary: "#CF305D",
-    tertiary:  "#57AA78",
+    primary:     "#1A2F8A",
+    secondary:   "#CF305D",
+    tertiary:    "#57AA78",
+    quaternary:  "#F59E0B",
   },
 };
 
@@ -101,19 +103,27 @@ const STYLE_GROUPS = [
       { key: "bodyNum3", label: "Body Number 3", hint: "" },
     ],
   },
-  {
+{
     title: "Numbers — Underscore",
     icon: Hash,
     items: [
       { key: "underNum", label: "Underscore Number", hint: "" },
     ],
   },
+  {
+    title: "Text — Filter",
+    icon: Filter,
+    items: [
+      { key: "filter", label: "Filter Label", hint: "Used in filter pills and dropdowns" },
+    ],
+  },
 ];
 
 const COLOR_ROLES = [
-  { key: "primary",   label: "Primary",   hint: "" },
-  { key: "secondary", label: "Secondary", hint: "" },
-  { key: "tertiary",  label: "Tertiary",  hint: "" },
+  { key: "primary",    label: "Primary",    hint: "" },
+  { key: "secondary",  label: "Secondary",  hint: "" },
+  { key: "tertiary",   label: "Tertiary",   hint: "" },
+  { key: "quaternary", label: "Quaternary", hint: "Accent — used for highlights and filters" },
 ];
 
 /* ═══════════════════════════════════════════════════════════════════════

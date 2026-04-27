@@ -124,7 +124,7 @@ function Badge({ label, color, tiny }) {
 /* ══════════════════════════════════════════════════════════════
    ORG LAYOUT  (Reingold–Tilford)
 ══════════════════════════════════════════════════════════════ */
-const NW = 124, NH = 56, HGAP = 28, VGAP = 64;
+const NW = 160, NH = 72, HGAP = 36, VGAP = 80;
 
 function computeLayout(nodes) {
   if (!nodes.length) return {};
@@ -216,10 +216,12 @@ function OrgChart({ nodes, positions, selected, onSelect }) {
                 stroke={isSel ? T.navyM : cc.border}
                 strokeWidth={isSel ? 2 : 1.5}
               />
-              {/* ownership bar */}
+{/* ownership % text */}
               {owPct > 0 && (
-                <rect x={p.x} y={p.y + NH - 4} width={(NW * owPct) / 100} height={4}
-                  rx={0} fill={owCol} opacity={0.9} />
+                <text x={p.x + NW / 2} y={p.y + NH - 6} textAnchor="middle" dominantBaseline="middle"
+                  fill={owCol} fontSize={12} fontWeight={600} fontFamily="monospace">
+                  {Math.round(owPct)}%
+                </text>
               )}
               {/* not-consolidated dot */}
               {!n.consolidate && (
@@ -229,21 +231,21 @@ function OrgChart({ nodes, positions, selected, onSelect }) {
               {n.detached && (
                 <circle cx={p.x + NW - 9} cy={p.y + 9} r={4.5} fill={T.amber} stroke="#fff" strokeWidth={1.5} />
               )}
-              {/* short name */}
-              <text x={p.x + NW / 2} y={p.y + 21} textAnchor="middle" dominantBaseline="middle"
-                fill="#fff" fontSize={12} fontWeight={800}
+{/* short name */}
+              <text x={p.x + NW / 2} y={p.y + 26} textAnchor="middle" dominantBaseline="middle"
+                fill="#fff" fontSize={14} fontWeight={800}
                 fontFamily='"Inter","Helvetica Neue",sans-serif'>
                 {n.id}
               </text>
               {/* legal name */}
-              <text x={p.x + NW / 2} y={p.y + 37} textAnchor="middle" dominantBaseline="middle"
-                fill="rgba(255,255,255,0.65)" fontSize={8.5} fontWeight={400}
+              <text x={p.x + NW / 2} y={p.y + 46} textAnchor="middle" dominantBaseline="middle"
+                fill="rgba(255,255,255,0.65)" fontSize={12} fontWeight={400}
                 fontFamily='"Inter","Helvetica Neue",sans-serif'>
-                {(n.label || "").length > 18 ? (n.label || "").slice(0, 16) + "…" : n.label}
+                {(n.label || "").length > 22 ? (n.label || "").slice(0, 20) + "…" : n.label}
               </text>
               {/* currency */}
-              <text x={p.x + NW - 6} y={p.y + NH - 8} textAnchor="end" dominantBaseline="middle"
-                fill="rgba(255,255,255,0.4)" fontSize={7.5} fontWeight={600} fontFamily="monospace">
+              <text x={p.x + NW - 6} y={p.y + NH - 9} textAnchor="end" dominantBaseline="middle"
+                fill="rgba(255,255,255,0.4)" fontSize={12} fontWeight={600} fontFamily="monospace">
                 {n.currency}
               </text>
             </g>
@@ -464,24 +466,7 @@ function GraphTab({ nodes, companies, ownership, groupStructure, selected, onSel
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 10 }}>
       {/* legend */}
-      <div style={{ display: "flex", alignItems: "center", gap: 16, flexShrink: 0, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 10, fontWeight: 700, color: T.gray }}>Bottom bar = ownership:</span>
-        {[["< 50%", T.red], ["50–79%", T.amber], ["≥ 80%", T.green]].map(([l, c]) => (
-          <div key={l} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <span style={{ width: 18, height: 3, background: c, borderRadius: 2, display: "inline-block" }} />
-            <span style={{ fontSize: 10, color: T.gray }}>{l}</span>
-          </div>
-        ))}
-        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          <span style={{ width: 9, height: 9, borderRadius: "50%", background: T.red, display: "inline-block" }} />
-          <span style={{ fontSize: 10, color: T.gray }}>Not consolidated</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          <span style={{ width: 9, height: 9, borderRadius: "50%", background: T.amber, display: "inline-block" }} />
-          <span style={{ fontSize: 10, color: T.gray }}>Detached</span>
-        </div>
-        <span style={{ marginLeft: "auto", fontSize: 10, color: T.gray }}>Click a node to inspect →</span>
-      </div>
+
 
       {/* chart area */}
       <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 12 }}>
@@ -490,8 +475,8 @@ function GraphTab({ nodes, companies, ownership, groupStructure, selected, onSel
           background: "linear-gradient(140deg,#f4f6ff 0%,#eef1ff 60%,#f8f4ff 100%)",
           borderRadius: 20, border: "1px solid #e0e6ff", overflow: "hidden",
         }}>
-          {/* dot grid */}
-          <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", opacity: 0.35 }}>
+         {/* dot grid */}
+          <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", opacity: 0.35, zIndex: 0 }}>
             <defs>
               <pattern id="grid-dots" x="0" y="0" width="28" height="28" patternUnits="userSpaceOnUse">
                 <circle cx="1" cy="1" r="1" fill="#a5b4fc" />
@@ -500,7 +485,9 @@ function GraphTab({ nodes, companies, ownership, groupStructure, selected, onSel
             <rect width="100%" height="100%" fill="url(#grid-dots)" />
           </svg>
 
-          <OrgChart nodes={connected} positions={positions} selected={selected} onSelect={onSelect} />
+         <div style={{ position: "relative", zIndex: 1, height: "100%" }}>
+            <OrgChart nodes={connected} positions={positions} selected={selected} onSelect={onSelect} />
+          </div>
 
           <DetailPanel
             node={selNode} companies={companies}
@@ -515,12 +502,6 @@ function GraphTab({ nodes, companies, ownership, groupStructure, selected, onSel
         />
       </div>
 
-      {/* footer */}
-      <div style={{ display: "flex", gap: 18, flexShrink: 0, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 10, color: T.gray }}>{connected.filter(n => n.parent).length} parent–child relationships</span>
-        <span style={{ fontSize: 10, color: T.gray }}>{detached.length} detached</span>
-        <span style={{ fontSize: 10, color: T.gray }}>{nodes.filter(n => !n.consolidate).length} not consolidated</span>
-      </div>
     </div>
   );
 }
@@ -528,9 +509,11 @@ function GraphTab({ nodes, companies, ownership, groupStructure, selected, onSel
 /* ══════════════════════════════════════════════════════════════
    TAB: COMPANIES
 ══════════════════════════════════════════════════════════════ */
-function CompaniesTab({ companies }) {
-  const [search, setSearch] = useState("");
-  const filtered = companies.filter(c =>
+function CompaniesTab({ companies, ownership, structKey, groupStructure, search = "" }) {
+  const structCompanies = structKey
+    ? companies.filter(c => groupStructure.some(g => g.groupStructure === structKey && g.companyShortName === c.companyShortName))
+    : companies;
+  const filtered = structCompanies.filter(c =>
     !search ||
     (c.companyShortName || "").toLowerCase().includes(search.toLowerCase()) ||
     (c.companyLegalName  || "").toLowerCase().includes(search.toLowerCase())
@@ -538,64 +521,80 @@ function CompaniesTab({ companies }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <div style={{ position: "relative" }}>
-          <input
-            type="text" placeholder="Search companies…" value={search}
-            onChange={e => setSearch(e.target.value)}
-            style={{ paddingLeft: 32, paddingRight: 12, paddingTop: 8, paddingBottom: 8, fontSize: 12, borderRadius: 10, border: "1px solid #e5e7eb", outline: "none", background: "#fff", width: 260 }}
-          />
-          <Building2 size={13} color={T.gray} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)" }} />
-        </div>
-        <span style={{ fontSize: 11, color: T.gray }}>{filtered.length} of {companies.length}</span>
-      </div>
+
 
       <div style={{ background: "#fff", borderRadius: 16, border: "1px solid #f0f0f0", overflow: "hidden" }}>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
             <thead>
               <tr style={{ background: `${T.navy}08`, borderBottom: "1px solid #f0f0f0" }}>
-                {["#", "SHORT NAME", "LEGAL NAME", "CURRENCY", "PRINCIPLE", "TYPE", "CONSOLIDATE", "FROM", "MAPPING", "RECOGNIZE AS"].map(h => (
+                {["#", "SHORT NAME", "LEGAL NAME", "CURRENCY", "OWNERSHIP", "TYPE", "CONSOLIDATE", "FROM", "MAPPING", "RECOGNIZE AS"].map(h => (
                   <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontWeight: 800, color: T.navy, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.07em", whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filtered.map((c, i) => (
-                <tr key={i}
-                  style={{ borderBottom: "1px solid #f5f5f5", background: i % 2 ? "#fafafa" : "#fff", transition: "background 0.1s" }}
-                  onMouseEnter={e => e.currentTarget.style.background = "#f0f4ff"}
-                  onMouseLeave={e => e.currentTarget.style.background = i % 2 ? "#fafafa" : "#fff"}
-                >
-                  <td style={{ padding: "10px 14px", color: "#d1d5db", fontSize: 10, fontFamily: "monospace" }}>{i + 1}</td>
-                  <td style={{ padding: "10px 14px" }}>
-                    <span style={{ display: "inline-flex", padding: "3px 8px", borderRadius: 8, fontSize: 11, fontWeight: 800, background: T.navyL, color: T.navy }}>{c.companyShortName}</span>
-                  </td>
-                  <td style={{ padding: "10px 14px", color: "#374151", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.companyLegalName}</td>
-                  <td style={{ padding: "10px 14px" }}>
-                    <span style={{ padding: "2px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: "#f3f4f6", color: "#374151", fontFamily: "monospace" }}>{c.currencyCode}</span>
-                  </td>
-                  <td style={{ padding: "10px 14px", color: T.gray }}>{c.accountingPrinciple || "—"}</td>
-                  <td style={{ padding: "10px 14px" }}>
-                    {c.type ? <Badge label={c.type} color={typeC(c.type)} tiny /> : <span style={{ color: "#e5e7eb" }}>—</span>}
-                  </td>
-                  <td style={{ padding: "10px 14px" }}>
-                    {c.consolidate
-                      ? <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "#10b981", fontSize: 10, fontWeight: 700 }}><CheckCircle2 size={12} /> Yes</span>
-                      : <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "#d1d5db", fontSize: 10 }}><XCircle size={12} /> No</span>
-                    }
-                  </td>
-                  <td style={{ padding: "10px 14px", color: T.gray, whiteSpace: "nowrap" }}>
-                    {c.consolidateFromMonth && c.consolidateFromYear
-                      ? `${MONTH_FULL[(c.consolidateFromMonth || 1) - 1].slice(0, 3)} ${c.consolidateFromYear}`
-                      : <span style={{ color: "#e5e7eb" }}>—</span>}
-                  </td>
-                  <td style={{ padding: "10px 14px", color: T.gray }}>{c.mappingName || <span style={{ color: "#e5e7eb" }}>—</span>}</td>
-                  <td style={{ padding: "10px 14px" }}>
-                    {c.recognizeAs ? <Badge label={c.recognizeAs} color={typeC(c.recognizeAs)} tiny /> : <span style={{ color: "#e5e7eb" }}>—</span>}
-                  </td>
-                </tr>
-              ))}
+              {filtered.map((c, i) => {
+                const ow    = ownership?.find(o => o.companyShortName === c.companyShortName);
+                const pct   = ow?.ownershipPercentage || 0;
+                const owCol = pct < 50 ? T.red : pct < 80 ? T.amber : T.green;
+                const toYear = ow?.toYear && ow.toYear > 0;
+                return (
+                  <tr key={i}
+                    style={{ borderBottom: "1px solid #f5f5f5", background: i % 2 ? "#fafafa" : "#fff", transition: "background 0.1s" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#f0f4ff"}
+                    onMouseLeave={e => e.currentTarget.style.background = i % 2 ? "#fafafa" : "#fff"}
+                  >
+                    <td style={{ padding: "10px 14px", color: "#d1d5db", fontSize: 10, fontFamily: "monospace" }}>{i + 1}</td>
+                    <td style={{ padding: "10px 14px" }}>
+                      <span style={{ display: "inline-flex", padding: "3px 8px", borderRadius: 8, fontSize: 11, fontWeight: 800, background: T.navyL, color: T.navy }}>{c.companyShortName}</span>
+                    </td>
+                    <td style={{ padding: "10px 14px", color: "#374151", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.companyLegalName}</td>
+                    <td style={{ padding: "10px 14px" }}>
+                      <span style={{ padding: "2px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: "#f3f4f6", color: "#374151", fontFamily: "monospace" }}>{c.currencyCode}</span>
+                    </td>
+                    <td style={{ padding: "10px 14px" }}>
+                      {ow ? (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 120 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <div style={{ flex: 1, height: 5, background: "#f0f0f0", borderRadius: 9999, overflow: "hidden" }}>
+                              <div style={{ height: "100%", width: `${pct}%`, background: owCol, borderRadius: 9999 }} />
+                            </div>
+                            <span style={{ fontSize: 11, fontWeight: 800, color: owCol, minWidth: 34 }}>{fmt(pct)}%</span>
+                          </div>
+                          <div style={{ display: "flex", gap: 6, fontSize: 9, color: T.gray }}>
+                            {ow.fromMonth && ow.fromYear && (
+                              <span>From {MONTH_FULL[(ow.fromMonth || 1) - 1].slice(0, 3)} {ow.fromYear}</span>
+                            )}
+                            {toYear
+                              ? <span style={{ color: T.red }}>· Until {MONTH_FULL[(ow.toMonth || 1) - 1].slice(0, 3)} {ow.toYear}</span>
+                              : <span style={{ color: T.green }}>· Open</span>
+                            }
+                          </div>
+                        </div>
+                      ) : <span style={{ color: "#e5e7eb" }}>—</span>}
+                    </td>
+                    <td style={{ padding: "10px 14px" }}>
+                      {c.type ? <Badge label={c.type} color={typeC(c.type)} tiny /> : <span style={{ color: "#e5e7eb" }}>—</span>}
+                    </td>
+                    <td style={{ padding: "10px 14px" }}>
+                      {c.consolidate
+                        ? <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "#10b981", fontSize: 10, fontWeight: 700 }}><CheckCircle2 size={12} /> Yes</span>
+                        : <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "#d1d5db", fontSize: 10 }}><XCircle size={12} /> No</span>
+                      }
+                    </td>
+                    <td style={{ padding: "10px 14px", color: T.gray, whiteSpace: "nowrap" }}>
+                      {c.consolidateFromMonth && c.consolidateFromYear
+                        ? `${MONTH_FULL[(c.consolidateFromMonth || 1) - 1].slice(0, 3)} ${c.consolidateFromYear}`
+                        : <span style={{ color: "#e5e7eb" }}>—</span>}
+                    </td>
+                    <td style={{ padding: "10px 14px", color: T.gray }}>{c.mappingName || <span style={{ color: "#e5e7eb" }}>—</span>}</td>
+<td style={{ padding: "10px 14px" }}>
+                      {c.recognizeAs ? <Badge label={c.recognizeAs} color={typeC(c.recognizeAs)} tiny /> : <span style={{ color: "#e5e7eb" }}>—</span>}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -887,8 +886,9 @@ export default function StructurePage({
   const [errors,    setErrors]    = useState({});
   const [tab,       setTab]       = useState("tree");
   const [structKey, setStructKey] = useState(null);
-  const [selected,  setSelected]  = useState(null);
+const [selected,  setSelected]  = useState(null);
   const [tick,      setTick]      = useState(0);
+  const [search,    setSearch]    = useState("");
 
   useEffect(() => {
     if (!token) return;
@@ -951,9 +951,7 @@ export default function StructurePage({
 
   const TABS = [
     { key: "tree",      label: "Org Tree",       count: groupStructure.filter(g => g.groupStructure === structKey).length, color: T.navy    },
-    { key: "companies", label: "Companies",      count: companies.length,                                                   color: "#0e7c5b" },
-    { key: "ownership", label: "Ownership",      count: ownership.length,                                                   color: "#7c3aed" },
-    { key: "settings",  label: "Group Settings",                                                                            color: "#d97706" },
+{ key: "companies", label: "Companies",      count: companies.length,                                                   color: "#0e7c5b" },
     { key: "periods",   label: "Periods",        count: periods.length,                                                     color: T.red     },
   ];
 
@@ -1033,6 +1031,16 @@ export default function StructurePage({
           ))}
         </div>
 
+       {tab === "companies" && (
+          <div style={{ position: "relative" }}>
+            <input
+              type="text" placeholder="Search companies…" value={search}
+              onChange={e => setSearch(e.target.value)}
+              style={{ paddingLeft: 32, paddingRight: 12, paddingTop: 7, paddingBottom: 7, fontSize: 11, borderRadius: 10, border: "1px solid #e5e7eb", outline: "none", background: "#fff", width: 220 }}
+            />
+            <Building2 size={12} color={T.gray} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)" }} />
+          </div>
+        )}
         {structures.length > 1 && (
           <div style={{ display: "flex", gap: 4, background: "#f3f4f6", borderRadius: 12, padding: 4 }}>
             {structures.map(s => (
@@ -1066,9 +1074,12 @@ export default function StructurePage({
       {!loading && (
         <>
           {tab === "tree"      && <GraphTab nodes={nodes} companies={companies} ownership={ownership} groupStructure={groupStructure} selected={selected} onSelect={setSelected} />}
-          {tab === "companies" && <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}><CompaniesTab    companies={companies} /></div>}
-          {tab === "ownership" && <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}><OwnershipTab    ownership={ownership} companies={companies} /></div>}
-          {tab === "settings"  && <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}><GroupSettingsTab settings={settings} currencies={currencies} /></div>}
+{tab === "companies" && (
+            <div style={{ flex: 1, overflowY: "auto", minHeight: 0, display: "flex", flexDirection: "column", gap: 24 }}>
+                            <CompaniesTab companies={companies} ownership={ownership} structKey={structKey} groupStructure={groupStructure} search={search} />
+
+             </div>
+          )}
           {tab === "periods"   && <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}><PeriodsTab      periods={periods} /></div>}
         </>
       )}

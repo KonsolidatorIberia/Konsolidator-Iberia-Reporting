@@ -21,9 +21,10 @@ export function SettingsProvider({ children }) {
   useEffect(() => {
     const root = document.documentElement;
 
-    root.style.setProperty("--color-primary",   settings.colors.primary);
-    root.style.setProperty("--color-secondary", settings.colors.secondary);
-    root.style.setProperty("--color-tertiary",  settings.colors.tertiary);
+root.style.setProperty("--color-primary",    settings.colors.primary);
+    root.style.setProperty("--color-secondary",  settings.colors.secondary);
+    root.style.setProperty("--color-tertiary",   settings.colors.tertiary);
+    root.style.setProperty("--color-quaternary", settings.colors.quaternary ?? "#F59E0B");
 
     Object.entries(settings.typography).forEach(([key, s]) => {
       root.style.setProperty(`--font-${key}-family`, s.font);
