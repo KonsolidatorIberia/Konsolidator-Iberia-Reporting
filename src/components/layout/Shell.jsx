@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Settings } from "lucide-react";
 import Sidebar from "./Sidebar.jsx";
 
-function UserPage({ user, onLogout, onNavigate }) {
+function UserPage({ user, onLogout }) {
   return (
     <div className="flex items-center justify-center h-full">
       <div className="bg-white rounded-3xl border border-gray-100 shadow-sm p-10 w-full max-w-sm text-center space-y-6">
@@ -13,20 +13,12 @@ function UserPage({ user, onLogout, onNavigate }) {
           <p className="text-lg font-black text-[#1a2f8a]">{user?.username}</p>
           <p className="text-xs text-gray-400 mt-1">Konsolidator user</p>
         </div>
-        <div className="space-y-2">
-          <button
-            onClick={() => onNavigate?.("settings")}
-            className="w-full bg-white hover:bg-[#eef1fb] text-[#1a2f8a] font-black py-3 rounded-2xl transition-all text-sm tracking-wide border border-[#1a2f8a]/20 flex items-center justify-center gap-2"
-          >
-            <Settings size={14} /> Settings
-          </button>
-          <button
-            onClick={onLogout}
-            className="w-full bg-[#e8394a] hover:bg-[#d02e3e] text-white font-black py-3 rounded-2xl transition-all text-sm tracking-wide shadow-lg shadow-red-100"
-          >
-            Sign out
-          </button>
-        </div>
+        <button
+          onClick={onLogout}
+          className="w-full bg-[#e8394a] hover:bg-[#d02e3e] text-white font-black py-3 rounded-2xl transition-all text-sm tracking-wide shadow-lg shadow-red-100"
+        >
+          Sign out
+        </button>
       </div>
     </div>
   );
@@ -54,7 +46,7 @@ export default function Shell({ user, onRefresh, onLogout, children }) {
       <div className="flex-1 overflow-y-auto" style={{ height: "100vh" }}>
         <main className="px-4 py-8 h-full">
  {activePage === "user"
-            ? <UserPage user={user} onLogout={onLogout} onNavigate={setActivePage} />
+           ? <UserPage user={user} onLogout={onLogout} />
             : content
           }
         </main>

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useTypo, useSettings } from "./SettingsContext";
 import { createRoot } from "react-dom/client";
 import {
   ChevronDown, Loader2, X, Plus, Trash2, Edit3,
@@ -605,7 +606,7 @@ async function exportKpisToPdf({
 }
 
 // ── FilterPill ────────────────────────────────────────────────────────────────
-function FilterPill({ label, value, onChange, options }) {
+function FilterPill({ label, value, onChange, options, filterStyle, colors }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const display = options.find(o => String(o.value) === String(value))?.label ?? "—";
@@ -617,22 +618,27 @@ function FilterPill({ label, value, onChange, options }) {
   return (
     <div ref={ref} className="relative flex-shrink-0">
       <button onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-2 px-3 py-2 rounded-2xl border text-xs font-bold transition-all select-none bg-white border-[#c2c2c2] text-[#505050] shadow-xl hover:border-[#1a2f8a]/40">
+        className="flex items-center gap-2 px-3 py-2 rounded-2xl border transition-all select-none bg-white border-[#c2c2c2] shadow-xl hover:border-[#1a2f8a]/40"
+        style={filterStyle}>
         <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50">{label}</span>
-        <span className="text-[#1a2f8a]">{display}</span>
-        <ChevronDown size={10} className={`transition-transform duration-200 text-[#1a2f8a]/40 ${open ? "rotate-180" : ""}`} />
+        <span>{display}</span>
+        <ChevronDown size={10} className={`transition-transform duration-200 opacity-40 ${open ? "rotate-180" : ""}`} />
       </button>
       {open && (
         <div className="absolute top-full left-0 mt-2 z-50 min-w-[160px] bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden">
           <div className="p-1.5 max-h-64 overflow-y-auto">
-            {options.map(o => (
-              <button key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
-                className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-between gap-3
-                  ${String(o.value) === String(value) ? "bg-[#1a2f8a] text-white" : "text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]"}`}>
-                {o.label}
-                {String(o.value) === String(value) && <span className="w-1.5 h-1.5 rounded-full bg-white/60" />}
-              </button>
-            ))}
+            {options.map(o => {
+              const selected = String(o.value) === String(value);
+              return (
+                <button key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
+                  className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-between gap-3
+                    ${selected ? "text-white" : "text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]"}`}
+                  style={selected ? { backgroundColor: colors?.primary } : undefined}>
+                  {o.label}
+                  {selected && <span className="w-1.5 h-1.5 rounded-full bg-white/60" />}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -1601,6 +1607,7 @@ function GraphSection({
   kpiList, allAccountCodes,
   defaultCompany, defaultKpiIds,
   onStateChange,
+  filterStyle, colors, body1Style, body2Style,
 }) {
   // Default: end = anchor year/month, start = 12 months earlier
   const anchorY = parseInt(year) || new Date().getFullYear();
@@ -1801,7 +1808,16 @@ function GraphSection({
   }, [sectionId, secCompany, secStartYear, secStartMonth, secEndYear, secEndMonth,
       secSource, secStructure, secDimGroup, secDim, secMode, secKpiIds, chartData, onStateChange]);
 
-  const COLORS = ["#1a2f8a", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"];
+const COLORS = [
+    colors?.primary,
+    colors?.secondary,
+    colors?.tertiary,
+    "#ef4444",
+    "#8b5cf6",
+    "#ec4899",
+    "#06b6d4",
+    "#84cc16",
+  ];
 
   const toggleKpi = (id) => {
     setSecKpiIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
@@ -1813,23 +1829,23 @@ return (
       <div className="flex items-center gap-1.5 flex-wrap px-4 py-2.5 bg-[#f8f9ff] border-b border-gray-100">
         <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50 mr-1">§{sectionId}</span>
 
-        <FilterPill label="Company" value={secCompany} onChange={setSecCompany} options={companyCodes.map(c => ({ value: c, label: c }))} />
+<FilterPill label="COMP" value={secCompany} onChange={setSecCompany} options={companyCodes.map(c => ({ value: c, label: c }))} filterStyle={filterStyle} colors={colors} />
 
         <span className="text-[9px] font-black text-gray-300 mx-1">│</span>
-        <FilterPill label="Start M" value={secStartMonth} onChange={setSecStartMonth} options={MONTHS.map(m => ({ value: String(m.value), label: m.label.slice(0,3) }))} />
-        <FilterPill label="Start Y" value={secStartYear} onChange={setSecStartYear} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-        <FilterPill label="End M" value={secEndMonth} onChange={setSecEndMonth} options={MONTHS.map(m => ({ value: String(m.value), label: m.label.slice(0,3) }))} />
-        <FilterPill label="End Y" value={secEndYear} onChange={setSecEndYear} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+        <FilterPill label="Start M" value={secStartMonth} onChange={setSecStartMonth} options={MONTHS.map(m => ({ value: String(m.value), label: m.label.slice(0,3) }))} filterStyle={filterStyle} colors={colors} />
+        <FilterPill label="Start Y" value={secStartYear} onChange={setSecStartYear} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} filterStyle={filterStyle} colors={colors} />
+        <FilterPill label="End M" value={secEndMonth} onChange={setSecEndMonth} options={MONTHS.map(m => ({ value: String(m.value), label: m.label.slice(0,3) }))} filterStyle={filterStyle} colors={colors} />
+        <FilterPill label="End Y" value={secEndYear} onChange={setSecEndYear} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} filterStyle={filterStyle} colors={colors} />
 
         <span className="text-[9px] font-black text-gray-300 mx-1">│</span>
-        {sourceOpts.length > 0 && <FilterPill label="Source" value={secSource} onChange={setSecSource} options={sourceOpts} />}
-        {structureOpts.length > 0 && <FilterPill label="Structure" value={secStructure} onChange={setSecStructure} options={structureOpts} />}
+        {sourceOpts.length > 0 && <FilterPill label="SRC" value={secSource} onChange={setSecSource} options={sourceOpts} filterStyle={filterStyle} colors={colors} />}
+        {structureOpts.length > 0 && <FilterPill label="STRUCT" value={secStructure} onChange={setSecStructure} options={structureOpts} filterStyle={filterStyle} colors={colors} />}
 
-        {secDimGroups.length > 0 && <FilterPill label="Dim Grp" value={secDimGroup} onChange={v => { setSecDimGroup(v); setSecDim(""); }} options={[{ value: "", label: "None" }, ...secDimGroups.map(g => ({ value: g, label: g }))]} />}
-        {secDimGroup && secGroupDimOptions.length > 0 && <FilterPill label="Dim" value={secDim} onChange={setSecDim} options={[{ value: "", label: "All" }, ...secGroupDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))]} />}
+        {secDimGroups.length > 0 && <FilterPill label="DIM GRP" value={secDimGroup} onChange={v => { setSecDimGroup(v); setSecDim(""); }} options={[{ value: "", label: "None" }, ...secDimGroups.map(g => ({ value: g, label: g }))]} filterStyle={filterStyle} colors={colors} />}
+        {secDimGroup && secGroupDimOptions.length > 0 && <FilterPill label="DIM" value={secDim} onChange={setSecDim} options={[{ value: "", label: "All" }, ...secGroupDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))]} filterStyle={filterStyle} colors={colors} />}
 
         <span className="text-[9px] font-black text-gray-300 mx-1">│</span>
-        <FilterPill label="Mode" value={secMode} onChange={setSecMode} options={[{ value: "monthly", label: "Monthly" }, { value: "ytd", label: "YTD" }]} />
+        <FilterPill label="Mode" value={secMode} onChange={setSecMode} options={[{ value: "monthly", label: "Monthly" }, { value: "ytd", label: "YTD" }]} filterStyle={filterStyle} colors={colors} />
 
         {/* KPI multiselect */}
         <div ref={kpiPickerRef} className="relative flex-shrink-0">
@@ -1864,14 +1880,22 @@ return (
         style={tableOpen ? { height: "260px" } : undefined}>
 
         <div className="absolute inset-0 px-4 py-3">
-          {/* X-axis granularity toggle */}
+{/* X-axis granularity toggle */}
           <div className="absolute bottom-3 left-4 z-10 flex items-center gap-0.5 bg-white border border-gray-100 rounded-lg p-0.5 shadow-sm">
             <button onClick={() => setSecXAxis("month")}
-              className={`px-2 py-0.5 rounded-md text-[9px] font-black transition-all ${secXAxis === "month" ? "bg-[#1a2f8a] text-white" : "text-gray-400 hover:text-[#1a2f8a]"}`}>
+              className="px-2 py-0.5 rounded-md text-[9px] font-black transition-all"
+              style={{
+                backgroundColor: secXAxis === "month" ? colors?.primary : "transparent",
+                color: secXAxis === "month" ? "#FFFFFF" : colors?.quaternary,
+              }}>
               Month
             </button>
             <button onClick={() => setSecXAxis("year")}
-              className={`px-2 py-0.5 rounded-md text-[9px] font-black transition-all ${secXAxis === "year" ? "bg-[#1a2f8a] text-white" : "text-gray-400 hover:text-[#1a2f8a]"}`}>
+              className="px-2 py-0.5 rounded-md text-[9px] font-black transition-all"
+              style={{
+                backgroundColor: secXAxis === "year" ? colors?.primary : "transparent",
+                color: secXAxis === "year" ? "#FFFFFF" : colors?.quaternary,
+              }}>
               Year
             </button>
           </div>
@@ -1948,27 +1972,28 @@ return (
                 {secKpiIds.length === 0 ? "Select KPIs to view data" : "—"}
               </div>
             ) : (
-<table className="w-full text-[10px]">
-                <thead className="bg-[#1a2f8a] text-white">
-                  <tr>
-                    <th className="text-left px-3 py-2 font-black uppercase tracking-wider">Period</th>
+<table className="w-full border-collapse">
+                <thead>
+                  <tr style={{ backgroundColor: colors?.primary }}>
+                    <th className="text-center px-3 py-2 whitespace-nowrap" style={body1Style}>Period</th>
                     {secKpiIds.map(kid => {
                       const k = kpiList.find(k => k.id === kid);
-                      return <th key={kid} className="text-right px-3 py-2 font-black whitespace-nowrap">{k?.label ?? kid}</th>;
+                      return <th key={kid} className="text-center px-3 py-2 whitespace-nowrap" style={body1Style}>{k?.label ?? kid}</th>;
                     })}
                   </tr>
                 </thead>
                 <tbody>
                   {chartData.map((d, i) => (
                     <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-[#f8f9ff]"}>
-                      <td className="text-left px-3 py-1.5 font-black text-[#1a2f8a]">{d.period}</td>
+                      <td className="text-center px-3 py-1.5 whitespace-nowrap" style={body2Style}>{d.period}</td>
                       {secKpiIds.map(kid => {
                         const k = kpiList.find(k => k.id === kid);
                         const v = d[kid];
-                        const color = v === null || v === undefined || isNaN(v) ? "text-gray-300"
-                                    : v < 0 ? "text-red-500" : "text-[#1a2f8a]";
+                        const cellStyle = v === null || v === undefined || isNaN(v)
+                          ? { ...body2Style, color: "#D1D5DB" }
+                          : { ...body2Style, color: v < 0 ? "#EF4444" : "#000000" };
                         return (
-                          <td key={kid} className={`text-right px-3 py-1.5 font-mono whitespace-nowrap ${color}`}>
+                          <td key={kid} className="text-center px-3 py-1.5 whitespace-nowrap" style={cellStyle}>
                             {v === null || v === undefined || isNaN(v) ? "—" : fmtValue(v, k?.format)}
                           </td>
                         );
@@ -2029,8 +2054,58 @@ async function renderChartToImage({ data, kpiIds, kpiList, width = 900, height =
   }
 }
 
+function AnimatedTabSelector({ tabs, activeKey, onSelect, colors }) {
+  const containerRef = useRef(null);
+  const [indicator, setIndicator] = useState({ left: 0, width: 0 });
+  const activeIdx = Math.max(0, tabs.findIndex(t => t.key === activeKey));
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const buttons = containerRef.current.querySelectorAll("button");
+    const active = buttons[activeIdx];
+    if (active) {
+      setIndicator({ left: active.offsetLeft, width: active.offsetWidth });
+    }
+  }, [activeIdx, tabs.length]);
+
+  return (
+    <div ref={containerRef} className="relative flex items-center gap-0.5 p-0.5 rounded-xl"
+      style={{ backgroundColor: `${colors?.primary}25` }}>
+      <div
+        className="absolute top-0.5 bottom-0.5 rounded-lg transition-all duration-300 ease-out shadow-sm"
+        style={{
+          left: indicator.left,
+          width: indicator.width,
+          backgroundColor: colors?.primary,
+        }}
+      />
+      {tabs.map(t => {
+        const isActive = t.key === activeKey;
+        return (
+          <button
+            key={t.key}
+            onClick={() => onSelect(t.key)}
+            className="relative z-10 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-black transition-colors"
+            style={{ color: isActive ? "#FFFFFF" : "#6b7280" }}>
+            {t.icon}
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function KpiIndividualesPage({ token, sources = [], structures = [], companies = [], dimensions = [] }) {
+const header1Style = useTypo("header1");
+  const header2Style = useTypo("header2");
+  const body1Style = useTypo("body1");
+  const body2Style = useTypo("body2");
+  const underscore2Style = useTypo("underscore2");
+  const underscore3Style = useTypo("underscore3");
+  const filterStyle = useTypo("filter");
+  const { colors } = useSettings();
   const [year, setYear] = useState("");
   const [month, setMonth] = useState("");
   const [source, setSource] = useState("");
@@ -2487,47 +2562,40 @@ const orderedCols = colOrder && colOrder.length === activeCols.length ? colOrder
   return (
     <div className="flex flex-col gap-4 h-full min-h-0">
 
-      {/* Header */}
+{/* Header */}
       <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          <div className="w-1.5 h-10 rounded-full bg-[#1a2f8a]" />
+          <div className="w-1.5 h-10 rounded-full" style={{ backgroundColor: colors.primary }} />
           <div>
             <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Individual</p>
-            <h1 className="text-[29px] font-black text-[#1a2f8a] leading-none">KPIs</h1>
+            <h1 className="leading-none" style={header1Style}>KPIs</h1>
           </div>
         </div>
 {viewMode !== "graphs" && (
           <>
             <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
             <div className="flex items-center gap-2 flex-wrap">
-              {sourceOpts.length > 0 && <FilterPill label="Source" value={source} onChange={setSource} options={sourceOpts} />}
-              <FilterPill label="Year" value={year} onChange={setYear} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-              <FilterPill label="Month" value={month} onChange={setMonth} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-              {structureOpts.length > 0 && <FilterPill label="Structure" value={structure} onChange={setStructure} options={structureOpts} />}
-              {dimGroups.length > 0 && <FilterPill label="Dim Group" value={selGroup} onChange={v => { setSelGroup(v); setSelDim(""); }} options={[{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))]} />}
-              {selGroup && groupDimOptions.length > 0 && <FilterPill label="Dimension" value={selDim} onChange={setSelDim} options={[{ value: "", label: "All" }, ...groupDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))]} />}
+              {sourceOpts.length > 0 && <FilterPill label="Source" value={source} onChange={setSource} options={sourceOpts} filterStyle={filterStyle} colors={colors} />}
+              <FilterPill label="Year" value={year} onChange={setYear} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} filterStyle={filterStyle} colors={colors} />
+              <FilterPill label="Month" value={month} onChange={setMonth} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} filterStyle={filterStyle} colors={colors} />
+              {structureOpts.length > 0 && <FilterPill label="Structure" value={structure} onChange={setStructure} options={structureOpts} filterStyle={filterStyle} colors={colors} />}
+              {dimGroups.length > 0 && <FilterPill label="Dim Group" value={selGroup} onChange={v => { setSelGroup(v); setSelDim(""); }} options={[{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))]} filterStyle={filterStyle} colors={colors} />}
+              {selGroup && groupDimOptions.length > 0 && <FilterPill label="Dimension" value={selDim} onChange={setSelDim} options={[{ value: "", label: "All" }, ...groupDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))]} filterStyle={filterStyle} colors={colors} />}
             </div>
           </>
         )}
 <div className="ml-auto flex items-center gap-3 flex-shrink-0 mr-6">
           {loading && <Loader2 size={13} className="animate-spin text-[#1a2f8a]" />}
-          <div className="flex items-center gap-0.5 bg-[#f0f0f0] rounded-xl p-0.5">
-            <button onClick={() => setViewMode("company")}
-              title="By Company"
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-black transition-all ${viewMode === "company" ? "bg-[#1a2f8a] text-white shadow-sm" : "text-gray-500 hover:text-[#1a2f8a]"}`}>
-              <Building2 size={11} /> Company
-            </button>
-            <button onClick={() => setViewMode("dimension")}
-              title="By Dimension"
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-black transition-all ${viewMode === "dimension" ? "bg-[#1a2f8a] text-white shadow-sm" : "text-gray-500 hover:text-[#1a2f8a]"}`}>
-              <Layers size={11} /> Dimension
-            </button>
-            <button onClick={() => setViewMode("graphs")}
-              title="Graphs"
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-black transition-all ${viewMode === "graphs" ? "bg-[#1a2f8a] text-white shadow-sm" : "text-gray-500 hover:text-[#1a2f8a]"}`}>
-              <BarChart3 size={11} /> Graphs
-            </button>
-          </div>
+<AnimatedTabSelector
+            tabs={[
+              { key: "company",   label: "Company",   icon: <Building2 size={11} /> },
+              { key: "dimension", label: "Dimension", icon: <Layers size={11} /> },
+              { key: "graphs",    label: "Graphs",    icon: <BarChart3 size={11} /> },
+            ]}
+            activeKey={viewMode}
+            onSelect={setViewMode}
+            colors={colors}
+          />
         <button onClick={() => setEditingKpi("new")}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black bg-white border border-[#1a2f8a]/20 text-[#1a2f8a] hover:bg-[#eef1fb] transition-all">
             <Plus size={12} /> New KPI
@@ -2566,7 +2634,7 @@ const orderedCols = colOrder && colOrder.length === activeCols.length ? colOrder
         </div>
       ) : viewMode === "graphs" ? (
         <div className="flex flex-col gap-3 flex-1 min-h-0 overflow-auto pr-1">
- {[1, 2, 3].map(sid => (
+{[1, 2, 3].map(sid => (
             <GraphSection
               key={sid}
               sectionId={sid}
@@ -2584,6 +2652,10 @@ const orderedCols = colOrder && colOrder.length === activeCols.length ? colOrder
               defaultCompany={companyCodes[0] || ""}
               defaultKpiIds={["revenue", "ebitda", "net_result"]}
               onStateChange={handleGraphSectionState}
+              filterStyle={filterStyle}
+              colors={colors}
+              body1Style={body1Style}
+              body2Style={body2Style}
             />
           ))}
         </div>
@@ -2598,12 +2670,12 @@ const orderedCols = colOrder && colOrder.length === activeCols.length ? colOrder
         <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
           <div className="overflow-auto flex-1">
             <table className="w-full text-xs border-collapse">
-              <thead className="sticky top-0 z-10">
-<tr style={{ backgroundColor: "#1a2f8a" }}>
-                  <th className="sticky left-0 z-30 text-left px-5 py-3 text-white font-black uppercase tracking-widest text-xs border-r border-white/20 min-w-[250px]" style={{ backgroundColor: "#1a2f8a" }}>
-                    KPI
-                  </th>
-      {orderedCols.map((col, ci) => {
+<thead className="sticky top-0 z-10">
+<tr style={{ backgroundColor: colors.primary }}>
+<th className="sticky left-0 z-30 text-center px-5 py-3 border-r border-white/20 min-w-[250px]" style={{ backgroundColor: colors.primary }}>
+    <span style={header2Style}>KPI</span>
+  </th>
+{orderedCols.map((col, ci) => {
                     const label = viewMode === "dimension" ? (dimensionPivots.get(col)?.name ?? col) : col;
                     return (
                       <th key={col}
@@ -2611,17 +2683,14 @@ const orderedCols = colOrder && colOrder.length === activeCols.length ? colOrder
                         onDragStart={() => setColDragIdx(ci)}
                         onDragOver={e => { e.preventDefault(); setColDragOverIdx(ci); }}
                         onDragEnd={handleColDragEnd}
-                        className={`text-right px-4 py-3 text-white font-black text-xs whitespace-nowrap min-w-[140px] cursor-grab select-none transition-all ${colDragOverIdx === ci ? "opacity-50" : ""}`}
-                        style={{ backgroundColor: "#1a2f8a" }}>
-                        <div className="flex items-center justify-end gap-1.5">
-                          <GripVertical size={10} className="opacity-40 rotate-90" />
-                          {label}
-                        </div>
+                        className={`text-center px-4 py-3 whitespace-nowrap min-w-[140px] cursor-grab select-none transition-all ${colDragOverIdx === ci ? "opacity-50" : ""}`}
+                        style={{ backgroundColor: colors.primary }}>
+                        <span style={header2Style}>{label}</span>
                       </th>
                     );
                   })}
-                  <th className="sticky right-0 text-right px-4 py-3 text-white font-black text-xs whitespace-nowrap border-l border-white/20 min-w-[130px]" style={{ backgroundColor: "#0f1f5c" }}>
-                    Total / Avg
+<th className="sticky right-0 text-center px-4 py-3 whitespace-nowrap border-l border-white/20 min-w-[130px]" style={{ backgroundColor: colors.primary }}>
+                    <span style={header2Style}>Total / Avg</span>
                   </th>
                 </tr>
               </thead>
@@ -2653,15 +2722,18 @@ const orderedCols = colOrder && colOrder.length === activeCols.length ? colOrder
                           <div className="opacity-0 group-hover:opacity-40 transition-opacity cursor-grab text-gray-400 flex-shrink-0">
                             <GripVertical size={11} />
                           </div>
-                          <div className="flex flex-col gap-0.5 flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-black text-xs text-[#1a2f8a] truncate">{kpi.label}</span>
-                              {kpi.category && (
-                                <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-[#eef1fb] text-[#1a2f8a]/60 flex-shrink-0">{kpi.category}</span>
-                              )}
-                            </div>
-                            {kpi.description && <span className="text-[10px] text-gray-400 truncate">{kpi.description}</span>}
-                          </div>
+<div className="flex flex-col gap-0.5 flex-1 min-w-0">
+  <div className="flex items-center gap-1.5">
+    <span className="truncate" style={body1Style}>{kpi.label}</span>
+    {kpi.category && (
+      <span className="px-1.5 py-0.5 rounded-md flex-shrink-0"
+        style={{ backgroundColor: colors.primary, ...underscore2Style }}>
+        {kpi.category}
+      </span>
+    )}
+  </div>
+  {kpi.description && <span className="truncate" style={underscore3Style}>{kpi.description}</span>}
+</div>
                           <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 flex-shrink-0">
                             <button onClick={() => setEditingKpi(kpi)}
                               className="w-6 h-6 rounded-lg bg-[#eef1fb] hover:bg-[#1a2f8a] hover:text-white text-[#1a2f8a] flex items-center justify-center transition-all">
@@ -2674,15 +2746,25 @@ const orderedCols = colOrder && colOrder.length === activeCols.length ? colOrder
                           </div>
                         </div>
                       </td>
+{values.map((val, ci) => {
+                        const cellStyle = val === null
+                          ? { ...body1Style, color: "#D1D5DB" }
+                          : { ...body1Style, color: val < 0 ? "#EF4444" : "#000000" };
+                        return (
+                          <td key={orderedCols[ci]}
+                            className="px-4 py-3 text-center whitespace-nowrap"
+                            style={cellStyle}>
+                            {val === null ? "—" : fmtValue(val, kpi.format)}
+                          </td>
+                        );
+                      })}
 
-{values.map((val, ci) => (
-                        <td key={orderedCols[ci]} className={`px-4 py-3 text-right font-mono text-xs whitespace-nowrap ${getColor(val, kpi.format)}`}>
-                          {val === null ? <span className="text-gray-200">—</span> : fmtValue(val, kpi.format)}
-                        </td>
-                      ))}
-
-                      <td className={`sticky right-0 px-4 py-3 text-right font-mono text-xs whitespace-nowrap font-bold border-l border-gray-100 bg-[#eef1fb] group-hover:bg-[#e4e8f8] ${getColor(aggregate, kpi.format)}`}>
-                        {aggregate === null ? <span className="text-gray-300">—</span> : (
+<td className="sticky right-0 px-4 py-3 text-center whitespace-nowrap border-l border-gray-100 bg-[#eef1fb] group-hover:bg-[#e4e8f8]"
+                        style={{
+                          ...body1Style,
+                          color: aggregate === null ? "#D1D5DB" : aggregate < 0 ? "#EF4444" : "#000000",
+                        }}>
+                        {aggregate === null ? "—" : (
                           <>
                             {fmtValue(aggregate, kpi.format)}
                             <span className="text-[9px] font-normal text-gray-400 ml-1">{kpi.format === "percent" ? "avg" : "Σ"}</span>

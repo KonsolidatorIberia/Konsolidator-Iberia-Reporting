@@ -1,4 +1,3 @@
-import { useState } from "react";
 import HomePage from "../components/layout/HomePage.jsx";
 import IndividualesPage from "../components/layout/IndividualesPage.jsx";
 import KpiIndividualesPage from "../components/layout/KpiIndividualesPage";
@@ -8,69 +7,60 @@ import ConsolidationSheetPage from "../components/layout/ConsolidationSheetPage.
 import StructurePage from "../components/layout/StructurePage.jsx";
 import SettingsPage from "../components/layout/SettingsPage.jsx";
 
-
-
-
-
-export default function AppRoutes({ token, activePage, onNavigate }) {
-  const [sharedData, setSharedData] = useState({});
+export default function AppRoutes({ token, activePage, preloadedData }) {
+  const sharedData = preloadedData ?? {};
 
   if (activePage === "home") return (
-    <HomePage token={token} onNavigate={onNavigate} onDataLoaded={setSharedData} />
+    <HomePage token={token} initialData={sharedData} />
   );
 
-if (activePage === "individual-data") return (
-  <IndividualesPage
-    token={token}
-    sources={sharedData.sources ?? []}
-    structures={sharedData.structures ?? []}
-    companies={sharedData.companies ?? []}
-    dimensions={sharedData.dimensions ?? []}
+  if (activePage === "individual-data") return (
+    <IndividualesPage
+      token={token}
+      sources={sharedData.sources ?? []}
+      structures={sharedData.structures ?? []}
+      companies={sharedData.companies ?? []}
+      dimensions={sharedData.dimensions ?? []}
+    />
+  );
 
+  if (activePage === "individual-contributive") return (
+    <ContributivePage token={token} />
+  );
 
-  />
-);
+  if (activePage === "structure") return (
+    <StructurePage
+      token={token}
+      structures={sharedData.structures ?? []}
+      companies={sharedData.companies ?? []}
+    />
+  );
 
-if (activePage === "individual-contributive") return (
-  <ContributivePage token={token} />
-);
+  if (activePage === "individual-dimensiones") return (
+    <DimensionesPage
+      token={token}
+      sources={sharedData.sources ?? []}
+      structures={sharedData.structures ?? []}
+      companies={sharedData.companies ?? []}
+      dimensions={sharedData.dimensions ?? []}
+    />
+  );
 
-// inside AppRoutes:
-if (activePage === "structure") return (
-  <StructurePage
-    token={token}
-    structures={sharedData.structures ?? []}
-    companies={sharedData.companies ?? []}
-  />
-);
-
-if (activePage === "individual-dimensiones") return (
-  <DimensionesPage
-    token={token}
-    sources={sharedData.sources ?? []}
-    structures={sharedData.structures ?? []}
-    companies={sharedData.companies ?? []}
-    dimensions={sharedData.dimensions ?? []}
-  />
-);
-
-
-
-if (activePage === "consolidated-sheet") return (
+  if (activePage === "consolidated-sheet") return (
     <ConsolidationSheetPage token={token} />
   );
 
   if (activePage === "individual-kpis") return (
-  <KpiIndividualesPage
-    token={token}
-    sources={sharedData.sources ?? []}
-    structures={sharedData.structures ?? []}
-    companies={sharedData.companies ?? []}
-    dimensions={sharedData.dimensions ?? []}
-  />
-);
+    <KpiIndividualesPage
+      token={token}
+      sources={sharedData.sources ?? []}
+      structures={sharedData.structures ?? []}
+      companies={sharedData.companies ?? []}
+      dimensions={sharedData.dimensions ?? []}
+    />
+  );
 
- if (activePage === "settings") return <SettingsPage />;
+  if (activePage === "settings") return <SettingsPage />;
 
   return (
     <div className="flex items-center justify-center h-full">
@@ -80,6 +70,4 @@ if (activePage === "consolidated-sheet") return (
       </div>
     </div>
   );
-
-  
 }

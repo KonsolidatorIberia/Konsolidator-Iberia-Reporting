@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { ChevronDown, ChevronRight, Loader2, RefreshCw, Maximize2, Minimize2 } from "lucide-react";
-
+import { useTypo, useSettings } from "./SettingsContext";
 const BASE = "https://api.konsolidator.com/v2";
+
+
 const MONTHS = [
   { value: 1,  label: "January"   }, { value: 2,  label: "February"  },
   { value: 3,  label: "March"     }, { value: 4,  label: "April"     },
@@ -19,7 +21,7 @@ const fmt = (n) => {
 };
 
 // ── FilterPill ────────────────────────────────────────────────────────────────
-function FilterPill({ label, value, onChange, options }) {
+function FilterPill({ label, value, onChange, options, filterStyle, colors }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const display = options.find(o => String(o.value) === String(value))?.label ?? "—";
@@ -30,23 +32,28 @@ function FilterPill({ label, value, onChange, options }) {
   }, []);
   return (
     <div ref={ref} className="relative flex-shrink-0">
-      <button onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-2 px-3 py-2 rounded-2xl border text-xs font-bold transition-all select-none bg-white border-[#c2c2c2] text-[#505050] shadow-xl hover:border-[#1a2f8a]/40">
-        <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50">{label}</span>
-        <span className="text-[#1a2f8a]">{display}</span>
-        <ChevronDown size={10} className={`transition-transform duration-200 text-[#1a2f8a]/40 ${open ? "rotate-180" : ""}`} />
-      </button>
+<button onClick={() => setOpen(o => !o)}
+  className="flex items-center gap-2 px-3 py-2 rounded-2xl border transition-all select-none bg-white border-[#c2c2c2] shadow-xl hover:border-[#1a2f8a]/40"
+  style={filterStyle}>
+  <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50">{label}</span>
+  <span>{display}</span>
+  <ChevronDown size={10} className={`transition-transform duration-200 opacity-40 ${open ? "rotate-180" : ""}`} />
+</button>
       {open && (
         <div className="absolute top-full left-0 mt-2 z-50 min-w-[160px] bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden">
           <div className="p-1.5 max-h-64 overflow-y-auto">
-            {options.map(o => (
-              <button key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
-                className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-between gap-3
-                  ${String(o.value) === String(value) ? "bg-[#1a2f8a] text-white" : "text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]"}`}>
-                {o.label}
-                {String(o.value) === String(value) && <span className="w-1.5 h-1.5 rounded-full bg-white/60" />}
-              </button>
-            ))}
+           {options.map(o => {
+  const selected = String(o.value) === String(value);
+  return (
+    <button key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
+      className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-between gap-3
+        ${selected ? "text-white" : "text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]"}`}
+      style={selected ? { backgroundColor: colors?.primary } : undefined}>
+      {o.label}
+      {selected && <span className="w-1.5 h-1.5 rounded-full bg-white/60" />}
+    </button>
+  );
+})}
           </div>
         </div>
       )}
@@ -101,10 +108,19 @@ function SheetRow({
   node, depth, expanded, onToggle,
   pivot, uploadedPivot, elimPivot,
   contributionCompanies, topParent,
+  elimExpanded, elimHeaders,
+  compareMode, cmpPivot,
+  body1Style, body2Style, subbody1Style,
 }) {
-  const hasChildren = node.children?.length > 0;
+const hasChildren = node.children?.length > 0;
   const isExpanded  = expanded.has(node.AccountCode);
   const isSummary   = /\.S$/i.test(node.AccountCode) || hasChildren;
+
+  const rowStyle = !hasChildren ? subbody1Style : (depth === 0 ? body1Style : body2Style);
+  const cellStyle = (v) => {
+    const baseColor = v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : "#000000";
+    return { ...rowStyle, color: baseColor };
+  };
 
   const byCompany = pivot.get(node.AccountCode) || {};
 
@@ -126,7 +142,52 @@ const consTotal = (byCompany[topParent] ?? [])
   // sum of individual company contributions. Works uniformly for root view
   // and subgroup views — and for subgroups like Tizon, EJEs live in the
   // parent's run (BIRD), not the subgroup's, so we can't read them directly.
-  const elimTotal = consTotal - contribSum;
+const elimTotal = consTotal - contribSum;
+
+  // ── Compare-period totals (mirrors current-period derivation) ──
+  const cmpByCompany = cmpPivot?.get(node.AccountCode) || {};
+
+  const cmpConsTotal = (cmpByCompany[topParent] ?? [])
+    .filter(r => r.CompanyRole === "Group")
+    .filter(r => !r.OriginCompanyShortName?.trim() && !r.CounterpartyShortName?.trim())
+    .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
+
+  const cmpGetContrib = (company) => {
+    const role = company === topParent ? "Parent" : "Contribution";
+    return (cmpByCompany[company] ?? [])
+      .filter(r => r.CompanyRole === role)
+      .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
+  };
+
+  const cmpContribSum = contributionCompanies.reduce((s, c) => s + cmpGetContrib(c), 0);
+  const cmpElimTotal  = cmpConsTotal - cmpContribSum;
+
+  // Render two cells (compare value + delta) for any given pair (current, compare)
+  const renderCompareCells = (current, compare, key) => {
+    const delta = current - compare;
+    const pct = compare !== 0 ? (delta / Math.abs(compare)) * 100 : null;
+    const baseColor = compare === 0 ? "#D1D5DB" : compare < 0 ? "#EF4444" : "#000000";
+    const deltaColor = delta === 0 ? "#D1D5DB" : delta < 0 ? "#EF4444" : "#10B981";
+    return [
+      <td key={`${key}-cmp`}
+        className="px-3 py-2.5 text-center whitespace-nowrap"
+        style={{ minWidth: 110, backgroundColor: "#fffbf0", borderLeft: "2px solid rgba(251,191,36,0.25)", ...rowStyle, color: baseColor }}>
+        {fmt(compare)}
+      </td>,
+      <td key={`${key}-delta`}
+        className="px-3 py-2.5 text-center whitespace-nowrap"
+        style={{ minWidth: 130, backgroundColor: "#fffbf0", borderRight: "2px solid rgba(251,191,36,0.25)", ...rowStyle, color: deltaColor }}>
+        {delta === 0 ? "—" : (
+          <span className="flex flex-col items-center gap-0.5 leading-tight">
+            <span>{(delta > 0 ? "+" : "") + fmt(delta)}</span>
+            {pct !== null && (
+              <span className="text-[9px] opacity-70">{(pct > 0 ? "+" : "") + pct.toFixed(1) + "%"}</span>
+            )}
+          </span>
+        )}
+      </td>,
+    ];
+  };
 
   return (
     <>
@@ -139,63 +200,86 @@ const consTotal = (byCompany[topParent] ?? [])
                   <ChevronRight size={11} />
                 </span>
               : <span className="w-3 flex-shrink-0" />}
-            <span className={`font-mono text-[11px] flex-shrink-0 ${isSummary ? "text-[#1a2f8a]" : "text-gray-400"}`}>
-              {node.AccountCode}
-            </span>
-            <span className={`text-xs ml-1.5 truncate ${isSummary ? "font-black text-[#1a2f8a]" : "text-gray-700 font-medium"}`} style={{ maxWidth: 160 }}>
-              {node.AccountName}
-            </span>
+<span className="flex-shrink-0 mr-2" style={rowStyle}>
+  {node.AccountCode}
+</span>
+<span className="truncate" style={{ ...rowStyle, maxWidth: 160 }}>
+  {node.AccountName}
+</span>
           </div>
         </td>
 
-        <td className={`px-4 py-2.5 text-right font-mono text-xs border-l border-gray-100
-          ${isSummary ? "font-black" : ""}
-          ${consTotal === 0 ? "text-gray-300" : consTotal > 0 ? "text-[#1a2f8a]" : "text-[#e8394a]"}`}
-          style={{ minWidth: 130 }}>
-          {fmt(consTotal)}
-        </td>
+<td className="px-4 py-2.5 text-center whitespace-nowrap border-l border-gray-100"
+  style={{ minWidth: 130, ...cellStyle(consTotal) }}>
+  {fmt(consTotal)}
+</td>
+{compareMode && renderCompareCells(consTotal, cmpConsTotal, "cons")}
 
-        <td className={`px-4 py-2.5 text-right font-mono text-xs border-l border-gray-100
-          ${isSummary ? "font-black" : ""}
-          ${elimTotal === 0 ? "text-gray-300" : "text-amber-600"}`}
-          style={{ minWidth: 110 }}>
-          {fmt(elimTotal)}
-        </td>
+<td className="px-4 py-2.5 text-center whitespace-nowrap border-l border-gray-100"
+  style={{ minWidth: 110, ...cellStyle(elimTotal) }}>
+  {fmt(elimTotal)}
+</td>
+{compareMode && renderCompareCells(elimTotal, cmpElimTotal, "elim")}
 
-        <td className={`px-4 py-2.5 text-right font-mono text-xs border-l border-gray-200
-          ${isSummary ? "font-black" : ""}
-          ${contribSum === 0 ? "text-gray-300" : "text-[#1a2f8a]"}`}
-          style={{ minWidth: 110 }}>
-          {fmt(contribSum)}
-        </td>
+{elimExpanded && elimHeaders.map((h) => {
+  const subVal = (elimPivot.get(node.AccountCode) ?? {})[h] ?? 0;
+  return (
+    <td key={`elim-${h}`}
+      className="px-3 py-2.5 text-center whitespace-nowrap border-l border-gray-100"
+      style={{
+        minWidth: 140,
+        backgroundColor: "#f8f9ff",
+        ...cellStyle(subVal),
+      }}>
+      {fmt(subVal)}
+    </td>
+  );
+})}
+<td className="px-4 py-2.5 text-center whitespace-nowrap border-l border-gray-200"
+  style={{ minWidth: 110, ...cellStyle(contribSum) }}>
+  {fmt(contribSum)}
+</td>
+{compareMode && renderCompareCells(contribSum, cmpContribSum, "contribsum")}
 
-        {contributionCompanies.map(c => {
-          const val = getContrib(c);
-          return (
-            <td key={c}
-              className={`px-4 py-2.5 text-right font-mono text-xs border-l border-gray-100
-                ${isSummary ? "font-black" : ""}
-                ${val === 0 ? "text-gray-300" : val > 0 ? "text-gray-700" : "text-[#e8394a]"}`}
-              style={{ minWidth: 120 }}>
-              {fmt(val)}
-            </td>
-          );
-        })}
+{contributionCompanies.flatMap(c => {
+  const val = getContrib(c);
+  const cmpVal = cmpGetContrib(c);
+  return [
+    <td key={c}
+      className="px-4 py-2.5 text-center whitespace-nowrap border-l border-gray-100"
+      style={{ minWidth: 120, ...cellStyle(val) }}>
+      {fmt(val)}
+    </td>,
+    ...(compareMode ? renderCompareCells(val, cmpVal, `contrib-${c}`) : []),
+  ];
+})}
       </tr>
 
-      {isExpanded && hasChildren && node.children.map(child => (
-        <SheetRow key={child.AccountCode} node={child} depth={depth + 1}
-          expanded={expanded} onToggle={onToggle}
-          pivot={pivot} uploadedPivot={uploadedPivot} elimPivot={elimPivot}
-          contributionCompanies={contributionCompanies}
-          topParent={topParent} />
-      ))}
+{isExpanded && hasChildren && node.children.map(child => (
+  <SheetRow key={child.AccountCode} node={child} depth={depth + 1}
+    expanded={expanded} onToggle={onToggle}
+    pivot={pivot} uploadedPivot={uploadedPivot} elimPivot={elimPivot}
+    contributionCompanies={contributionCompanies}
+    topParent={topParent}
+    elimExpanded={elimExpanded} elimHeaders={elimHeaders}
+    compareMode={compareMode} cmpPivot={cmpPivot}
+    body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style} />
+))}
     </>
   );
 }
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function ConsolidationSheetPage({ token }) {
+const header1Style = useTypo("header1");
+const header2Style = useTypo("header2");
+  const body1Style = useTypo("body1");
+  const body2Style = useTypo("body2");
+  const subbody1Style = useTypo("subbody1");
+  const underscore1Style = useTypo("underscore1");
+  const underscore2Style = useTypo("underscore2");
+  const filterStyle = useTypo("filter");
+  const { colors } = useSettings();
   const [periods,        setPeriods]        = useState([]);
   const [sources,        setSources]        = useState([]);
   const [structures,     setStructures]     = useState([]);
@@ -215,6 +299,15 @@ export default function ConsolidationSheetPage({ token }) {
   const [loading,      setLoading]      = useState(false);
   const [metaReady,    setMetaReady]    = useState(false);
 const [expanded,     setExpanded]     = useState(new Set());
+const [elimExpanded, setElimExpanded] = useState(false);
+
+const [compareMode, setCompareMode] = useState(false);
+const [cmpYear,      setCmpYear]      = useState("");
+const [cmpMonth,     setCmpMonth]     = useState("");
+const [cmpSource,    setCmpSource]    = useState("");
+const [cmpStructure, setCmpStructure] = useState("");
+const [cmpRawData,   setCmpRawData]   = useState([]);
+const [cmpLoading,   setCmpLoading]   = useState(false);
 
   const autoPeriodDone = useRef(false);
 
@@ -357,16 +450,17 @@ if (!metaReady || !year || !month || !source || !structure || !topParent) return
     setJournalData([]);
     setExpanded(new Set());
     /* eslint-enable react-hooks/set-state-in-effect */
-    const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and GroupShortName eq '${topParent}'`;
+const consFilter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and GroupShortName eq '${topParent}'`;
+    const baseFilter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}'`;
 
     Promise.all([
-      fetch(`${BASE}/reports/consolidated-accounts?$filter=${encodeURIComponent(filter)}`, {
+      fetch(`${BASE}/reports/consolidated-accounts?$filter=${encodeURIComponent(consFilter)}`, {
         headers: { Authorization: `Bearer ${token}` }
       }).then(r => r.json()).then(d => d.value || []),
-      fetch(`${BASE}/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`, {
+      fetch(`${BASE}/reports/uploaded-accounts?$filter=${encodeURIComponent(baseFilter)}`, {
         headers: { Authorization: `Bearer ${token}` }
       }).then(r => r.json()).then(d => d.value || []),
-      fetch(`${BASE}/journal-entries?$filter=${encodeURIComponent(filter)}`, {
+      fetch(`${BASE}/journal-entries?$filter=${encodeURIComponent(baseFilter)}`, {
         headers: { Authorization: `Bearer ${token}` }
       }).then(r => r.json()).then(d => d.value || []),
 ])
@@ -409,6 +503,19 @@ if (!metaReady || !year || !month || !source || !structure || !topParent) return
       .catch(() => setLoading(false));
   }, [token, metaReady, year, month, source, structure, topParent]);
 
+  // ── Fetch compare data ────────────────────────────────────────────────────
+useEffect(() => {
+  if (!compareMode || !cmpYear || !cmpMonth || !cmpSource || !cmpStructure || !topParent) return;
+  setCmpLoading(true);
+  const filter = `Year eq ${cmpYear} and Month eq ${cmpMonth} and Source eq '${cmpSource}' and GroupStructure eq '${cmpStructure}' and GroupShortName eq '${topParent}'`;
+  fetch(`${BASE}/reports/consolidated-accounts?$filter=${encodeURIComponent(filter)}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  })
+    .then(r => r.json())
+    .then(d => { setCmpRawData(d.value || []); setCmpLoading(false); })
+    .catch(() => { setCmpRawData([]); setCmpLoading(false); });
+}, [token, compareMode, cmpYear, cmpMonth, cmpSource, cmpStructure, topParent]);
+
   // ── Derived data ──────────────────────────────────────────────────────────
 
   const pivot = useMemo(() => {
@@ -422,6 +529,18 @@ if (!metaReady || !year || !month || !source || !structure || !topParent) return
     return m;
   }, [rawData]);
 
+  // Compare-period pivot: { code → { company → consTotal, contribByCo } }
+const cmpPivot = useMemo(() => {
+  const m = new Map();
+  cmpRawData.forEach(r => {
+    if (!m.has(r.AccountCode)) m.set(r.AccountCode, {});
+    const c = m.get(r.AccountCode);
+    if (!c[r.CompanyShortName]) c[r.CompanyShortName] = [];
+    c[r.CompanyShortName].push(r);
+  });
+  return m;
+}, [cmpRawData]);
+
   // The Group-role company in these rows is always the selected perspective,
   // because we fetched with GroupShortName=topParent. Keep the read here so
   // elimination filtering stays correct if the data arrives before topParent
@@ -432,19 +551,40 @@ if (!metaReady || !year || !month || !source || !structure || !topParent) return
     )][0] || topParent;
   }, [rawData, topParent]);
 
-  // ── Elimination rollup ────────────────────────────────────────────────────
-  // Backend already scoped EJEs to this consolidation (via GroupShortName),
-  // so we just sum them up and roll into parent accounts.
-  const elimPivot = useMemo(() => {
-    const detail = new Map();
-    journalData
-      .filter(r => r.JournalType === "EJE" && r.CompanyShortName === groupRoleCompany)
-      .forEach(r => {
-        const ac = String(r.AccountCode ?? "").trim();
-        if (!ac) return;
-        detail.set(ac, (detail.get(ac) ?? 0) + -(Number(r.AmountYTD ?? 0)));
-      });
+// ── Elimination rollup by JournalHeader ───────────────────────────────────
+  // Each elimination journal has a meaningful Header describing what it does.
+  // We collect every distinct header that appears at Group level, bucket per
+  // header per account, and roll up the tree. Sub-columns are derived
+  // dynamically from the data — order is stable (alphabetical, with empty
+  // headers last).
+  const { elimPivot, elimHeaders } = useMemo(() => {
+    // 1. Collect Group-level journals only (these are the consolidation engine's postings)
+    const groupJournals = journalData.filter(r => r.CompanyShortName === topParent);
 
+    // 2. Discover all distinct headers
+    const headerSet = new Set();
+    groupJournals.forEach(r => {
+      const h = String(r.JournalHeader ?? "").trim() || "(no header)";
+      headerSet.add(h);
+    });
+    const headers = [...headerSet].sort((a, b) => {
+      if (a === "(no header)") return 1;
+      if (b === "(no header)") return -1;
+      return a.localeCompare(b, "es", { sensitivity: "base" });
+    });
+
+    // 3. Bucket per account per header
+    const empty = () => Object.fromEntries(headers.map(h => [h, 0]));
+    const detail = new Map();
+    groupJournals.forEach(r => {
+      const ac = String(r.AccountCode ?? "").trim();
+      if (!ac) return;
+      const h = String(r.JournalHeader ?? "").trim() || "(no header)";
+      if (!detail.has(ac)) detail.set(ac, empty());
+      detail.get(ac)[h] += -(Number(r.AmountYTD ?? 0));
+    });
+
+    // 4. Roll up the tree (parent inherits sum of all child journal entries)
     const parentOf = new Map();
     const seen = new Set();
     rawData.forEach(r => {
@@ -455,17 +595,39 @@ if (!metaReady || !year || !month || !source || !structure || !topParent) return
     });
 
     const m = new Map();
-    detail.forEach((amt, ac) => {
-      m.set(ac, (m.get(ac) ?? 0) + amt);
+    const addTo = (code, src) => {
+      if (!m.has(code)) m.set(code, empty());
+      const dst = m.get(code);
+      headers.forEach(h => { dst[h] += src[h]; });
+    };
+
+    detail.forEach((src, ac) => {
+      addTo(ac, src);
       let cur = ac;
       while (parentOf.has(cur)) {
         const par = parentOf.get(cur);
-        m.set(par, (m.get(par) ?? 0) + amt);
+        addTo(par, src);
         cur = par;
       }
     });
-    return m;
-  }, [journalData, rawData, groupRoleCompany]);
+
+// Drop headers where every account is zero (keeps the view clean)
+    const headerTotals = {};
+    headers.forEach(h => {
+      let absSum = 0;
+      for (const v of m.values()) absSum += Math.abs(v[h] ?? 0);
+      headerTotals[h] = absSum;
+    });
+    const nonEmptyHeaders = headers.filter(h => headerTotals[h] >= 1);
+
+    console.log("=== ELIM HEADERS DEBUG ===");
+    console.log("All headers found:", headers);
+    console.log("Header abs-sum totals:", headerTotals);
+    console.log("Headers kept (abs-sum ≥ 1):", nonEmptyHeaders);
+    console.log("=========================");
+
+    return { elimPivot: m, elimHeaders: nonEmptyHeaders };
+  }, [journalData, rawData, topParent]);
 
   const uploadedPivot = useMemo(() => {
     const m = new Map();
@@ -508,49 +670,90 @@ if (!metaReady || !year || !month || !source || !structure || !topParent) return
 {/* ── Header ── */}
       <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          <div className="w-1.5 h-10 rounded-full bg-[#1a2f8a]" />
+          <div className="w-1.5 h-10 rounded-full" style={{ backgroundColor: colors.primary }} />
           <div>
             <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Consolidated</p>
-            <h1 className="text-[29px] font-black text-[#1a2f8a] leading-none">Sheet</h1>
+            <h1 className="leading-none" style={header1Style}>Sheet</h1>
           </div>
         </div>
         <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
-        <div className="flex items-center gap-2 flex-wrap">
-          {sources.length > 0 && (
-            <FilterPill label="Source" value={source} onChange={setSource}
-              options={sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s }))} />
-          )}
-          {availableYears.length > 0 && (
-            <FilterPill label="Year" value={year} onChange={setYear} options={availableYears} />
-          )}
-          {availableMonths.length > 0 && (
-            <FilterPill label="Month" value={month} onChange={setMonth} options={availableMonths} />
-          )}
-          {structures.length > 0 && (
-            <FilterPill label="Structure" value={structure} onChange={setStructure}
-              options={structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s }))} />
-          )}
-          {holdingOptions.length > 1 && (
-            <FilterPill label="Perspective" value={topParent} onChange={setPerspectiveCompany}
-              options={holdingOptions} />
-          )}
-          {displayCurrency && (
-            <div className="flex items-center gap-1.5 px-3 py-2 rounded-2xl border text-xs font-bold bg-white border-[#c2c2c2] shadow-xl">
-              <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50">Currency</span>
-              <span className="text-[#1a2f8a]">{displayCurrency}</span>
-            </div>
-          )}
-        </div>
-        <div className="ml-auto flex items-center gap-3 flex-shrink-0 mr-6">
+<div className="flex items-center gap-2 flex-wrap">
+  {sources.length > 0 && (
+    <FilterPill label="Source" value={source} onChange={setSource}
+      options={sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s }))}
+      filterStyle={filterStyle} colors={colors} />
+  )}
+  {availableYears.length > 0 && (
+    <FilterPill label="Year" value={year} onChange={setYear} options={availableYears}
+      filterStyle={filterStyle} colors={colors} />
+  )}
+  {availableMonths.length > 0 && (
+    <FilterPill label="Month" value={month} onChange={setMonth} options={availableMonths}
+      filterStyle={filterStyle} colors={colors} />
+  )}
+  {structures.length > 0 && (
+    <FilterPill label="Structure" value={structure} onChange={setStructure}
+      options={structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s }))}
+      filterStyle={filterStyle} colors={colors} />
+  )}
+  {holdingOptions.length > 1 && (
+    <FilterPill label="Perspective" value={topParent} onChange={setPerspectiveCompany}
+      options={holdingOptions}
+      filterStyle={filterStyle} colors={colors} />
+  )}
+
+</div>
+<div className="ml-auto flex items-center gap-3 flex-shrink-0 mr-6">
           {loading && <Loader2 size={13} className="animate-spin text-[#1a2f8a]" />}
+          <button
+            onClick={() => {
+              if (!compareMode) {
+                setCmpYear(year); setCmpMonth(month);
+                setCmpSource(source); setCmpStructure(structure);
+              }
+              setCompareMode(c => !c);
+            }}
+            className="flex items-center gap-1 text-[10px] px-3 py-1.5 rounded-2xl transition-all font-bold uppercase tracking-widest"
+            style={{
+              backgroundColor: compareMode ? colors.primary : `${colors.primary}15`,
+              color: compareMode ? "white" : colors.primary,
+            }}>
+            Compare
+          </button>
           <button className="transition-all hover:opacity-80 hover:scale-105" title="Export Excel">
             <img src="https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png" width="44" height="36" alt="Excel" />
           </button>
-          <button className="transition-all hover:opacity-80 hover:scale-105" title="Export PDF">
+<button className="transition-all hover:opacity-80 hover:scale-105" title="Export PDF">
             <img src="https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png" width="30" height="36" alt="PDF" />
           </button>
         </div>
       </div>
+
+      {/* ── Compare filter row ── */}
+      {compareMode && (
+        <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            <div className="w-1.5 h-8 rounded-full" style={{ backgroundColor: "#FCD34D" }} />
+            <p className="text-[10px] font-black uppercase tracking-widest leading-none" style={{ color: "#0c1d55" }}>
+              Compare<br/>Period
+            </p>
+          </div>
+          <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
+          <div className="flex items-center gap-2 flex-wrap">
+            <FilterPill label="Source"    value={cmpSource}    onChange={setCmpSource}
+              options={sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s }))}
+              filterStyle={filterStyle} colors={colors} />
+            <FilterPill label="Year"      value={cmpYear}      onChange={setCmpYear}
+              options={availableYears} filterStyle={filterStyle} colors={colors} />
+            <FilterPill label="Month"     value={cmpMonth}     onChange={setCmpMonth}
+              options={availableMonths} filterStyle={filterStyle} colors={colors} />
+            <FilterPill label="Structure" value={cmpStructure} onChange={setCmpStructure}
+              options={structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s }))}
+              filterStyle={filterStyle} colors={colors} />
+            {cmpLoading && <Loader2 size={13} className="animate-spin text-amber-400 flex-shrink-0" />}
+          </div>
+        </div>
+      )}
 
       {/* ── Accounts view ── */}
       <div className="flex-1 min-h-0 flex flex-col">
@@ -565,14 +768,14 @@ if (!metaReady || !year || !month || !source || !structure || !topParent) return
                 No data for selected filters
               </div>
             ) : (
-              <div className="overflow-auto flex-1 min-h-0">
-                <table className="text-xs border-collapse w-full" style={{ borderSpacing: 0 }}>
+<div className="flex-1 min-h-0" style={{ overflowX: "auto", overflowY: "auto" }}>
+                <table className="text-xs border-collapse" style={{ borderSpacing: 0, width: "max-content", minWidth: "100%", tableLayout: "auto" }}>
 <thead className="sticky top-0 z-30">
                     {/* ── Row 1: overarching group headers ── */}
-                    <tr style={{ backgroundColor: "#1a2f8a" }}>
-<th className="sticky left-0 z-40 border-r border-white/20 text-left px-4 py-3" style={{ minWidth: 220, width: 220, backgroundColor: "#1a2f8a" }} rowSpan={2}>
+                    <tr style={{ backgroundColor: colors.primary }}>
+                      <th className="sticky left-0 z-40 border-r border-white/20 text-left px-4 py-3" style={{ minWidth: 220, width: 220, backgroundColor: colors.primary }} rowSpan={2}>
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-[10px] font-black text-white uppercase tracking-widest">Account</span>
+                         <span style={header2Style}>ACCOUNT</span>
                           <button
                             onClick={() => {
                               if (expanded.size > 0) { setExpanded(new Set()); }
@@ -583,50 +786,150 @@ if (!metaReady || !year || !month || !source || !structure || !topParent) return
                           </button>
                         </div>
                       </th>
-                      <th colSpan={3} className="px-4 py-2 text-center border-l border-white/20" style={{ backgroundColor: "#1a2f8a" }}>
-                        <span className="text-[9px] font-black text-white uppercase tracking-widest">
-                          Consolidation · {getLegal(topParent)}
-                        </span>
-                      </th>
-                      <th colSpan={contributionCompanies.length} className="px-4 py-2 text-center border-l border-white/20" style={{ backgroundColor: "#0f1f5c" }}>
-                        <span className="text-[9px] font-black text-white uppercase tracking-widest">Contribution</span>
-                      </th>
+<th colSpan={(2 + (elimExpanded ? elimHeaders.length : 0)) * (compareMode ? 3 : 1)} className="px-4 py-2 text-center border-l border-white/20"
+  style={{
+    backgroundColor: colors.primary,
+    boxShadow: "inset 0 0 0 9999px rgba(0,0,0,0.1)",
+  }}>
+  <span style={{ ...header2Style, textTransform: "uppercase", position: "relative" }}>
+    Consolidation · {getLegal(topParent)}
+  </span>
+</th>
+<th colSpan={(contributionCompanies.length + 1) * (compareMode ? 3 : 1)} className="px-4 py-2 text-center border-l border-white/20"
+  style={{
+    backgroundColor: colors.primary,
+    boxShadow: "inset 0 0 0 9999px rgba(0,0,0,0.1)",
+  }}>
+  <span style={{ ...header2Style, textTransform: "uppercase", position: "relative" }}>Contribution</span>
+</th>
                     </tr>
-                    {/* ── Row 2: individual column headers ── */}
-                    <tr style={{ borderBottom: "2px solid rgba(255,255,255,0.1)" }}>
-                      <th className="px-4 py-2.5 text-right border-l border-white/20" style={{ minWidth: 100, backgroundColor: "#1a2f8a" }}>
-                        <div className="flex flex-col items-end gap-0.5">
-                          <span className="text-[10px] font-black text-white uppercase tracking-widest">{topParent || "Total"}</span>
-                          <span className="text-[9px] text-white/40 font-bold">{isRootView ? "Consolidated" : "Subgroup"}</span>
-                        </div>
-                      </th>
-                      <th className="px-4 py-2.5 text-right border-l border-white/20" style={{ minWidth: 100, backgroundColor: "#1a2f8a" }}>
-                        <span className="text-[10px] font-black text-amber-300 uppercase tracking-widest">Eliminations</span>
-                      </th>
-                      <th className="px-4 py-2.5 text-right border-l border-white/20" style={{ minWidth: 110, backgroundColor: "#1a2f8a" }}>
-                        <span className="text-[10px] font-black text-white uppercase tracking-widest">Contribution</span>
-                        <div className="text-[9px] text-white/40 font-bold">Sum</div>
-                      </th>
-                      {contributionCompanies.map(c => (
-                        <th key={c} className="px-4 py-2.5 text-right border-l border-white/20" style={{ minWidth: 100, backgroundColor: "#0f1f5c" }}>
-                          <div className="flex flex-col items-end gap-0.5">
-                            <span className="text-[10px] font-black text-white uppercase tracking-widest block overflow-hidden text-ellipsis whitespace-nowrap max-w-full" title={getLegal(c)}>
-                              {getLegal(c)}
-                            </span>
-                            <span className="text-[9px] text-white/40 font-bold">{displayCurrency}</span>
-                          </div>
-                        </th>
-                      ))}
-                    </tr>
+{/* ── Row 2: individual column headers ── */}
+<tr style={{ borderBottom: "2px solid rgba(255,255,255,0.1)" }}>
+<th className="px-4 py-2.5 text-center border-l border-white/20" style={{ minWidth: 100, backgroundColor: colors.primary }}>
+    <div className="flex flex-col items-center gap-0.5">
+      <span style={underscore1Style}>{topParent || "Total"}</span>
+      <span style={underscore2Style}>{isRootView ? "Consolidated" : "Subgroup"}</span>
+    </div>
+  </th>
+  {compareMode && (
+    <>
+      <th className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "2px solid rgba(251,191,36,0.35)" }}>
+        <div className="flex flex-col items-center gap-0.5">
+          <span style={{ ...underscore1Style, color: "#Ffffff" }}>Compare</span>
+          <span style={underscore2Style}>&nbsp;</span>
+        </div>
+      </th>
+      <th className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "2px solid rgba(251,191,36,0.35)" }}>
+        <div className="flex flex-col items-center gap-0.5">
+          <span style={{ ...underscore1Style, color: "#Ffffff" }}>Δ</span>
+          <span style={underscore2Style}>&nbsp;</span>
+        </div>
+      </th>
+    </>
+  )}
+<th className="px-4 py-2.5 text-center border-l border-white/20 cursor-pointer hover:bg-white/10 transition-colors select-none"
+    style={{ minWidth: 100, backgroundColor: colors.primary }}
+    onClick={() => setElimExpanded(e => !e)}>
+    <div className="flex flex-col items-center gap-0.5">
+      <span style={underscore1Style}>
+        Eliminations {elimExpanded ? "▾" : "▸"}
+      </span>
+      <span style={underscore2Style}>&nbsp;</span>
+    </div>
+  </th>
+  {compareMode && (
+    <>
+      <th className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "2px solid rgba(251,191,36,0.35)" }}>
+        <div className="flex flex-col items-center gap-0.5">
+          <span style={{ ...underscore1Style, color: "#Ffffff" }}>Compare</span>
+          <span style={underscore2Style}>&nbsp;</span>
+        </div>
+      </th>
+      <th className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "2px solid rgba(251,191,36,0.35)" }}>
+        <div className="flex flex-col items-center gap-0.5">
+          <span style={{ ...underscore1Style, color: "#Ffffff" }}>Δ</span>
+          <span style={underscore2Style}>&nbsp;</span>
+        </div>
+      </th>
+    </>
+  )}
+{elimExpanded && elimHeaders.map((h, idx) => (
+    <th key={`elim-head-${h}`}
+      className="px-3 py-2.5 text-center border-l border-white/10"
+      style={{
+        minWidth: 140,
+        backgroundColor: colors.primary,
+        boxShadow: `inset 0 0 0 9999px rgba(0,0,0,${0.03 * (idx + 1)})`,
+      }}>
+      <div className="flex flex-col items-center gap-0.5">
+        <span style={{ ...underscore1Style, position: "relative", textTransform: "none" }}
+          title={h}>
+          {h}
+        </span>
+        <span style={underscore2Style}>&nbsp;</span>
+      </div>
+    </th>
+  ))}
+<th className="px-4 py-2.5 text-center border-l border-white/20" style={{ minWidth: 110, backgroundColor: colors.primary }}>
+    <div className="flex flex-col items-center gap-0.5">
+      <span style={underscore1Style}>Contribution</span>
+      <span style={underscore2Style}>Sum</span>
+    </div>
+  </th>
+  {compareMode && (
+    <>
+      <th className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "2px solid rgba(251,191,36,0.35)" }}>
+        <div className="flex flex-col items-center gap-0.5">
+          <span style={{ ...underscore1Style, color: "#Ffffff" }}>Compare</span>
+          <span style={underscore2Style}>&nbsp;</span>
+        </div>
+      </th>
+      <th className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "2px solid rgba(251,191,36,0.35)" }}>
+        <div className="flex flex-col items-center gap-0.5">
+          <span style={{ ...underscore1Style, color: "#Ffffff" }}>Δ</span>
+          <span style={underscore2Style}>&nbsp;</span>
+        </div>
+      </th>
+    </>
+  )}
+{contributionCompanies.flatMap(c => [
+    <th key={c} className="px-4 py-2.5 text-center border-l border-white/20" style={{ minWidth: 100, backgroundColor: colors.primary }}>
+      <div className="flex flex-col items-center gap-0.5">
+        <span className="block overflow-hidden text-ellipsis whitespace-nowrap max-w-full" style={underscore1Style} title={getLegal(c)}>
+          {getLegal(c)}
+        </span>
+        <span style={underscore2Style}>{displayCurrency}</span>
+      </div>
+    </th>,
+    ...(compareMode ? [
+      <th key={`${c}-cmp`} className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "2px solid rgba(251,191,36,0.35)" }}>
+        <div className="flex flex-col items-center gap-0.5">
+          <span style={{ ...underscore1Style, color: "#Ffffff" }}>Compare</span>
+          <span style={underscore2Style}>&nbsp;</span>
+        </div>
+      </th>,
+      <th key={`${c}-delta`} className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "2px solid rgba(251,191,36,0.35)" }}>
+        <div className="flex flex-col items-center gap-0.5">
+          <span style={{ ...underscore1Style, color: "#Ffffff" }}>Δ</span>
+          <span style={underscore2Style}>&nbsp;</span>
+        </div>
+      </th>,
+    ] : []),
+  ])}
+</tr>
+
                   </thead>
                   <tbody>
-                    {tree.map(node => (
-                      <SheetRow key={node.AccountCode} node={node} depth={0}
-                        expanded={expanded} onToggle={toggleExpand}
-                        pivot={pivot} uploadedPivot={uploadedPivot} elimPivot={elimPivot}
-                        contributionCompanies={contributionCompanies}
-                        topParent={topParent} />
-                    ))}
+{tree.map(node => (
+  <SheetRow key={node.AccountCode} node={node} depth={0}
+    expanded={expanded} onToggle={toggleExpand}
+    pivot={pivot} uploadedPivot={uploadedPivot} elimPivot={elimPivot}
+    contributionCompanies={contributionCompanies}
+    topParent={topParent}
+    elimExpanded={elimExpanded} elimHeaders={elimHeaders}
+    compareMode={compareMode} cmpPivot={cmpPivot}
+    body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style} />
+))}
                   </tbody>
                 </table>
               </div>

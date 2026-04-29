@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { ChevronDown, Loader2, X, RefreshCw, Search, Database, GitMerge } from "lucide-react";
-
+import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Search, Database, GitMerge, Maximize2, Minimize2 } from "lucide-react";
+import { useTypo, useSettings } from "./SettingsContext";
 const BASE_URL = "";
 
 const MONTHS = [
@@ -32,9 +32,62 @@ function parseAmt(val) {
   return parseFloat(s) || 0;
 }
 
+function pgcSort(a, b) {
+  const cA = a.AccountCode || a.code || "";
+  const cB = b.AccountCode || b.code || "";
+  const aA = /^[A-Za-z]/.test(cA), bA = /^[A-Za-z]/.test(cB);
+  if (aA && !bA) return -1;
+  if (!aA && bA) return 1;
+  const strip = c => c.replace(/\.S$/i, "");
+  const isSum = c => /\.S$/i.test(c);
+  const bsA = strip(cA), bsB = strip(cB);
+  if (bsA === bsB) {
+    if (isSum(cA) && !isSum(cB)) return 1;
+    if (!isSum(cA) && isSum(cB)) return -1;
+    return 0;
+  }
+  const pA = bsA.split("."), pB = bsB.split(".");
+  for (let i = 0; i < Math.max(pA.length, pB.length); i++) {
+    const a = pA[i] ?? "", b = pB[i] ?? "";
+    if (a === b) continue;
+    const na = Number(a), nb = Number(b);
+    if (!isNaN(na) && !isNaN(nb)) return na - nb;
+    return a.localeCompare(b, "es", { sensitivity: "base" });
+  }
+  return 0;
+}
+
+
+function buildTree(accounts) {
+  // Normalize field names (API returns camelCase, our pivot uses PascalCase)
+  const normalized = accounts.map(a => ({
+    ...a,
+    AccountCode:    a.AccountCode    ?? a.accountCode    ?? "",
+    AccountName:    a.AccountName    ?? a.accountName    ?? "",
+    SumAccountCode: a.SumAccountCode ?? a.sumAccountCode ?? "",
+  })).filter(a => a.AccountCode);
+
+  const sorted = [...normalized].sort(pgcSort);
+  const map = new Map();
+  sorted.forEach(a => map.set(a.AccountCode, { ...a, children: [] }));
+  const roots = [];
+  sorted.forEach(a => {
+    const parent = a.SumAccountCode ? map.get(a.SumAccountCode) : null;
+    if (parent && !/\.S$/i.test(parent.AccountCode)) {
+      parent.children.push(map.get(a.AccountCode));
+    } else {
+      const isNum = /^\d/.test(a.AccountCode);
+      const missing = a.SumAccountCode && !map.has(a.SumAccountCode);
+      if (!(isNum && missing)) roots.push(map.get(a.AccountCode));
+    }
+  });
+  return roots;
+}
+
 function FilterPill({ label, value, onChange, options }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
+  const filterTypo = useTypo("filter");
   const display = options.find(o => String(o.value) === String(value))?.label ?? "—";
   useEffect(() => {
     const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
@@ -44,26 +97,103 @@ function FilterPill({ label, value, onChange, options }) {
   return (
     <div ref={ref} className="relative flex-shrink-0">
       <button onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-2 px-3 py-2 rounded-2xl border text-xs font-bold transition-all select-none bg-white border-[#c2c2c2] text-[#505050] shadow-xl hover:border-[#1a2f8a]/40">
+        className="flex items-center gap-2 px-3 py-2 rounded-2xl border transition-all select-none bg-white border-[#c2c2c2] shadow-xl hover:border-[#1a2f8a]/40"
+        style={filterTypo}>
         <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50">{label}</span>
-        <span className="text-[#1a2f8a]">{display}</span>
+        <span>{display}</span>
         <ChevronDown size={10} className={`transition-transform duration-200 text-[#1a2f8a]/40 ${open ? "rotate-180" : ""}`} />
       </button>
       {open && (
         <div className="absolute top-full left-0 mt-2 z-50 min-w-[160px] bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden">
           <div className="p-1.5 max-h-64 overflow-y-auto">
-            {options.map(o => (
-              <button key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
-                className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-between gap-3
-                  ${String(o.value) === String(value) ? "bg-[#1a2f8a] text-white" : "text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]"}`}>
-                {o.label}
-                {String(o.value) === String(value) && <span className="w-1.5 h-1.5 rounded-full bg-white/60 flex-shrink-0" />}
-              </button>
-            ))}
+            {options.map(o => {
+              const selected = String(o.value) === String(value);
+              return (
+                <button key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
+                  className={`w-full text-left px-3 py-2 rounded-xl transition-all flex items-center justify-between gap-3
+                    ${selected ? "bg-[#1a2f8a] text-white" : "hover:bg-[#eef1fb]"}`}
+                  style={selected ? { ...filterTypo, color: "#ffffff" } : filterTypo}>
+                  {o.label}
+                  {selected && <span className="w-1.5 h-1.5 rounded-full bg-white/60 flex-shrink-0" />}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+const INDENT = 14;
+
+function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, body1Style, body2Style, header2Style, colors }) {
+  const code = node.AccountCode;
+  const hasChildren = node.children?.length > 0;
+  const isExpanded = expandedSet.has(code);
+// Get value: prefer the node's own value (backend subtotal), fall back to summing children
+  const getNodeVal = (dimKey) => {
+    const ownVal = getVal(code, dimKey);
+    if (ownVal !== 0) return ownVal;  // backend already provides this subtotal
+    if (!hasChildren) return 0;
+    let total = 0;
+    const sumChildren = (n) => {
+      n.children.forEach(c => {
+        const cv = getVal(c.AccountCode, dimKey);
+        if (cv !== 0) {
+          total += cv;
+        } else if (c.children?.length) {
+          sumChildren(c);
+        }
+      });
+    };
+    sumChildren(node);
+    return total;
+  };
+const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 0);
+
+  const cellColor = (v) => v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : "#000000";
+  const rowStyle = depth === 0 ? body1Style : body2Style;
+
+  return (
+    <>
+      <tr className="border-b border-gray-50 hover:bg-[#f8f9ff] transition-colors group">
+<td className="py-2.5 sticky left-0 z-10 border-r border-gray-100 bg-white group-hover:bg-[#f8f9ff]"
+          style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 300 }}>
+          <div className={`flex items-center ${hasChildren ? "cursor-pointer" : ""}`}
+            onClick={() => hasChildren && onToggle(code)}>
+            {hasChildren
+              ? <span className="flex-shrink-0 mr-2" style={{ color: rowStyle?.color }}>
+                  {isExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
+                </span>
+              : <span className="inline-block mr-2" style={{ width: 12 }} />}
+            <span className="flex-shrink-0 mr-2" style={rowStyle}>{code}</span>
+            <span className="truncate max-w-[280px]" style={rowStyle}>{node.AccountName ?? node.accountName ?? ""}</span>
+          </div>
+        </td>
+{dimCols.map(dim => {
+          const val = getNodeVal(dim.code ?? "__none__");
+          return (
+            <td key={dim.code ?? "__none__"}
+              className="px-4 py-2.5 text-center whitespace-nowrap"
+              style={{ ...rowStyle, color: cellColor(val) }}>
+              {val === 0 ? "—" : fmtAmt(val)}
+            </td>
+          );
+        })}
+        <td className="px-4 py-2.5 text-center whitespace-nowrap sticky right-0 z-10 border-l border-gray-100 bg-[#fafafa]"
+          style={{ ...rowStyle, color: cellColor(rowTotal), minWidth: 150 }}>
+          {rowTotal === 0 ? "—" : fmtAmt(rowTotal)}
+        </td>
+      </tr>
+{isExpanded && hasChildren && node.children.map(child => (
+        <DimensionRow key={child.AccountCode} node={child} depth={depth + 1}
+          expandedSet={expandedSet} onToggle={onToggle}
+          dimCols={dimCols} getVal={getVal}
+          body1Style={body1Style} body2Style={body2Style}
+          header2Style={header2Style} colors={colors} />
+      ))}
+    </>
   );
 }
 
@@ -134,13 +264,26 @@ const PGC_LINES = [
 ];
 
 /* ── Pivot Tab ────────────────────────────────────────────── */
-function PivotTab({ data, dimensions, onShowAccounts, selGroup, compareMode, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "" }) {
+function PivotTab({ data, dimensions, groupAccounts = [], onShowAccounts, selGroup, compareMode, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "" }) {
+  const header2Style = useTypo("header2");
+    const body1Style = useTypo("body1");
+  const body2Style = useTypo("body2");
+  const { colors } = useSettings();
+
   const headerRef = useRef(null);
   const bodyRef   = useRef(null);
   const onBodyScroll   = useCallback(() => { if (headerRef.current) headerRef.current.scrollLeft = bodyRef.current.scrollLeft; }, []);
   const onHeaderScroll = useCallback(() => { if (bodyRef.current)   bodyRef.current.scrollLeft = headerRef.current.scrollLeft; }, []);
 
+const [expandedSet, setExpandedSet] = useState(new Set());
 
+  const toggleExpand = useCallback(code => {
+    setExpandedSet(prev => {
+      const n = new Set(prev);
+      if (n.has(code)) n.delete(code); else n.add(code);
+      return n;
+    });
+  }, []);
 
   // Dims for selected group
   const groupDimCodes = useMemo(() => {
@@ -153,9 +296,9 @@ function PivotTab({ data, dimensions, onShowAccounts, selGroup, compareMode, sou
     );
   }, [dimensions, selGroup]);
 
-  // Build pivot from data
-  const { accounts, dimCols, pivot } = useMemo(() => {
-    if (!data.length) return { accounts: [], dimCols: [], pivot: new Map() };
+// Build pivot from data
+  const { tree, accountMap: allAccountMap, dimCols, pivot } = useMemo(() => {
+    if (!data.length) return { tree: [], accountMap: new Map(), dimCols: [], pivot: new Map() };
 
     // Filter rows by selected group
     const rows = groupDimCodes
@@ -164,18 +307,68 @@ function PivotTab({ data, dimensions, onShowAccounts, selGroup, compareMode, sou
           return !dc || groupDimCodes.has(dc);
         })
       : data;
-
-    // Unique accounts
-    const accountMap = new Map();
+// Get codes that actually have data in this period (with their names from data rows)
+    const dataAccountInfo = new Map();
     rows.forEach(r => {
       const code = r.AccountCode ?? r.accountCode ?? "";
-      const name = r.AccountName ?? r.accountName ?? "";
-      if (code && !accountMap.has(code)) accountMap.set(code, { code, name });
+      if (!code) return;
+      const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
+      if (lac && lac !== "—") return;
+      const acType = r.AccountType ?? r.accountType ?? "";
+      if (acType && acType !== "P/L") return;
+      if (!dataAccountInfo.has(code)) {
+        dataAccountInfo.set(code, {
+          AccountCode: code,
+          AccountName: r.AccountName ?? r.accountName ?? "",
+          SumAccountCode: r.SumAccountCode ?? r.sumAccountCode ?? "",
+          AccountType: acType,
+        });
+      }
     });
-    const accounts = [...accountMap.values()].sort((a, b) =>
-      a.code.localeCompare(b.code, undefined, { numeric: true })
-    );
 
+    // Build groupAccounts lookup (hierarchy source)
+    const groupMap = new Map();
+    (groupAccounts || []).forEach(a => {
+      const code = a.AccountCode ?? a.accountCode ?? "";
+      if (!code) return;
+      const acType = a.AccountType ?? a.accountType ?? "";
+      if (acType && acType !== "P/L") return;
+      groupMap.set(code, {
+        AccountCode: code,
+        AccountName: a.AccountName ?? a.accountName ?? "",
+        SumAccountCode: a.SumAccountCode ?? a.sumAccountCode ?? "",
+        AccountType: acType,
+        IsSumAccount: a.IsSumAccount ?? a.isSumAccount ?? false,
+      });
+    });
+
+    // Build accountMap: prefer groupAccounts (has hierarchy) but fall back to data
+    const accountMap = new Map();
+    if (groupMap.size > 0) {
+      // Walk up the hierarchy: include every ancestor of accounts that have data
+      const includeWithAncestors = (code) => {
+        if (accountMap.has(code)) return;
+        const a = groupMap.get(code);
+        if (!a) {
+          // Code exists in data but not in groupAccounts — add it as orphan
+          const fallback = dataAccountInfo.get(code);
+          if (fallback) accountMap.set(code, fallback);
+          return;
+        }
+        accountMap.set(code, a);
+        if (a.SumAccountCode) includeWithAncestors(a.SumAccountCode);
+      };
+      dataAccountInfo.forEach((_, code) => includeWithAncestors(code));
+    } else {
+      // No groupAccounts — flat list from data
+      dataAccountInfo.forEach((info, code) => accountMap.set(code, info));
+    }
+
+    const tree = buildTree([...accountMap.values()]);
+    console.log("[TREE DEBUG] groupAccounts.length:", (groupAccounts || []).length, "dataAccountInfo.size:", dataAccountInfo.size, "accountMap.size:", accountMap.size, "tree roots:", tree.length);
+console.log("[TREE DEBUG] accounts:", [...accountMap.values()].slice(0, 5));
+console.log("[TREE DEBUG] tree roots:", tree.length, "first:", tree[0]);
+console.log("[TREE DEBUG] sample with children:", tree.find(n => n.children?.length > 0));
     // Unique dim columns
     const dimMap = new Map();
     rows.forEach(r => {
@@ -206,11 +399,16 @@ const lacCheck = r.LocalAccountCode ?? r.localAccountCode ?? "";
       pivot.get(ac).set(key, (pivot.get(ac).get(key) ?? 0) + amt);
     });
 
-    return { accounts, dimCols, pivot };
-  }, [data, groupDimCodes]);
+return { tree, accountMap, dimCols, pivot };
+  }, [data, groupDimCodes, groupAccounts]);
 
-const getVal      = (ac, dk) => pivot.get(ac)?.get(dk) ?? 0;
-  const getRowTotal = (ac)     => dimCols.reduce((s, d) => s + getVal(ac, d.code ?? "__none__"), 0);
+  const expandAll = useCallback(() => {
+    setExpandedSet(new Set([...allAccountMap.keys()]));
+  }, [allAccountMap]);
+
+  const collapseAll = useCallback(() => setExpandedSet(new Set()), []);
+
+  const getVal = (ac, dk) => pivot.get(ac)?.get(dk) ?? 0;
 
   // Compare filter states
 
@@ -369,28 +567,41 @@ if (compareMode) {
         <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
           <div className="overflow-auto flex-1">
             <table className="w-full text-xs border-collapse">
-              <thead className="sticky top-0 z-10">
-                <tr style={{ backgroundColor: "#1a2f8a" }}>
-                  <th className="sticky left-0 z-30 text-left px-5 py-3 text-white font-black uppercase tracking-widest text-xs border-r border-white/20" style={{ backgroundColor: "#1a2f8a" }}>
-                    Dimension
+<thead className="sticky top-0 z-10">
+                <tr style={{ backgroundColor: colors.primary }}>
+                  <th className="sticky left-0 z-30 text-left px-5 py-3 border-r border-white/20" style={{ backgroundColor: colors.primary }}>
+                    <span style={header2Style}>Dimension</span>
                   </th>
-<th className="text-right px-4 py-3 text-white font-black text-xs whitespace-nowrap" style={{ backgroundColor: "#1a2f8a" }}>Standard</th>
-                  <th className="text-right px-4 py-3 text-white font-black text-xs whitespace-nowrap" style={{ backgroundColor: "#1a2f8a" }}>Compare 1</th>
-                  <th className="text-right px-4 py-3 text-white font-black text-xs whitespace-nowrap" style={{ backgroundColor: "#1a2f8a", opacity: 0.7 }}>Δ Amt</th>
-                  <th className="text-right px-4 py-3 text-white font-black text-xs whitespace-nowrap" style={{ backgroundColor: "#1a2f8a", opacity: 0.5 }}>Δ %</th>
-                  <th className="text-right px-4 py-3 text-white font-black text-xs whitespace-nowrap" style={{ backgroundColor: "#0f1f5c" }}>Compare 2</th>
-                  <th className="text-right px-4 py-3 text-white font-black text-xs whitespace-nowrap" style={{ backgroundColor: "#0f1f5c", opacity: 0.7 }}>Δ Amt</th>
-                  <th className="text-right px-4 py-3 text-white font-black text-xs whitespace-nowrap" style={{ backgroundColor: "#0f1f5c", opacity: 0.5 }}>Δ %</th>
+                  <th className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary }}>
+                    <span style={header2Style}>Standard</span>
+                  </th>
+                  <th className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary }}>
+                    <span style={header2Style}>Compare 1</span>
+                  </th>
+                  <th className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary, opacity: 0.85 }}>
+                    <span style={header2Style}>Δ Amt</span>
+                  </th>
+                  <th className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary, opacity: 0.7 }}>
+                    <span style={header2Style}>Δ %</span>
+                  </th>
+                  <th className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary, filter: "brightness(0.75)" }}>
+                    <span style={header2Style}>Compare 2</span>
+                  </th>
+                  <th className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary, filter: "brightness(0.75)", opacity: 0.85 }}>
+                    <span style={header2Style}>Δ Amt</span>
+                  </th>
+                  <th className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary, filter: "brightness(0.75)", opacity: 0.7 }}>
+                    <span style={header2Style}>Δ %</span>
+                  </th>
                 </tr>
               </thead>
 <tbody>
                 {dimCols.filter(dim => !!dim.code).map(dim => {
                   const dimKey = dim.code ?? "__none__";
 
-const lineDef = PGC_LINES.find(l => l.key === line) ?? PGC_LINES[0];
+                  const lineDef = PGC_LINES.find(l => l.key === line) ?? PGC_LINES[0];
                   const sumPivot = (p, pPrev) => {
                     let total = 0;
-                    // Iterate over ALL accounts in this pivot, not just Standard accounts
                     p.forEach((dimMap, acCode) => {
                       if (lineDef.test(acCode)) {
                         const ytd = dimMap.get(dimKey) ?? 0;
@@ -404,26 +615,41 @@ const lineDef = PGC_LINES.find(l => l.key === line) ?? PGC_LINES[0];
                     });
                     return total;
                   };
-const v1 = sumPivot(pivot, prevPivot);
+                  const v1 = sumPivot(pivot, prevPivot);
                   const v2 = sumPivot(pivot2, prevPivot2);
                   const v3 = sumPivot(pivot3, prevPivot3);
-                  const fmt = v => v === 0 ? <span className="text-gray-200">—</span> : <span className={v > 0 ? "text-[#1a2f8a]" : "text-red-500"}>{fmtAmt(v)}</span>;
+                  const valColor = v => v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : body1Style?.color ?? "#000000";
+                  const devColor = v => v === 0 ? "#D1D5DB" : v >= 0 ? "#059669" : "#EF4444";
                   return (
                     <tr key={dimKey} className="border-b border-gray-50 hover:bg-[#f8f9ff] transition-colors">
-                      <td className="sticky left-0 z-10 px-5 py-2.5 bg-white border-r border-gray-100">
-<span className="font-black text-xs text-[#1a2f8a]">{dim.name}</span>
+<td className="sticky left-0 z-10 px-5 py-2.5 bg-white border-r border-gray-100">
+                        <span style={body1Style}>{dim.name}</span>
                       </td>
-<td className="px-4 py-2.5 text-right font-mono text-xs">{fmt(v1)}</td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs">{fmt(v2)}</td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs text-amber-600">{v1 === 0 && v2 === 0 ? <span className="text-gray-200">—</span> : <span className={v1 - v2 >= 0 ? "text-emerald-600" : "text-red-500"}>{fmtAmt(v1 - v2)}</span>}</td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs">{v2 === 0 ? <span className="text-gray-200">—</span> : <span className={v1 - v2 >= 0 ? "text-emerald-600" : "text-red-500"}>{(((v1 - v2) / Math.abs(v2)) * 100).toFixed(1)}%</span>}</td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs">{fmt(v3)}</td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs">{v1 === 0 && v3 === 0 ? <span className="text-gray-200">—</span> : <span className={v1 - v3 >= 0 ? "text-emerald-600" : "text-red-500"}>{fmtAmt(v1 - v3)}</span>}</td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs">{v3 === 0 ? <span className="text-gray-200">—</span> : <span className={v1 - v3 >= 0 ? "text-emerald-600" : "text-red-500"}>{(((v1 - v3) / Math.abs(v3)) * 100).toFixed(1)}%</span>}</td>
+                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: valColor(v1) }}>
+                        {v1 === 0 ? "—" : fmtAmt(v1)}
+                      </td>
+                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: valColor(v2) }}>
+                        {v2 === 0 ? "—" : fmtAmt(v2)}
+                      </td>
+                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: v1 === 0 && v2 === 0 ? "#D1D5DB" : devColor(v1 - v2) }}>
+                        {v1 === 0 && v2 === 0 ? "—" : fmtAmt(v1 - v2)}
+                      </td>
+                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: v2 === 0 ? "#D1D5DB" : devColor(v1 - v2) }}>
+                        {v2 === 0 ? "—" : `${(((v1 - v2) / Math.abs(v2)) * 100).toFixed(1)}%`}
+                      </td>
+                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: valColor(v3) }}>
+                        {v3 === 0 ? "—" : fmtAmt(v3)}
+                      </td>
+                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: v1 === 0 && v3 === 0 ? "#D1D5DB" : devColor(v1 - v3) }}>
+                        {v1 === 0 && v3 === 0 ? "—" : fmtAmt(v1 - v3)}
+                      </td>
+                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: v3 === 0 ? "#D1D5DB" : devColor(v1 - v3) }}>
+                        {v3 === 0 ? "—" : `${(((v1 - v3) / Math.abs(v3)) * 100).toFixed(1)}%`}
+                      </td>
                     </tr>
                   );
                 })}
-             {(() => {
+                {(() => {
                   const lineDef = PGC_LINES.find(l => l.key === line) ?? PGC_LINES[0];
                   const sumAll = (p, pPrev) => {
                     let total = 0;
@@ -442,22 +668,37 @@ const v1 = sumPivot(pivot, prevPivot);
                     });
                     return total;
                   };
-const t1 = sumAll(pivot, prevPivot);
+                  const t1 = sumAll(pivot, prevPivot);
                   const t2 = sumAll(pivot2, prevPivot2);
                   const t3 = sumAll(pivot3, prevPivot3);
-                  const fmt = v => v === 0 ? <span className="text-gray-200">—</span> : <span className={v > 0 ? "text-[#1a2f8a]" : "text-red-500"}>{fmtAmt(v)}</span>;
+                  const valColor = v => v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : body1Style?.color ?? "#000000";
+                  const devColor = v => v === 0 ? "#D1D5DB" : v >= 0 ? "#059669" : "#EF4444";
                   return (
                     <tr key="__total__" className="border-t-2 border-[#1a2f8a]/20 bg-[#eef1fb]">
-                      <td className="sticky left-0 z-10 px-5 py-2.5 bg-[#eef1fb] border-r border-gray-100">
-                        <span className="font-black text-xs text-[#1a2f8a]">Total</span>
+<td className="sticky left-0 z-10 px-5 py-2.5 bg-[#eef1fb] border-r border-gray-100">
+                        <span style={body1Style}>Total</span>
                       </td>
-<td className="px-4 py-2.5 text-right font-mono text-xs font-bold">{fmt(t1)}</td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs font-bold">{fmt(t2)}</td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs font-bold">{t1 === 0 && t2 === 0 ? <span className="text-gray-200">—</span> : <span className={t1 - t2 >= 0 ? "text-emerald-600" : "text-red-500"}>{fmtAmt(t1 - t2)}</span>}</td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs font-bold">{t2 === 0 ? <span className="text-gray-200">—</span> : <span className={t1 - t2 >= 0 ? "text-emerald-600" : "text-red-500"}>{(((t1 - t2) / Math.abs(t2)) * 100).toFixed(1)}%</span>}</td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs font-bold">{fmt(t3)}</td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs font-bold">{t1 === 0 && t3 === 0 ? <span className="text-gray-200">—</span> : <span className={t1 - t3 >= 0 ? "text-emerald-600" : "text-red-500"}>{fmtAmt(t1 - t3)}</span>}</td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs font-bold">{t3 === 0 ? <span className="text-gray-200">—</span> : <span className={t1 - t3 >= 0 ? "text-emerald-600" : "text-red-500"}>{(((t1 - t3) / Math.abs(t3)) * 100).toFixed(1)}%</span>}</td>
+                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: valColor(t1) }}>
+                        {t1 === 0 ? "—" : fmtAmt(t1)}
+                      </td>
+                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: valColor(t2) }}>
+                        {t2 === 0 ? "—" : fmtAmt(t2)}
+                      </td>
+                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: t1 === 0 && t2 === 0 ? "#D1D5DB" : devColor(t1 - t2) }}>
+                        {t1 === 0 && t2 === 0 ? "—" : fmtAmt(t1 - t2)}
+                      </td>
+                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: t2 === 0 ? "#D1D5DB" : devColor(t1 - t2) }}>
+                        {t2 === 0 ? "—" : `${(((t1 - t2) / Math.abs(t2)) * 100).toFixed(1)}%`}
+                      </td>
+                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: valColor(t3) }}>
+                        {t3 === 0 ? "—" : fmtAmt(t3)}
+                      </td>
+                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: t1 === 0 && t3 === 0 ? "#D1D5DB" : devColor(t1 - t3) }}>
+                        {t1 === 0 && t3 === 0 ? "—" : fmtAmt(t1 - t3)}
+                      </td>
+                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: t3 === 0 ? "#D1D5DB" : devColor(t1 - t3) }}>
+                        {t3 === 0 ? "—" : `${(((t1 - t3) / Math.abs(t3)) * 100).toFixed(1)}%`}
+                      </td>
                     </tr>
                   );
                 })()}
@@ -483,13 +724,17 @@ const t1 = sumAll(pivot, prevPivot);
               {dimCols.map((_, i) => <col key={i} style={{ width: DCOL, minWidth: DCOL }} />)}
               <col style={{ width: TCOL, minWidth: TCOL }} />
             </colgroup>
-            <thead>
-              <tr style={{ backgroundColor: "#1a2f8a" }}>
-<th className="sticky left-0 z-30 text-left px-5 py-3 text-white font-black uppercase tracking-widest text-xs border-r border-white/20" style={{ backgroundColor: "#1a2f8a" }}>
+<thead>
+              <tr style={{ backgroundColor: colors.primary }}>
+<th className="sticky left-0 z-30 text-center px-5 py-3 border-r border-white/20" style={{ backgroundColor: colors.primary }}>
                   <div className="flex items-center justify-between gap-3">
-                    <span>Account</span>
+                    <span style={header2Style}>ACCOUNT</span>
                     <div className="flex items-center gap-2">
-                      <span className="text-white/40 text-[10px] font-bold normal-case tracking-normal">{accounts.length} accs · {dimCols.length} dims</span>
+                      <button onClick={() => expandedSet.size > 0 ? collapseAll() : expandAll()}
+                        className="flex items-center justify-center w-6 h-6 rounded-lg bg-white/10 hover:bg-white/20 transition-all"
+                        title={expandedSet.size > 0 ? "Collapse all" : "Expand all"}>
+                        {expandedSet.size > 0 ? <Minimize2 size={12} className="text-white/70"/> : <Maximize2 size={12} className="text-white/70"/>}
+                      </button>
                       <button onClick={onShowAccounts}
                         className="flex items-center justify-center w-6 h-6 rounded-lg bg-white/10 hover:bg-white/20 transition-all"
                         title="View uploaded accounts">
@@ -498,16 +743,13 @@ const t1 = sumAll(pivot, prevPivot);
                     </div>
                   </div>
                 </th>
-                {dimCols.map(dim => (
-                  <th key={dim.code ?? "__none__"} className="text-right px-4 py-3 text-white whitespace-nowrap text-xs" style={{ backgroundColor: dim.code ? "#1a2f8a" : "#0f1f5c" }}>
-                    <div className="flex flex-col items-end gap-0.5">
-                      <span className="font-black text-[11px] leading-tight truncate max-w-[120px]">{dim.name}</span>
-                      {dim.code && <span className="font-normal opacity-40 text-[9px]">{dim.code}</span>}
-                    </div>
+{dimCols.map(dim => (
+                  <th key={dim.code ?? "__none__"} className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary }}>
+                    <span className="leading-tight truncate max-w-[120px] inline-block" style={header2Style}>{dim.name}</span>
                   </th>
                 ))}
-                <th className="sticky right-0 z-10 text-right px-4 py-3 text-white font-black whitespace-nowrap border-l border-white/20 text-xs" style={{ backgroundColor: "#0f1f5c" }}>
-                  Total
+                <th className="sticky right-0 z-10 text-center px-4 py-3 whitespace-nowrap border-l border-white/20" style={{ backgroundColor: colors.primary }}>
+                  <span style={header2Style}>TOTAL</span>
                 </th>
               </tr>
             </thead>
@@ -522,31 +764,14 @@ const t1 = sumAll(pivot, prevPivot);
               {dimCols.map((_, i) => <col key={i} style={{ width: DCOL, minWidth: DCOL }} />)}
               <col style={{ width: TCOL, minWidth: TCOL }} />
             </colgroup>
-            <tbody>
-              {accounts.map(account => {
-                const rowTotal = getRowTotal(account.code);
-                return (
-                  <tr key={account.code} className="border-b border-gray-50 hover:bg-[#f8f9ff] transition-colors">
-                    <td className="py-2.5 sticky left-0 z-10 border-r border-gray-100 bg-white hover:bg-[#f8f9ff]" style={{ paddingLeft: 16, minWidth: ACOL }}>
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-mono text-xs text-gray-400 flex-shrink-0">{account.code}</span>
-                        <span className="text-xs text-gray-700 truncate max-w-[180px]">{account.name}</span>
-                      </div>
-                    </td>
-                    {dimCols.map(dim => {
-                      const val = getVal(account.code, dim.code ?? "__none__");
-                      return (
-                        <td key={dim.code ?? "__none__"} className={`px-4 py-2.5 text-right font-mono text-xs whitespace-nowrap ${val === 0 ? "text-gray-200" : val > 0 ? "text-[#1a2f8a]" : "text-red-500"}`}>
-                          {val === 0 ? "—" : fmtAmt(val)}
-                        </td>
-                      );
-                    })}
-                    <td className={`px-4 py-2.5 text-right font-mono text-xs whitespace-nowrap sticky right-0 z-10 border-l border-gray-100 bg-[#eef1fb] font-bold ${rowTotal === 0 ? "text-gray-300" : rowTotal > 0 ? "text-[#1a2f8a]" : "text-red-500"}`} style={{ minWidth: TCOL }}>
-                      {rowTotal === 0 ? "—" : fmtAmt(rowTotal)}
-                    </td>
-                  </tr>
-                );
-              })}
+<tbody>
+              {tree.map(node => (
+                <DimensionRow key={node.AccountCode} node={node} depth={0}
+                  expandedSet={expandedSet} onToggle={toggleExpand}
+                  dimCols={dimCols} getVal={getVal}
+                  body1Style={body1Style} body2Style={body2Style}
+                  header2Style={header2Style} colors={colors} />
+              ))}
             </tbody>
           </table>
         </div>
@@ -556,7 +781,11 @@ const t1 = sumAll(pivot, prevPivot);
 }
 
 /* ── Main ─────────────────────────────────────────────────── */
-export default function DimensionesPage({ token, sources = [], structures = [], companies = [], dimensions = [] }) {
+export default function DimensionesPage({ token, sources = [], structures = [], companies = [], dimensions = [], groupAccounts = [] }) {
+  const { colors } = useSettings();
+  const header1Style = useTypo("header1");
+  const underscore1Style = useTypo("underscore1");
+
   const [year,      setYear]      = useState("");
   const [month,     setMonth]     = useState("");
   const [metaReady, setMetaReady] = useState(false);
@@ -576,9 +805,23 @@ const [loading,   setLoading]   = useState(true);
     "Cache-Control": "no-cache",
   }), [token]);
 
-const autoPeriodDone = useRef(false);
-  const probedRef = useRef({ source: "", structure: "", company: "" });
-
+const probedRef = useRef({ source: "", structure: "", company: "" });
+// Load group accounts hierarchy (needed for drill-down tree)
+  const [groupAccountsLocal, setGroupAccountsLocal] = useState([]);
+  useEffect(() => {
+    if (!token) return;
+    fetch(`${BASE_URL}/v2/group-accounts`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return;
+        const rows = d.value ?? (Array.isArray(d) ? d : []);
+        console.log("[GROUP ACCOUNTS LOADED]", rows.length, "first:", rows[0]);
+        setGroupAccountsLocal(rows);
+      })
+      .catch(e => console.error("group-accounts fetch failed:", e));
+  }, [token]);
   useEffect(() => {
     if (!token) return;
     fetch(`${BASE_URL}/v2/periods`, {
@@ -639,7 +882,8 @@ useEffect(() => {
       // No data found — allow retry on next filter change
       probedRef.current.key = "";
     })();
-  }, [metaReady, source, structure, company, token]); // stable size, no year/month
+// eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [metaReady, source, structure, company, token]);
 
 
 
@@ -648,6 +892,7 @@ useEffect(() => {
       const s = sources[0];
       setSource(typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sources]);
 
   useEffect(() => {
@@ -655,6 +900,7 @@ useEffect(() => {
       const s = structures[0];
       setStructure(typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [structures]);
 
   useEffect(() => {
@@ -662,6 +908,7 @@ useEffect(() => {
       const c = companies[0];
       setCompany(typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : String(c));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companies]);
 
   const fetchData = useCallback(async () => {
@@ -706,11 +953,11 @@ useEffect(() => {
 
       {/* Header */}
       <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          <div className="w-1.5 h-10 rounded-full bg-[#1a2f8a]" />
+<div className="flex items-center gap-1.5 flex-shrink-0">
+          <div className="w-1.5 h-10 rounded-full" style={{ background: colors.primary }} />
           <div>
-            <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Individual</p>
-            <h1 className="text-[29px] font-black text-[#1a2f8a] leading-none">Dimensiones</h1>
+           <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Individual</p>
+            <h1 style={{ ...header1Style, lineHeight: 1 }}>Dimensiones</h1>
           </div>
         </div>
 
@@ -730,9 +977,11 @@ useEffect(() => {
 
 <div className="ml-auto flex items-center gap-3 flex-shrink-0 mr-6">
           {loading && <Loader2 size={13} className="animate-spin text-[#1a2f8a]" />}
-          <button onClick={() => setCompareMode(c => !c)}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black transition-all
-              ${compareMode ? "bg-amber-400 text-[#1a2f8a] shadow-xl" : "bg-white border border-gray-200 text-gray-500 hover:text-[#1a2f8a] shadow-xl"}`}>
+<button onClick={() => setCompareMode(c => !c)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black transition-all shadow-xl"
+            style={compareMode
+              ? { backgroundColor: colors.primary, color: "#ffffff" }
+              : { backgroundColor: "#ffffff", color: "#6b7280", border: "1px solid #e5e7eb" }}>
             <GitMerge size={12} /> Compare
           </button>
         </div>
@@ -761,7 +1010,7 @@ useEffect(() => {
           </div>
         </div>
 ) : (
-     <PivotTab data={rawData} dimensions={dimensions} onShowAccounts={() => setShowAccounts(true)} selGroup={selGroup} dimGroups={dimGroups} compareMode={compareMode} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} />
+   <PivotTab data={rawData} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroup={selGroup} dimGroups={dimGroups} compareMode={compareMode} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} />
       )}
 
       {showAccounts && (

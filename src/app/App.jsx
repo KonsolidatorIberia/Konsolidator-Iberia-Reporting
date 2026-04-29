@@ -3,45 +3,36 @@ import Login from "../auth/Login.jsx";
 import Shell from "../components/layout/Shell.jsx";
 import AppRoutes from "./routes.jsx";
 import { SettingsProvider } from "../components/layout/SettingsContext.jsx";
+import EpicLoader from "../components/layout/EpicLoader.jsx";
 
 const TOKEN_URL = "https://konsolidatorsignin.b2clogin.com/konsolidatorsignin.onmicrosoft.com/B2C_1_ropc/oauth2/v2.0/token";
 const CLIENT_ID = "20e20379-2661-4066-b297-90c2e089e899";
 const SCOPE = "https://konsolidatorsignin.onmicrosoft.com/1c72d99d-de80-416c-94d0-f84300b7d77e/User.Read";
 
-function IntroOverlay() {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1a2f8a]">
-      <div className="text-center">
-        <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-xl">
-          <span className="text-[#1a2f8a] font-black text-2xl">[K</span>
-        </div>
-        <p className="text-white font-black text-xl tracking-widest">KONSOLIDATOR</p>
-        <p className="text-blue-300 text-xs mt-2 tracking-widest uppercase">Loading your dashboard…</p>
-      </div>
-    </div>
-  );
-}
-
 export default function App() {
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
   const [creds, setCreds] = useState(null);
-  const [showIntro, setShowIntro] = useState(false);
+  const [loaderActive, setLoaderActive] = useState(false);
+  const [shellReady, setShellReady] = useState(false);
+  const [preloadedData, setPreloadedData] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const handleLogin = (accessToken, userData, credentials) => {
     setToken(accessToken);
     setUser(userData);
     setCreds(credentials);
-    setShowIntro(true);
-    setTimeout(() => setShowIntro(false), 1800);
+    setLoaderActive(true);
+    setShellReady(false);
   };
 
   const handleLogout = () => {
     setToken(null);
     setUser(null);
     setCreds(null);
-    setShowIntro(false);
+    setLoaderActive(false);
+    setShellReady(false);
+    setPreloadedData(null);
   };
 
   const handleRefresh = async () => {
@@ -65,14 +56,37 @@ export default function App() {
   };
 
   if (!token) return <Login onLogin={handleLogin} />;
+
   return (
     <SettingsProvider>
-      {showIntro && <IntroOverlay />}
-      <Shell key={refreshKey} user={user} onLogout={handleLogout} onRefresh={handleRefresh}>
-        {(activePage, onNavigate) => (
-          <AppRoutes token={token} activePage={activePage} onNavigate={onNavigate} />
-        )}
-      </Shell>
+      {loaderActive && (
+        <EpicLoader
+          token={token}
+          onDataLoaded={(d) => setPreloadedData(d)}
+          onReady={() => {
+            setShellReady(true);
+            setTimeout(() => setLoaderActive(false), 100);
+          }}
+        />
+      )}
+      <div
+        style={{
+          opacity: shellReady ? 1 : 0,
+          transform: shellReady ? "scale(1)" : "scale(0.96)",
+          transition: "opacity 600ms cubic-bezier(0.4,0,0.2,1) 100ms, transform 600ms cubic-bezier(0.4,0,0.2,1) 100ms",
+        }}
+      >
+        <Shell key={refreshKey} user={user} onLogout={handleLogout} onRefresh={handleRefresh}>
+          {(activePage, onNavigate) => (
+            <AppRoutes
+              token={token}
+              activePage={activePage}
+              onNavigate={onNavigate}
+              preloadedData={preloadedData}
+            />
+          )}
+        </Shell>
+      </div>
     </SettingsProvider>
   );
 }

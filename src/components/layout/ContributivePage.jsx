@@ -1,5 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useTypo, useSettings } from "./SettingsContext";
 import {
   ChevronDown, ChevronRight, Loader2, Maximize2, Minimize2,
 X, RefreshCw, Filter, TrendingUp, TrendingDown, BookOpen, GitMerge,
@@ -672,7 +673,7 @@ function generateContributivePdf({
 }
 
 /* ─── FilterPill ──────────────────────────────────────────────────────────── */
-function CompanyFilterPill({ cols, selected, onChange }) {
+function CompanyFilterPill({ cols, selected, onChange, filterStyle, colors }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -691,19 +692,20 @@ function CompanyFilterPill({ cols, selected, onChange }) {
 
   return (
     <div ref={ref} className="relative flex-shrink-0">
-      <button onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-2 px-3 py-2 rounded-2xl border text-xs font-bold transition-all select-none bg-white border-[#c2c2c2] text-[#505050] shadow-xl hover:border-[#1a2f8a]/40">
-        <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50">Companies</span>
-        <span className="text-[#1a2f8a]">{allSelected ? "All" : `${selected.length} selected`}</span>
-        <ChevronDown size={10} className={`transition-transform duration-200 text-[#1a2f8a]/40 ${open ? "rotate-180" : ""}`} />
-      </button>
+<button onClick={() => setOpen(o => !o)}
+  className="flex items-center gap-2 px-3 py-2 rounded-2xl border transition-all select-none bg-white border-[#c2c2c2] shadow-xl hover:border-[#1a2f8a]/40"
+  style={filterStyle}>
+  <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50">COMP</span>
+  <span>{allSelected ? "All" : `${selected.length} selected`}</span>
+  <ChevronDown size={10} className={`transition-transform duration-200 opacity-40 ${open ? "rotate-180" : ""}`} />
+</button>
       {open && (
         <div className="absolute top-full left-0 mt-2 z-50 min-w-[200px] bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden">
           <div className="p-1.5 max-h-72 overflow-y-auto">
 <button onClick={selectAll}
-              className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2.5 text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]">
-              <span className={`w-4 h-4 rounded flex-shrink-0 border-2 flex items-center justify-center transition-all
-                ${allSelected ? "bg-[#1a2f8a] border-[#1a2f8a]" : "border-gray-300 bg-white"}`}>
+  className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2.5 text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]">
+  <span className="w-4 h-4 rounded flex-shrink-0 border-2 flex items-center justify-center transition-all"
+    style={allSelected ? { backgroundColor: colors?.primary, borderColor: colors?.primary } : { borderColor: "#d1d5db", backgroundColor: "white" }}>
                 {allSelected && (
                   <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
                     <path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -713,20 +715,23 @@ function CompanyFilterPill({ cols, selected, onChange }) {
               All companies
             </button>
             <div className="my-1 border-t border-gray-100" />
-{cols.map(co => (
-              <button key={co} onClick={() => toggle(co)}
-                className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2.5 text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]">
-                <span className={`w-4 h-4 rounded flex-shrink-0 border-2 flex items-center justify-center transition-all
-                  ${selected.includes(co) ? "bg-[#1a2f8a] border-[#1a2f8a]" : "border-gray-300 bg-white"}`}>
-                  {selected.includes(co) && (
-                    <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
-                      <path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                  )}
+{cols.map(co => {
+  const isSel = selected.includes(co);
+  return (
+  <button key={co} onClick={() => toggle(co)}
+    className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2.5 text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]">
+    <span className="w-4 h-4 rounded flex-shrink-0 border-2 flex items-center justify-center transition-all"
+      style={isSel ? { backgroundColor: colors?.primary, borderColor: colors?.primary } : { borderColor: "#d1d5db", backgroundColor: "white" }}>
+{isSel && (
+  <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+    <path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+  </svg>
+)}
                 </span>
-                {co}
-              </button>
-            ))}
+{co}
+  </button>
+  );
+})}
           </div>
         </div>
       )}
@@ -734,7 +739,7 @@ function CompanyFilterPill({ cols, selected, onChange }) {
   );
 }
 
-function FilterPill({ label, value, onChange, options }) {
+function FilterPill({ label, value, onChange, options, filterStyle, colors }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const display = options.find(o => String(o.value) === String(value))?.label ?? "—";
@@ -747,26 +752,69 @@ function FilterPill({ label, value, onChange, options }) {
 
   return (
     <div ref={ref} className="relative flex-shrink-0">
-      <button onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-2 px-3 py-2 rounded-2xl border text-xs font-bold transition-all select-none bg-white border-[#c2c2c2] text-[#505050] shadow-xl hover:border-[#1a2f8a]/40">
-        <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50">{label}</span>
-        <span className="text-[#1a2f8a]">{display}</span>
-        <ChevronDown size={10} className={`transition-transform duration-200 text-[#1a2f8a]/40 ${open ? "rotate-180" : ""}`} />
-      </button>
+     <button onClick={() => setOpen(o => !o)}
+  className="flex items-center gap-2 px-3 py-2 rounded-2xl border transition-all select-none bg-white border-[#c2c2c2] shadow-xl hover:border-[#1a2f8a]/40"
+  style={filterStyle}>
+ <span style={{ ...filterStyle, fontSize: 9, fontWeight: 800, opacity: 0.5, textTransform: "uppercase", letterSpacing: "0.1em" }}>{label}</span>
+  <span>{display}</span>
+  <ChevronDown size={10} className={`transition-transform duration-200 opacity-40 ${open ? "rotate-180" : ""}`} />
+</button>
       {open && (
         <div className="absolute top-full left-0 mt-2 z-50 min-w-[160px] bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden">
           <div className="p-1.5 max-h-64 overflow-y-auto">
-            {options.map(o => (
-              <button key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
-                className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-between gap-3
-                  ${String(o.value) === String(value) ? "bg-[#1a2f8a] text-white" : "text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]"}`}>
-                {o.label}
-                {String(o.value) === String(value) && <span className="w-1.5 h-1.5 rounded-full bg-white/60 flex-shrink-0" />}
-              </button>
-            ))}
+{options.map(o => {
+  const selected = String(o.value) === String(value);
+  return (
+    <button key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
+      className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-between gap-3
+        ${selected ? "text-white" : "text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]"}`}
+      style={selected ? { backgroundColor: colors?.primary } : undefined}>
+      {o.label}
+      {selected && <span className="w-1.5 h-1.5 rounded-full bg-white/60 flex-shrink-0" />}
+    </button>
+  );
+})}
           </div>
-        </div>
+</div>
       )}
+    </div>
+  );
+}
+
+function TabSelector({ tabs, activeIdx, onSelect, filterStyle }) {
+  const containerRef = useRef(null);
+  const [indicator, setIndicator] = useState({ left: 0, width: 0 });
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const buttons = containerRef.current.querySelectorAll("button");
+    const active = buttons[activeIdx];
+    if (active) {
+      setIndicator({
+        left: active.offsetLeft,
+        width: active.offsetWidth,
+      });
+    }
+  }, [activeIdx, tabs.length]);
+
+  return (
+    <div ref={containerRef} className="relative flex items-center gap-1 p-1 bg-[#e6e6e6] rounded-2xl flex-shrink-0 shadow-xl">
+      <div
+        className="absolute top-1 bottom-1 bg-white shadow-sm rounded-2xl transition-all duration-300 ease-out"
+        style={{
+          left: indicator.left,
+          width: indicator.width,
+        }}
+      />
+      {tabs.map((t, i) => (
+        <button
+          key={t.key || "all"}
+          onClick={() => onSelect(t.key === tabs[activeIdx]?.key && t.key !== "" ? "" : t.key)}
+          className="relative z-10 px-3 py-2 rounded-2xl transition-all"
+          style={filterStyle}>
+          {t.label}
+        </button>
+      ))}
     </div>
   );
 }
@@ -803,9 +851,9 @@ const amt  = -(Number(r.ReportingAmountYTD ?? r.reportingAmountYTD ?? r.AmountYT
               <p className="text-white/40 text-[9px] uppercase tracking-widest">Amount YTD</p>
               <p className={`text-lg font-black ${total >= 0 ? "text-white" : "text-red-300"}`}>{fmtAmt(total)}</p>
             </div>
-            <button onClick={onClose} className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center">
-              <X size={13} className="text-white/70" />
-            </button>
+<button onClick={onClose} className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center">
+  <X size={13} className="text-white/70" />
+</button>
           </div>
         </div>
 
@@ -842,12 +890,12 @@ const amt  = -(Number(r.ReportingAmountYTD ?? r.reportingAmountYTD ?? r.AmountYT
 /* ─── Pivot Row ───────────────────────────────────────────────────────────── */
 const INDENT = 14;
 
-function PivotRow({ node, depth, expandedSet, onToggle, cols, pivot, onCellClick, expandedColsMap, journalPivot, compareMode, cmpPivot }) {
+function PivotRow({ node, depth, expandedSet, onToggle, cols, pivot, onCellClick, expandedColsMap, journalPivot, compareMode, cmpPivot, body1Style, body2Style }) {
   const code        = node.AccountCode;
   const hasChildren = node.children?.length > 0;
   const isExpanded  = expandedSet.has(code);
   const isSummary   = /\.S$/i.test(code) || hasChildren;
-
+const rowStyle = depth === 0 ? body1Style : body2Style;
 const getVal = co => pivot.get(code)?.[co]?.total ?? 0;
   const getJp  = co => journalPivot?.get(code)?.[co] ?? {};
   const getSaldo = co => getVal(co);
@@ -855,11 +903,10 @@ const getVal = co => pivot.get(code)?.[co]?.total ?? 0;
   const rowTotal = cols.reduce((s, co) => s + getVal(co), 0);
 
 
-  const cellColor = (v, bold) => {
-    if (v === 0) return "text-gray-200";
-    if (bold)    return v > 0 ? "font-black text-[#1a2f8a]" : "font-black text-red-500";
-    return v > 0 ? "text-gray-700" : "text-red-500";
-  };
+const cellStyle = (v) => {
+  const baseColor = v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : "#000000";
+  return { ...rowStyle, color: baseColor };
+};
 
   return (
     <>
@@ -870,18 +917,20 @@ const getVal = co => pivot.get(code)?.[co]?.total ?? 0;
         <td className={`py-2.5 sticky left-0 z-10 border-r border-gray-100
           ${isSummary ? "bg-[#ffffff]" : "bg-white group-hover:bg-[#f8f9ff]"}`}
           style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 280 }}>
-          <div className={`flex items-center gap-1.5 ${hasChildren ? "cursor-pointer" : ""}`}
-            onClick={() => hasChildren && onToggle(code)}>
-            {hasChildren
-              ? <span className="text-[#1a2f8a]/50 flex-shrink-0">{isExpanded ? <ChevronDown size={11}/> : <ChevronRight size={11}/>}</span>
-              : <span className="w-3 flex-shrink-0" />}
-            <span className={`font-mono text-xs flex-shrink-0 ${isSummary ? "text-[#1a2f8a]" : "text-gray-400"}`}>
-              {code}
-            </span>
-            <span className={`text-xs truncate max-w-[180px] ${isSummary ? "font-bold text-[#1a2f8a]" : "text-gray-700"}`}>
-              {node.AccountName ?? node.accountName ?? ""}
-            </span>
-          </div>
+<div className={`flex items-center ${hasChildren ? "cursor-pointer" : ""}`}
+  onClick={() => hasChildren && onToggle(code)}>
+  {hasChildren
+    ? <span className="flex-shrink-0 mr-2" style={{ color: rowStyle?.color }}>
+        {isExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
+      </span>
+    : <span className="inline-block mr-2" style={{ width: 12 }} />}
+  <span className="flex-shrink-0 mr-2" style={rowStyle}>
+    {code}
+  </span>
+  <span className="truncate max-w-[280px]" style={rowStyle}>
+    {node.AccountName ?? node.accountName ?? ""}
+  </span>
+</div>
         </td>
 
 {/* Per-company values */}
@@ -892,16 +941,15 @@ const getVal = co => pivot.get(code)?.[co]?.total ?? 0;
           const jp         = getJp(co);
           const saldo      = getSaldo(co);
 
-          const mainTd = (
-            <td key={co}
-              className={`px-4 py-2.5 text-right font-mono text-xs whitespace-nowrap transition-colors
-                ${val !== 0 && rows.length > 0 ? "cursor-pointer hover:bg-[#eef1fb]" : ""}
-                ${cellColor(saldo, isSummary)}`}
-              style={{ minWidth: 130 }}
-              onClick={() => val !== 0 && rows.length > 0 && onCellClick(node, co, rows)}
-            >
+const mainTd = (
+  <td key={co}
+    className={`px-4 py-2.5 text-center whitespace-nowrap transition-colors
+      ${val !== 0 && rows.length > 0 ? "cursor-pointer hover:bg-[#eef1fb]" : ""}`}
+    style={{ minWidth: 130, ...cellStyle(saldo) }}
+    onClick={() => val !== 0 && rows.length > 0 && onCellClick(node, co, rows)}
+  >
 {saldo === 0 ? <span className="text-gray-200">—</span> : (
-                <span className="flex items-center justify-end gap-1">
+  <span className="flex items-center justify-center gap-1">
                   {!isSummary && (saldo > 0
                     ? <TrendingUp size={9} className="text-emerald-400 opacity-0 group-hover:opacity-100 transition-opacity" />
                     : <TrendingDown size={9} className="text-red-400 opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -915,14 +963,14 @@ const getVal = co => pivot.get(code)?.[co]?.total ?? 0;
 const cmpVal = compareMode ? (cmpPivot?.get(code)?.[co] ?? 0) : 0;
           const dev = compareMode ? saldo - cmpVal : 0;
           const devPct = compareMode && cmpVal !== 0 ? ((dev / Math.abs(cmpVal)) * 100).toFixed(1) : null;
-          const cmpTd = compareMode ? (
-            <td key={`${co}-cmp`}
-              className="px-4 py-2.5 text-right font-mono text-xs whitespace-nowrap"
-              style={{ minWidth: 150, borderRight: "2px solid rgba(251,191,36,0.25)", backgroundColor: "white" }}>
+const cmpTd = compareMode ? (
+  <td key={`${co}-cmp`}
+    className="px-4 py-2.5 text-center font-mono text-xs whitespace-nowrap"
+    style={{ minWidth: 150, borderRight: "2px solid rgba(251,191,36,0.25)", backgroundColor: "white" }}>
               {cmpVal === 0 && dev === 0 ? (
                 <span className="text-gray-600">—</span>
               ) : (
-                <span className="flex flex-col items-end gap-0.5">
+                <span className="flex flex-col items-center gap-0.5">
                   <span className={`${isSummary ? "font-bold" : ""} ${cmpVal === 0 ? "text-gray-500" : "text-black"}`}>
                     {cmpVal === 0 ? "—" : fmtAmt(cmpVal)}
                   </span>
@@ -938,53 +986,51 @@ const cmpVal = compareMode ? (cmpPivot?.get(code)?.[co] ?? 0) : 0;
 
           if (!isExpanded) return [mainTd, ...(cmpTd ? [cmpTd] : [])];
 
-          const uploadedTd = (
-            <td key={`${co}-uploaded`}
-              className={`px-3 py-2.5 text-right font-mono text-xs whitespace-nowrap bg-[#f8f9ff] border-l border-gray-100
-                ${val === 0 ? "text-gray-200" : val > 0 ? "text-gray-700" : "text-red-500"}`}
-              style={{ minWidth: 110 }}
-              onClick={() => val !== 0 && rows.length > 0 && onCellClick(node, co, rows)}>
-              {val === 0 ? "—" : fmtAmt(val)}
-            </td>
-          );
+const uploadedTd = (
+  <td key={`${co}-uploaded`}
+    className="px-3 py-2.5 text-center whitespace-nowrap bg-[#f8f9ff] border-l border-gray-100"
+    style={{ minWidth: 110, ...cellStyle(val) }}
+    onClick={() => val !== 0 && rows.length > 0 && onCellClick(node, co, rows)}>
+    {val === 0 ? "—" : fmtAmt(val)}
+  </td>
+);
 
-          const subTds = SUB_COLS.map(sc => {
-            const subVal = jp[sc.key] ?? 0;
-            return (
-              <td key={`${co}-${sc.key}`}
-                className={`px-3 py-2.5 text-right font-mono text-xs whitespace-nowrap bg-[#f8f9ff] border-l border-gray-100
-                  ${subVal === 0 ? "text-gray-200" : sc.color}`}
-                style={{ minWidth: 100 }}>
-                {subVal === 0 ? "—" : fmtAmt(subVal)}
-              </td>
-            );
-          });
+const subTds = SUB_COLS.map(sc => {
+  const subVal = jp[sc.key] ?? 0;
+  return (
+    <td key={`${co}-${sc.key}`}
+      className="px-3 py-2.5 text-center whitespace-nowrap bg-[#f8f9ff] border-l border-gray-100"
+      style={{ minWidth: 100, ...cellStyle(subVal) }}>
+      {subVal === 0 ? "—" : fmtAmt(subVal)}
+    </td>
+  );
+});
 
           return [mainTd, ...(cmpTd ? [cmpTd] : []), uploadedTd, ...subTds];
         })}
 
-        {/* Row total — sticky right */}
-        <td className={`px-4 py-2.5 text-right font-mono text-xs whitespace-nowrap sticky right-0 z-10 border-l border-gray-100
-          ${isSummary ? "bg-[#eef1fb] font-bold" : "bg-white group-hover:bg-[#f8f9ff]"}
-          ${rowTotal === 0 ? "text-gray-300" : rowTotal > 0 ? "text-[#1a2f8a]" : "text-red-500"}`}
-          style={{ minWidth: 140 }}>
-          {rowTotal === 0 ? "—" : fmtAmt(rowTotal)}
-        </td>
+{/* Row total — sticky right */}
+<td className="px-4 py-2.5 text-center whitespace-nowrap sticky right-0 z-10 border-l border-gray-100"
+  style={{ minWidth: 140, backgroundColor: "#fafafa", ...cellStyle(rowTotal) }}>
+  {rowTotal === 0 ? "—" : fmtAmt(rowTotal)}
+</td>
       </tr>
 
 {isExpanded && hasChildren && node.children.map(child => (
-        <PivotRow key={child.AccountCode} node={child} depth={depth + 1}
-          expandedSet={expandedSet} onToggle={onToggle}
-          cols={cols} pivot={pivot} onCellClick={onCellClick}
-          expandedColsMap={expandedColsMap} journalPivot={journalPivot}
-          compareMode={compareMode} cmpPivot={cmpPivot}
-        />
-      ))}
+  <PivotRow key={child.AccountCode} node={child} depth={depth + 1}
+    expandedSet={expandedSet} onToggle={onToggle}
+    cols={cols} pivot={pivot} onCellClick={onCellClick}
+    expandedColsMap={expandedColsMap} journalPivot={journalPivot}
+    compareMode={compareMode} cmpPivot={cmpPivot}
+    body1Style={body1Style} body2Style={body2Style}
+  />
+))}
     </>
   );
 }
 
-function SyncedTable({ cols, tree, expandedSet, expandedColsMap, toggleCol, toggleExpand, pivot, journalPivot, accountMap, companies, groupStructure, hasData, collapseAll, expandAll, setDrilldown, getReportingCurrency, breakers = {},
+function SyncedTable({ cols, tree, expandedSet, expandedColsMap, toggleCol, toggleExpand, pivot, journalPivot, accountMap, companies, 
+  groupStructure, hasData, collapseAll, expandAll, setDrilldown, getReportingCurrency, breakers = {},body1Style, body2Style, header2Style, header3Style, underscore1Style, underscore2Style, filterStyle, colors,
   compareMode, onToggleCompare, cmpPivot, cmpLoading,
   cmpYear, setCmpYear, cmpMonth, setCmpMonth, cmpSource, setCmpSource, cmpStructure, setCmpStructure,
   yearOpts = [], monthOpts = [], sourceOpts = [], structureOpts = []
@@ -1029,20 +1075,19 @@ const cmpPeriodLabel = cmpYear && cmpMonth
     const isExp = !!expandedColsMap[co];
     const legalName = companies.find(c => (c.CompanyShortName ?? c.companyShortName) === co)?.CompanyLegalName
       ?? companies.find(c => (c.CompanyShortName ?? c.companyShortName) === co)?.companyLegalName ?? co;
-    const main = (
-      <th key={co}
-        className="text-right px-4 py-3 text-white whitespace-nowrap text-xs cursor-pointer hover:bg-white/10 transition-colors select-none"
-        style={{ backgroundColor: "#1a2f8a" }}
-        onClick={() => toggleCol(co)}>
-        <div className="flex items-center justify-end gap-1.5">
-          <div>
-            <p className="font-black text-[12px] leading-tight">{legalName}</p>
-            <p className="font-normal opacity-50 text-[10px]">{co} · {getReportingCurrency(co, groupStructure, companies)}</p>
-          </div>
-          <ChevronDown size={10} className={`opacity-50 transition-transform duration-200 flex-shrink-0 ${isExp ? "rotate-180" : ""}`} />
-        </div>
-      </th>
-    );
+const main = (
+  <th key={co}
+    className="px-4 py-3 whitespace-nowrap cursor-pointer hover:bg-white/10 transition-colors select-none"
+    style={{ backgroundColor: colors.primary }}
+    onClick={() => toggleCol(co)}>
+    <div className="flex items-center justify-center">
+      <div>
+        <p className="leading-tight" style={underscore1Style}>{legalName}</p>
+        <p className="leading-tight" style={underscore2Style}>{co} · {getReportingCurrency(co, groupStructure, companies)}</p>
+      </div>
+    </div>
+  </th>
+);
     const cmpTh = compareMode ? (
       <th key={`${co}-cmp`}
         className="text-right px-4 py-3 whitespace-nowrap text-xs"
@@ -1051,22 +1096,20 @@ const cmpPeriodLabel = cmpYear && cmpMonth
         <p className="font-normal text-white text-[9px]">{co} · Δ</p>
       </th>
     ) : null;
-    if (!isExp) return [main, ...(cmpTh ? [cmpTh] : [])];
-    const uploadedTh = (
-      <th key={`${co}-uploaded`}
-        className="text-right px-3 py-3 whitespace-nowrap text-[10px] font-black border-l border-white/10 text-white/50"
-        style={{ backgroundColor: "#1a3070" }}>
-        Uploaded
-      </th>
-    );
-    const subs = SUB_COLS.map(sc => (
-      <th key={`${co}-${sc.key}`}
-        className="text-right px-3 py-3 whitespace-nowrap text-[10px] font-black border-l border-white/10 text-white/60"
-        style={{ backgroundColor: "#1e3494" }}>
-        {sc.label}
-      </th>
-    ));
-    return [main, ...(cmpTh ? [cmpTh] : []), uploadedTh, ...subs];
+if (!isExp) return [main, ...(cmpTh ? [cmpTh] : [])];
+// 5 sub-columns: Uploaded, AJE, RJE, EJE, SYS — each darkened by 3% more
+const subColsAll = [{ key: "uploaded", label: "UPLOADED" }, ...SUB_COLS];
+const subThs = subColsAll.map((sc, idx) => (
+  <th key={`${co}-${sc.key}`}
+    className="px-3 py-3 whitespace-nowrap border-l border-white/10"
+    style={{
+      backgroundColor: colors.primary,
+      boxShadow: `inset 0 0 0 9999px rgba(0,0,0,${0.03 * (idx + 1)})`,
+    }}>
+    <div className="flex justify-center" style={underscore2Style}>{sc.label}</div>
+  </th>
+));
+return [main, ...(cmpTh ? [cmpTh] : []), ...subThs];
   });
 
   const totalWidth = colWidths.reduce((s, w) => s + w, 0) + 1;
@@ -1077,40 +1120,46 @@ return (
       <table style={{ borderCollapse: "collapse", width: "max-content", minWidth: "100%", tableLayout: "auto", borderSpacing: 0 }}>
         {colgroup}
         <thead style={{ position: "sticky", top: 0, zIndex: 20 }}>
-          <tr style={{ backgroundColor: "#1a2f8a" }}>
-            <th className="sticky left-0 z-30 text-left px-5 py-3 text-white font-black uppercase tracking-widest text-xs border-r border-white/20"
-              style={{ backgroundColor: "#1a2f8a" }}>
+<tr style={{ backgroundColor: colors.primary }}>
+<th className="sticky left-0 z-30 text-left px-5 py-3 border-r border-white/20"
+  style={{ backgroundColor: colors.primary }}>
               <div className="flex items-center justify-between gap-3">
-                <span>Account</span>
+                <span style={header2Style}>ACCOUNTS</span>
                 <div className="flex items-center gap-2">
-                  {hasData && <span className="text-white/40 text-[10px] font-bold normal-case tracking-normal">{accountMap.size} accs · {cols.length} cols</span>}
 {hasData && (
-                    <>
-                      <button onClick={() => expandedSet.size > 0 ? collapseAll() : expandAll()}
-                        className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white/70 hover:text-white transition-all font-bold normal-case tracking-normal">
-                        {expandedSet.size > 0 ? <Minimize2 size={14}/> : <Maximize2 size={14}/>}
-                      </button>
-                      <button onClick={onToggleCompare}
-                        className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded-lg transition-all font-bold normal-case tracking-normal ${compareMode ? "bg-amber-400 text-[#1a2f8a]" : "bg-white/10 hover:bg-white/20 text-white/70 hover:text-white"}`}>
-                        <GitMerge size={12} /> Compare
-                      </button>
-                    </>
-                  )}
+  <>
+    <button onClick={() => expandedSet.size > 0 ? collapseAll() : expandAll()}
+      className="flex items-center gap-1 text-[12px] px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 transition-all font-bold normal-case tracking-normal"
+      style={{ color: colors.quaternary }}>
+      {expandedSet.size > 0 ? <Minimize2 size={14}/> : <Maximize2 size={14}/>}
+    </button>
+<button onClick={onToggleCompare}
+  className={`flex items-center gap-1 text-[10px] px-3 py-1 rounded-lg transition-all font-bold normal-case tracking-normal ${compareMode ? "" : "bg-white/10 hover:bg-white/20"}`}
+  style={{
+    color: compareMode ? colors.primary : colors.quaternary,
+    backgroundColor: compareMode ? colors.quaternary : undefined,
+  }}>
+  <GitMerge size={12} /> Compare
+</button>
+  </>
+)}
                 </div>
               </div>
             </th>
             {headerCols}
-<th className="sticky right-0 z-10 text-right px-4 py-3 text-white font-black whitespace-nowrap border-l border-white/20 text-xs"
-              style={{ backgroundColor: "#0f1f5c" }}>Total</th>
+<th className="sticky right-0 z-10 px-4 py-3 whitespace-nowrap border-l border-white/20"
+  style={{ backgroundColor: colors.primary }}>
+  <div className="flex justify-center" style={header2Style}>TOTAL</div>
+</th>
           </tr>
 {compareMode && (
   <tr style={{ backgroundColor: "white", borderBottom: "1px solid rgba(251,191,36,0.2)" }}>
     <th className="px-5 py-2 sticky left-0 z-30" style={{ backgroundColor: "white" }}>
       <div className="flex items-center gap-2">
-        <FilterPill label="Source"    value={cmpSource}    onChange={setCmpSource}    options={sourceOpts}    />
-        <FilterPill label="Year"      value={cmpYear}      onChange={setCmpYear}      options={yearOpts}      />
-        <FilterPill label="Month"     value={cmpMonth}     onChange={setCmpMonth}     options={monthOpts}     />
-        <FilterPill label="Structure" value={cmpStructure} onChange={setCmpStructure} options={structureOpts} />
+        <FilterPill label="SRC"    value={cmpSource}    onChange={setCmpSource}    options={sourceOpts}    filterStyle={filterStyle} colors={colors} />
+        <FilterPill label="YR"      value={cmpYear}      onChange={setCmpYear}      options={yearOpts}      filterStyle={filterStyle} colors={colors} />
+        <FilterPill label="MNTH"     value={cmpMonth}     onChange={setCmpMonth}     options={monthOpts}     filterStyle={filterStyle} colors={colors} />
+        <FilterPill label="STRUCT" value={cmpStructure} onChange={setCmpStructure} options={structureOpts} filterStyle={filterStyle} colors={colors} />
         {cmpLoading && <Loader2 size={11} className="animate-spin text-amber-400 flex-shrink-0" />}
       </div>
     </th>
@@ -1119,42 +1168,49 @@ return (
 )}
         </thead>
         <tbody>
-          {tree.map((node, i) => {
-            const type = node.AccountType ?? node.accountType ?? "";
-            const prevType = i > 0 ? (tree[i-1].AccountType ?? tree[i-1].accountType ?? "") : null;
-            const showDivider = type !== prevType;
-            const TYPE_LABELS = {
-              "P/L": { label: "Profit & Loss",          color: "#1A2B6B" },
-              "DIS": { label: "Distribution of Result", color: "#374151" },
-              "B/S": { label: "Balance Sheet",          color: "#1a2f8a" },
-              "C/F": { label: "Cash Flow",              color: "#1e3a5f" },
-              "CFS": { label: "Cash Flow",              color: "#1e3a5f" },
-            };
-            const divider = showDivider ? (TYPE_LABELS[type] ?? { label: type, color: "#374151" }) : null;
+{tree.map((node, i) => {
+  const type = node.AccountType ?? node.accountType ?? "";
+  const prevType = i > 0 ? (tree[i-1].AccountType ?? tree[i-1].accountType ?? "") : null;
+  const showDivider = type !== prevType;
+const TYPE_LABELS = {
+  "P/L": { label: "Profit & Loss",          color: colors.primary,   darken: true },
+  "DIS": { label: "Distribution of Result", color: colors.primary,   },
+  "B/S": { label: "Balance Sheet",          color: colors.secondary               },
+  "C/F": { label: "Cash Flow",              color: colors.tertiary                },
+  "CFS": { label: "Cash Flow",              color: colors.tertiary                },
+};
+  const divider = showDivider ? (TYPE_LABELS[type] ?? { label: type, color: colors.quaternary }) : null;
             return (
               <>
 {divider && (
   <tr key={`divider-${node.AccountCode}`}>
     <td
-      style={{ backgroundColor: divider.color }}
+      style={{
+        backgroundColor: divider.color,
+        boxShadow: divider.darken ? "inset 0 0 0 9999px rgba(0,0,0,0.2)" : undefined,
+      }}
       className="px-5 py-1.5 sticky left-0 z-10">
-      <span className="text-[10px] font-black uppercase tracking-widest text-white">
+      <span style={{ ...header3Style, textTransform: "uppercase", position: "relative" }}>
         {divider.label}
       </span>
     </td>
     <td colSpan={totalColSpan - 1}
-      style={{ backgroundColor: divider.color }}
+      style={{
+        backgroundColor: divider.color,
+        boxShadow: divider.darken ? "inset 0 0 0 9999px rgba(0,0,0,0.2)" : undefined,
+      }}
       className="py-1.5">
     </td>
   </tr>
 )}
 <PivotRow key={node.AccountCode} node={node} depth={0}
-                  expandedSet={expandedSet} onToggle={toggleExpand}
-                  cols={cols} pivot={pivot}
-                  onCellClick={(node, co, rows) => setDrilldown({ node, company: co, rows })}
-                  expandedColsMap={expandedColsMap} journalPivot={journalPivot}
-                  compareMode={compareMode} cmpPivot={cmpPivot}
-                />
+  expandedSet={expandedSet} onToggle={toggleExpand}
+  cols={cols} pivot={pivot}
+  onCellClick={(node, co, rows) => setDrilldown({ node, company: co, rows })}
+  expandedColsMap={expandedColsMap} journalPivot={journalPivot}
+  compareMode={compareMode} cmpPivot={cmpPivot}
+  body1Style={body1Style} body2Style={body2Style}
+/>
               </>
             );
           })}
@@ -1166,6 +1222,15 @@ return (
 
 /* ─── Main ────────────────────────────────────────────────────────────────── */
 export default function ContributivePage({ token }) {
+  const header1Style = useTypo("header1");
+  const header2Style = useTypo("header2");
+  const header3Style = useTypo("header3");
+  const body1Style = useTypo("body1");
+  const body2Style = useTypo("body2");
+  const filterStyle = useTypo("filter");
+  const underscore1Style = useTypo("underscore1");
+const underscore2Style = useTypo("underscore2");
+  const { colors } = useSettings();
   const [periods,       setPeriods]       = useState([]);
   const [sources,       setSources]       = useState([]);
   const [structures,    setStructures]    = useState([]);
@@ -1504,47 +1569,57 @@ const cmpPivot = new Map();
         .contributive-body::-webkit-scrollbar-track { background: transparent; }
       `}</style>
 {showJournals && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setShowJournals(false)}>
-          <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" />
-          <div className="relative bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-[95vw] max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
-            <div className="bg-[#1a2f8a] px-5 py-4 flex items-center justify-between flex-shrink-0">
-              <div>
-                <p className="text-white font-black text-sm">Journal Entries</p>
-                <p className="text-white/50 text-[10px]">{journalData.length} entries · {year} · {MONTHS.find(m => m.value === Number(month))?.label} · {source}</p>
-              </div>
-              <button onClick={() => setShowJournals(false)} className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center">
-                <X size={13} className="text-white/70" />
-              </button>
-            </div>
-            <div className="overflow-auto flex-1">
-              <table className="w-full text-xs border-collapse">
-                <thead className="sticky top-0 z-10">
-                  <tr className="bg-[#eef1fb]">
-                    {["Company","Account","Type","Journal #","Header","J.Type","Layer","Counterparty","Dimension","Amount YTD","CCY","Row Text","Posted","Sys Gen"].map(h => (
-                      <th key={h} className="text-left px-3 py-2.5 text-[10px] font-black text-[#1a2f8a] uppercase tracking-widest whitespace-nowrap border-b border-gray-200">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {journalData.map((r, i) => (
-                    <tr key={i} className={`border-b border-gray-50 hover:bg-blue-50/30 transition-colors ${i % 2 === 0 ? "" : "bg-gray-50/40"}`}>
-                      <td className="px-3 py-2 whitespace-nowrap font-bold text-gray-700">{r.CompanyShortName ?? r.companyShortName}</td>
-                      <td className="px-3 py-2 whitespace-nowrap"><span className="font-mono text-gray-400 mr-1">{r.AccountCode ?? r.accountCode}</span><span className="text-gray-600">{r.AccountName ?? r.accountName}</span></td>
-                      <td className="px-3 py-2 whitespace-nowrap text-gray-500">{r.AccountType ?? r.accountType}</td>
-                      <td className="px-3 py-2 whitespace-nowrap font-mono font-bold text-[#1a2f8a]">{r.JournalNumber ?? r.journalNumber}</td>
-                      <td className="px-3 py-2 whitespace-nowrap text-gray-600 max-w-[180px] truncate">{r.JournalHeader ?? r.journalHeader}</td>
-                      <td className="px-3 py-2 whitespace-nowrap"><span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 font-bold">{r.JournalType ?? r.journalType}</span></td>
-                      <td className="px-3 py-2 whitespace-nowrap text-gray-500">{r.JournalLayer ?? r.journalLayer}</td>
-                      <td className="px-3 py-2 whitespace-nowrap text-gray-500">{r.CounterpartyShortName ?? r.counterpartyShortName}</td>
-                      <td className="px-3 py-2 whitespace-nowrap text-gray-500">{r.DimensionName ?? r.dimensionName}</td>
-                      <td className={`px-3 py-2 whitespace-nowrap font-mono font-bold text-right ${(r.AmountYTD ?? r.amountYTD) >= 0 ? "text-[#1a2f8a]" : "text-red-500"}`}>{fmtAmt(r.AmountYTD ?? r.amountYTD)}</td>
-                      <td className="px-3 py-2 whitespace-nowrap text-gray-400">{r.CurrencyCode ?? r.currencyCode}</td>
-                      <td className="px-3 py-2 text-gray-400 max-w-[160px] truncate">{r.RowText ?? r.rowText}</td>
-                      <td className="px-3 py-2 whitespace-nowrap"><span className={`px-1.5 py-0.5 rounded font-bold ${(r.Posted ?? r.posted) ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-600"}`}>{(r.Posted ?? r.posted) ? "Yes" : "No"}</span></td>
-                      <td className="px-3 py-2 whitespace-nowrap"><span className={`px-1.5 py-0.5 rounded font-bold ${(r.SystemGenerated ?? r.systemGenerated) ? "bg-gray-100 text-gray-500" : "bg-white text-gray-400"}`}>{(r.SystemGenerated ?? r.systemGenerated) ? "Yes" : "No"}</span></td>
-                    </tr>
-                  ))}
-                </tbody>
+  <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setShowJournals(false)}>
+    <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" />
+    <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[95vw] max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="px-5 py-4 flex items-center justify-between flex-shrink-0" style={{ backgroundColor: colors.primary }}>
+        <div>
+          <p style={header2Style}>Journal Entries</p>
+          <p style={underscore2Style}>{journalData.length} entries · {year} · {MONTHS.find(m => m.value === Number(month))?.label} · {source}</p>
+        </div>
+        <button onClick={() => setShowJournals(false)} className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center">
+          <X size={13} className="text-white/70" />
+        </button>
+      </div>
+      <div className="overflow-auto flex-1">
+        <table className="w-full border-collapse">
+<thead className="sticky top-0 z-10">
+  <tr>
+    {["Company","Account","Type","Journal #","Header","J.Type","Layer","Counterparty","Dimension","Amount YTD","CCY","Row Text","Posted","Sys Gen"].map(h => (
+      <th key={h}
+        className="text-left px-3 py-2.5 whitespace-nowrap"
+        style={{
+          backgroundColor: colors.primary,
+          boxShadow: "inset 0 0 0 9999px rgba(0,0,0,0.1)",
+        }}>
+        <span style={{ ...underscore1Style, position: "relative" }}>{h}</span>
+      </th>
+    ))}
+  </tr>
+</thead>
+<tbody>
+  {journalData.map((r, i) => {
+    const amt = Number(r.AmountYTD ?? r.amountYTD) || 0;
+    return (
+      <tr key={i} className={`border-b border-gray-50 hover:bg-blue-50/30 transition-colors ${i % 2 === 0 ? "" : "bg-gray-50/40"}`} style={body2Style}>
+        <td className="px-3 py-2 whitespace-nowrap">{r.CompanyShortName ?? r.companyShortName}</td>
+        <td className="px-3 py-2 whitespace-nowrap"><span className="mr-1 opacity-60">{r.AccountCode ?? r.accountCode}</span><span>{r.AccountName ?? r.accountName}</span></td>
+        <td className="px-3 py-2 whitespace-nowrap">{r.AccountType ?? r.accountType}</td>
+        <td className="px-3 py-2 whitespace-nowrap">{r.JournalNumber ?? r.journalNumber}</td>
+        <td className="px-3 py-2 whitespace-nowrap max-w-[180px] truncate">{r.JournalHeader ?? r.journalHeader}</td>
+        <td className="px-3 py-2 whitespace-nowrap"><span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600">{r.JournalType ?? r.journalType}</span></td>
+        <td className="px-3 py-2 whitespace-nowrap">{r.JournalLayer ?? r.journalLayer}</td>
+        <td className="px-3 py-2 whitespace-nowrap">{r.CounterpartyShortName ?? r.counterpartyShortName}</td>
+        <td className="px-3 py-2 whitespace-nowrap">{r.DimensionName ?? r.dimensionName}</td>
+        <td className="px-3 py-2 whitespace-nowrap text-right" style={{ color: amt === 0 ? "#D1D5DB" : amt < 0 ? "#EF4444" : "#000000" }}>{fmtAmt(amt)}</td>
+        <td className="px-3 py-2 whitespace-nowrap">{r.CurrencyCode ?? r.currencyCode}</td>
+        <td className="px-3 py-2 max-w-[160px] truncate">{r.RowText ?? r.rowText}</td>
+        <td className="px-3 py-2 whitespace-nowrap"><span className={`px-1.5 py-0.5 rounded ${(r.Posted ?? r.posted) ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-600"}`}>{(r.Posted ?? r.posted) ? "Yes" : "No"}</span></td>
+        <td className="px-3 py-2 whitespace-nowrap"><span className={`px-1.5 py-0.5 rounded ${(r.SystemGenerated ?? r.systemGenerated) ? "bg-gray-100 text-gray-500" : "bg-white text-gray-400"}`}>{(r.SystemGenerated ?? r.systemGenerated) ? "Yes" : "No"}</span></td>
+      </tr>
+    );
+  })}
+</tbody>
               </table>
             </div>
           </div>
@@ -1566,48 +1641,46 @@ const cmpPivot = new Map();
 {/* Header */}
       <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          <div className="w-1.5 h-10 rounded-full bg-[#1a2f8a]" />
+          <div className="w-1.5 h-10 rounded-full" style={{ backgroundColor: colors.primary }} />
           <div>
             <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Accounts</p>
-            <h1 className="text-[29px] font-black text-[#1a2f8a] leading-none">Contr</h1>
+            <h1 className="leading-none" style={header1Style}>Contr</h1>
           </div>
         </div>
 
 <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
 
-        {types.length > 0 && (
-          <div className="flex items-center gap-1 p-1 bg-[#e6e6e6] rounded-2xl flex-shrink-0 shadow-xl">
-            <button onClick={() => setTypeFilter("")}
-              className={`px-3 py-2 rounded-2xl text-xs font-black transition-all ${!typeFilter ? "bg-white text-[#1a2f8a] shadow-sm" : "text-[#636363]"}`}>
-              All
-            </button>
-            {types.map(t => (
-              <button key={t} onClick={() => setTypeFilter(t === typeFilter ? "" : t)}
-                className={`px-3 py-2 rounded-2xl text-xs font-black transition-all ${typeFilter === t ? "bg-white text-[#1a2f8a] shadow-sm" : "text-[#636363]"}`}>
-                {t}
-              </button>
-            ))}
-          </div>
-        )}
+{types.length > 0 && (() => {
+  const tabs = [{ key: "", label: "All" }, ...types.map(t => ({ key: t, label: t }))];
+  const activeIdx = Math.max(0, tabs.findIndex(t => t.key === typeFilter));
+  return <TabSelector tabs={tabs} activeIdx={activeIdx} onSelect={setTypeFilter} filterStyle={filterStyle} />;
+})()}
 
         <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
 
 <div className="flex items-center gap-2 flex-wrap">
-          {sourceOpts.length > 0    && <FilterPill label="Source"    value={source}    onChange={setSource}    options={sourceOpts}    />}
-          {yearOpts.length > 0      && <FilterPill label="Year"      value={year}      onChange={setYear}      options={yearOpts}      />}
-          {monthOpts.length > 0     && <FilterPill label="Month"     value={month}     onChange={setMonth}     options={monthOpts}     />}
-          {structureOpts.length > 0 && <FilterPill label="Structure" value={structure} onChange={setStructure} options={structureOpts} />}
-{cols.length > 0 && <CompanyFilterPill cols={cols} selected={selectedCompanies} onChange={setSelectedCompanies} />}
-        </div>
+  {sourceOpts.length > 0    && <FilterPill label="SRC"    value={source}    onChange={setSource}    options={sourceOpts}    filterStyle={filterStyle} colors={colors} />}
+  {yearOpts.length > 0      && <FilterPill label="YR"      value={year}      onChange={setYear}      options={yearOpts}      filterStyle={filterStyle} colors={colors} />}
+  {monthOpts.length > 0     && <FilterPill label="MNTH"     value={month}     onChange={setMonth}     options={monthOpts}     filterStyle={filterStyle} colors={colors} />}
+  {structureOpts.length > 0 && <FilterPill label="STURCT" value={structure} onChange={setStructure} options={structureOpts} filterStyle={filterStyle} colors={colors} />}
+{cols.length > 0 && <CompanyFilterPill cols={cols} selected={selectedCompanies} onChange={setSelectedCompanies} filterStyle={filterStyle} colors={colors} />}
+</div>
 
 <div className="ml-auto flex items-center gap-3 flex-shrink-0 mr-6">
           {loading && <Loader2 size={13} className="animate-spin text-[#1a2f8a]" />}
-          {journalData.length > 0 && (
-            <button onClick={() => setShowJournals(true)}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#eef1fb] text-[#1a2f8a] text-xs font-black hover:bg-[#1a2f8a] hover:text-white transition-all">
-              Journal Entries ({journalData.length})
-            </button>
-          )}
+{journalData.length > 0 && (
+  <button onClick={() => setShowJournals(true)}
+    title={`Journal Entries (${journalData.length})`}
+    className="relative flex items-center justify-center w-10 h-10 rounded-xl transition-all hover:scale-110 hover:shadow-md"
+    style={{ backgroundColor: `${colors.primary}15` }}>
+    <BookOpen size={18} style={{ color: colors.primary }} />
+    <span
+      className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center text-[10px] font-black text-white"
+      style={{ backgroundColor: colors.primary }}>
+      {journalData.length}
+    </span>
+  </button>
+)}
 <button className="transition-all hover:opacity-80 hover:scale-105" title="Export Excel"
   onClick={() => generateContributiveXlsx({
     tree, pivot,
@@ -1655,6 +1728,14 @@ const cmpPivot = new Map();
 <SyncedTable
   cols={selectedCompanies.length === 0 ? cols : cols.filter(c => selectedCompanies.includes(c))}
   tree={tree}
+  body1Style={body1Style}
+  body2Style={body2Style}
+  header2Style={header2Style}
+  header3Style={header3Style}
+  underscore1Style={underscore1Style}
+  underscore2Style={underscore2Style}
+  filterStyle={filterStyle}
+  colors={colors}
   expandedSet={expandedSet}
   expandedColsMap={expandedColsMap}
   toggleCol={toggleCol}

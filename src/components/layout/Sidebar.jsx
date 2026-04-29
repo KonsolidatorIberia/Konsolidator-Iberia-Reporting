@@ -2,17 +2,16 @@ import { useState, useRef } from "react";
 import {
   Home, Network, FileText, Layers, SlidersHorizontal,
   PieChart, Table, Table2, BookOpen, TrendingUp, BarChart3,
-  ChevronRight, Eye, RefreshCw, Filter,
+  ChevronRight, Eye, RefreshCw, Filter, Settings, Database,
 } from "lucide-react";
+import { useTypo, useSettings } from "./SettingsContext";
 
 const NAV = [
   { key: "home",      label: "Home",      icon: Home },
-  { key: "structure", label: "Structure", icon: Network },
   {
     key: "individual", label: "Individual", icon: FileText,
     children: [
       { key: "individual-data",        label: "Data",        icon: Table    },
-      { key: "individual-contributive",label: "Contributive",icon: PieChart },
       { key: "individual-kpis",        label: "KPIs",        icon: BarChart3 },
       { key: "individual-dimensiones", label: "Dimensiones", icon: Filter   },
     ],
@@ -20,9 +19,10 @@ const NAV = [
   {
     key: "consolidated", label: "Consolidated", icon: Layers,
     children: [
-      { key: "consolidated-sheet", label: "Consolidation Sheet", icon: Table     },
-      { key: "consolidated-mgmt",  label: "Consolidating Mgmt",  icon: BarChart3 },
-      { key: "consolidated-notes", label: "Memory Notes",        icon: BookOpen  },
+      { key: "individual-contributive", label: "Contributive",        icon: PieChart  },
+      { key: "consolidated-sheet",      label: "Consolidation Sheet", icon: Table     },
+      { key: "consolidated-mgmt",       label: "Consolidating Mgmt",  icon: BarChart3 },
+      { key: "consolidated-notes",      label: "Memory Notes",        icon: BookOpen  },
     ],
   },
   {
@@ -34,6 +34,12 @@ const NAV = [
     ],
   },
   { key: "views", label: "Views", icon: Eye },
+  {
+    key: "data-explorer", label: "Data Explorer", icon: Database,
+    children: [
+      { key: "structure", label: "Structure", icon: Network },
+    ],
+  },
 ];
 
 const W_OPEN     = "10vw";
@@ -41,6 +47,10 @@ const W_CLOSED   = "4.5vw";
 const TRANSITION = "400ms cubic-bezier(0.25,0.1,0.25,1)";
 
 export default function Sidebar({ activePage, onNavigate, user, collapsed, onToggleCollapse, height = "100vh", onRefresh }) {
+  const { colors } = useSettings();
+  const body1Style = useTypo("body1");
+  const body2Style = useTypo("body2");
+
   const [hoveredKey, setHoveredKey] = useState(null);
   const [flyoutTop,  setFlyoutTop]  = useState(0);
   const rowRefs      = useRef({});
@@ -84,7 +94,7 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
             style={{ opacity: collapsed ? 1 : 0, transition: `opacity ${TRANSITION}`, pointerEvents: "none" }} />
         </div>
 
-        {/* ── Nav ── */}
+{/* ── Nav ── */}
         <div className="bg-white rounded-2xl shadow-xl border border-gray-100 flex-1 flex flex-col py-3 overflow-visible">
           {NAV.map((item) => {
             const isActiveParent = activeParent === item.key;
@@ -101,16 +111,22 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
               >
                 <button
                   onClick={() => !hasChildren && onNavigate?.(item.key)}
-                  className={`w-full flex items-center py-2.5 transition-colors
-                    ${isActiveParent
-                      ? "text-[#3151e0] bg-[#1a2f8a]/5 border-r-2"
-                      : "text-[#2f3138] hover:text-gray-600 hover:bg-gray-100"}`}
-                  style={{ justifyContent: "flex-start", paddingLeft: "1.25rem", paddingRight: "1rem" }}
+                  className="w-full flex items-center py-2.5 transition-colors hover:bg-gray-100"
+                  style={{
+                    justifyContent: "flex-start",
+                    paddingLeft: "1.25rem",
+                    paddingRight: "1rem",
+                    color: isActiveParent ? colors.primary : (body1Style?.color ?? "#2f3138"),
+                    backgroundColor: isActiveParent ? `${colors.primary}0d` : "transparent",
+                    borderRight: isActiveParent ? `2px solid ${colors.primary}` : "none",
+                  }}
                 >
                   <item.icon size={20} className="flex-shrink-0" style={{ minWidth: 16 }} />
                   <span
-                    className="text-xs font-semibold text-left overflow-hidden whitespace-nowrap"
+                    className="text-left overflow-hidden whitespace-nowrap"
                     style={{
+                      ...body1Style,
+                      color: isActiveParent ? colors.primary : body1Style?.color,
                       maxWidth:   collapsed ? 0 : 140,
                       opacity:    collapsed ? 0 : 1,
                       marginLeft: "0.75rem",
@@ -134,12 +150,14 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
                         <button
                           key={child.key}
                           onClick={() => { onNavigate?.(child.key); setHoveredKey(null); }}
-                          className={`w-full flex items-center gap-2 pl-10 pr-4 py-2 text-left relative
-                            ${isActive ? "text-[#1a2f8a]" : "text-gray-400 hover:text-[#1a2f8a]"}`}
-                          style={{ animation: (!collapsed && isHovered) ? `navSlideIn 200ms ease ${ci * 45}ms both` : "none" }}
+                          className="w-full flex items-center gap-2 pl-10 pr-4 py-2 text-left relative"
+                          style={{
+                            color: isActive ? colors.primary : (body2Style?.color ?? "#9ca3af"),
+                            animation: (!collapsed && isHovered) ? `navSlideIn 200ms ease ${ci * 45}ms both` : "none",
+                          }}
                         >
-                          {isActive && <span className="absolute left-5 top-1/2 -translate-y-1/2 w-0.5 h-3.5 bg-[#1a2f8a] rounded-full" />}
-                          <span className={`text-xs whitespace-nowrap ${isActive ? "font-black" : "font-medium"}`}>
+                          {isActive && <span className="absolute left-5 top-1/2 -translate-y-1/2 w-0.5 h-3.5 rounded-full" style={{ backgroundColor: colors.primary }} />}
+                          <span className="whitespace-nowrap" style={{ ...body2Style, color: isActive ? colors.primary : body2Style?.color }}>
                             {child.label}
                           </span>
                         </button>
@@ -150,6 +168,42 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
               </div>
             );
           })}
+
+          {/* Settings — pinned to bottom */}
+          <div className="mt-auto pt-2 border-t border-gray-100">
+            {(() => {
+              const isActive = activePage === "settings";
+              return (
+                <button
+                  onClick={() => onNavigate?.("settings")}
+                  className="w-full flex items-center py-2.5 transition-colors hover:bg-gray-100"
+                  style={{
+                    justifyContent: "flex-start",
+                    paddingLeft: "1.25rem",
+                    paddingRight: "1rem",
+                    color: isActive ? colors.primary : (body1Style?.color ?? "#2f3138"),
+                    backgroundColor: isActive ? `${colors.primary}0d` : "transparent",
+                    borderRight: isActive ? `2px solid ${colors.primary}` : "none",
+                  }}
+                >
+                  <Settings size={20} className="flex-shrink-0" style={{ minWidth: 16 }} />
+                  <span
+                    className="text-left overflow-hidden whitespace-nowrap"
+                    style={{
+                      ...body1Style,
+                      color: isActive ? colors.primary : body1Style?.color,
+                      maxWidth:   collapsed ? 0 : 140,
+                      opacity:    collapsed ? 0 : 1,
+                      marginLeft: "0.75rem",
+                      transition: `max-width ${TRANSITION}, opacity ${TRANSITION}`,
+                    }}
+                  >
+                    Settings
+                  </span>
+                </button>
+              );
+            })()}
+          </div>
         </div>
 
         {/* ── User ── */}
@@ -161,7 +215,7 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
             transition: `max-height ${TRANSITION}, opacity ${TRANSITION}`,
           }}>
             <div className="flex items-center gap-2 px-2 pb-1 cursor-pointer" onClick={() => onNavigate?.("user")}>
-              <div className="w-7 h-7 bg-[#1a2f8a] rounded-full flex items-center justify-center text-white text-xs font-black flex-shrink-0">
+<div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-black flex-shrink-0" style={{ backgroundColor: colors.primary }}>
                 {user?.username?.[0]?.toUpperCase() || "U"}
               </div>
               <p className="text-xs font-semibold text-gray-700 truncate">{user?.username}</p>
@@ -196,15 +250,17 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
           {hoveredItem.children.map((child, ci) => {
             const isActive = activePage === child.key;
             return (
-              <button
+<button
                 key={child.key}
                 onClick={() => { onNavigate?.(child.key); setHoveredKey(null); }}
-                className={`flex items-center gap-2 px-3 py-2 w-full text-left whitespace-nowrap rounded-lg transition-colors
-                  ${isActive ? "text-[#1a2f8a]" : "text-gray-500 hover:text-[#1a2f8a] hover:bg-blue-50/50"}`}
-                style={{ animation: `navSlideIn 180ms ease ${ci * 40}ms both` }}
+                className="flex items-center gap-2 px-3 py-2 w-full text-left whitespace-nowrap rounded-lg transition-colors hover:bg-blue-50/50"
+                style={{
+                  color: isActive ? colors.primary : (body2Style?.color ?? "#6b7280"),
+                  animation: `navSlideIn 180ms ease ${ci * 40}ms both`,
+                }}
               >
-                {isActive && <span className="w-0.5 h-3 bg-[#1a2f8a] rounded-full flex-shrink-0" />}
-                <span className={`text-xs ${isActive ? "font-black" : "font-medium"}`}>{child.label}</span>
+                {isActive && <span className="w-0.5 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: colors.primary }} />}
+                <span className="whitespace-nowrap" style={{ ...body2Style, color: isActive ? colors.primary : body2Style?.color }}>{child.label}</span>
               </button>
               
             );

@@ -42,33 +42,38 @@ const WEIGHTS = [
 const DEFAULT_SETTINGS = {
   typography: {
     header1:      { font: "Inter, sans-serif", size: 29, weight: 900, color: "#1A2F8A" },
-    header2:      { font: "Inter, sans-serif", size: 18, weight: 800, color: "#1A2F8A" },
-    body1:        { font: "Inter, sans-serif", size: 13, weight: 500, color: "#2F3138" },
-    body2:        { font: "Inter, sans-serif", size: 11, weight: 400, color: "#6B7280" },
-    underscore1:  { font: "Inter, sans-serif", size: 10, weight: 800, color: "#9CA3AF" },
-    underscore2:  { font: "Inter, sans-serif", size: 9,  weight: 700, color: "#B0B4BD" },
+    header2:      { font: "Inter, sans-serif", size: 12, weight: 800, color: "#ffffff" },
+    header3:      { font: "Inter, sans-serif", size: 12, weight: 700, color: "#FFFFFF" },
+    body1:        { font: "Inter, sans-serif", size: 12, weight: 600, color: "#2F3138" },
+    body2:        { font: "Inter, sans-serif", size: 11, weight: 400, color: "#5b5d62" },
+    subbody1:     { font: "Inter, sans-serif", size: 10, weight: 400, color: "#9CA3AF" },
+    subbody2:     { font: "Inter, sans-serif", size: 10, weight: 400, color: "#9CA3AF" },
+    underscore1:  { font: "Inter, sans-serif", size: 12, weight: 700, color: "#ffffff" },
+    underscore2:  { font: "Inter, sans-serif", size: 10, weight: 600, color: "#ffffff" },
+    underscore3:  { font: "Inter, sans-serif", size: 10, weight: 600, color: "#9CA3AF" },
     headerNum:    { font: '"JetBrains Mono", "Courier New", monospace', size: 22, weight: 800, color: "#1A2F8A" },
     bodyNum1:     { font: '"JetBrains Mono", "Courier New", monospace', size: 13, weight: 600, color: "#1A2F8A" },
     bodyNum2:     { font: '"JetBrains Mono", "Courier New", monospace', size: 12, weight: 500, color: "#2F3138" },
     bodyNum3:     { font: '"JetBrains Mono", "Courier New", monospace', size: 11, weight: 400, color: "#6B7280" },
- underNum:     { font: '"JetBrains Mono", "Courier New", monospace', size: 10, weight: 500, color: "#9CA3AF" },
-    filter:       { font: "Inter, sans-serif", size: 11, weight: 800, color: "#1A2F8A" },
+    underNum:     { font: '"JetBrains Mono", "Courier New", monospace', size: 10, weight: 500, color: "#9CA3AF" },
+    filter:       { font: "Inter, sans-serif", size: 12, weight: 600, color: "#1A2F8A" },
   },
   colors: {
     primary:     "#1A2F8A",
     secondary:   "#CF305D",
     tertiary:    "#57AA78",
-    quaternary:  "#F59E0B",
+    quaternary:  "#ffffff",
   },
 };
 
 const STYLE_GROUPS = [
-  {
+{
     title: "Text — Headers",
     icon: Type,
     items: [
       { key: "header1", label: "Header 1", hint: "" },
       { key: "header2", label: "Header 2", hint: "" },
+      { key: "header3", label: "Header 3", hint: "Used in section breakers" },
     ],
   },
   {
@@ -79,12 +84,21 @@ const STYLE_GROUPS = [
       { key: "body2", label: "Body 2", hint: "" },
     ],
   },
-  {
+{
+    title: "Text — SubBody",
+    icon: AlignLeft,
+    items: [
+      { key: "subbody1", label: "SubBody 1", hint: "" },
+      { key: "subbody2", label: "SubBody 2", hint: "" },
+    ],
+  },
+{
     title: "Text — Underscore",
     icon: Minus,
     items: [
       { key: "underscore1", label: "Underscore 1", hint: "" },
       { key: "underscore2", label: "Underscore 2", hint: "" },
+      { key: "underscore3", label: "Underscore 3", hint: "" },
     ],
   },
   {

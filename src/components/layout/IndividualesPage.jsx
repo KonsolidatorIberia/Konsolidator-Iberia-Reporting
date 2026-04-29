@@ -2,9 +2,10 @@ import React, { useState, useEffect, useMemo, useCallback, useRef,  useLayoutEff
 import {
   FileText, Search, Loader2, AlertCircle, Filter,
   ChevronDown, ChevronRight, Hash, Calendar, Database, Network,
-  RefreshCw, X, GitMerge, BookOpen, Upload, BarChart2, TrendingUp,
+  RefreshCw, X, GitMerge, BookOpen, Upload, BarChart2, TrendingUp,Library,
 } from "lucide-react";
 import { useSettings, useTypo } from "./SettingsContext.jsx";
+import MappingsModal from "./Mappings.jsx";
 
 const BASE_URL = "";
 
@@ -207,10 +208,10 @@ function FilterPill({ label, value, onChange, options, dark = false, labelStyle 
 className={`flex items-center gap-2 px-3 py-2 rounded-2xl border text-xs font-bold transition-all select-none
           ${value
             ? dark
-              ? "bg-[#ffffff] border-[#dfdfdf] text-black hover:bg-white/30 shadow-xl"
+              ? "bg-[#ffffff] border-[#dfdfdf] text-black hover:bg-white/30 shadow-ml"
               : "bg-[#ffffff] border-[#c2c2c2] text-[#505050] shadow-xl"
             : dark
-              ? "bg-[#ffffff] border-[#dfdfdf] text-black hover:bg-white/30 shadow-xl"
+              ? "bg-[#ffffff] border-[#dfdfdf] text-black hover:bg-white/30 shadow-l"
               : "bg-[#ffffff] border-[#c2c2c2] text-[#505050] shadow-xl"
           }`}>
 <span className={`text-[9px] font-black uppercase tracking-widest ${labelStyle || (value ? (dark ? "text-black/30" : "text-[#1a2f8a]/50") : dark ? "text-black/30" : "text-[#1a2f8a]/50")}`}>{label}</span>
@@ -579,12 +580,19 @@ const total = sumNode(node);
   );
 }
 
-function PLAmountCell({ value, bold, divider }) {
+function PLAmountCell({ value, divider, typoStyle }) {
   const isEmpty = value === 0;
   const isNeg   = value < 0;
-  const color   = isEmpty ? "text-gray-300" : isNeg ? "text-red-500" : "text-gray-800";
+  const semanticColor = isEmpty ? "#D1D5DB" : isNeg ? "#EF4444" : null;
+
+  const style = {
+    ...(typoStyle ?? {}),
+    ...(semanticColor ? { color: semanticColor } : {}),
+    ...(divider ? { borderLeft: "2px solid #e2e8f0" } : {}),
+  };
+
   return (
-    <td className={`pr-6 py-3 text-right font-mono text-xs whitespace-nowrap min-w-[144px] flex-shrink-0 ${bold ? "font-bold" : ""} ${color}`} style={divider ? { borderLeft: "2px solid #e2e8f0" } : {}}>
+    <td className="pr-6 py-3 text-right whitespace-nowrap min-w-[144px] flex-shrink-0" style={style}>
       {isEmpty ? "—" : isNeg ? `(${fmtAmt(Math.abs(value))})` : fmtAmt(value)}
     </td>
   );
@@ -596,19 +604,21 @@ function deviation(a, b) {
   return { diff, pct };
 }
 
-function DeviationCells({ a, b, bold }) {
+function DeviationCells({ a, b, typoStyle }) {
   const { diff, pct } = deviation(a, b);
   const isNeg  = diff < 0;
-  const color  = diff === 0 ? "text-gray-300" : isNeg ? "text-red-400" : "text-emerald-600";
+  const color  = diff === 0 ? "#D1D5DB" : isNeg ? "#F87171" : "#059669";
   const pctStr = pct === null ? "—" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
-  const diffStr = diff === 0 ? "—"
-    : isNeg ? `(${fmtAmt(Math.abs(diff))})` : fmtAmt(diff);
+  const diffStr = diff === 0 ? "—" : isNeg ? `(${fmtAmt(Math.abs(diff))})` : fmtAmt(diff);
+
+  const style = { ...(typoStyle ?? {}), color };
+
   return (
     <>
-      <td className={`pr-6 py-3 text-right font-mono text-xs whitespace-nowrap min-w-[112px] flex-shrink-0 ${bold ? "font-bold" : ""} ${color}`}>
+      <td className="pr-6 py-3 text-right whitespace-nowrap min-w-[112px] flex-shrink-0" style={style}>
         {diffStr}
       </td>
-      <td className={`pr-6 py-3 text-right font-mono text-xs whitespace-nowrap min-w-[80px] flex-shrink-0 ${bold ? "font-bold" : ""} ${color}`}>
+      <td className="pr-6 py-3 text-right whitespace-nowrap min-w-[80px] flex-shrink-0" style={style}>
         {pctStr}
       </td>
     </>
@@ -2756,11 +2766,18 @@ function PLStatement({
 dimGroups = [], cmpFilteredDims = [], cmp2FilteredDims = [],
 cmp2Enabled = true, onCmp2EnabledChange,
 loading, error, month, year, source, structure,
-journalEntries = [], dimensionActive = false,
+journalEntries = [], journalEntriesCmp = [], journalEntriesCmp2 = [], dimensionActive = false,
   breakers = { pl: {}, bs: {}, cf: {} },
   pgcMapping = null,
 }) {
 const { colors } = useSettings();
+const header3Style = useTypo("header3");
+
+const body1Style = useTypo("body1");
+const body2Style = useTypo("body2");
+const subbody1Style = useTypo("subbody1");
+const subbody2Style = useTypo("subbody2");
+const header2Style = useTypo("header2");
 const [expandedMap, setExpandedMap] = useState({});
 const [summaryMode, setSummaryMode] = useState(true);
 const [ytdOnly, setYtdOnly] = useState(false);
@@ -2895,6 +2912,28 @@ const journalByCode = useMemo(() => {
   });
   return idx;
 }, [journalEntries]);
+
+const journalByCodeCmp = useMemo(() => {
+  const idx = new Map();
+  (journalEntriesCmp || []).forEach(row => {
+    const code = String(row.accountCode ?? row.AccountCode ?? "");
+    if (!code) return;
+    if (!idx.has(code)) idx.set(code, []);
+    idx.get(code).push(row);
+  });
+  return idx;
+}, [journalEntriesCmp]);
+
+const journalByCodeCmp2 = useMemo(() => {
+  const idx = new Map();
+  (journalEntriesCmp2 || []).forEach(row => {
+    const code = String(row.accountCode ?? row.AccountCode ?? "");
+    if (!code) return;
+    if (!idx.has(code)) idx.set(code, []);
+    idx.get(code).push(row);
+  });
+  return idx;
+}, [journalEntriesCmp2]);
 
 const prevNodeByCode = useMemo(() => {
   const map = new Map();
@@ -3034,20 +3073,39 @@ return filtered.sort((a, b) =>
 // When PGC mapping is active, derive the 3 breakers (one per section,
 // placed on the first row of each section in the rendered list).
 const effectiveBreakersPl = useMemo(() => {
-  if (!pgcMapping?.rows || !pgcMapping?.sections) return breakers.pl ?? {};
-  const rowsToRender = summaryMode ? summaryRows : allSumRows;
-  const seen = new Set();
-  const out = {};
-  for (const node of rowsToRender) {
-    const m = pgcMapping.rows.get(String(node.code));
-    if (!m) continue;
-    if (seen.has(m.section)) continue;
-    seen.add(m.section);
-    const sec = pgcMapping.sections.get(m.section);
-    if (sec) out[String(node.code)] = { label: sec.label, color: sec.color };
+  const palette = [colors.primary, colors.secondary, colors.tertiary];
+
+  // PGC mapping path
+  if (pgcMapping?.rows && pgcMapping?.sections) {
+    const rowsToRender = summaryMode ? summaryRows : allSumRows;
+    const seen = new Set();
+    const out = {};
+    let i = 0;
+    for (const node of rowsToRender) {
+      const m = pgcMapping.rows.get(String(node.code));
+      if (!m) continue;
+      if (seen.has(m.section)) continue;
+      seen.add(m.section);
+      const sec = pgcMapping.sections.get(m.section);
+      if (sec) {
+        out[String(node.code)] = { label: sec.label, color: palette[i] ?? sec.color };
+        i++;
+      }
+    }
+    return out;
   }
+
+  // Legacy Supabase path — recolor by position
+  const legacy = breakers.pl ?? {};
+  const codes = Object.keys(legacy).sort((a, b) =>
+    String(a).localeCompare(String(b), undefined, { numeric: true })
+  );
+  const out = {};
+  codes.forEach((code, i) => {
+    out[code] = { ...legacy[code], color: palette[i] ?? legacy[code].color };
+  });
   return out;
-}, [pgcMapping, breakers, summaryMode, summaryRows, allSumRows]);
+}, [pgcMapping, breakers, summaryMode, summaryRows, allSumRows, colors]);
 
 const handleExportPdf = () => {
   generatePLPdf({
@@ -3190,7 +3248,7 @@ const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.valu
       <div className="bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden">
 <div className="bg-[#1a2f8a] px-6 py-4 flex items-center justify-between">
   <div>
-        <p className="k-panel-title font-black text-base">Profit & Loss</p>
+        <p className="k-panel-title font-black text-base">PROFIT & LOSS</p>
 
   </div>
   {/* Hidden export trigger */}
@@ -3368,15 +3426,15 @@ options={[{ value: "", label: "All" }, ...cmp2FilteredDims.map(d => { const v = 
 <thead className="sticky top-0 z-10">
   {/* cmpLabel/cmp2Label defined as vars above thead */}
 
-<tr className="border-b border-gray-100 bg-[#ffffff]">
-<th className="text-left px-6 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest bg-[#ffffff]">Account</th>
-    {!ytdOnly && <th className="text-right pr-6 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest w-36 bg-[#ffffff]">Monthly</th>}
-{!ytdOnly && compareMode && <th colSpan={3} className="text-center pr-6 py-3 text-[9px] font-black text-[#CF305D] uppercase tracking-widest bg-[#ffffff] whitespace-nowrap">{cmpLabel}</th>}
-    {!ytdOnly && compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 text-[9px] font-black text-[#57aa78] uppercase tracking-widest bg-[#ffffff] whitespace-nowrap">{cmp2Label}</th>}
-    {ytdOnly && <th className="text-right pr-6 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest w-36 bg-[#ffffff]">YTD</th>}
-{ytdOnly && compareMode && <th colSpan={3} className="text-center pr-6 py-3 text-[9px] font-black text-[#CF305D] uppercase tracking-widest bg-[#ffffff] whitespace-nowrap">{cmpLabel}</th>}
-    {ytdOnly && compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 text-[9px] font-black text-[#57aa78] uppercase tracking-widest bg-[#ffffff] whitespace-nowrap">{cmp2Label}</th>}
-  </tr>
+<tr className="border-b border-gray-100" style={{ backgroundColor: colors.primary }}>
+  <th className="text-left px-6 py-3 uppercase tracking-widest" style={{ ...header2Style, backgroundColor: colors.primary }}>Account</th>
+  {!ytdOnly && <th className="text-right pr-6 py-3 uppercase tracking-widest w-36" style={{ ...header2Style, backgroundColor: colors.primary }}>Monthly</th>}
+  {!ytdOnly && compareMode && <th colSpan={3} className="text-center pr-6 py-3 text-[11px] font-black text-[#CF305D] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{cmpLabel}</th>}
+  {!ytdOnly && compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 text-[11px] font-black text-[#57aa78] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{cmp2Label}</th>}
+  {ytdOnly && <th className="text-right pr-6 py-3 uppercase tracking-widest w-36" style={{ ...header2Style, backgroundColor: colors.primary }}>YTD</th>}
+  {ytdOnly && compareMode && <th colSpan={3} className="text-center pr-6 py-3 text-[11px] font-black text-[#CF305D] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{cmpLabel}</th>}
+  {ytdOnly && compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 text-[11px] font-black text-[#57aa78] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{cmp2Label}</th>}
+</tr>
 </thead>
             <tbody>
               {console.log("allSumRows codes:", allSumRows.map(n=>n.code), "breakers.pl:", Object.keys(breakers.pl))}
@@ -3391,16 +3449,16 @@ const mon      = ytd - prevYtd;
 const expanded = !!expandedMap[node.code];
 const hasKids  = !summaryMode && (node.children||[]).filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType)).length > 0;
 const isHighlighted = PL_HIGHLIGHTED_CODES.has(String(node.code)) || String(node.code).endsWith(".S") || String(node.code).endsWith(".PL");
-const SECTION_DIVIDERS_MAP= Object.keys(effectiveBreakersPl).length
+const SECTION_DIVIDERS_MAP = Object.keys(effectiveBreakersPl).length
   ? effectiveBreakersPl
   : summaryRows.some(n => /[a-zA-Z]/.test(String(n.code)))
-    ? { "A.04.S": { label: "Ingresos", color: "#1A2B6B" }, "A.13.S": { label: "Gastos operativos", color: "#CF305D" }, "A.24.S": { label: "Resultado final", color: "#374151" } }
-    : { "11999": { label: "Ingresos", color: "#1A2B6B" }, "53999": { label: "Gastos operativos", color: "#CF305D" }, "89999": { label: "Resultado final", color: "#374151" } };
+    ? { "A.04.S": { label: "Ingresos", color: colors.primary }, "A.13.S": { label: "Gastos operativos", color: colors.secondary }, "A.24.S": { label: "Resultado final", color: colors.tertiary } }
+    : { "11999": { label: "Ingresos", color: colors.primary }, "53999": { label: "Gastos operativos", color: colors.secondary }, "89999": { label: "Resultado final", color: colors.tertiary } };
 
 const DETAIL_DIVIDERS_BEFORE = (() => {
   const fallback = summaryRows.some(n => /[a-zA-Z]/.test(String(n.code)))
-    ? { "A.04.S": { label: "Ingresos", color: "#1A2B6B" }, "A.13.S": { label: "Gastos operativos", color: "#CF305D" }, "A.24.S": { label: "Resultado neto", color: "#374151" } }
-    : { "10999": { label: "Ingresos", color: "#1A2B6B" }, "12199": { label: "Gastos operativos", color: "#CF305D" }, "89999": { label: "Resultado final", color: "#374151" } };
+    ? { "A.04.S": { label: "Ingresos", color: colors.primary }, "A.13.S": { label: "Gastos operativos", color: colors.secondary }, "A.24.S": { label: "Resultado neto", color: colors.tertiary } }
+    : { "10999": { label: "Ingresos", color: colors.primary }, "12199": { label: "Gastos operativos", color: colors.secondary }, "89999": { label: "Resultado final", color: colors.tertiary } };
 const source = Object.keys(effectiveBreakersPl).length ? effectiveBreakersPl : fallback;
   if (allSumRows.length === 0) return source;
   const remapped = { ...source };
@@ -3430,46 +3488,46 @@ const divider = !summaryMode
 divider ? (
   <tr key={`divider-${node.code}`}>
     <td colSpan={compareMode ? (cmp2Enabled ? 8 : 5) : 2} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
-      <span className="text-[10px] font-black uppercase tracking-widest text-white/100">{divider.label}</span>
+      <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
     </td>
   </tr>
 ) : null,
 <tr key={node.code}
-      className={`border-b border-gray-100 cursor-pointer ${isHighlighted ? "bg-[#eef1fb]" : "bg-white"} hover:bg-[#eef1fb]/60 transition-colors`}
+      className="border-b border-gray-100 bg-white cursor-pointer hover:bg-[#eef1fb]/60 transition-colors"
       onClick={(e) => { e.stopPropagation(); toggle(node.code); }}>
-      <td className="py-3 px-6">
-        <div className="flex items-center gap-2">
-          {hasKids
-            ? <span className="text-[#1a2f8a]/50">{expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
-            : <span className="w-3"/>}
-<span className={`text-xs ${isHighlighted ? "font-bold text-[#1a2f8a] uppercase tracking-wider" : "text-gray-600"}`}>
-  {isHighlighted ? node.name : node.name.charAt(0).toUpperCase() + node.name.slice(1).toLowerCase()}
-</span>
-
-        </div>
-      </td>
-{!ytdOnly && <PLAmountCell value={mon} bold />}
-{!ytdOnly && compareMode && <PLAmountCell value={cmpMon} bold divider />}
-{!ytdOnly && compareMode && <DeviationCells a={mon} b={cmpMon} bold />}
-{!ytdOnly && compareMode && cmp2Enabled && (() => {
-  const cmp2Ytd = -getCmp2Ytd(node.code);
-  const cmp2Mon = cmp2Ytd - (-getCmp2Prev(node.code));
-  return <>
-    <PLAmountCell value={cmp2Mon} bold divider />
-    <DeviationCells a={mon} b={cmp2Mon} bold />
-  </>;
-})()}
-{ytdOnly && <PLAmountCell value={ytd} bold />}
-{ytdOnly && compareMode && <PLAmountCell value={cmpYtd} bold divider />}
-{ytdOnly && compareMode && <DeviationCells a={ytd} b={cmpYtd} bold />}
-{ytdOnly && compareMode && cmp2Enabled && (() => {
-  const cmp2Ytd = -getCmp2Ytd(node.code);
-  return <>
-    <PLAmountCell value={cmp2Ytd} bold divider />
-    <DeviationCells a={ytd} b={cmp2Ytd} bold />
-  </>;
-})()}
-
+<td className="py-3 px-6">
+  <div className="flex items-center">
+    {hasKids && (
+      <span className="text-[#1a2f8a]/50 mr-2">
+        {expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
+      </span>
+    )}
+    <span style={body1Style}>
+      {node.name.charAt(0).toUpperCase() + node.name.slice(1).toLowerCase()}
+    </span>
+  </div>
+</td>
+      {!ytdOnly && <PLAmountCell value={mon} typoStyle={body1Style} />}
+      {!ytdOnly && compareMode && <PLAmountCell value={cmpMon} typoStyle={body1Style} divider />}
+      {!ytdOnly && compareMode && <DeviationCells a={mon} b={cmpMon} typoStyle={body1Style} />}
+      {!ytdOnly && compareMode && cmp2Enabled && (() => {
+        const cmp2Ytd = -getCmp2Ytd(node.code);
+        const cmp2Mon = cmp2Ytd - (-getCmp2Prev(node.code));
+        return <>
+          <PLAmountCell value={cmp2Mon} typoStyle={body1Style} divider />
+          <DeviationCells a={mon} b={cmp2Mon} typoStyle={body1Style} />
+        </>;
+      })()}
+      {ytdOnly && <PLAmountCell value={ytd} typoStyle={body1Style} />}
+      {ytdOnly && compareMode && <PLAmountCell value={cmpYtd} typoStyle={body1Style} divider />}
+      {ytdOnly && compareMode && <DeviationCells a={ytd} b={cmpYtd} typoStyle={body1Style} />}
+      {ytdOnly && compareMode && cmp2Enabled && (() => {
+        const cmp2Ytd = -getCmp2Ytd(node.code);
+        return <>
+          <PLAmountCell value={cmp2Ytd} typoStyle={body1Style} divider />
+          <DeviationCells a={ytd} b={cmp2Ytd} typoStyle={body1Style} />
+        </>;
+      })()}
     </tr>,
 ...(expanded ? (function renderChildren(children, leaves, depth, parentCode) {
 
@@ -3488,32 +3546,31 @@ divider ? (
     const grandkids = (child.children || []).filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType));
     const hasMore = grandkids.length > 0 || (child.uploadLeaves?.length > 0);
 
-const childBg = depth === 0 ? "bg-[#f4f6fd]" : depth === 1 ? "bg-[#f8f9ff]" : "bg-white";
-    rows.push(
-      <tr key={child.code}
-        className={`border-b border-[#1a2f8a]/5 transition-colors ${childBg} ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : "hover:bg-[#eef1fb]/20"}`}
-        onClick={hasMore ? (e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [`drill-${node.code}-${child.code}`]: !prev[`drill-${node.code}-${child.code}`] })); } : undefined}>
-<td className="py-2" style={{ paddingLeft: `${24 + depth * 20}px` }}>
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-px bg-[#1a2f8a]/20 flex-shrink-0" />
-            {hasMore
-              ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{childExpanded ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
-              : <span className="w-3 flex-shrink-0" />}
-            <span className={`text-xs ${child.isSumAccount ? "font-bold text-[#1a2f8a]" : depth === 0 ? "text-gray-700 font-medium" : "text-gray-500"}`}>{child.name}</span>
-          </div>
-        </td>
-{!ytdOnly && <PLAmountCell value={cMon} bold={child.isSumAccount} />}
-        {!ytdOnly && compareMode && <PLAmountCell value={cCmpMon} bold={child.isSumAccount} divider />}
-        {!ytdOnly && compareMode && <DeviationCells a={cMon} b={cCmpMon} bold={child.isSumAccount} />}
-{!ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cCmp2Mon} bold={child.isSumAccount} divider />}
-        {!ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={cMon} b={cCmp2Mon} bold={child.isSumAccount} />}
-        {ytdOnly && <PLAmountCell value={cYtd} bold={child.isSumAccount} />}
-        {ytdOnly && compareMode && <PLAmountCell value={cCmpYtd} bold={child.isSumAccount} divider />}
-        {ytdOnly && compareMode && <DeviationCells a={cYtd} b={cCmpYtd} bold={child.isSumAccount} />}
-{ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cCmp2Ytd} bold={child.isSumAccount} divider />}
-        {ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={cYtd} b={cCmp2Ytd} bold={child.isSumAccount} />}
-      </tr>
-    );
+rows.push(
+  <tr key={child.code}
+    className={`border-b border-[#1a2f8a]/5 bg-white transition-colors ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : "hover:bg-[#eef1fb]/20"}`}
+    onClick={hasMore ? (e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [`drill-${node.code}-${child.code}`]: !prev[`drill-${node.code}-${child.code}`] })); } : undefined}>
+    <td className="py-2" style={{ paddingLeft: `${24 + depth * 20}px` }}>
+      <div className="flex items-center gap-2">
+        
+        {hasMore
+          ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{childExpanded ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
+          : <span className="w-3 flex-shrink-0" />}
+        <span style={body2Style}>{child.name}</span>
+      </div>
+    </td>
+    {!ytdOnly && <PLAmountCell value={cMon} typoStyle={body2Style} />}
+    {!ytdOnly && compareMode && <PLAmountCell value={cCmpMon} typoStyle={body2Style} divider />}
+    {!ytdOnly && compareMode && <DeviationCells a={cMon} b={cCmpMon} typoStyle={body2Style} />}
+    {!ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cCmp2Mon} typoStyle={body2Style} divider />}
+    {!ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={cMon} b={cCmp2Mon} typoStyle={body2Style} />}
+    {ytdOnly && <PLAmountCell value={cYtd} typoStyle={body2Style} />}
+    {ytdOnly && compareMode && <PLAmountCell value={cCmpYtd} typoStyle={body2Style} divider />}
+    {ytdOnly && compareMode && <DeviationCells a={cYtd} b={cCmpYtd} typoStyle={body2Style} />}
+    {ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cCmp2Ytd} typoStyle={body2Style} divider />}
+    {ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={cYtd} b={cCmp2Ytd} typoStyle={body2Style} />}
+  </tr>
+);
 
 if (childExpanded && hasMore) {
            rows.push(...renderChildren(grandkids, child.uploadLeaves || [], depth + 1, child.code));
@@ -3525,51 +3582,66 @@ if (childExpanded && hasMore) {
       if (jrnRows.length > 0) {
         const jrnKey = `jrn-child-${node.code}-${child.code}`;
         const jrnExpanded = !!expandedMap[jrnKey];
-        rows.push(
-          <tr key={jrnKey}
-            className="border-b border-[#1a2f8a]/5 cursor-pointer hover:bg-indigo-50/40 transition-colors"
-            onClick={(e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [jrnKey]: !prev[jrnKey] })); }}>
-            <td className="py-1" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
-              <div className="flex items-center gap-1.5">
-                <div className="w-2 h-px bg-indigo-200 flex-shrink-0" />
-<span className="text-[#1a2f8a]/40 flex-shrink-0">
-                  {jrnExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>}
-                </span>
-                <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded flex-shrink-0">
-                  journal
-                </span>
-                <span className="text-[10px] text-gray-400">{jrnRows.length} entries</span>
-              </div>
-            </td>
-            <td />{compareMode && <><td /><td /><td /></>}{compareMode && cmp2Enabled && <><td /><td /><td /></>}
-          </tr>
-        );
-        if (jrnExpanded) {
-          jrnRows.forEach((jrn, k) => {
-            const amt = parseAmt(jrn.amountYTD ?? jrn.AmountYTD ?? 0);
-            rows.push(
-<tr key={`jrn-child-entry-${node.code}-${child.code}-${k}`}
-                className="border-b border-[#1a2f8a]/5 hover:bg-indigo-50/40 transition-colors bg-indigo-50/10 cursor-pointer"
-                onClick={(e) => { e.stopPropagation(); setJrnPopup(jrn); }}>
-                <td className="py-1" style={{ paddingLeft: `${24 + (depth + 2) * 20}px` }}>
-                  <div className="flex items-center gap-2">
-                    <div className="w-1.5 h-1.5 rounded-full bg-indigo-200 flex-shrink-0" />
-                      <span className="text-[10px] font-mono font-bold text-indigo-500 flex-shrink-0 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded">{jrn.journalNumber ?? jrn.JournalNumber ?? ""}</span>
-                      {(jrn.journalHeader ?? jrn.JournalHeader) && <span className="text-[10px] text-gray-500 flex-shrink-0">{jrn.journalHeader ?? jrn.JournalHeader}</span>}
-                      {(jrn.rowText ?? jrn.RowText) && <span className="text-[10px] text-gray-400 italic truncate max-w-[250px]">— {jrn.rowText ?? jrn.RowText}</span>}
-                      {(jrn.counterpartyShortName ?? jrn.CounterpartyShortName) && <span className="text-[10px] font-medium text-indigo-300 ml-auto flex-shrink-0">{jrn.counterpartyShortName ?? jrn.CounterpartyShortName}</span>}
-                    </div>
-                </td>
-{!ytdOnly && <PLAmountCell value={-amt} bold={false} />}
-                {!ytdOnly && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-                {!ytdOnly && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-                {ytdOnly && <PLAmountCell value={-amt} bold={false} />}
-                {ytdOnly && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-                {ytdOnly && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-              </tr>
-            );
-          });
-        }
+rows.push(
+  <tr key={jrnKey}
+    className="border-b border-[#1a2f8a]/5 bg-white cursor-pointer hover:bg-indigo-50/40 transition-colors"
+    onClick={(e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [jrnKey]: !prev[jrnKey] })); }}>
+    <td className="py-1" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
+      <div className="flex items-center gap-1.5">
+        <div className="w-2 h-px bg-indigo-200 flex-shrink-0" />
+        <span className="text-[#1a2f8a]/40 flex-shrink-0">
+          {jrnExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>}
+        </span>
+        <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded flex-shrink-0">
+          journal
+        </span>
+        <span style={subbody2Style}>{jrnRows.length} entries</span>
+      </div>
+    </td>
+    <td />{compareMode && <><td /><td /><td /></>}{compareMode && cmp2Enabled && <><td /><td /><td /></>}
+  </tr>
+);
+if (jrnExpanded) {
+  jrnRows.forEach((jrn, k) => {
+    const amt = parseAmt(jrn.amountYTD ?? jrn.AmountYTD ?? 0);
+    rows.push(
+      <tr key={`jrn-child-entry-${node.code}-${child.code}-${k}`}
+        className="border-b border-[#1a2f8a]/5 bg-white hover:bg-indigo-50/40 transition-colors cursor-pointer"
+        onClick={(e) => { e.stopPropagation(); setJrnPopup(jrn); }}>
+        <td className="py-1" style={{ paddingLeft: `${24 + (depth + 2) * 20}px` }}>
+          <div className="flex items-center gap-2">
+            <div className="w-1.5 h-1.5 rounded-full bg-indigo-200 flex-shrink-0" />
+            <span className="flex-shrink-0 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded" style={subbody2Style}>{jrn.journalNumber ?? jrn.JournalNumber ?? ""}</span>
+            {(jrn.journalHeader ?? jrn.JournalHeader) && <span className="flex-shrink-0" style={subbody2Style}>{jrn.journalHeader ?? jrn.JournalHeader}</span>}
+            {(jrn.rowText ?? jrn.RowText) && <span className="truncate max-w-[250px]" style={subbody2Style}>— {jrn.rowText ?? jrn.RowText}</span>}
+            {(jrn.counterpartyShortName ?? jrn.CounterpartyShortName) && <span className="ml-auto flex-shrink-0" style={subbody2Style}>{jrn.counterpartyShortName ?? jrn.CounterpartyShortName}</span>}
+          </div>
+        </td>
+{(() => {
+  const jrnNum = jrn.journalNumber ?? jrn.JournalNumber;
+  const cmpJrn = (journalByCodeCmp.get(child.code) || []).find(j => (j.journalNumber ?? j.JournalNumber) === jrnNum);
+  const cmp2Jrn = (journalByCodeCmp2.get(child.code) || []).find(j => (j.journalNumber ?? j.JournalNumber) === jrnNum);
+  const cmpAmt = cmpJrn ? -parseAmt(cmpJrn.amountYTD ?? cmpJrn.AmountYTD ?? 0) : 0;
+  const cmp2Amt = cmp2Jrn ? -parseAmt(cmp2Jrn.amountYTD ?? cmp2Jrn.AmountYTD ?? 0) : 0;
+  return (
+    <>
+      {!ytdOnly && <PLAmountCell value={-amt} typoStyle={subbody2Style} />}
+      {!ytdOnly && compareMode && <PLAmountCell value={cmpAmt} typoStyle={subbody2Style} divider />}
+      {!ytdOnly && compareMode && <DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody2Style} />}
+      {!ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cmp2Amt} typoStyle={subbody2Style} divider />}
+      {!ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={-amt} b={cmp2Amt} typoStyle={subbody2Style} />}
+      {ytdOnly && <PLAmountCell value={-amt} typoStyle={subbody2Style} />}
+      {ytdOnly && compareMode && <PLAmountCell value={cmpAmt} typoStyle={subbody2Style} divider />}
+      {ytdOnly && compareMode && <DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody2Style} />}
+      {ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cmp2Amt} typoStyle={subbody2Style} divider />}
+      {ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={-amt} b={cmp2Amt} typoStyle={subbody2Style} />}
+    </>
+  );
+})()}
+      </tr>
+    );
+  });
+}
       }
     }
   });
@@ -3583,64 +3655,64 @@ if (childExpanded && hasMore) {
     const hasDims = leaf.type === "localAccount" && leaf.children?.length > 0;
     const amt = leaf.amount ?? 0;
 
-    rows.push(
-      <tr key={leafKey}
-        className={`border-b border-[#1a2f8a]/5 transition-colors bg-[#fafbff] ${hasDims ? "cursor-pointer hover:bg-amber-50/30" : "hover:bg-[#f0f3ff]"}`}
-        onClick={hasDims ? (e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [leafKey]: !prev[leafKey] })); } : undefined}>
-       <td className="py-1.5 border-r-0" style={{ paddingLeft: `${24 + depth * 20}px` }}>
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-px bg-[#1a2f8a]/10 flex-shrink-0" />
-            {hasDims
-              ? <span className="text-gray-300 flex-shrink-0">{leafExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>}</span>
-              : <span className="w-3 flex-shrink-0" />}
-            {leaf.code && <span className="text-[10px] font-mono text-gray-400 flex-shrink-0">{leaf.code}</span>}
-            <span className="text-xs text-gray-500 italic">{leaf.name || ""}</span>
-          </div>
-        </td>
-{!ytdOnly && <PLAmountCell value={-(amt - (leaf.code ? getPrevLeafAmt(leaf.code) : 0))} bold={false} />}
-        {!ytdOnly && compareMode && (() => {
-          const cmpAmt = leaf.code ? -getCmpLeafAmt(leaf.code) : 0;
-          return <><PLAmountCell value={cmpAmt} bold={false} divider /><DeviationCells a={-(amt - (leaf.code ? getPrevLeafAmt(leaf.code) : 0))} b={cmpAmt} bold={false} /></>;
-        })()}
-        {!ytdOnly && compareMode && cmp2Enabled && (() => {
-          const cmp2Amt = leaf.code ? -getCmp2LeafAmt(leaf.code) : 0;
-          return <><PLAmountCell value={cmp2Amt} bold={false} divider /><DeviationCells a={-(amt - (leaf.code ? getPrevLeafAmt(leaf.code) : 0))} b={cmp2Amt} bold={false} /></>;
-        })()}
-        {ytdOnly && <PLAmountCell value={-amt} bold={false} />}
-        {ytdOnly && compareMode && (() => {
-          const cmpAmt = leaf.code ? -getCmpLeafAmt(leaf.code) : 0;
-          return <><PLAmountCell value={cmpAmt} bold={false} divider /><DeviationCells a={-amt} b={cmpAmt} bold={false} /></>;
-        })()}
-        {ytdOnly && compareMode && cmp2Enabled && (() => {
-          const cmp2Amt = leaf.code ? -getCmp2LeafAmt(leaf.code) : 0;
-          return <><PLAmountCell value={cmp2Amt} bold={false} divider /><DeviationCells a={-amt} b={cmp2Amt} bold={false} /></>;
-        })()}
-      </tr>
-    );
+rows.push(
+  <tr key={leafKey}
+    className={`border-b border-[#1a2f8a]/5 bg-white transition-colors ${hasDims ? "cursor-pointer hover:bg-amber-50/30" : "hover:bg-[#f0f3ff]"}`}
+    onClick={hasDims ? (e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [leafKey]: !prev[leafKey] })); } : undefined}>
+    <td className="py-1.5 border-r-0" style={{ paddingLeft: `${24 + depth * 20}px` }}>
+      <div className="flex items-center gap-2">
+        <div className="w-2 h-px bg-[#1a2f8a]/10 flex-shrink-0" />
+        {hasDims
+          ? <span className="text-gray-300 flex-shrink-0">{leafExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>}</span>
+          : <span className="w-3 flex-shrink-0" />}
+        {leaf.code && <span style={subbody1Style}>{leaf.code}&nbsp;</span>}
+        <span style={subbody1Style}>{leaf.name || ""}</span>
+      </div>
+    </td>
+    {!ytdOnly && <PLAmountCell value={-(amt - (leaf.code ? getPrevLeafAmt(leaf.code) : 0))} typoStyle={subbody1Style} />}
+    {!ytdOnly && compareMode && (() => {
+      const cmpAmt = leaf.code ? -getCmpLeafAmt(leaf.code) : 0;
+      return <><PLAmountCell value={cmpAmt} typoStyle={subbody1Style} divider /><DeviationCells a={-(amt - (leaf.code ? getPrevLeafAmt(leaf.code) : 0))} b={cmpAmt} typoStyle={subbody1Style} /></>;
+    })()}
+    {!ytdOnly && compareMode && cmp2Enabled && (() => {
+      const cmp2Amt = leaf.code ? -getCmp2LeafAmt(leaf.code) : 0;
+      return <><PLAmountCell value={cmp2Amt} typoStyle={subbody1Style} divider /><DeviationCells a={-(amt - (leaf.code ? getPrevLeafAmt(leaf.code) : 0))} b={cmp2Amt} typoStyle={subbody1Style} /></>;
+    })()}
+    {ytdOnly && <PLAmountCell value={-amt} typoStyle={subbody1Style} />}
+    {ytdOnly && compareMode && (() => {
+      const cmpAmt = leaf.code ? -getCmpLeafAmt(leaf.code) : 0;
+      return <><PLAmountCell value={cmpAmt} typoStyle={subbody1Style} divider /><DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody1Style} /></>;
+    })()}
+    {ytdOnly && compareMode && cmp2Enabled && (() => {
+      const cmp2Amt = leaf.code ? -getCmp2LeafAmt(leaf.code) : 0;
+      return <><PLAmountCell value={cmp2Amt} typoStyle={subbody1Style} divider /><DeviationCells a={-amt} b={cmp2Amt} typoStyle={subbody1Style} /></>;
+    })()}
+  </tr>
+);
 
-    if (leafExpanded && hasDims) {
-      leaf.children.forEach((dim, j) => {
-        rows.push(
-<tr key={`dim-${parentCode ?? node.code}-${depth}-${i}-${j}`}
-            className="border-b border-[#1a2f8a]/5 hover:bg-amber-50/40 transition-colors bg-amber-50/10 cursor-pointer"
-            onClick={(e) => { e.stopPropagation(); setDimPopup(dim); }}>
-           <td className="py-1" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
-              <div className="flex items-center gap-1.5">
-                <div className="w-2 h-px bg-amber-200 flex-shrink-0" />
-                <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded flex-shrink-0">dim</span>
-                <span className="text-xs text-gray-400 italic">{dim.name || dim.code}</span>
-              </div>
-            </td>
-{!ytdOnly && <PLAmountCell value={-(dim.amount - getPrevDimAmt(leaf.code, dim.code))} bold={false} />}
-            {!ytdOnly && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-            {!ytdOnly && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-            {ytdOnly && <PLAmountCell value={-dim.amount} bold={false} />}
-            {ytdOnly && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-            {ytdOnly && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-          </tr>
-        );
-      });
-    }
+if (leafExpanded && hasDims) {
+  leaf.children.forEach((dim, j) => {
+    rows.push(
+    <tr key={`dim-${parentCode ?? node.code}-${depth}-${i}-${j}`}
+  className="border-b border-[#1a2f8a]/5 bg-white hover:bg-amber-50/40 transition-colors cursor-pointer"
+  onClick={(e) => { e.stopPropagation(); setDimPopup(dim); }}>
+  <td className="py-1" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
+    <div className="flex items-center gap-1.5">
+      <div className="w-2 h-px bg-amber-200 flex-shrink-0" />
+      <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded flex-shrink-0">dim</span>
+      <span style={subbody2Style}>{dim.name || dim.code}</span>
+    </div>
+  </td>
+  {!ytdOnly && <PLAmountCell value={-(dim.amount - getPrevDimAmt(leaf.code, dim.code))} typoStyle={subbody2Style} />}
+  {!ytdOnly && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+  {!ytdOnly && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+  {ytdOnly && <PLAmountCell value={-dim.amount} typoStyle={subbody2Style} />}
+  {ytdOnly && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+  {ytdOnly && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+</tr>
+    );
+  });
+}
   });
 
   return rows;
@@ -3834,6 +3906,41 @@ const PL_HIGHLIGHTED_CODES = new Set([
 ]);
 
 
+function BSAmountCell({ value, divider, typoStyle }) {
+  const isEmpty = value === 0;
+  const isNeg = value < 0;
+  const semanticColor = isEmpty ? "#D1D5DB" : isNeg ? "#EF4444" : null;
+
+  const style = {
+    ...(typoStyle ?? {}),
+    ...(semanticColor ? { color: semanticColor } : {}),
+    ...(divider ? { borderLeft: "2px solid #e2e8f0" } : {}),
+  };
+
+  return (
+    <td className="pr-4 py-2.5 text-right whitespace-nowrap w-36" style={style}>
+      {isEmpty ? "—" : isNeg ? `(${fmtAmt(Math.abs(value))})` : fmtAmt(value)}
+    </td>
+  );
+}
+
+function BSDeviationCells({ a, b, typoStyle }) {
+  const { diff, pct } = deviation(a, b);
+  const isNeg = diff < 0;
+  const color = diff === 0 ? "#D1D5DB" : isNeg ? "#F87171" : "#059669";
+  const pctStr = pct === null ? "—" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
+  const diffStr = diff === 0 ? "—" : isNeg ? `(${fmtAmt(Math.abs(diff))})` : fmtAmt(diff);
+
+  const style = { ...(typoStyle ?? {}), color };
+
+  return (
+    <>
+      <td className="pr-4 py-2.5 text-right whitespace-nowrap w-28" style={style}>{diffStr}</td>
+      <td className="pr-4 py-2.5 text-right whitespace-nowrap w-20" style={style}>{pctStr}</td>
+    </>
+  );
+}
+
 
 
 function BalanceSheet({ groupAccounts, uploadedAccounts, loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], onCompareChange, dimensionActive = false, upDimGroup = "", upDimension = "", filteredDims = [], externalCmp2Enabled, onBsCmp2EnabledChange, breakers = { pl: {}, bs: {}, cf: {} }, pgcBsMapping = null,
@@ -3846,6 +3953,12 @@ function BalanceSheet({ groupAccounts, uploadedAccounts, loading, error, month, 
   const { colors } = useSettings();
   const [filtersOpen, setFiltersOpen] = useState(true);
   const [cmpLoading, setCmpLoading] = useState(false);
+  const header3Style = useTypo("header3");
+  const header2Style = useTypo("header2");
+  const body1Style = useTypo("body1");
+  const body2Style = useTypo("body2");
+  const subbody1Style = useTypo("subbody1");
+  const subbody2Style = useTypo("subbody2");
   const [cmp2Loading, setCmp2Loading] = useState(false);
 const [bsView, setBsView] = useState("summary");
 const [cmp2EnabledInternal, setCmp2EnabledInternal] = useState(true);
@@ -4003,7 +4116,7 @@ const companyTree = useMemo(() => {
 }, [groupAccounts, filteredAllCompaniesData, dimensionActive]);
 
 
-function renderBSDrill(node, parentKey) {
+function renderBSDrill(node, parentKey, parentDepth = 0) {
 
   if (!bsDrillMap[parentKey]) return null;
   const children = (node.children || []).filter(hasData);
@@ -4031,19 +4144,18 @@ const renderDrillChildren = (children, leaves, depth, contextKey) => {
       const total = Number(child.code) >= 599999 ? -sumNode(child) : sumNode(child);
       const isBold = BS_HIGHLIGHTED_CODES.has(String(child.code));
 
-      rows.push(
-        <tr key={childKey}
-          className={`border-b border-[#1a2f8a]/5 transition-colors ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : "hover:bg-[#eef1fb]/30"}`}
-          onClick={hasMore ? () => setBsDrillMap(prev => ({ ...prev, [childKey]: !prev[childKey] })) : undefined}>
-          <td className="py-2" style={{ paddingLeft: `${24 + depth * 20}px` }}>
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-px bg-[#1a2f8a]/20 flex-shrink-0" />
-              {hasMore
-                ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{childExpanded ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
-                : <span className="w-3 flex-shrink-0" />}
-              <span className={`text-xs ${isBold ? "font-bold text-[#1a2f8a]" : "text-gray-600"}`}>{child.name}</span>
-            </div>
-          </td>
+rows.push(
+  <tr key={childKey}
+    className={`border-b border-[#1a2f8a]/5 transition-colors ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : "hover:bg-[#eef1fb]/30"}`}
+    onClick={hasMore ? () => setBsDrillMap(prev => ({ ...prev, [childKey]: !prev[childKey] })) : undefined}>
+    <td className="py-2" style={{ paddingLeft: `${24 + depth * 20}px` }}>
+<div className="flex items-center">
+  {hasMore
+    ? <span className="text-[#1a2f8a]/50 mr-2">{childExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
+    : <span className="inline-block mr-2" style={{ width: 12 }} />}
+  <span style={body2Style}>{child.name}</span>
+</div>
+    </td>
 <td className={`text-right pr-4 py-2 font-mono text-xs whitespace-nowrap w-36 ${isBold ? "font-bold text-[#1a2f8a]" : "text-gray-600"}`}>
             {total === 0 ? "—" : fmtAmt(total)}
           </td>
@@ -4148,16 +4260,15 @@ if (childExpanded && hasMore) {
 <tr key={leafKey}
           className={`border-b border-[#1a2f8a]/5 bg-[#fafbff] transition-colors ${hasDims ? "cursor-pointer hover:bg-amber-50/40" : "hover:bg-[#eef1fb]/20"}`}
           onClick={hasDims ? () => setBsDrillMap(prev => ({ ...prev, [leafKey]: !prev[leafKey] })) : undefined}>
-          <td className="py-1.5" style={{ paddingLeft: `${24 + depth * 20}px` }}>
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-px bg-[#1a2f8a]/10 flex-shrink-0" />
-              {hasDims
-                ? <span className="text-gray-300 flex-shrink-0">{leafExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>}</span>
-                : <span className="w-3 flex-shrink-0" />}
-              {leaf.code && <span className="text-[10px] font-mono text-gray-400 flex-shrink-0">{leaf.code}</span>}
-              <span className="text-xs text-gray-500 italic">{leaf.name || ""}</span>
-            </div>
-          </td>
+<td className="py-1.5" style={{ paddingLeft: `${24 + depth * 20}px` }}>
+  <div className="flex items-center">
+    {hasDims
+      ? <span className="text-[#1a2f8a]/50 mr-2">{leafExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
+      : <span className="inline-block mr-2" style={{ width: 12 }} />}
+    {leaf.code && <span className="mr-2" style={subbody1Style}>{leaf.code}</span>}
+    <span style={subbody1Style}>{leaf.name || ""}</span>
+  </div>
+</td>
 <td className="text-right pr-4 py-1.5 font-mono text-xs text-gray-400 w-36">
 
             {amt === 0 ? "—" : fmtAmt(amt)}
@@ -4262,7 +4373,7 @@ if (childExpanded && hasMore) {
     return rows;
   };
 
-  return renderDrillChildren(children, leaves, 0, parentKey);
+return renderDrillChildren(children, leaves, parentDepth + 1, parentKey);
 
 }
 
@@ -4358,11 +4469,7 @@ function renderNode(node, depth = 0) {
     );
 
 if (expanded && hasMore) {
-const drillRows = renderBSDrill(
-  node, drillKey,
-  compareMode ? allCmpTree : null,
-  compareMode ? allCmp2Tree : null
-);
+const drillRows = renderBSDrill(node, drillKey, depth);
       if (drillRows?.length) {
         rows.push(...drillRows.map((row, i) => row));
       }
@@ -4377,9 +4484,9 @@ const drillRows = renderBSDrill(
 function renderBSRows(nodes) {
   const rows = [];
 
-  // PGC mapping path: render the flat list from pgc_bs_rows
+ // PGC mapping path: jerárquico (padre → hijos del flat list)
   if (pgcBsMapping?.rows) {
-    const flatNodes = bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes;
+const flatNodes = bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes;
     if (!flatNodes) return rows;
 
     const isPGC_BS = (code) => {
@@ -4387,12 +4494,48 @@ function renderBSRows(nodes) {
       return m && (m.section === "PASIVO" || m.section === "PATRIMONIO");
     };
 
-    flatNodes.forEach(node => {
+    const flatByCode = new Map(flatNodes.map(n => [String(n.code), n]));
+    const gaByCode = new Map(groupAccounts.map(g => [String(g.accountCode ?? g.AccountCode ?? ""), g]));
+    const childrenInFlat = new Map();
+    const rootsInFlat = [];
+
+    flatNodes.forEach(n => {
+      let parentInFlat = null;
+      const ga = gaByCode.get(String(n.code));
+      let curParent = ga ? String(ga.sumAccountCode ?? ga.SumAccountCode ?? "") : "";
+      const seen = new Set([String(n.code)]);
+      while (curParent && !seen.has(curParent)) {
+        seen.add(curParent);
+        if (flatByCode.has(curParent)) { parentInFlat = curParent; break; }
+        const pa = gaByCode.get(curParent);
+        curParent = pa ? String(pa.sumAccountCode ?? pa.SumAccountCode ?? "") : "";
+      }
+      if (parentInFlat) {
+        if (!childrenInFlat.has(parentInFlat)) childrenInFlat.set(parentInFlat, []);
+        childrenInFlat.get(parentInFlat).push(n);
+      } else {
+        rootsInFlat.push(n);
+      }
+    });
+
+    const sortBySO = (a, b) => {
+      const sa = pgcBsMapping.rows.get(String(a.code))?.sortOrder ?? 0;
+      const sb = pgcBsMapping.rows.get(String(b.code))?.sortOrder ?? 0;
+      return sa - sb;
+    };
+    childrenInFlat.forEach(arr => arr.sort(sortBySO));
+    rootsInFlat.sort(sortBySO);
+
+    const renderFlatNode = (node, depth) => {
       const total = isPGC_BS(node.code) ? -sumNode(node) : sumNode(node);
       const isBold = isBSHighlighted(node);
       const drillKey = `bsrow-${node.code}`;
-      const hasMore = (node.children || []).filter(hasData).length > 0
-        || node.uploadLeaves?.filter(l => l.type !== "plain").length > 0;
+      const flatChildren = childrenInFlat.get(String(node.code)) || [];
+      const treeChildren = (node.children || []).filter(hasData);
+      const hasNonFlatChildren = treeChildren.some(c => !flatByCode.has(String(c.code)));
+      const hasLeaves = (node.uploadLeaves || []).some(l => l.type !== "plain");
+      const hasJournal = (journalByCode.get(node.code) || []).length > 0;
+      const hasMore = flatChildren.length > 0 || hasNonFlatChildren || hasLeaves || hasJournal;
       const expanded = !!bsDrillMap[drillKey];
 
       const divider = effectiveBreakersBs[String(node.code)];
@@ -4400,37 +4543,43 @@ function renderBSRows(nodes) {
         rows.push(
           <tr key={`bsdivider-${node.code}`}>
             <td colSpan={2} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
-              <span className="text-[10px] font-black uppercase tracking-widest text-white/100">{divider.label}</span>
+             <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
             </td>
           </tr>
         );
       }
 
-      rows.push(
-        <tr key={node.code}
-          className={`border-b border-gray-100 ${isBold ? "bg-[#eef1fb]" : "bg-white"} ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
-          onClick={hasMore ? () => bsDrill(drillKey) : undefined}>
-          <td className="px-6 py-2.5">
-            <div className="flex items-center gap-2">
-              {hasMore
-                ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{expanded ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
-                : <span className="w-3 flex-shrink-0" />}
-              <span className={`text-xs ${isBold ? "font-bold text-[#1a2f8a] uppercase tracking-wider" : "text-gray-600"}`}>
-                {isBold ? (node.name ?? "") : ((node.name ?? "").charAt(0).toUpperCase() + (node.name ?? "").slice(1).toLowerCase())}
-              </span>
-            </div>
-          </td>
-          <td className={`text-right pr-8 py-2.5 font-mono text-xs whitespace-nowrap w-40 ${isBold ? "font-bold text-[#1a2f8a]" : "text-gray-600"}`}>
-            {total === 0 ? "-" : fmtAmt(total)}
-          </td>
-        </tr>
-      );
+const rowStyle = depth === 0 ? body1Style : body2Style;
+rows.push(
+  <tr key={node.code}
+    className={`border-b border-gray-100 bg-white ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
+    onClick={hasMore ? () => bsDrill(drillKey) : undefined}>
+    <td className="py-2.5" style={{ paddingLeft: `${24 + depth * 18}px` }}>
+      <div className="flex items-center">
+        {hasMore && (
+          <span className="text-[#1a2f8a]/50 mr-2">
+            {expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
+          </span>
+        )}
+        <span style={rowStyle}>
+          {(node.name ?? "").charAt(0).toUpperCase() + (node.name ?? "").slice(1).toLowerCase()}
+        </span>
+      </div>
+    </td>
+    <BSAmountCell value={total} typoStyle={rowStyle} />
+  </tr>
+);
 
-     if (expanded && hasMore) {
-        const drillRows = renderBSDrill(node, drillKey);
-        if (drillRows?.length) rows.push(...drillRows);
-      }
-    });
+if (expanded) {
+  flatChildren.forEach(child => renderFlatNode(child, depth + 1));
+  if (hasNonFlatChildren || hasLeaves || hasJournal) {
+    const drillRows = renderBSDrill(node, drillKey, depth);
+    if (drillRows?.length) rows.push(...drillRows);
+  }
+}
+    };
+
+    rootsInFlat.forEach(n => renderFlatNode(n, 0));
     return rows;
   }
 
@@ -4447,14 +4596,14 @@ function renderBSRows(nodes) {
     const expanded = !!bsDrillMap[drillKey];
 console.log("renderBSRows node:", node.code, "drillKey:", drillKey, "expanded:", expanded, "bsDrillMap keys:", Object.keys(bsDrillMap));
 const BS_DIVIDERS = Object.keys(breakers.bs).length
-      ? breakers.bs
-      : { '399999': { label: "Activo", color: "#1a2f8a" }, '499999': { label: "Patrimonio Neto", color: "#374151" }, '699999': { label: "Pasivo", color: "#CF305D" }, 'C.ACT': { label: "Activo", color: "#1a2f8a" }, 'D.S': { label: "Patrimonio Neto", color: "#374151" }, 'E.S': { label: "Pasivo", color: "#CF305D" } };
+  ? effectiveBreakersBs
+  : { '399999': { label: "Activo", color: colors.primary }, '499999': { label: "Patrimonio Neto", color: colors.secondary }, '699999': { label: "Pasivo", color: colors.tertiary }, 'C.ACT': { label: "Activo", color: colors.primary }, 'D.S': { label: "Patrimonio Neto", color: colors.secondary }, 'E.S': { label: "Pasivo", color: colors.tertiary } };
     const bsDivider = BS_DIVIDERS[String(node.code)];
     if (bsDivider) {
       rows.push(
         <tr key={`bsdivider-${node.code}`}>
           <td colSpan={2} style={{ backgroundColor: bsDivider.color }} className="px-6 py-1.5">
-            <span className="text-[10px] font-black uppercase tracking-widest text-white/100">{bsDivider.label}</span>
+            <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
           </td>
         </tr>
       );
@@ -4462,25 +4611,25 @@ const BS_DIVIDERS = Object.keys(breakers.bs).length
 
     if (kids.length > 0) rows.push(...renderBSRows(kids));
 
-    rows.push(
-      <tr key={node.code}
-        className={`border-b border-gray-100 ${isBold ? "bg-[#eef1fb]" : "bg-white"} ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
-        onClick={hasMore ? () => { console.log("clicking BS row", drillKey); bsDrill(drillKey); } : undefined}>
-        <td className="px-6 py-2.5">
-          <div className="flex items-center gap-2">
-            {hasMore
-              ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{expanded ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
-              : <span className="w-3 flex-shrink-0" />}
-            <span className={`text-xs ${isBold ? "font-bold text-[#1a2f8a] uppercase tracking-wider" : "text-gray-600"}`}>
-  {isBold ? (node.name ?? "") : ((node.name ?? "").charAt(0).toUpperCase() + (node.name ?? "").slice(1).toLowerCase())}
-</span>
-          </div>
-        </td>
-        <td className={`text-right pr-8 py-2.5 font-mono text-xs whitespace-nowrap w-40 ${isBold ? "font-bold text-[#1a2f8a]" : "text-gray-600"}`}>
-          {total === 0 ? "-" : fmtAmt(total)}
-        </td>
-      </tr>
-    );
+rows.push(
+  <tr key={node.code}
+    className={`border-b border-gray-100 bg-white ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
+    onClick={hasMore ? () => bsDrill(drillKey) : undefined}>
+    <td className="px-6 py-2.5">
+      <div className="flex items-center">
+        {hasMore && (
+          <span className="text-[#1a2f8a]/50 mr-2">
+            {expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
+          </span>
+        )}
+        <span style={body1Style}>
+          {(node.name ?? "").charAt(0).toUpperCase() + (node.name ?? "").slice(1).toLowerCase()}
+        </span>
+      </div>
+    </td>
+    <BSAmountCell value={total} typoStyle={body1Style} />
+  </tr>
+);
 
 if (expanded && hasMore) {
     const drillRows = renderBSDrill(node, drillKey);
@@ -4550,7 +4699,13 @@ const allCmp2Tree = useMemo(
  const bsRoots = useMemo(() => tree.filter(n => hasData(n) && n.accountType === "B/S")
     .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true })), [tree]);
 
-  // PGC mapping: ordered list of nodes for summary or detailed view
+// PGC mapping: ordered list of nodes — filtered by active tab (summary/assets/equity)
+  const sectionFilterForView = useCallback((info) => {
+    if (bsView === "assets") return info.section === "ACTIVO";
+    if (bsView === "equity") return info.section === "PATRIMONIO" || info.section === "PASIVO";
+    return true; // summary tab: no section filter (uses showInSummary instead)
+  }, [bsView]);
+
   const bsPgcSummaryNodes = useMemo(() => {
     if (!pgcBsMapping?.rows) return null;
     const treeByCode = new Map();
@@ -4558,11 +4713,11 @@ const allCmp2Tree = useMemo(
       nodes.forEach(n => { treeByCode.set(String(n.code), n); index(n.children || []); });
     })(tree);
     return [...pgcBsMapping.rows.entries()]
-      .filter(([, info]) => info.showInSummary)
+      .filter(([, info]) => info.showInSummary && sectionFilterForView(info))
       .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
       .map(([code]) => treeByCode.get(code))
       .filter(n => n && hasData(n) && n.accountType === "B/S");
-  }, [tree, pgcBsMapping]);
+  }, [tree, pgcBsMapping, sectionFilterForView]);
 
   const bsPgcAllSumNodes = useMemo(() => {
     if (!pgcBsMapping?.rows) return null;
@@ -4571,28 +4726,88 @@ const allCmp2Tree = useMemo(
       nodes.forEach(n => { treeByCode.set(String(n.code), n); index(n.children || []); });
     })(tree);
     return [...pgcBsMapping.rows.entries()]
-      .filter(([, info]) => info.isSum)
+      .filter(([, info]) => info.isSum && sectionFilterForView(info))
       .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
       .map(([code]) => treeByCode.get(code))
       .filter(n => n && hasData(n) && n.accountType === "B/S");
-  }, [tree, pgcBsMapping]);
+  }, [tree, pgcBsMapping, sectionFilterForView]);
 
-  // Derive the 3 BS breakers (one per section, on the first row of each section)
-  const effectiveBreakersBs = useMemo(() => {
-    if (!pgcBsMapping?.rows || !pgcBsMapping?.sections) return breakers.bs ?? {};
-    const rowsToScan = (bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes) || [];
-    const seen = new Set();
+// Derive the 3 BS breakers in render order (parents-first, matching renderFlatNode)
+const effectiveBreakersBs = useMemo(() => {
+  const palette = [colors.primary, colors.secondary, colors.tertiary];
+
+  if (!pgcBsMapping?.rows || !pgcBsMapping?.sections) {
+    // Legacy Supabase path — recolor by position
+    const legacy = breakers.bs ?? {};
+    const codes = Object.keys(legacy).sort((a, b) =>
+      String(a).localeCompare(String(b), undefined, { numeric: true })
+    );
     const out = {};
-    for (const node of rowsToScan) {
-      const m = pgcBsMapping.rows.get(String(node.code));
-      if (!m) continue;
-      if (seen.has(m.section)) continue;
-      seen.add(m.section);
-      const sec = pgcBsMapping.sections.get(m.section);
-      if (sec) out[String(node.code)] = { label: sec.label, color: sec.color };
-    }
+    codes.forEach((code, i) => {
+      out[code] = { ...legacy[code], color: palette[i] ?? legacy[code].color };
+    });
     return out;
-  }, [pgcBsMapping, breakers, bsView, bsPgcSummaryNodes, bsPgcAllSumNodes]);
+  }
+
+  const rowsToScan = (bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes) || [];
+  if (!rowsToScan.length) return {};
+
+  const flatByCode = new Map(rowsToScan.map(n => [String(n.code), n]));
+  const gaByCode = new Map(groupAccounts.map(g => [String(g.accountCode ?? g.AccountCode ?? ""), g]));
+  const childrenInFlat = new Map();
+  const rootsInFlat = [];
+
+  rowsToScan.forEach(n => {
+    let parentInFlat = null;
+    const ga = gaByCode.get(String(n.code));
+    let curParent = ga ? String(ga.sumAccountCode ?? ga.SumAccountCode ?? "") : "";
+    const seen = new Set([String(n.code)]);
+    while (curParent && !seen.has(curParent)) {
+      seen.add(curParent);
+      if (flatByCode.has(curParent)) { parentInFlat = curParent; break; }
+      const pa = gaByCode.get(curParent);
+      curParent = pa ? String(pa.sumAccountCode ?? pa.SumAccountCode ?? "") : "";
+    }
+    if (parentInFlat) {
+      if (!childrenInFlat.has(parentInFlat)) childrenInFlat.set(parentInFlat, []);
+      childrenInFlat.get(parentInFlat).push(n);
+    } else {
+      rootsInFlat.push(n);
+    }
+  });
+
+  const sortBySO = (a, b) => {
+    const sa = pgcBsMapping.rows.get(String(a.code))?.sortOrder ?? 0;
+    const sb = pgcBsMapping.rows.get(String(b.code))?.sortOrder ?? 0;
+    return sa - sb;
+  };
+  childrenInFlat.forEach(arr => arr.sort(sortBySO));
+  rootsInFlat.sort(sortBySO);
+
+  const renderOrder = [];
+  const walk = (node) => {
+    renderOrder.push(node);
+    const kids = childrenInFlat.get(String(node.code)) || [];
+    kids.forEach(walk);
+  };
+  rootsInFlat.forEach(walk);
+
+  const seenSec = new Set();
+  const out = {};
+  let i = 0;
+  for (const node of renderOrder) {
+    const m = pgcBsMapping.rows.get(String(node.code));
+    if (!m) continue;
+    if (seenSec.has(m.section)) continue;
+    seenSec.add(m.section);
+    const sec = pgcBsMapping.sections.get(m.section);
+    if (sec) {
+      out[String(node.code)] = { label: sec.label, color: palette[i] ?? sec.color };
+      i++;
+    }
+  }
+  return out;
+}, [pgcBsMapping, breakers, bsView, bsPgcSummaryNodes, bsPgcAllSumNodes, groupAccounts, colors]);
 
   const monthLabel = MONTHS.find(m => String(m.value) === String(month))?.label ?? month;
 
@@ -4612,7 +4827,7 @@ const allCmp2Tree = useMemo(
 function renderBSCompareRows(nodes, cmpTree, cmp2Tree) {
     const rows = [];
 
-    // PGC mapping path
+  // PGC mapping path: jerárquico
     if (pgcBsMapping?.rows) {
       const flatNodes = bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes;
       if (!flatNodes) return rows;
@@ -4622,7 +4837,41 @@ function renderBSCompareRows(nodes, cmpTree, cmp2Tree) {
         return m && (m.section === "PASIVO" || m.section === "PATRIMONIO");
       };
 
-      flatNodes.forEach(node => {
+      const flatByCode = new Map(flatNodes.map(n => [String(n.code), n]));
+      const gaByCode = new Map(groupAccounts.map(g => [String(g.accountCode ?? g.AccountCode ?? ""), g]));
+      const childrenInFlat = new Map();
+      const rootsInFlat = [];
+
+      flatNodes.forEach(n => {
+        let parentInFlat = null;
+        const ga = gaByCode.get(String(n.code));
+        let curParent = ga ? String(ga.sumAccountCode ?? ga.SumAccountCode ?? "") : "";
+        const seen = new Set([String(n.code)]);
+        while (curParent && !seen.has(curParent)) {
+          seen.add(curParent);
+          if (flatByCode.has(curParent)) { parentInFlat = curParent; break; }
+          const pa = gaByCode.get(curParent);
+          curParent = pa ? String(pa.sumAccountCode ?? pa.SumAccountCode ?? "") : "";
+        }
+        if (parentInFlat) {
+          if (!childrenInFlat.has(parentInFlat)) childrenInFlat.set(parentInFlat, []);
+          childrenInFlat.get(parentInFlat).push(n);
+        } else {
+          rootsInFlat.push(n);
+        }
+      });
+
+      const sortBySO = (a, b) => {
+        const sa = pgcBsMapping.rows.get(String(a.code))?.sortOrder ?? 0;
+        const sb = pgcBsMapping.rows.get(String(b.code))?.sortOrder ?? 0;
+        return sa - sb;
+      };
+      childrenInFlat.forEach(arr => arr.sort(sortBySO));
+      rootsInFlat.sort(sortBySO);
+
+      const devColor = (v) => v === 0 ? "text-gray-300" : v > 0 ? "text-emerald-600" : "text-red-500";
+
+      const renderFlatNodeCmp = (node, depth) => {
         const isBold = isBSHighlighted(node);
         const actual = isPGC_BS(node.code) ? -sumNode(node) : sumNode(node);
         const cmpRaw = getNodeValue(cmpTree, node.code);
@@ -4633,67 +4882,62 @@ function renderBSCompareRows(nodes, cmpTree, cmp2Tree) {
         const devBPct = cmp !== 0 ? (devB / Math.abs(cmp)) * 100 : null;
         const devC = actual - cmp2;
         const devCPct = cmp2 !== 0 ? (devC / Math.abs(cmp2)) * 100 : null;
-        const devColor = (v) => v === 0 ? "text-gray-300" : v > 0 ? "text-emerald-600" : "text-red-500";
 
         const drillKeyCmp = `bscmp-${node.code}`;
-        const hasMoreCmp = (node.children || []).filter(hasData).length > 0
-          || node.uploadLeaves?.filter(l => l.type !== "plain").length > 0;
+        const flatChildrenCmp = childrenInFlat.get(String(node.code)) || [];
+        const treeChildrenCmp = (node.children || []).filter(hasData);
+        const hasNonFlatCmp = treeChildrenCmp.some(c => !flatByCode.has(String(c.code)));
+        const hasLeavesCmp = (node.uploadLeaves || []).some(l => l.type !== "plain");
+        const hasJournalCmp = (journalByCode.get(node.code) || []).length > 0;
+        const hasMoreCmp = flatChildrenCmp.length > 0 || hasNonFlatCmp || hasLeavesCmp || hasJournalCmp;
         const expandedCmp = !!bsDrillMap[drillKeyCmp];
-
+        const rowStyle = depth === 0 ? body1Style : body2Style;
         const divider = effectiveBreakersBs[String(node.code)];
         if (divider) {
           rows.push(
             <tr key={`bsdivider-${node.code}`}>
               <td colSpan={cmp2Enabled ? 8 : 5} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
-                <span className="text-[10px] font-black uppercase tracking-widest text-white">{divider.label}</span>
+               <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
               </td>
             </tr>
           );
         }
 
-        rows.push(
-          <tr key={node.code}
-            className={`border-b border-gray-100 ${isBold ? "bg-[#eef1fb]" : "bg-white"} ${hasMoreCmp ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
-            onClick={hasMoreCmp ? () => bsDrill(drillKeyCmp) : undefined}>
-            <td className="px-6 py-2.5">
-              <div className="flex items-center gap-2">
-                {hasMoreCmp
-                  ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{expandedCmp ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
-                  : <span className="w-3 flex-shrink-0" />}
-                <span className={`text-xs ${isBold ? "font-bold text-[#1a2f8a] uppercase tracking-wider" : "text-gray-600"}`}>
-                  {isBold ? (node.name ?? "") : ((node.name ?? "").charAt(0).toUpperCase() + (node.name ?? "").slice(1).toLowerCase())}
-                </span>
-              </div>
-            </td>
-            <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-36 ${isBold ? "font-bold text-[#1a2f8a]" : "text-gray-600"}`}>
-              {actual === 0 ? "-" : fmtAmt(actual)}
-            </td>
-            <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-36 ${isBold ? "font-bold text-[#CF305D]" : "text-[#CF305D]"}`} style={{ borderLeft: "2px solid #e2e8f0" }}>
-              {cmp === 0 ? "-" : fmtAmt(cmp)}
-            </td>
-            <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-28 ${isBold ? "font-bold" : ""} ${devColor(devB)}`}>
-              {devB === 0 ? "-" : fmtAmt(devB)}
-            </td>
-            <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-20 ${isBold ? "font-bold" : ""} ${devColor(devB)}`}>
-              {devBPct === null ? "—" : `${devBPct >= 0 ? "+" : ""}${devBPct.toFixed(1)}%`}
-            </td>
-            {cmp2Enabled && <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-36 ${isBold ? "font-bold text-[#57aa78]" : "text-[#57aa78]"}`} style={{ borderLeft: "2px solid #e2e8f0" }}>
-              {cmp2 === 0 ? "-" : fmtAmt(cmp2)}
-            </td>}
-            {cmp2Enabled && <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-28 ${isBold ? "font-bold" : ""} ${devColor(devC)}`}>
-              {devC === 0 ? "-" : fmtAmt(devC)}
-            </td>}
-            {cmp2Enabled && <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-20 ${isBold ? "font-bold" : ""} ${devColor(devC)}`}>
-              {devCPct === null ? "—" : `${devCPct >= 0 ? "+" : ""}${devCPct.toFixed(1)}%`}
-            </td>}
-          </tr>
-        );
+const rowStyleCmp = depth === 0 ? body1Style : body2Style;
+rows.push(
+  <tr key={node.code}
+    className={`border-b border-gray-100 bg-white ${hasMoreCmp ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
+    onClick={hasMoreCmp ? () => bsDrill(drillKeyCmp) : undefined}>
+    <td className="py-2.5" style={{ paddingLeft: `${24 + depth * 18}px` }}>
+      <div className="flex items-center">
+        {hasMoreCmp && (
+          <span className="text-[#1a2f8a]/50 mr-2">
+            {expandedCmp ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
+          </span>
+        )}
+        <span style={rowStyleCmp}>
+          {(node.name ?? "").charAt(0).toUpperCase() + (node.name ?? "").slice(1).toLowerCase()}
+        </span>
+      </div>
+    </td>
+    <BSAmountCell value={actual} typoStyle={rowStyleCmp} />
+    <BSAmountCell value={cmp} typoStyle={rowStyleCmp} divider />
+    <BSDeviationCells a={actual} b={cmp} typoStyle={rowStyleCmp} />
+    {cmp2Enabled && <BSAmountCell value={cmp2} typoStyle={rowStyleCmp} divider />}
+    {cmp2Enabled && <BSDeviationCells a={actual} b={cmp2} typoStyle={rowStyleCmp} />}
+  </tr>
+);
 
-       if (expandedCmp && hasMoreCmp) {
-          const drillRows = renderBSDrill(node, drillKeyCmp, cmpTree, cmp2Tree);
-          if (drillRows?.length) rows.push(...drillRows);
-        }
-      });
+if (expandedCmp) {
+  flatChildrenCmp.forEach(child => renderFlatNodeCmp(child, depth + 1));
+  if (hasNonFlatCmp || hasLeavesCmp || hasJournalCmp) {
+    const drillRows = renderBSDrill(node, drillKeyCmp, depth);
+    if (drillRows?.length) rows.push(...drillRows);
+  }
+}
+      };
+
+      rootsInFlat.forEach(n => renderFlatNodeCmp(n, 0));
       return rows;
     }
 
@@ -4706,14 +4950,14 @@ function renderBSCompareRows(nodes, cmpTree, cmp2Tree) {
       const kids = (node.children || []).filter(hasData).filter(c => c.level <= 4);
 
 const BS_DIVIDERS = Object.keys(breakers.bs).length
-        ? breakers.bs
-        : { '399999': { label: "Activo", color: "#1a2f8a" }, '499999': { label: "Patrimonio Neto", color: "#374151" }, '699999': { label: "Pasivo", color: "#CF305D" }, 'C.ACT': { label: "Activo", color: "#1a2f8a" }, 'D.S': { label: "Patrimonio Neto", color: "#374151" }, 'E.S': { label: "Pasivo", color: "#CF305D" } };
+  ? effectiveBreakersBs
+  : { '399999': { label: "Activo", color: colors.primary }, '499999': { label: "Patrimonio Neto", color: colors.secondary }, '699999': { label: "Pasivo", color: colors.tertiary }, 'C.ACT': { label: "Activo", color: colors.primary }, 'D.S': { label: "Patrimonio Neto", color: colors.secondary }, 'E.S': { label: "Pasivo", color: colors.tertiary } };
       const bsDivider = BS_DIVIDERS[String(node.code)];
       if (bsDivider) {
         rows.push(
           <tr key={`bsdivider-${node.code}`}>
             <td colSpan={cmp2Enabled ? 8 : 5} style={{ backgroundColor: bsDivider.color }} className="px-6 py-1.5">
-              <span className="text-[10px] font-black uppercase tracking-widest text-white">{bsDivider.label}</span>
+              <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
             </td>
           </tr>
         );
@@ -4737,46 +4981,32 @@ const BS_DIVIDERS = Object.keys(breakers.bs).length
       const hasMoreCmp = node.uploadLeaves?.filter(l => l.type !== "plain").length > 0;
       const expandedCmp = !!bsDrillMap[drillKeyCmp];
 
-      rows.push(
-        <tr key={node.code}
-          className={`border-b border-gray-100 ${isBold ? "bg-[#eef1fb]" : "bg-white"} ${hasMoreCmp ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
-          onClick={hasMoreCmp ? () => bsDrill(drillKeyCmp) : undefined}>
-          <td className="px-6 py-2.5">
-            <div className="flex items-center gap-2">
-              {hasMoreCmp
-                ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{expandedCmp ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
-                : <span className="w-3 flex-shrink-0" />}
-              <span className={`text-xs ${isBold ? "font-bold text-[#1a2f8a] uppercase tracking-wider" : "text-gray-600"}`}>
-                {isBold ? (node.name ?? "") : ((node.name ?? "").charAt(0).toUpperCase() + (node.name ?? "").slice(1).toLowerCase())}
-              </span>
-            </div>
-          </td>
-          <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-36 ${isBold ? "font-bold text-[#1a2f8a]" : "text-gray-600"}`}>
-            {actual === 0 ? "-" : fmtAmt(actual)}
-          </td>
-<td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-36 ${isBold ? "font-bold text-[#CF305D]" : "text-[#CF305D]"}`} style={{ borderLeft: "2px solid #e2e8f0" }}>
-            {cmp === 0 ? "-" : fmtAmt(cmp)}
-          </td>
-          <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-28 ${isBold ? "font-bold" : ""} ${devColor(devB)}`}>
-            {devB === 0 ? "-" : fmtAmt(devB)}
-          </td>
-          <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-20 ${isBold ? "font-bold" : ""} ${devColor(devB)}`}>
-            {devBPct === null ? "—" : `${devBPct >= 0 ? "+" : ""}${devBPct.toFixed(1)}%`}
-          </td>
-          {cmp2Enabled && <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-36 ${isBold ? "font-bold text-[#57aa78]" : "text-[#57aa78]"}`} style={{ borderLeft: "2px solid #e2e8f0" }}>
-            {cmp2 === 0 ? "-" : fmtAmt(cmp2)}
-          </td>}
-          {cmp2Enabled && <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-28 ${isBold ? "font-bold" : ""} ${devColor(devC)}`}>
-            {devC === 0 ? "-" : fmtAmt(devC)}
-          </td>}
-          {cmp2Enabled && <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap w-20 ${isBold ? "font-bold" : ""} ${devColor(devC)}`}>
-            {devCPct === null ? "—" : `${devCPct >= 0 ? "+" : ""}${devCPct.toFixed(1)}%`}
-          </td>}
-        </tr>
-      );
+rows.push(
+  <tr key={node.code}
+    className={`border-b border-gray-100 bg-white ${hasMoreCmp ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
+    onClick={hasMoreCmp ? () => bsDrill(drillKeyCmp) : undefined}>
+    <td className="px-6 py-2.5">
+      <div className="flex items-center">
+        {hasMoreCmp && (
+          <span className="text-[#1a2f8a]/50 mr-2">
+            {expandedCmp ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
+          </span>
+        )}
+        <span style={body1Style}>
+          {(node.name ?? "").charAt(0).toUpperCase() + (node.name ?? "").slice(1).toLowerCase()}
+        </span>
+      </div>
+    </td>
+    <BSAmountCell value={actual} typoStyle={body1Style} />
+    <BSAmountCell value={cmp} typoStyle={body1Style} divider />
+    <BSDeviationCells a={actual} b={cmp} typoStyle={body1Style} />
+    {cmp2Enabled && <BSAmountCell value={cmp2} typoStyle={body1Style} divider />}
+    {cmp2Enabled && <BSDeviationCells a={actual} b={cmp2} typoStyle={body1Style} />}
+  </tr>
+);
 
- if (expandedCmp && hasMoreCmp) {
-        const drillRows = renderBSDrill(node, drillKeyCmp, cmpTree, cmp2Tree);
+if (expandedCmp && hasMoreCmp) {
+  const drillRows = renderBSDrill(node, drillKeyCmp);
         if (drillRows?.length) {
           rows.push(...drillRows);
         }
@@ -4925,7 +5155,7 @@ style={compareMode
             ref={el => {
               if (!el) return;
               const btns = el.querySelectorAll("button");
-              const tabs = pgcBsMapping ? ["detailed","summary"] : ["summary","assets","equity"];
+const tabs = ["summary","assets","equity"];
               const idx = tabs.indexOf(bsView);
               const active = btns[idx >= 0 ? idx : 0];
               const pill = el.querySelector(".bs-pill");
@@ -4942,10 +5172,7 @@ style={compareMode
               transition: "left 0.25s cubic-bezier(0.4,0,0.2,1), width 0.25s cubic-bezier(0.4,0,0.2,1)",
               pointerEvents: "none",
             }} />
-            {(pgcBsMapping
-              ? [["detailed","Detailed"],["summary","Summary"]]
-              : [["summary","Summary"],["assets","Assets"],["equity","Equity & Liab."]]
-            ).map(([v, label]) => (
+{[["summary","Summary"],["assets","Assets"],["equity","Equity & Liab."]].map(([v, label]) => (
               <button key={v} onClick={() => setBsView(v)}
                 className="relative z-10 px-3 py-1.5 rounded-lg text-xs font-black transition-colors duration-200"
                 style={{ color: bsView === v ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}80` }}>
@@ -5000,34 +5227,31 @@ style={compareMode
             {compareMode && <><col style={{ width: "144px" }} /><col style={{ width: "112px" }} /><col style={{ width: "80px" }} /></>}
             {compareMode && cmp2Enabled && <><col style={{ width: "144px" }} /><col style={{ width: "112px" }} /><col style={{ width: "80px" }} /></>}
           </colgroup>
-          <thead>
-
-
+<thead>
 {(pgcBsMapping || bsView === "summary") ? (
-<tr className="border-b border-gray-100 bg-white" style={{ position: "sticky", top: 0, zIndex: 10 }}>
-                <th className="text-left px-4 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest">Account</th>
-<th className="text-right pr-4 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest w-36">Actual</th>
-{compareMode && <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black text-[#CF305D] uppercase tracking-widest whitespace-nowrap">{[cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource].filter(Boolean).join(" · ")}</th>}
-                {compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black text-[#57aa78] uppercase tracking-widest whitespace-nowrap">{[cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source].filter(Boolean).join(" · ")}</th>}
-              </tr>
+<tr className="border-b border-gray-100" style={{ position: "sticky", top: 0, zIndex: 10, backgroundColor: colors.primary }}>
+  <th className="text-left px-4 py-3 uppercase tracking-widest" style={{ ...header2Style, backgroundColor: colors.primary }}>Account</th>
+  <th className="text-right pr-4 py-3 uppercase tracking-widest w-36" style={{ ...header2Style, backgroundColor: colors.primary }}>Actual</th>
+  {compareMode && <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black text-[#CF305D] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{[cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource].filter(Boolean).join(" · ")}</th>}
+  {compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black text-[#57aa78] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{[cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source].filter(Boolean).join(" · ")}</th>}
+</tr>
 ) : (
   <>
-
-<tr className="border-b border-gray-100 bg-white">
-  <th className="text-left px-6 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest bg-white" style={{ position: "sticky", top: 0, left: 0, zIndex: 20 }}>Account</th>
+<tr className="border-b border-gray-100" style={{ backgroundColor: colors.primary }}>
+  <th className="text-left px-6 py-3 uppercase tracking-widest" style={{ ...header2Style, position: "sticky", top: 0, left: 0, zIndex: 20, backgroundColor: colors.primary }}>Account</th>
   {companyColumns.map(({ source, currency }) => (
     <React.Fragment key={source}>
-<th className="text-right pr-4 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest whitespace-nowrap min-w-[120px] bg-white" style={{ position: "sticky", top: 0 }}>Actual</th>
+      <th className="text-right pr-4 py-3 uppercase tracking-widest whitespace-nowrap min-w-[120px]" style={{ ...header2Style, position: "sticky", top: 0, backgroundColor: colors.primary }}>Actual</th>
       {compareMode && <>
-        <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black text-[#CF305D] uppercase tracking-widest whitespace-nowrap min-w-[120px] bg-white" style={{ position: "sticky", top: 0 }}>{[cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource].filter(Boolean).join(" · ")}</th>
-        {cmp2Enabled && <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black text-[#57aa78] uppercase tracking-widest whitespace-nowrap min-w-[120px] bg-white" style={{ position: "sticky", top: 0 }}>{[cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source].filter(Boolean).join(" · ")}</th>}
+        <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black text-[#CF305D] uppercase tracking-widest whitespace-nowrap min-w-[120px]" style={{ position: "sticky", top: 0, backgroundColor: colors.primary }}>{[cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource].filter(Boolean).join(" · ")}</th>
+        {cmp2Enabled && <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black text-[#57aa78] uppercase tracking-widest whitespace-nowrap min-w-[120px]" style={{ position: "sticky", top: 0, backgroundColor: colors.primary }}>{[cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source].filter(Boolean).join(" · ")}</th>}
       </>}
     </React.Fragment>
   ))}
 </tr>
   </>
 )}
-          </thead>
+</thead>
 <tbody>
             {pgcBsMapping ? (
               bsRoots.length === 0
@@ -5056,7 +5280,9 @@ style={compareMode
 export default function AccountsDashboard({ token, sources = [], structures = [], companies = [], dimensions = [] }) {
 const { colors } = useSettings();
 const headerStyle = useTypo("header1");
+const header3Style = useTypo("header3");
 const underscoreStyle = useTypo("underscore1");
+const filterStyle = useTypo("filter");
 
 const [activeTab, setActiveTab]   = useState("pl");
 const [prevTab, setPrevTab]       = useState(null);
@@ -5200,10 +5426,16 @@ const [jrnLoading, setJrnLoading] = useState(false);
 const [jrnError, setJrnError] = useState(null);
 const [jrnFetched, setJrnFetched] = useState(false);
 const [jrnSearch, setJrnSearch] = useState("");
+const [jrnCmpData, setJrnCmpData] = useState([]);
+const [jrnCmp2Data, setJrnCmp2Data] = useState([]);
 
 const [breakers, setBreakers] = useState({ pl: {}, bs: {}, cf: {} });
 const [pgcMapping, setPgcMapping] = useState(null);
 const [pgcBsMapping, setPgcBsMapping] = useState(null);
+const [spanishIfrsEsPlMapping, setSpanishIfrsEsPlMapping] = useState(null);
+const [spanishIfrsEsBsMapping, setSpanishIfrsEsBsMapping] = useState(null);
+const [danishIfrsPlMapping, setDanishIfrsPlMapping] = useState(null);
+const [danishIfrsBsMapping, setDanishIfrsBsMapping] = useState(null);
 
 // AFTER — drop this in its place:
 useEffect(() => {
@@ -5224,18 +5456,20 @@ useEffect(() => {
   // Everything else     → no custom breakers needed (fallback defaults apply)
 
 const isPGC         = grpData.some(n => /[a-zA-Z]/.test(String(n.accountCode ?? n.AccountCode ?? "")) && String(n.accountCode ?? n.AccountCode ?? "").endsWith(".S"));
-  const isSpanishIFRS = !isPGC && grpData.some(n => /^[A-Z]\.\d/.test(String(n.accountCode ?? n.AccountCode ?? "")));
-  const isDanish      = !isPGC && !isSpanishIFRS && grpData.some(n => /^\d{6}$/.test(String(n.accountCode ?? n.AccountCode ?? "")));
+  const isSpanishIfrsEs = !isPGC && grpData.some(n => /\.PL$/.test(String(n.accountCode ?? n.AccountCode ?? "")));
+  const isSpanishIFRS = !isPGC && !isSpanishIfrsEs && grpData.some(n => /^[A-Z]\.\d/.test(String(n.accountCode ?? n.AccountCode ?? "")));
+const isDanish      = !isPGC && !isSpanishIFRS && !isSpanishIfrsEs && grpData.some(n => /^\d{5,6}$/.test(String(n.accountCode ?? n.AccountCode ?? "")));
 
-  if (!isPGC && !isSpanishIFRS && !isDanish) return;
+// Spanish IFRS-ES and Danish IFRS use mapping tables (no breakers needed)
+  if (isDanish || isSpanishIfrsEs) return;
+
+  if (!isPGC && !isSpanishIFRS) return;
 
   breakersFetchedRef.current = true;
 
   const endpoint = isPGC
     ? `${SUPABASE_URL}/pgc_breakers?select=*`
-    : isSpanishIFRS
-      ? `${SUPABASE_URL}/spanish_ifrs_breakers?select=*`
-      : `${SUPABASE_URL}/danish_breakers?select=*`;
+    : `${SUPABASE_URL}/spanish_ifrs_breakers?select=*`;
 
   fetch(endpoint, { headers: sbHeaders })
     .then(r => r.json())
@@ -5330,12 +5564,195 @@ useEffect(() => {
       secsArr.forEach(s => {
         sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) });
       });
-      setPgcBsMapping({ rows, sections });
+setPgcBsMapping({ rows, sections });
     })
     .catch(() => setPgcBsMapping(null));
 }, [grpData]);
 
+// ── Danish IFRS: load PL mapping (danish_ifrs_pl_rows + danish_ifrs_pl_sections) ──
+useEffect(() => {
+  console.log("[DanishPL useEffect] fired, grpData.length=", grpData.length);
+  if (!grpData.length) { setDanishIfrsPlMapping(null); return; }
+
+  const isPGC = grpData.some(n => {
+    const c = String(n.accountCode ?? n.AccountCode ?? "");
+    return /[a-zA-Z]/.test(c) && c.endsWith(".S");
+  });
+  const isSpanishIFRS = !isPGC && grpData.some(n => /^[A-Z]\.\d/.test(String(n.accountCode ?? n.AccountCode ?? "")));
+  const isDanish = !isPGC && !isSpanishIFRS && grpData.some(n => /^\d{5,6}$/.test(String(n.accountCode ?? n.AccountCode ?? "")));
+
+  console.log("[DanishPL useEffect] isPGC=", isPGC, "isSpanishIFRS=", isSpanishIFRS, "isDanish=", isDanish);
+
+  if (!isDanish) { setDanishIfrsPlMapping(null); return; }
+
+  const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
+  const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
+  const sbHeaders = {
+    apikey:        SUPABASE_APIKEY,
+    Authorization: `Bearer ${SUPABASE_APIKEY}`,
+  };
+
+  Promise.all([
+    fetch(`${SUPABASE_URL}/danish_ifrs_pl_rows?select=*&order=sort_order.asc`,    { headers: sbHeaders }).then(r => r.json()),
+    fetch(`${SUPABASE_URL}/danish_ifrs_pl_sections?select=*&order=sort_order.asc`, { headers: sbHeaders }).then(r => r.json()),
+  ])
+    .then(([rowsArr, secsArr]) => {
+      if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
+      const rows = new Map();
+      rowsArr.forEach(r => {
+        rows.set(String(r.account_code), {
+          section:       String(r.section_code),
+          sortOrder:     Number(r.sort_order),
+          isSum:         !!r.is_sum,
+          showInSummary: !!r.show_in_summary,
+          level:         Number(r.level ?? 0),
+        });
+      });
+      const sections = new Map();
+      secsArr.forEach(s => {
+        sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) });
+      });
+console.log("[DanishPL useEffect] SETTING mapping, rows=", rows.size, "sections=", sections.size);
+      setDanishIfrsPlMapping({ rows, sections });
+    })
+    .catch((e) => { console.log("[DanishPL useEffect] FETCH ERROR:", e); setDanishIfrsPlMapping(null); });
+}, [grpData]);
+
+// ── Danish IFRS: load BS mapping (danish_ifrs_bs_rows + danish_ifrs_bs_sections) ──
+useEffect(() => {
+  if (!grpData.length) { setDanishIfrsBsMapping(null); return; }
+
+  const isPGC = grpData.some(n => {
+    const c = String(n.accountCode ?? n.AccountCode ?? "");
+    return /[a-zA-Z]/.test(c) && c.endsWith(".S");
+  });
+  const isSpanishIFRS = !isPGC && grpData.some(n => /^[A-Z]\.\d/.test(String(n.accountCode ?? n.AccountCode ?? "")));
+const isDanish = !isPGC && !isSpanishIFRS && grpData.some(n => /^\d{5,6}$/.test(String(n.accountCode ?? n.AccountCode ?? "")));
+
+  if (!isDanish) { setDanishIfrsBsMapping(null); return; }
+
+  const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
+  const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
+  const sbHeaders = {
+    apikey:        SUPABASE_APIKEY,
+    Authorization: `Bearer ${SUPABASE_APIKEY}`,
+  };
+
+  Promise.all([
+    fetch(`${SUPABASE_URL}/danish_ifrs_bs_rows?select=*&order=sort_order.asc`,    { headers: sbHeaders }).then(r => r.json()),
+    fetch(`${SUPABASE_URL}/danish_ifrs_bs_sections?select=*&order=sort_order.asc`, { headers: sbHeaders }).then(r => r.json()),
+  ])
+    .then(([rowsArr, secsArr]) => {
+      if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
+      const rows = new Map();
+      rowsArr.forEach(r => {
+        rows.set(String(r.account_code), {
+          section:       String(r.section_code),
+          sortOrder:     Number(r.sort_order),
+          isSum:         !!r.is_sum,
+          showInSummary: !!r.show_in_summary,
+          level:         Number(r.level ?? 0),
+        });
+      });
+      const sections = new Map();
+      secsArr.forEach(s => {
+        sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) });
+      });
+      setDanishIfrsBsMapping({ rows, sections });
+    })
+    .catch(() => setDanishIfrsBsMapping(null));
+}, [grpData]);
+
+// ── Spanish IFRS ES (Españolizado): load PL mapping ──
+useEffect(() => {
+  if (!grpData.length) { setSpanishIfrsEsPlMapping(null); return; }
+
+  const isPGC = grpData.some(n => {
+    const c = String(n.accountCode ?? n.AccountCode ?? "");
+    return /[a-zA-Z]/.test(c) && c.endsWith(".S");
+  });
+  const isSpanishIfrsEs = !isPGC && grpData.some(n => {
+    const c = String(n.accountCode ?? n.AccountCode ?? "");
+    return /\.PL$/.test(c);
+  });
+
+  if (!isSpanishIfrsEs) { setSpanishIfrsEsPlMapping(null); return; }
+
+  const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
+  const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
+  const sbHeaders = { apikey: SUPABASE_APIKEY, Authorization: `Bearer ${SUPABASE_APIKEY}` };
+
+  Promise.all([
+    fetch(`${SUPABASE_URL}/spanish_ifrs_es_pl_rows?select=*&order=sort_order.asc`,    { headers: sbHeaders }).then(r => r.json()),
+    fetch(`${SUPABASE_URL}/spanish_ifrs_es_pl_sections?select=*&order=sort_order.asc`, { headers: sbHeaders }).then(r => r.json()),
+  ])
+    .then(([rowsArr, secsArr]) => {
+      if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
+      const rows = new Map();
+      rowsArr.forEach(r => {
+        rows.set(String(r.account_code), {
+          section:       String(r.section_code),
+          sortOrder:     Number(r.sort_order),
+          isSum:         !!r.is_sum,
+          showInSummary: !!r.show_in_summary,
+          level:         Number(r.level ?? 0),
+        });
+      });
+      const sections = new Map();
+      secsArr.forEach(s => {
+        sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) });
+      });
+      setSpanishIfrsEsPlMapping({ rows, sections });
+    })
+    .catch(() => setSpanishIfrsEsPlMapping(null));
+}, [grpData]);
+
+// ── Spanish IFRS ES: load BS mapping ──
+useEffect(() => {
+  if (!grpData.length) { setSpanishIfrsEsBsMapping(null); return; }
+
+  const isPGC = grpData.some(n => {
+    const c = String(n.accountCode ?? n.AccountCode ?? "");
+    return /[a-zA-Z]/.test(c) && c.endsWith(".S");
+  });
+  const isSpanishIfrsEs = !isPGC && grpData.some(n => {
+    const c = String(n.accountCode ?? n.AccountCode ?? "");
+    return /\.PL$/.test(c);
+  });
+
+  if (!isSpanishIfrsEs) { setSpanishIfrsEsBsMapping(null); return; }
+
+  const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
+  const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
+  const sbHeaders = { apikey: SUPABASE_APIKEY, Authorization: `Bearer ${SUPABASE_APIKEY}` };
+
+  Promise.all([
+    fetch(`${SUPABASE_URL}/spanish_ifrs_es_bs_rows?select=*&order=sort_order.asc`,    { headers: sbHeaders }).then(r => r.json()),
+    fetch(`${SUPABASE_URL}/spanish_ifrs_es_bs_sections?select=*&order=sort_order.asc`, { headers: sbHeaders }).then(r => r.json()),
+  ])
+    .then(([rowsArr, secsArr]) => {
+      if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
+      const rows = new Map();
+      rowsArr.forEach(r => {
+        rows.set(String(r.account_code), {
+          section:       String(r.section_code),
+          sortOrder:     Number(r.sort_order),
+          isSum:         !!r.is_sum,
+          showInSummary: !!r.show_in_summary,
+          level:         Number(r.level ?? 0),
+        });
+      });
+      const sections = new Map();
+      secsArr.forEach(s => {
+        sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) });
+      });
+      setSpanishIfrsEsBsMapping({ rows, sections });
+    })
+    .catch(() => setSpanishIfrsEsBsMapping(null));
+}, [grpData]);
+
 const [exportModal, setExportModal] = useState(false);
+const [viewsModalOpen, setViewsModalOpen] = useState(false);
 const [exportOpts, setExportOpts] = useState({
   plSummary: true, plDetailed: true,
   bsSummary: true, bsAssets: true, bsEquity: true,
@@ -5504,6 +5921,7 @@ setPlCmpLoading(true);
       const res = await fetch(`${BASE_URL}/v2/group-accounts`, { headers: headers() });
       if (!res.ok) { const t = await res.text(); throw new Error(`HTTP ${res.status} – ${t.slice(0, 200)}`); }
       const json = await res.json();
+      console.log("GROUP ACCOUNTS RAW:", JSON.stringify(json.value?.slice(0,3) ?? json.slice?.(0,3), null, 2));
       setGrpData(json.value ?? (Array.isArray(json) ? json : [json]));
       setGrpFetched(true);
     } catch (e) { setGrpError(e.message); }
@@ -5538,6 +5956,34 @@ const fetchJournal = useCallback(async (year, month, source, structure, company)
   } catch (e) { setJrnError(e.message); }
   finally { setJrnLoading(false); }
 }, [upYear, upMonth, upSource, upStructure, upCompany, headers]);
+
+const fetchJournalCmp = useCallback(async (year, month, source, structure, company) => {
+  if (!year || !month || !source || !structure || !company) { setJrnCmpData([]); return; }
+  try {
+    const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
+    const res = await fetch(
+      `${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(filter)}`,
+      { headers: headers() }
+    );
+    if (!res.ok) { setJrnCmpData([]); return; }
+    const json = await res.json();
+    setJrnCmpData(json.value ?? (Array.isArray(json) ? json : []));
+  } catch { setJrnCmpData([]); }
+}, [headers]);
+
+const fetchJournalCmp2 = useCallback(async (year, month, source, structure, company) => {
+  if (!year || !month || !source || !structure || !company) { setJrnCmp2Data([]); return; }
+  try {
+    const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
+    const res = await fetch(
+      `${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(filter)}`,
+      { headers: headers() }
+    );
+    if (!res.ok) { setJrnCmp2Data([]); return; }
+    const json = await res.json();
+    setJrnCmp2Data(json.value ?? (Array.isArray(json) ? json : []));
+  } catch { setJrnCmp2Data([]); }
+}, [headers]);
 
 const fetchCmp2 = useCallback(async (year, month, source, structure, company) => {
   if (!year || !month || !source || !structure || !company) return;
@@ -5626,12 +6072,28 @@ const [cmp2Loading,   setCmp2Loading]   = useState(false);
 }, [compareMode, cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany]);
 
 useEffect(() => {
+  if (compareMode && cmpSource && cmpStructure && cmpYear && cmpMonth && cmpCompany) {
+    fetchJournalCmp(cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany);
+  } else {
+    setJrnCmpData([]);
+  }
+}, [compareMode, cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany, fetchJournalCmp]);
+
+useEffect(() => {
+  if (compareMode && cmp2Source && cmp2Structure && cmp2Year && cmp2Month && cmp2Company) {
+    fetchJournalCmp2(cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company);
+  } else {
+    setJrnCmp2Data([]);
+  }
+}, [compareMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, fetchJournalCmp2]);
+
+useEffect(() => {
   if (compareMode && cmp2Source && cmp2Structure && cmp2Year && cmp2Month && cmp2Company) {
     fetchCmp2(cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company);
   }
 }, [compareMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company]);
 
-
+console.log("🔴 RENDER AccountsDashboard | grpData:", grpData.length, "| pgcMapping:", pgcMapping ? "SET" : "null", "| danishIfrsPlMapping:", danishIfrsPlMapping ? "SET" : "null", "| pgcBsMapping:", pgcBsMapping ? "SET" : "null", "| danishIfrsBsMapping:", danishIfrsBsMapping ? "SET" : "null");
   const tab        = TABS.find(t => t.id === activeTab);
    const anyLoading = probingPeriod || upLoading || prevLoading || plCmpLoading || plCmp2Loading || mapLoading || grpLoading || jrnLoading;
 
@@ -5877,10 +6339,10 @@ return (
 {/* Page header + Tab switcher + Filters — all in one row */}
 <div className="flex items-center gap-4 flex-wrap">
  {/* Left: title */}
-  <div className="flex items-center gap-1.5 flex-shrink-0">
+<div className="flex items-center gap-1.5 flex-shrink-0">
     <div className="w-1.5 h-10 rounded-full" style={{ background: colors.primary }} />
     <div>
-      <p style={underscoreStyle} className="uppercase tracking-widest leading-none mb-0.5">Accounts</p>
+      <p className="uppercase tracking-widest leading-none mb-0.5 text-[12px] font-bold text-gray-600">Accounts</p>
       <h1 style={{ ...headerStyle, lineHeight: 1 }}>{tab.label}</h1>
     </div>
   </div>
@@ -5902,17 +6364,21 @@ return (
       transition: "left 0.25s cubic-bezier(0.4,0,0.2,1), width 0.25s cubic-bezier(0.4,0,0.2,1)",
     }}
   />
-  {TABS.map(t => {
+{TABS.map(t => {
     const Icon = t.icon;
     const active = activeTab === t.id;
     return (
       <button
         key={t.id}
         onClick={() => handleTabChange(t.id)}
-        className="flex items-center gap-1.5 px-3 py-2 rounded-2xl text-xs font-black relative z-10"
-        style={{ color: active ? "#1a2f8a" : "#636363", transition: "color 0.2s" }}
+        className="flex items-center gap-1.5 px-3 py-2 rounded-2xl relative z-10"
+        style={{
+          ...filterStyle,
+          color: active ? filterStyle.color : "#636363",
+          transition: "color 0.2s",
+        }}
       >
-        <Icon size={14} style={active ? { color: t.accent } : {}} />
+        <Icon size={16} style={active ? { color: colors.primary } : {}} />
         {t.label}
       </button>
     );
@@ -5957,6 +6423,15 @@ return (
 
 <div className="ml-auto flex items-center gap-3 flex-shrink-0 pr-6 mt-1">
 
+  <button
+    onClick={() => setViewsModalOpen(true)}
+    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border-2 border-gray-100 hover:border-[#1a2f8a]/30 hover:bg-[#eef1fb]/40 text-xs font-black text-[#1a2f8a] transition-all shadow-sm"
+    title="Mappings library"
+  >
+    <Library size={13} />
+    Views
+  </button>
+
 {(activeTab === "pl" || activeTab === "bs") && (
       <>
 <button
@@ -5986,8 +6461,13 @@ return (
       </>
     )}
   </div>
-</div>
 
+<MappingsModal
+    open={viewsModalOpen}
+    onClose={() => setViewsModalOpen(false)}
+    groupAccounts={grpData}
+  />
+</div>
 {/* ── P&L STATEMENT */}
 {activeTab === "pl" && (
 <div key={`pl-${animKey}`} className="tab-content" style={{ "--slide-from": TAB_ORDER.indexOf("pl") > TAB_ORDER.indexOf(prevTab ?? "pl") ? "30px" : "-30px" }}>
@@ -6088,8 +6568,10 @@ cmpFilters={{
   source={upSource}
   structure={upStructure}
 journalEntries={jrnData}
+journalEntriesCmp={jrnCmpData}
+journalEntriesCmp2={jrnCmp2Data}
   breakers={breakers}
-  pgcMapping={pgcMapping}
+pgcMapping={pgcMapping ?? danishIfrsPlMapping ?? spanishIfrsEsPlMapping}
 />
 </div>
 )}
@@ -6152,8 +6634,8 @@ journalEntries={jrnData}
   cmp2Data={bsCmp2Data} setCmp2Data={setBsCmp2Data}
 externalCmp2Enabled={bsCmp2Enabled}
   onBsCmp2EnabledChange={setBsCmp2Enabled}
-  breakers={breakers}
-  pgcBsMapping={pgcBsMapping}
+breakers={breakers}
+pgcBsMapping={pgcBsMapping ?? danishIfrsBsMapping ?? spanishIfrsEsBsMapping}
 />
 </div>
 )}
