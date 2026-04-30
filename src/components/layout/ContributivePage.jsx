@@ -3,7 +3,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useTypo, useSettings } from "./SettingsContext";
 import {
   ChevronDown, ChevronRight, Loader2, Maximize2, Minimize2,
-X, RefreshCw, Filter, TrendingUp, TrendingDown, BookOpen, GitMerge,
+  X, RefreshCw, Filter, TrendingUp, TrendingDown, BookOpen, GitMerge,
 } from "lucide-react";
 
 const BASE_URL = "";
@@ -16,7 +16,6 @@ const MONTHS = [
   { value: 9,  label: "September" }, { value: 10, label: "October"   },
   { value: 11, label: "November"  }, { value: 12, label: "December"  },
 ];
-
 
 const SUB_COLS = [
   { key: "AJE", label: "AJE", color: "text-indigo-500" },
@@ -46,7 +45,14 @@ function fmtAmt(n) {
   return num.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-/* ─── Reporting currency (same as old code) ───────────────────────────────── */
+function fmtPct(n) {
+  if (n == null || !isFinite(n)) return "—";
+  const num = Number(n);
+  if (isNaN(num) || num === 0) return "—";
+  return `${num >= 0 ? "" : ""}${num.toFixed(1)}%`;
+}
+
+/* ─── Reporting currency ──────────────────────────────────────────────────── */
 function getReportingCurrency(companyShortName, groupStructure, companies) {
   const node = groupStructure.find(g =>
     (g.CompanyShortName ?? g.companyShortName) === companyShortName
@@ -64,7 +70,7 @@ function getReportingCurrency(companyShortName, groupStructure, companies) {
   return parent?.CurrencyCode ?? parent?.currencyCode ?? "EUR";
 }
 
-/* ─── Sort (same as old code) ─────────────────────────────────────────────── */
+/* ─── Sort ────────────────────────────────────────────────────────────────── */
 function pgcSort(a, b) {
   const cA = a.AccountCode ?? a.accountCode ?? "";
   const cB = b.AccountCode ?? b.accountCode ?? "";
@@ -90,7 +96,7 @@ function pgcSort(a, b) {
   return 0;
 }
 
-/* ─── Tree builder (same logic as old code) ───────────────────────────────── */
+/* ─── Tree builder ────────────────────────────────────────────────────────── */
 function buildTree(accounts) {
   const sorted = [...accounts].sort(pgcSort);
   const map    = new Map();
@@ -111,7 +117,7 @@ function buildTree(accounts) {
       if (!(isNum && missing)) roots.push(map.get(code));
     }
   });
-return roots;
+  return roots;
 }
 
 /* ─── Export helpers ──────────────────────────────────────────────────────── */
@@ -137,6 +143,7 @@ function generateContributiveXlsx({
   compareMode = false,
   month, year, source, structure,
   cmpMonth, cmpYear, cmpSource, cmpStructure,
+  perspectiveMode = false, perspectiveParent = "",
 }) {
   async function doGenerate(ExcelJS) {
     const NAVY    = "FF1A2F8A";
@@ -147,6 +154,7 @@ function generateContributiveXlsx({
     const GRAY    = "FF6B7280";
     const BORDER  = "FFE5E7EB";
     const NUM_FMT = '#,##0.00;[RED]-#,##0.00;"-"';
+    const PCT_FMT = '0.0"%";[RED]-0.0"%";"-"';
 
     const mkFill   = a => ({ type: "pattern", pattern: "solid", fgColor: { argb: a } });
     const mkFont   = (bold, argb, sz = 9) => ({ bold, color: { argb }, name: "Calibri", size: sz });
@@ -196,9 +204,15 @@ function generateContributiveXlsx({
 
       const COL_ACCOUNT = 1;
       let ci = 2;
+      // Add parent total column when in perspective mode
+      let COL_PARENT = null;
+      if (perspectiveMode) {
+        COL_PARENT = ci++;
+      }
       const companyColMap = {};
       for (const co of cols) {
         companyColMap[co] = { actual: ci++ };
+        if (perspectiveMode) companyColMap[co].pct = ci++;
         if (compareMode) { companyColMap[co].cmp = ci++; companyColMap[co].delta = ci++; }
       }
       const COL_TOTAL = ci;
@@ -207,9 +221,12 @@ function generateContributiveXlsx({
       ws.views = [{ state: "frozen", ySplit: compareMode ? 4 : 3, showOutlineSymbols: true }];
       ws.getColumn(COL_ACCOUNT).width = 48;
 
+      if (COL_PARENT) ws.getColumn(COL_PARENT).width = 22;
+
       for (const co of cols) {
         const cm = companyColMap[co];
         ws.getColumn(cm.actual).width = 18;
+        if (cm.pct) ws.getColumn(cm.pct).width = 10;
         if (compareMode) {
           ws.getColumn(cm.cmp).width         = 18;
           ws.getColumn(cm.delta).width        = 14;
@@ -225,7 +242,8 @@ function generateContributiveXlsx({
       rTitle.height = 30;
       for (let c = 1; c <= totalCols; c++) rTitle.getCell(c).fill = mkFill(NAVY);
       const tc = rTitle.getCell(1);
-      tc.value = `${group.sheet}  ·  ${monthLabel} ${year}  ·  ${source}  ·  ${structure}`;
+      const perspLabel = perspectiveMode ? `  ·  Perspective: ${getLegalName(perspectiveParent)}` : "";
+      tc.value = `${group.sheet}  ·  ${monthLabel} ${year}  ·  ${source}  ·  ${structure}${perspLabel}`;
       tc.font  = mkFont(true, WHITE, 13);
       tc.alignment = { horizontal: "left", vertical: "middle", indent: 1 };
       ws.mergeCells(rTitle.number, 1, rTitle.number, totalCols);
@@ -249,6 +267,14 @@ function generateContributiveXlsx({
       rCoHead.height = 22;
       rCoHead.getCell(COL_ACCOUNT).fill = mkFill(NAVY);
 
+      if (COL_PARENT) {
+        const ph = rCoHead.getCell(COL_PARENT);
+        ph.value     = `${getLegalName(perspectiveParent)}  ·  CONSOLIDATED`;
+        ph.font      = mkFont(true, WHITE, 9);
+        ph.fill      = mkFill(NAVY_DK);
+        ph.alignment = { horizontal: "center", vertical: "middle" };
+      }
+
       for (const co of cols) {
         const cm  = companyColMap[co];
         const ccy = getRepCcy(co);
@@ -258,7 +284,8 @@ function generateContributiveXlsx({
         hc.fill      = mkFill(NAVY);
         hc.alignment = { horizontal: "center", vertical: "middle" };
         hc.border    = { left: { style: "medium", color: { argb: "FF3B5BDB" } } };
-        if (compareMode) ws.mergeCells(rCoHead.number, cm.actual, rCoHead.number, cm.delta);
+        const lastCol = cm.delta ?? cm.cmp ?? cm.pct ?? cm.actual;
+        if (lastCol !== cm.actual) ws.mergeCells(rCoHead.number, cm.actual, rCoHead.number, lastCol);
       }
       const thc = rCoHead.getCell(COL_TOTAL);
       thc.value     = "TOTAL";
@@ -277,6 +304,15 @@ function generateContributiveXlsx({
       ahc.alignment = { horizontal: "left", vertical: "middle", indent: 1 };
       ahc.border    = { bottom: { style: "medium", color: { argb: NAVY_DK } } };
 
+      if (COL_PARENT) {
+        const psc = rSub.getCell(COL_PARENT);
+        psc.value     = "Sum of children";
+        psc.font      = mkFont(true, WHITE, 8);
+        psc.fill      = mkFill(NAVY_DK);
+        psc.alignment = { horizontal: "right", vertical: "middle" };
+        psc.border    = { bottom: { style: "medium", color: { argb: NAVY_DK } } };
+      }
+
       for (const co of cols) {
         const cm = companyColMap[co];
         const pc = rSub.getCell(cm.actual);
@@ -285,6 +321,16 @@ function generateContributiveXlsx({
         pc.fill      = mkFill(NAVY);
         pc.alignment = { horizontal: "right", vertical: "middle" };
         pc.border    = { bottom: { style: "medium", color: { argb: NAVY_DK } } };
+
+        if (cm.pct) {
+          const pctH = rSub.getCell(cm.pct);
+          pctH.value     = "% of parent";
+          pctH.font      = mkFont(true, "FFA5B4FC", 8);
+          pctH.fill      = mkFill(NAVY);
+          pctH.alignment = { horizontal: "right", vertical: "middle" };
+          pctH.border    = { bottom: { style: "medium", color: { argb: NAVY_DK } } };
+        }
+
         if (compareMode) {
           const cc2 = rSub.getCell(cm.cmp);
           cc2.value     = `${cmpMoLabel} ${cmpYear}`;
@@ -330,6 +376,19 @@ function generateContributiveXlsx({
         ac.alignment = { horizontal: "left", vertical: "middle", indent: Math.max(1, depth + 1) };
         ac.border    = mkBorder();
 
+        // Parent consolidated total in perspective mode = sum of children
+        const parentTotal = perspectiveMode ? cols.reduce((s, co) => s + getVal(code, co), 0) : 0;
+
+        if (COL_PARENT) {
+          const pc = dr.getCell(COL_PARENT);
+          pc.value     = parentTotal === 0 ? null : parentTotal;
+          pc.numFmt    = NUM_FMT;
+          pc.font      = mkFont(true, parentTotal > 0 ? NAVY : parentTotal < 0 ? "FFEF4444" : GRAY, isSummary ? 9 : 8);
+          pc.fill      = mkFill(isSummary ? LIGHT : "FFEEF1FB");
+          pc.alignment = { horizontal: "right", vertical: "middle" };
+          pc.border    = mkBorder();
+        }
+
         for (const co of cols) {
           const cm    = companyColMap[co];
           const val   = getVal(code, co);
@@ -343,6 +402,18 @@ function generateContributiveXlsx({
           vc.fill      = mkFill(bg);
           vc.alignment = { horizontal: "right", vertical: "middle" };
           vc.border    = mkBorder();
+
+          // Percentage of parent
+          if (cm.pct) {
+            const pct = parentTotal !== 0 ? (val / parentTotal) * 100 : 0;
+            const pctC = dr.getCell(cm.pct);
+            pctC.value     = pct === 0 ? null : pct;
+            pctC.numFmt    = PCT_FMT;
+            pctC.font      = mkFont(false, "FF6366F1", isSummary ? 8 : 7);
+            pctC.fill      = mkFill(bg);
+            pctC.alignment = { horizontal: "right", vertical: "middle" };
+            pctC.border    = mkBorder();
+          }
 
           if (compareMode) {
             const cc3 = dr.getCell(cm.cmp);
@@ -425,6 +496,7 @@ function generateContributivePdf({
   compareMode = false,
   month, year, source, structure,
   cmpMonth, cmpYear, cmpSource, cmpStructure,
+  perspectiveMode = false, perspectiveParent = "",
 }) {
   function doGenerate(jsPDF, autoTable) {
     const NAVY    = [26, 47, 138];
@@ -437,12 +509,18 @@ function generateContributivePdf({
     const WHITE   = [255, 255, 255];
     const GRAY    = [107, 114, 128];
     const GRAY_LT = [220, 225, 240];
+    const INDIGO  = [99, 102, 241];
 
     const fmtN = n => {
       if (n == null || n === 0) return "—";
       const v = typeof n === "number" ? n : Number(n);
       if (isNaN(v) || v === 0) return "—";
       return v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    };
+
+    const fmtP = n => {
+      if (n == null || !isFinite(n) || n === 0) return "—";
+      return `${n.toFixed(1)}%`;
     };
 
     const getRepCcy = (co) => {
@@ -455,6 +533,9 @@ function generateContributivePdf({
       const parent = companies.find(c => (c.CompanyShortName ?? c.companyShortName) === parentName);
       return parent?.CurrencyCode ?? parent?.currencyCode ?? "EUR";
     };
+
+    const getLegalName = co =>
+      companies.find(c => (c.CompanyShortName ?? c.companyShortName) === co)?.CompanyLegalName ?? co;
 
     const getVal    = (code, co) => pivot.get(code)?.[co]?.total ?? 0;
     const getCmpVal = (code, co) => compareMode ? (cmpPivot?.get(code)?.[co] ?? 0) : 0;
@@ -485,7 +566,8 @@ function generateContributivePdf({
       doc.setFont("helvetica", "normal");
       doc.setFontSize(7);
       doc.setTextColor(180, 200, 255);
-      doc.text(`${monthLabel} ${year}  ·  ${source}  ·  ${structure}`, 8, 18);
+      const perspLabel = perspectiveMode ? `  ·  Perspective: ${getLegalName(perspectiveParent)}` : "";
+      doc.text(`${monthLabel} ${year}  ·  ${source}  ·  ${structure}${perspLabel}`, 8, 18);
       if (compareMode) {
         doc.setFillColor(...NAVY_DK);
         doc.roundedRect(8, 21, W - 16, 5, 1, 1, "F");
@@ -529,16 +611,33 @@ function generateContributivePdf({
 
     const buildColumns = () => {
       const colDefs   = [{ header: "Account", dataKey: "account" }];
-      const colStyles = { account: { cellWidth: compareMode ? 48 : 55 } };
+      const accW = compareMode ? 48 : (perspectiveMode ? 48 : 55);
+      const colStyles = { account: { cellWidth: accW } };
+
+      if (perspectiveMode) {
+        colDefs.push({ header: `${perspectiveParent}\nCONSOLIDATED`, dataKey: "parent_total" });
+      }
+
       const usableW   = W - 16;
-      const remaining = usableW - (compareMode ? 48 : 55);
-      const divisor   = compareMode ? cols.length * 2.8 + 1 : cols.length + 1;
+      let used = accW;
+      if (perspectiveMode) used += 28;
+      const remaining = usableW - used;
+      const perCoUnits = compareMode ? 2.8 : (perspectiveMode ? 1.4 : 1);
+      const divisor   = cols.length * perCoUnits + 1;
       const perCoW    = remaining / divisor;
+
+      if (perspectiveMode) {
+        colStyles.parent_total = { cellWidth: 28, halign: "right" };
+      }
 
       for (const co of cols) {
         const ccy = getRepCcy(co);
         colDefs.push({ header: `${co}\n${ccy}`, dataKey: `act_${co}` });
         colStyles[`act_${co}`] = { cellWidth: perCoW, halign: "right" };
+        if (perspectiveMode) {
+          colDefs.push({ header: `${co}\n%`, dataKey: `pct_${co}` });
+          colStyles[`pct_${co}`] = { cellWidth: perCoW * 0.55, halign: "right" };
+        }
         if (compareMode) {
           colDefs.push({ header: `${co}\nvs.`, dataKey: `cmp_${co}` });
           colStyles[`cmp_${co}`] = { cellWidth: perCoW, halign: "right" };
@@ -560,17 +659,23 @@ function generateContributivePdf({
           ? (node.AccountName ?? node.accountName ?? "").toUpperCase()
           : node.AccountName ?? node.accountName ?? "";
         const rt  = rowTotal(code);
+        const parentTotal = perspectiveMode ? rt : 0;
         const row = {
           account: "  ".repeat(depth) + name,
           total:   fmtN(rt),
           _isSummary: isSummary,
           _depth:     depth,
         };
+        if (perspectiveMode) row.parent_total = fmtN(parentTotal);
         for (const co of cols) {
           const val  = getVal(code, co);
           const cmpV = getCmpVal(code, co);
           const dv   = compareMode ? val - cmpV : 0;
           row[`act_${co}`] = fmtN(val);
+          if (perspectiveMode) {
+            const pct = parentTotal !== 0 ? (val / parentTotal) * 100 : 0;
+            row[`pct_${co}`] = fmtP(pct);
+          }
           if (compareMode) {
             row[`cmp_${co}`] = fmtN(cmpV);
             row[`del_${co}`] = dv === 0 ? "—" : (dv > 0 ? "+" : "") + fmtN(dv);
@@ -582,6 +687,8 @@ function generateContributivePdf({
     const didParse = (data) => {
       const { section, row, column, cell } = data;
       if (section === "head") {
+        if (perspectiveMode && column.dataKey === "parent_total") { cell.styles.fillColor = NAVY_DK; cell.styles.textColor = WHITE; }
+        if (perspectiveMode && column.dataKey.startsWith("pct_")) { cell.styles.fillColor = [70, 90, 180]; cell.styles.textColor = [200, 210, 255]; }
         if (compareMode && column.dataKey.startsWith("cmp_")) { cell.styles.fillColor = [130, 100, 10]; cell.styles.textColor = AMBER; }
         if (compareMode && column.dataKey.startsWith("del_")) { cell.styles.fillColor = NAVY_DK; cell.styles.textColor = AMBER; }
         if (column.dataKey === "total") cell.styles.fillColor = NAVY_DK;
@@ -596,7 +703,13 @@ function generateContributivePdf({
       const val    = cell.text[0];
       const isNeg  = v => typeof v === "string" && (v.startsWith("-") || v.startsWith("("));
       const isZero = v => v === "—" || v === "";
-      if (column.dataKey.startsWith("del_")) {
+      if (column.dataKey === "parent_total") {
+        cell.styles.fillColor = r._isSummary ? LIGHT : [240, 244, 255];
+        cell.styles.fontStyle = "bold";
+        cell.styles.textColor = isZero(val) ? GRAY : isNeg(val) ? RED : NAVY;
+      } else if (column.dataKey.startsWith("pct_")) {
+        cell.styles.textColor = isZero(val) ? GRAY : INDIGO;
+      } else if (column.dataKey.startsWith("del_")) {
         cell.styles.textColor = isZero(val) ? GRAY : val.startsWith("+") ? GREEN : RED;
       } else if (column.dataKey.startsWith("cmp_")) {
         cell.styles.textColor  = r._isSummary ? [130, 100, 10] : [161, 130, 40];
@@ -621,7 +734,7 @@ function generateContributivePdf({
       if (!groupRoots.length) continue;
       const startY  = drawHeader(group.label, isFirst);
       isFirst       = false;
-      const compact = compareMode || cols.length > 3;
+      const compact = compareMode || cols.length > 3 || perspectiveMode;
       autoTable(doc, {
         startY,
         columns:  colDefs,
@@ -692,20 +805,20 @@ function CompanyFilterPill({ cols, selected, onChange, filterStyle, colors }) {
 
   return (
     <div ref={ref} className="relative flex-shrink-0">
-<button onClick={() => setOpen(o => !o)}
-  className="flex items-center gap-2 px-3 py-2 rounded-2xl border transition-all select-none bg-white border-[#c2c2c2] shadow-xl hover:border-[#1a2f8a]/40"
-  style={filterStyle}>
-  <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50">COMP</span>
-  <span>{allSelected ? "All" : `${selected.length} selected`}</span>
-  <ChevronDown size={10} className={`transition-transform duration-200 opacity-40 ${open ? "rotate-180" : ""}`} />
-</button>
+      <button onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-2 px-3 py-2 rounded-2xl border transition-all select-none bg-white border-[#c2c2c2] shadow-xl hover:border-[#1a2f8a]/40"
+        style={filterStyle}>
+        <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50">COMP</span>
+        <span>{allSelected ? "All" : `${selected.length} selected`}</span>
+        <ChevronDown size={10} className={`transition-transform duration-200 opacity-40 ${open ? "rotate-180" : ""}`} />
+      </button>
       {open && (
         <div className="absolute top-full left-0 mt-2 z-50 min-w-[200px] bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden">
           <div className="p-1.5 max-h-72 overflow-y-auto">
-<button onClick={selectAll}
-  className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2.5 text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]">
-  <span className="w-4 h-4 rounded flex-shrink-0 border-2 flex items-center justify-center transition-all"
-    style={allSelected ? { backgroundColor: colors?.primary, borderColor: colors?.primary } : { borderColor: "#d1d5db", backgroundColor: "white" }}>
+            <button onClick={selectAll}
+              className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2.5 text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]">
+              <span className="w-4 h-4 rounded flex-shrink-0 border-2 flex items-center justify-center transition-all"
+                style={allSelected ? { backgroundColor: colors?.primary, borderColor: colors?.primary } : { borderColor: "#d1d5db", backgroundColor: "white" }}>
                 {allSelected && (
                   <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
                     <path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -715,23 +828,23 @@ function CompanyFilterPill({ cols, selected, onChange, filterStyle, colors }) {
               All companies
             </button>
             <div className="my-1 border-t border-gray-100" />
-{cols.map(co => {
-  const isSel = selected.includes(co);
-  return (
-  <button key={co} onClick={() => toggle(co)}
-    className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2.5 text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]">
-    <span className="w-4 h-4 rounded flex-shrink-0 border-2 flex items-center justify-center transition-all"
-      style={isSel ? { backgroundColor: colors?.primary, borderColor: colors?.primary } : { borderColor: "#d1d5db", backgroundColor: "white" }}>
-{isSel && (
-  <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
-    <path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-  </svg>
-)}
-                </span>
-{co}
-  </button>
-  );
-})}
+            {cols.map(co => {
+              const isSel = selected.includes(co);
+              return (
+                <button key={co} onClick={() => toggle(co)}
+                  className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2.5 text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]">
+                  <span className="w-4 h-4 rounded flex-shrink-0 border-2 flex items-center justify-center transition-all"
+                    style={isSel ? { backgroundColor: colors?.primary, borderColor: colors?.primary } : { borderColor: "#d1d5db", backgroundColor: "white" }}>
+                    {isSel && (
+                      <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                        <path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    )}
+                  </span>
+                  {co}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -752,30 +865,30 @@ function FilterPill({ label, value, onChange, options, filterStyle, colors }) {
 
   return (
     <div ref={ref} className="relative flex-shrink-0">
-     <button onClick={() => setOpen(o => !o)}
-  className="flex items-center gap-2 px-3 py-2 rounded-2xl border transition-all select-none bg-white border-[#c2c2c2] shadow-xl hover:border-[#1a2f8a]/40"
-  style={filterStyle}>
- <span style={{ ...filterStyle, fontSize: 9, fontWeight: 800, opacity: 0.5, textTransform: "uppercase", letterSpacing: "0.1em" }}>{label}</span>
-  <span>{display}</span>
-  <ChevronDown size={10} className={`transition-transform duration-200 opacity-40 ${open ? "rotate-180" : ""}`} />
-</button>
+      <button onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-2 px-3 py-2 rounded-2xl border transition-all select-none bg-white border-[#c2c2c2] shadow-xl hover:border-[#1a2f8a]/40"
+        style={filterStyle}>
+        <span style={{ ...filterStyle, fontSize: 9, fontWeight: 800, opacity: 0.5, textTransform: "uppercase", letterSpacing: "0.1em" }}>{label}</span>
+        <span>{display}</span>
+        <ChevronDown size={10} className={`transition-transform duration-200 opacity-40 ${open ? "rotate-180" : ""}`} />
+      </button>
       {open && (
         <div className="absolute top-full left-0 mt-2 z-50 min-w-[160px] bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden">
           <div className="p-1.5 max-h-64 overflow-y-auto">
-{options.map(o => {
-  const selected = String(o.value) === String(value);
-  return (
-    <button key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
-      className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-between gap-3
-        ${selected ? "text-white" : "text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]"}`}
-      style={selected ? { backgroundColor: colors?.primary } : undefined}>
-      {o.label}
-      {selected && <span className="w-1.5 h-1.5 rounded-full bg-white/60 flex-shrink-0" />}
-    </button>
-  );
-})}
+            {options.map(o => {
+              const selected = String(o.value) === String(value);
+              return (
+                <button key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
+                  className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-between gap-3
+                    ${selected ? "text-white" : "text-gray-600 hover:bg-[#eef1fb] hover:text-[#1a2f8a]"}`}
+                  style={selected ? { backgroundColor: colors?.primary } : undefined}>
+                  {o.label}
+                  {selected && <span className="w-1.5 h-1.5 rounded-full bg-white/60 flex-shrink-0" />}
+                </button>
+              );
+            })}
           </div>
-</div>
+        </div>
       )}
     </div>
   );
@@ -828,7 +941,7 @@ function DrilldownModal({ accountCode, accountName, company, rows, currency, onC
     const lac  = r.LocalAccountCode ?? r.localAccountCode ?? "__none__";
     const lanm = r.LocalAccountName ?? r.localAccountName ?? "";
     const dim  = r.DimensionName    ?? r.dimensionName    ?? "";
-const amt  = -(Number(r.ReportingAmountYTD ?? r.reportingAmountYTD ?? r.AmountYTD ?? r.amountYTD) || 0);
+    const amt  = -(Number(r.ReportingAmountYTD ?? r.reportingAmountYTD ?? r.AmountYTD ?? r.amountYTD) || 0);
     if (!byLocal.has(lac)) byLocal.set(lac, { code: lac === "__none__" ? null : lac, name: lanm, amt: 0, dims: [] });
     const e = byLocal.get(lac);
     e.amt += amt;
@@ -838,7 +951,7 @@ const amt  = -(Number(r.ReportingAmountYTD ?? r.reportingAmountYTD ?? r.AmountYT
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" />
-      <div className="relative bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col"
+<div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col"
         onClick={e => e.stopPropagation()}>
 
         <div className="bg-[#1a2f8a] px-5 py-4 flex items-center justify-between flex-shrink-0">
@@ -851,9 +964,9 @@ const amt  = -(Number(r.ReportingAmountYTD ?? r.reportingAmountYTD ?? r.AmountYT
               <p className="text-white/40 text-[9px] uppercase tracking-widest">Amount YTD</p>
               <p className={`text-lg font-black ${total >= 0 ? "text-white" : "text-red-300"}`}>{fmtAmt(total)}</p>
             </div>
-<button onClick={onClose} className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center">
-  <X size={13} className="text-white/70" />
-</button>
+            <button onClick={onClose} className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center">
+              <X size={13} className="text-white/70" />
+            </button>
           </div>
         </div>
 
@@ -890,23 +1003,30 @@ const amt  = -(Number(r.ReportingAmountYTD ?? r.reportingAmountYTD ?? r.AmountYT
 /* ─── Pivot Row ───────────────────────────────────────────────────────────── */
 const INDENT = 14;
 
-function PivotRow({ node, depth, expandedSet, onToggle, cols, pivot, onCellClick, expandedColsMap, journalPivot, compareMode, cmpPivot, body1Style, body2Style }) {
+function PivotRow({
+  node, depth, expandedSet, onToggle, cols, pivot, onCellClick,
+  expandedColsMap, journalPivot, compareMode, cmpPivot,
+  body1Style, body2Style,
+  perspectiveMode, parentTotalForRow,
+}) {
   const code        = node.AccountCode;
   const hasChildren = node.children?.length > 0;
   const isExpanded  = expandedSet.has(code);
   const isSummary   = /\.S$/i.test(code) || hasChildren;
-const rowStyle = depth === 0 ? body1Style : body2Style;
-const getVal = co => pivot.get(code)?.[co]?.total ?? 0;
-  const getJp  = co => journalPivot?.get(code)?.[co] ?? {};
+  const rowStyle    = depth === 0 ? body1Style : body2Style;
+
+  const getVal   = co => pivot.get(code)?.[co]?.total ?? 0;
+  const getJp    = co => journalPivot?.get(code)?.[co] ?? {};
   const getSaldo = co => getVal(co);
 
-  const rowTotal = cols.reduce((s, co) => s + getVal(co), 0);
+  const rowTotal    = cols.reduce((s, co) => s + getVal(co), 0);
+  // In perspective mode, the consolidated parent total IS the sum of children
+  const parentTotal = perspectiveMode ? rowTotal : 0;
 
-
-const cellStyle = (v) => {
-  const baseColor = v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : "#000000";
-  return { ...rowStyle, color: baseColor };
-};
+  const cellStyle = (v) => {
+    const baseColor = v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : "#000000";
+    return { ...rowStyle, color: baseColor };
+  };
 
   return (
     <>
@@ -917,39 +1037,52 @@ const cellStyle = (v) => {
         <td className={`py-2.5 sticky left-0 z-10 border-r border-gray-100
           ${isSummary ? "bg-[#ffffff]" : "bg-white group-hover:bg-[#f8f9ff]"}`}
           style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 280 }}>
-<div className={`flex items-center ${hasChildren ? "cursor-pointer" : ""}`}
-  onClick={() => hasChildren && onToggle(code)}>
-  {hasChildren
-    ? <span className="flex-shrink-0 mr-2" style={{ color: rowStyle?.color }}>
-        {isExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
-      </span>
-    : <span className="inline-block mr-2" style={{ width: 12 }} />}
-  <span className="flex-shrink-0 mr-2" style={rowStyle}>
-    {code}
-  </span>
-  <span className="truncate max-w-[280px]" style={rowStyle}>
-    {node.AccountName ?? node.accountName ?? ""}
-  </span>
-</div>
+          <div className={`flex items-center ${hasChildren ? "cursor-pointer" : ""}`}
+            onClick={() => hasChildren && onToggle(code)}>
+            {hasChildren
+              ? <span className="flex-shrink-0 mr-2" style={{ color: rowStyle?.color }}>
+                  {isExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
+                </span>
+              : <span className="inline-block mr-2" style={{ width: 12 }} />}
+            <span className="flex-shrink-0 mr-2" style={rowStyle}>
+              {code}
+            </span>
+            <span className="truncate max-w-[280px]" style={rowStyle}>
+              {node.AccountName ?? node.accountName ?? ""}
+            </span>
+          </div>
         </td>
 
-{/* Per-company values */}
-{cols.flatMap(co => {
+{/* Parent consolidated column (only in perspective mode) */}
+        {perspectiveMode && (
+          <td className="px-4 py-2.5 text-center whitespace-nowrap border-l border-gray-200"
+            style={{ minWidth: 160, backgroundColor: "#eef1fb", ...cellStyle(parentTotal) }}>
+            {parentTotal === 0 ? <span className="text-gray-300">—</span> : fmtAmt(parentTotal)}
+          </td>
+        )}
+
+        {/* Per-company values */}
+        {cols.flatMap(co => {
           const val        = getVal(co);
           const rows       = pivot.get(code)?.[co]?.rows ?? [];
           const isExpanded = !!expandedColsMap[co];
           const jp         = getJp(co);
           const saldo      = getSaldo(co);
 
-const mainTd = (
-  <td key={co}
-    className={`px-4 py-2.5 text-center whitespace-nowrap transition-colors
-      ${val !== 0 && rows.length > 0 ? "cursor-pointer hover:bg-[#eef1fb]" : ""}`}
-    style={{ minWidth: 130, ...cellStyle(saldo) }}
-    onClick={() => val !== 0 && rows.length > 0 && onCellClick(node, co, rows)}
-  >
-{saldo === 0 ? <span className="text-gray-200">—</span> : (
-  <span className="flex items-center justify-center gap-1">
+          // Percentage of parent (only meaningful in perspective mode)
+          const pct = perspectiveMode && parentTotal !== 0
+            ? (saldo / parentTotal) * 100
+            : null;
+
+          const mainTd = (
+            <td key={co}
+              className={`px-4 py-2.5 text-center whitespace-nowrap transition-colors
+                ${val !== 0 && rows.length > 0 ? "cursor-pointer hover:bg-[#eef1fb]" : ""}`}
+              style={{ minWidth: 130, ...cellStyle(saldo) }}
+              onClick={() => val !== 0 && rows.length > 0 && onCellClick(node, co, rows)}
+            >
+              {saldo === 0 ? <span className="text-gray-200">—</span> : (
+                <span className="flex items-center justify-center gap-1">
                   {!isSummary && (saldo > 0
                     ? <TrendingUp size={9} className="text-emerald-400 opacity-0 group-hover:opacity-100 transition-opacity" />
                     : <TrendingDown size={9} className="text-red-400 opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -960,13 +1093,28 @@ const mainTd = (
             </td>
           );
 
-const cmpVal = compareMode ? (cmpPivot?.get(code)?.[co] ?? 0) : 0;
+          // Percentage cell (perspective mode only)
+          const pctTd = perspectiveMode ? (
+            <td key={`${co}-pct`}
+              className="px-2 py-2.5 text-center whitespace-nowrap"
+              style={{ minWidth: 70, backgroundColor: "#fafbff", borderRight: "1px dashed #e0e6f5", ...rowStyle }}>
+              {pct === null || pct === 0 || !isFinite(pct) ? (
+                <span className="text-gray-300 text-[10px]">—</span>
+              ) : (
+                <span className={`text-[10px] font-bold ${Math.abs(pct) >= 50 ? "text-indigo-700" : "text-indigo-500"}`}>
+                  {pct.toFixed(1)}%
+                </span>
+              )}
+            </td>
+          ) : null;
+
+          const cmpVal = compareMode ? (cmpPivot?.get(code)?.[co] ?? 0) : 0;
           const dev = compareMode ? saldo - cmpVal : 0;
           const devPct = compareMode && cmpVal !== 0 ? ((dev / Math.abs(cmpVal)) * 100).toFixed(1) : null;
-const cmpTd = compareMode ? (
-  <td key={`${co}-cmp`}
-    className="px-4 py-2.5 text-center font-mono text-xs whitespace-nowrap"
-    style={{ minWidth: 150, borderRight: "2px solid rgba(251,191,36,0.25)", backgroundColor: "white" }}>
+          const cmpTd = compareMode ? (
+            <td key={`${co}-cmp`}
+              className="px-4 py-2.5 text-center font-mono text-xs whitespace-nowrap"
+              style={{ minWidth: 150, borderRight: "2px solid rgba(251,191,36,0.25)", backgroundColor: "white" }}>
               {cmpVal === 0 && dev === 0 ? (
                 <span className="text-gray-600">—</span>
               ) : (
@@ -984,233 +1132,306 @@ const cmpTd = compareMode ? (
             </td>
           ) : null;
 
-          if (!isExpanded) return [mainTd, ...(cmpTd ? [cmpTd] : [])];
+          if (!isExpanded) return [mainTd, ...(pctTd ? [pctTd] : []), ...(cmpTd ? [cmpTd] : [])];
 
-const uploadedTd = (
-  <td key={`${co}-uploaded`}
-    className="px-3 py-2.5 text-center whitespace-nowrap bg-[#f8f9ff] border-l border-gray-100"
-    style={{ minWidth: 110, ...cellStyle(val) }}
-    onClick={() => val !== 0 && rows.length > 0 && onCellClick(node, co, rows)}>
-    {val === 0 ? "—" : fmtAmt(val)}
-  </td>
-);
+          const uploadedTd = (
+            <td key={`${co}-uploaded`}
+              className="px-3 py-2.5 text-center whitespace-nowrap bg-[#f8f9ff] border-l border-gray-100"
+              style={{ minWidth: 110, ...cellStyle(val) }}
+              onClick={() => val !== 0 && rows.length > 0 && onCellClick(node, co, rows)}>
+              {val === 0 ? "—" : fmtAmt(val)}
+            </td>
+          );
 
-const subTds = SUB_COLS.map(sc => {
-  const subVal = jp[sc.key] ?? 0;
-  return (
-    <td key={`${co}-${sc.key}`}
-      className="px-3 py-2.5 text-center whitespace-nowrap bg-[#f8f9ff] border-l border-gray-100"
-      style={{ minWidth: 100, ...cellStyle(subVal) }}>
-      {subVal === 0 ? "—" : fmtAmt(subVal)}
-    </td>
-  );
-});
+          const subTds = SUB_COLS.map(sc => {
+            const subVal = jp[sc.key] ?? 0;
+            return (
+              <td key={`${co}-${sc.key}`}
+                className="px-3 py-2.5 text-center whitespace-nowrap bg-[#f8f9ff] border-l border-gray-100"
+                style={{ minWidth: 100, ...cellStyle(subVal) }}>
+                {subVal === 0 ? "—" : fmtAmt(subVal)}
+              </td>
+            );
+          });
 
-          return [mainTd, ...(cmpTd ? [cmpTd] : []), uploadedTd, ...subTds];
+          return [mainTd, ...(pctTd ? [pctTd] : []), ...(cmpTd ? [cmpTd] : []), uploadedTd, ...subTds];
         })}
 
-{/* Row total — sticky right */}
-<td className="px-4 py-2.5 text-center whitespace-nowrap sticky right-0 z-10 border-l border-gray-100"
-  style={{ minWidth: 140, backgroundColor: "#fafafa", ...cellStyle(rowTotal) }}>
-  {rowTotal === 0 ? "—" : fmtAmt(rowTotal)}
-</td>
+{!perspectiveMode && (
+  <td className="px-4 py-2.5 text-center whitespace-nowrap sticky right-0 z-10 border-l border-gray-100"
+    style={{ minWidth: 140, backgroundColor: "#fafafa", ...cellStyle(rowTotal) }}>
+    {rowTotal === 0 ? "—" : fmtAmt(rowTotal)}
+  </td>
+)}
       </tr>
 
-{isExpanded && hasChildren && node.children.map(child => (
-  <PivotRow key={child.AccountCode} node={child} depth={depth + 1}
-    expandedSet={expandedSet} onToggle={onToggle}
-    cols={cols} pivot={pivot} onCellClick={onCellClick}
-    expandedColsMap={expandedColsMap} journalPivot={journalPivot}
-    compareMode={compareMode} cmpPivot={cmpPivot}
-    body1Style={body1Style} body2Style={body2Style}
-  />
-))}
+      {isExpanded && hasChildren && node.children.map(child => (
+        <PivotRow key={child.AccountCode} node={child} depth={depth + 1}
+          expandedSet={expandedSet} onToggle={onToggle}
+          cols={cols} pivot={pivot} onCellClick={onCellClick}
+          expandedColsMap={expandedColsMap} journalPivot={journalPivot}
+          compareMode={compareMode} cmpPivot={cmpPivot}
+          body1Style={body1Style} body2Style={body2Style}
+          perspectiveMode={perspectiveMode}
+        />
+      ))}
     </>
   );
 }
 
-function SyncedTable({ cols, tree, expandedSet, expandedColsMap, toggleCol, toggleExpand, pivot, journalPivot, accountMap, companies, 
-  groupStructure, hasData, collapseAll, expandAll, setDrilldown, getReportingCurrency, breakers = {},body1Style, body2Style, header2Style, header3Style, underscore1Style, underscore2Style, filterStyle, colors,
+function SyncedTable({
+  cols, tree, expandedSet, expandedColsMap, toggleCol, toggleExpand, pivot, journalPivot, accountMap, companies,
+  groupStructure, hasData, collapseAll, expandAll, setDrilldown, getReportingCurrency, breakers = {},
+  body1Style, body2Style, header2Style, header3Style, underscore1Style, underscore2Style, filterStyle, colors,
   compareMode, onToggleCompare, cmpPivot, cmpLoading,
   cmpYear, setCmpYear, cmpMonth, setCmpMonth, cmpSource, setCmpSource, cmpStructure, setCmpStructure,
-  yearOpts = [], monthOpts = [], sourceOpts = [], structureOpts = []
+  yearOpts = [], monthOpts = [], sourceOpts = [], structureOpts = [],
+  perspectiveMode = false, perspectiveParent = "", reorderCols = () => {},
 }) {
-const totalColSpan = useMemo(() => {
-    let n = 2;
+  const [dragCol, setDragCol] = useState(null);
+  const [dragOverCol, setDragOverCol] = useState(null);
+  const totalColSpan = useMemo(() => {
+    let n = perspectiveMode ? 1 : 2;
+    if (perspectiveMode) n += 1; // parent consolidated col
     cols.forEach(co => {
       n += 1;
+      if (perspectiveMode) n += 1; // pct col
       if (compareMode) n += 1;
       if (expandedColsMap[co]) n += 1 + SUB_COLS.length;
     });
     return n;
-  }, [cols, expandedColsMap, compareMode]);
-const bodyRef = useRef(null);
+  }, [cols, expandedColsMap, compareMode, perspectiveMode]);
+
+  const bodyRef = useRef(null);
 
   // Compute column widths once based on expandedColsMap
-const colWidths = useMemo(() => {
+  const colWidths = useMemo(() => {
     const widths = [320];
+    if (perspectiveMode) widths.push(180); // parent total
     cols.forEach(co => {
       widths.push(160);
+      if (perspectiveMode) widths.push(80); // pct
       if (compareMode) widths.push(150);
       if (expandedColsMap[co]) {
         widths.push(140);
         SUB_COLS.forEach(() => widths.push(120));
       }
     });
-    widths.push(160);
-    return widths;
-  }, [cols, expandedColsMap, compareMode]);
+if (!perspectiveMode) widths.push(160);
+return widths;
+  }, [cols, expandedColsMap, compareMode, perspectiveMode]);
 
-const colgroup = (
+  const colgroup = (
     <colgroup>
       {colWidths.map((w, i) => <col key={i} style={{ width: w, minWidth: w }} />)}
     </colgroup>
   );
 
-const cmpPeriodLabel = cmpYear && cmpMonth
+  const cmpPeriodLabel = cmpYear && cmpMonth
     ? `${MONTHS.find(m => String(m.value) === String(cmpMonth))?.label ?? cmpMonth} ${cmpYear}`
     : "Compare";
+
+  const parentLegalName = perspectiveMode
+    ? (companies.find(c => (c.CompanyShortName ?? c.companyShortName) === perspectiveParent)?.CompanyLegalName
+       ?? companies.find(c => (c.CompanyShortName ?? c.companyShortName) === perspectiveParent)?.companyLegalName
+       ?? perspectiveParent)
+    : "";
 
   const headerCols = cols.flatMap(co => {
     const isExp = !!expandedColsMap[co];
     const legalName = companies.find(c => (c.CompanyShortName ?? c.companyShortName) === co)?.CompanyLegalName
       ?? companies.find(c => (c.CompanyShortName ?? c.companyShortName) === co)?.companyLegalName ?? co;
-const main = (
-  <th key={co}
-    className="px-4 py-3 whitespace-nowrap cursor-pointer hover:bg-white/10 transition-colors select-none"
-    style={{ backgroundColor: colors.primary }}
-    onClick={() => toggleCol(co)}>
-    <div className="flex items-center justify-center">
-      <div>
-        <p className="leading-tight" style={underscore1Style}>{legalName}</p>
-        <p className="leading-tight" style={underscore2Style}>{co} · {getReportingCurrency(co, groupStructure, companies)}</p>
-      </div>
-    </div>
-  </th>
-);
+const isDragging = dragCol === co;
+    const isDragOver = dragOverCol === co && dragCol !== co;
+    const main = (
+      <th key={co}
+        draggable
+        onDragStart={(e) => {
+          setDragCol(co);
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", co);
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          if (dragOverCol !== co) setDragOverCol(co);
+        }}
+        onDragLeave={() => { if (dragOverCol === co) setDragOverCol(null); }}
+        onDrop={(e) => {
+          e.preventDefault();
+          const from = e.dataTransfer.getData("text/plain") || dragCol;
+          if (from && from !== co) reorderCols(from, co);
+          setDragCol(null);
+          setDragOverCol(null);
+        }}
+        onDragEnd={() => { setDragCol(null); setDragOverCol(null); }}
+        className="px-4 py-3 whitespace-nowrap cursor-move hover:bg-white/10 transition-colors select-none"
+        style={{
+          backgroundColor: colors.primary,
+          opacity: isDragging ? 0.4 : 1,
+          boxShadow: isDragOver ? "inset 4px 0 0 0 #fbbf24" : undefined,
+        }}
+        onClick={() => toggleCol(co)}>
+       <div className="flex items-center justify-center">
+          
+          <div>
+            <p className="leading-tight" style={underscore1Style}>{legalName}</p>
+            <p className="leading-tight" style={underscore2Style}>{co} · {getReportingCurrency(co, groupStructure, companies)}</p>
+          </div>
+        </div>
+      </th>
+    );
+    const pctTh = perspectiveMode ? (
+      <th key={`${co}-pct`}
+        className="px-2 py-3 whitespace-nowrap"
+        style={{
+          backgroundColor: colors.primary,
+          boxShadow: "inset 0 0 0 9999px rgba(0,0,0,0.08)",
+          borderRight: "1px dashed rgba(255,255,255,0.15)",
+        }}>
+        <div className="flex justify-center" style={underscore2Style}>%</div>
+      </th>
+    ) : null;
     const cmpTh = compareMode ? (
       <th key={`${co}-cmp`}
         className="text-right px-4 py-3 whitespace-nowrap text-xs"
-      style={{ backgroundColor: "#0c1d55", borderRight: "2px solid rgba(251,191,36,0.35)" }}>
+        style={{ backgroundColor: "#0c1d55", borderRight: "2px solid rgba(251,191,36,0.35)" }}>
         <p className="font-black text-[11px] text-white leading-tight">{cmpPeriodLabel}</p>
         <p className="font-normal text-white text-[9px]">{co} · Δ</p>
       </th>
     ) : null;
-if (!isExp) return [main, ...(cmpTh ? [cmpTh] : [])];
-// 5 sub-columns: Uploaded, AJE, RJE, EJE, SYS — each darkened by 3% more
-const subColsAll = [{ key: "uploaded", label: "UPLOADED" }, ...SUB_COLS];
-const subThs = subColsAll.map((sc, idx) => (
-  <th key={`${co}-${sc.key}`}
-    className="px-3 py-3 whitespace-nowrap border-l border-white/10"
-    style={{
-      backgroundColor: colors.primary,
-      boxShadow: `inset 0 0 0 9999px rgba(0,0,0,${0.03 * (idx + 1)})`,
-    }}>
-    <div className="flex justify-center" style={underscore2Style}>{sc.label}</div>
-  </th>
-));
-return [main, ...(cmpTh ? [cmpTh] : []), ...subThs];
+    if (!isExp) return [main, ...(pctTh ? [pctTh] : []), ...(cmpTh ? [cmpTh] : [])];
+    const subColsAll = [{ key: "uploaded", label: "UPLOADED" }, ...SUB_COLS];
+    const subThs = subColsAll.map((sc, idx) => (
+      <th key={`${co}-${sc.key}`}
+        className="px-3 py-3 whitespace-nowrap border-l border-white/10"
+        style={{
+          backgroundColor: colors.primary,
+          boxShadow: `inset 0 0 0 9999px rgba(0,0,0,${0.03 * (idx + 1)})`,
+        }}>
+        <div className="flex justify-center" style={underscore2Style}>{sc.label}</div>
+      </th>
+    ));
+    return [main, ...(pctTh ? [pctTh] : []), ...(cmpTh ? [cmpTh] : []), ...subThs];
   });
 
   const totalWidth = colWidths.reduce((s, w) => s + w, 0) + 1;
 
-return (
+  return (
     <div ref={bodyRef} className="contributive-body"
       style={{ flex: 1, minHeight: 0, overflowX: "auto", overflowY: "auto" }}>
       <table style={{ borderCollapse: "collapse", width: "max-content", minWidth: "100%", tableLayout: "auto", borderSpacing: 0 }}>
         {colgroup}
         <thead style={{ position: "sticky", top: 0, zIndex: 20 }}>
-<tr style={{ backgroundColor: colors.primary }}>
-<th className="sticky left-0 z-30 text-left px-5 py-3 border-r border-white/20"
-  style={{ backgroundColor: colors.primary }}>
+          <tr style={{ backgroundColor: colors.primary }}>
+            <th className="sticky left-0 z-30 text-left px-5 py-3 border-r border-white/20"
+              style={{ backgroundColor: colors.primary }}>
               <div className="flex items-center justify-between gap-3">
                 <span style={header2Style}>ACCOUNTS</span>
                 <div className="flex items-center gap-2">
-{hasData && (
-  <>
-    <button onClick={() => expandedSet.size > 0 ? collapseAll() : expandAll()}
-      className="flex items-center gap-1 text-[12px] px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 transition-all font-bold normal-case tracking-normal"
-      style={{ color: colors.quaternary }}>
-      {expandedSet.size > 0 ? <Minimize2 size={14}/> : <Maximize2 size={14}/>}
-    </button>
-<button onClick={onToggleCompare}
-  className={`flex items-center gap-1 text-[10px] px-3 py-1 rounded-lg transition-all font-bold normal-case tracking-normal ${compareMode ? "" : "bg-white/10 hover:bg-white/20"}`}
-  style={{
-    color: compareMode ? colors.primary : colors.quaternary,
-    backgroundColor: compareMode ? colors.quaternary : undefined,
-  }}>
-  <GitMerge size={12} /> Compare
-</button>
-  </>
-)}
+                  {hasData && (
+                    <>
+                      <button onClick={() => expandedSet.size > 0 ? collapseAll() : expandAll()}
+                        className="flex items-center gap-1 text-[12px] px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 transition-all font-bold normal-case tracking-normal"
+                        style={{ color: colors.quaternary }}>
+                        {expandedSet.size > 0 ? <Minimize2 size={14}/> : <Maximize2 size={14}/>}
+                      </button>
+                      <button onClick={onToggleCompare}
+                        className={`flex items-center gap-1 text-[10px] px-3 py-1 rounded-lg transition-all font-bold normal-case tracking-normal ${compareMode ? "" : "bg-white/10 hover:bg-white/20"}`}
+                        style={{
+                          color: compareMode ? colors.primary : colors.quaternary,
+                          backgroundColor: compareMode ? colors.quaternary : undefined,
+                        }}>
+                        <GitMerge size={12} /> Compare
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </th>
+
+            {/* Parent consolidated column header */}
+            {perspectiveMode && (
+              <th className="px-4 py-3 whitespace-nowrap border-l border-white/30"
+                style={{
+                  backgroundColor: colors.primary,
+                  boxShadow: "inset 0 0 0 9999px rgba(0,0,0,0.15)",
+                }}>
+                <div className="flex flex-col items-center gap-0.5">
+                  <span style={underscore1Style}>{parentLegalName}</span>
+                  <span style={underscore2Style}>CONSOLIDATED · {perspectiveParent}</span>
+                </div>
+              </th>
+            )}
+
             {headerCols}
-<th className="sticky right-0 z-10 px-4 py-3 whitespace-nowrap border-l border-white/20"
-  style={{ backgroundColor: colors.primary }}>
-  <div className="flex justify-center" style={header2Style}>TOTAL</div>
-</th>
-          </tr>
-{compareMode && (
-  <tr style={{ backgroundColor: "white", borderBottom: "1px solid rgba(251,191,36,0.2)" }}>
-    <th className="px-5 py-2 sticky left-0 z-30" style={{ backgroundColor: "white" }}>
-      <div className="flex items-center gap-2">
-        <FilterPill label="SRC"    value={cmpSource}    onChange={setCmpSource}    options={sourceOpts}    filterStyle={filterStyle} colors={colors} />
-        <FilterPill label="YR"      value={cmpYear}      onChange={setCmpYear}      options={yearOpts}      filterStyle={filterStyle} colors={colors} />
-        <FilterPill label="MNTH"     value={cmpMonth}     onChange={setCmpMonth}     options={monthOpts}     filterStyle={filterStyle} colors={colors} />
-        <FilterPill label="STRUCT" value={cmpStructure} onChange={setCmpStructure} options={structureOpts} filterStyle={filterStyle} colors={colors} />
-        {cmpLoading && <Loader2 size={11} className="animate-spin text-amber-400 flex-shrink-0" />}
-      </div>
-    </th>
-    <th colSpan={totalColSpan - 1} style={{ backgroundColor: "white" }} />
-  </tr>
+{!perspectiveMode && (
+  <th className="sticky right-0 z-10 px-4 py-3 whitespace-nowrap border-l border-white/20"
+    style={{ backgroundColor: colors.primary }}>
+    <div className="flex justify-center" style={header2Style}>TOTAL</div>
+  </th>
 )}
+          </tr>
+          {compareMode && (
+            <tr style={{ backgroundColor: "white", borderBottom: "1px solid rgba(251,191,36,0.2)" }}>
+              <th className="px-5 py-2 sticky left-0 z-30" style={{ backgroundColor: "white" }}>
+                <div className="flex items-center gap-2">
+                  <FilterPill label="SRC"    value={cmpSource}    onChange={setCmpSource}    options={sourceOpts}    filterStyle={filterStyle} colors={colors} />
+                  <FilterPill label="YR"      value={cmpYear}      onChange={setCmpYear}      options={yearOpts}      filterStyle={filterStyle} colors={colors} />
+                  <FilterPill label="MNTH"     value={cmpMonth}     onChange={setCmpMonth}     options={monthOpts}     filterStyle={filterStyle} colors={colors} />
+                  <FilterPill label="STRUCT" value={cmpStructure} onChange={setCmpStructure} options={structureOpts} filterStyle={filterStyle} colors={colors} />
+                  {cmpLoading && <Loader2 size={11} className="animate-spin text-amber-400 flex-shrink-0" />}
+                </div>
+              </th>
+              <th colSpan={totalColSpan - 1} style={{ backgroundColor: "white" }} />
+            </tr>
+          )}
         </thead>
         <tbody>
-{tree.map((node, i) => {
-  const type = node.AccountType ?? node.accountType ?? "";
-  const prevType = i > 0 ? (tree[i-1].AccountType ?? tree[i-1].accountType ?? "") : null;
-  const showDivider = type !== prevType;
-const TYPE_LABELS = {
-  "P/L": { label: "Profit & Loss",          color: colors.primary,   darken: true },
-  "DIS": { label: "Distribution of Result", color: colors.primary,   },
-  "B/S": { label: "Balance Sheet",          color: colors.secondary               },
-  "C/F": { label: "Cash Flow",              color: colors.tertiary                },
-  "CFS": { label: "Cash Flow",              color: colors.tertiary                },
-};
-  const divider = showDivider ? (TYPE_LABELS[type] ?? { label: type, color: colors.quaternary }) : null;
+          {tree.map((node, i) => {
+            const type = node.AccountType ?? node.accountType ?? "";
+            const prevType = i > 0 ? (tree[i-1].AccountType ?? tree[i-1].accountType ?? "") : null;
+            const showDivider = type !== prevType;
+            const TYPE_LABELS = {
+              "P/L": { label: "Profit & Loss",          color: colors.primary,   darken: true },
+              "DIS": { label: "Distribution of Result", color: colors.primary,   },
+              "B/S": { label: "Balance Sheet",          color: colors.secondary               },
+              "C/F": { label: "Cash Flow",              color: colors.tertiary                },
+              "CFS": { label: "Cash Flow",              color: colors.tertiary                },
+            };
+            const divider = showDivider ? (TYPE_LABELS[type] ?? { label: type, color: colors.quaternary }) : null;
             return (
               <>
-{divider && (
-  <tr key={`divider-${node.AccountCode}`}>
-    <td
-      style={{
-        backgroundColor: divider.color,
-        boxShadow: divider.darken ? "inset 0 0 0 9999px rgba(0,0,0,0.2)" : undefined,
-      }}
-      className="px-5 py-1.5 sticky left-0 z-10">
-      <span style={{ ...header3Style, textTransform: "uppercase", position: "relative" }}>
-        {divider.label}
-      </span>
-    </td>
-    <td colSpan={totalColSpan - 1}
-      style={{
-        backgroundColor: divider.color,
-        boxShadow: divider.darken ? "inset 0 0 0 9999px rgba(0,0,0,0.2)" : undefined,
-      }}
-      className="py-1.5">
-    </td>
-  </tr>
-)}
-<PivotRow key={node.AccountCode} node={node} depth={0}
-  expandedSet={expandedSet} onToggle={toggleExpand}
-  cols={cols} pivot={pivot}
-  onCellClick={(node, co, rows) => setDrilldown({ node, company: co, rows })}
-  expandedColsMap={expandedColsMap} journalPivot={journalPivot}
-  compareMode={compareMode} cmpPivot={cmpPivot}
-  body1Style={body1Style} body2Style={body2Style}
-/>
+                {divider && (
+                  <tr key={`divider-${node.AccountCode}`}>
+                    <td
+                      style={{
+                        backgroundColor: divider.color,
+                        boxShadow: divider.darken ? "inset 0 0 0 9999px rgba(0,0,0,0.2)" : undefined,
+                      }}
+                      className="px-5 py-1.5 sticky left-0 z-10">
+                      <span style={{ ...header3Style, textTransform: "uppercase", position: "relative" }}>
+                        {divider.label}
+                      </span>
+                    </td>
+                    <td colSpan={totalColSpan - 1}
+                      style={{
+                        backgroundColor: divider.color,
+                        boxShadow: divider.darken ? "inset 0 0 0 9999px rgba(0,0,0,0.2)" : undefined,
+                      }}
+                      className="py-1.5">
+                    </td>
+                  </tr>
+                )}
+                <PivotRow key={node.AccountCode} node={node} depth={0}
+                  expandedSet={expandedSet} onToggle={toggleExpand}
+                  cols={cols} pivot={pivot}
+                  onCellClick={(node, co, rows) => setDrilldown({ node, company: co, rows })}
+                  expandedColsMap={expandedColsMap} journalPivot={journalPivot}
+                  compareMode={compareMode} cmpPivot={cmpPivot}
+                  body1Style={body1Style} body2Style={body2Style}
+                  perspectiveMode={perspectiveMode}
+                />
               </>
             );
           })}
@@ -1229,7 +1450,7 @@ export default function ContributivePage({ token }) {
   const body2Style = useTypo("body2");
   const filterStyle = useTypo("filter");
   const underscore1Style = useTypo("underscore1");
-const underscore2Style = useTypo("underscore2");
+  const underscore2Style = useTypo("underscore2");
   const { colors } = useSettings();
   const [periods,       setPeriods]       = useState([]);
   const [sources,       setSources]       = useState([]);
@@ -1241,10 +1462,14 @@ const underscore2Style = useTypo("underscore2");
   const [month,      setMonth]      = useState("");
   const [source,     setSource]     = useState("");
   const [structure,  setStructure]  = useState("DefaultStructure");
-const [typeFilter, setTypeFilter] = useState("");
-const [selectedCompanies, setSelectedCompanies] = useState([]);
+  const [typeFilter, setTypeFilter] = useState("");
+  const [selectedCompanies, setSelectedCompanies] = useState([]);
+// User-defined column order (drag-and-drop). Empty array = use natural order.
+  const [colOrder, setColOrder] = useState([]);
+  // NEW: perspective filter — "" means none/all (default), or a parent shortName
+  const [perspective, setPerspective] = useState("");
 
-const [rawData,      setRawData]      = useState([]);
+  const [rawData,      setRawData]      = useState([]);
   const [journalData,  setJournalData]  = useState([]);
   const [showJournals, setShowJournals] = useState(false);
   const [loading,      setLoading]      = useState(false);
@@ -1253,17 +1478,17 @@ const [rawData,      setRawData]      = useState([]);
   const autoPeriodDone = useRef(false);
   const breakersFetchedRef = useRef(false);
   const [breakers, setBreakers] = useState({});
-const [expandedSet,setExpandedSet]= useState(new Set());
-const [compareMode, setCompareMode] = useState(false);
-const [cmpYear, setCmpYear] = useState("");
-const [cmpMonth, setCmpMonth] = useState("");
-const [cmpSource, setCmpSource] = useState("");
-const [cmpStructure, setCmpStructure] = useState("");
-const [cmpRawData, setCmpRawData] = useState([]);
-const [cmpLoading, setCmpLoading] = useState(false);
-const [drilldown,       setDrilldown]       = useState(null);
+  const [expandedSet,setExpandedSet]= useState(new Set());
+  const [compareMode, setCompareMode] = useState(false);
+  const [cmpYear, setCmpYear] = useState("");
+  const [cmpMonth, setCmpMonth] = useState("");
+  const [cmpSource, setCmpSource] = useState("");
+  const [cmpStructure, setCmpStructure] = useState("");
+  const [cmpRawData, setCmpRawData] = useState([]);
+  const [cmpLoading, setCmpLoading] = useState(false);
+  const [drilldown,       setDrilldown]       = useState(null);
   const [expandedColsMap, setExpandedColsMap] = useState({});
-const _expandedCols = new Set(Object.keys(expandedColsMap).filter(k => expandedColsMap[k]));
+  const _expandedCols = new Set(Object.keys(expandedColsMap).filter(k => expandedColsMap[k]));
   const toggleCol = co => setExpandedColsMap(prev => ({ ...prev, [co]: !prev[co] }));
 
   const headers = useCallback(() => ({
@@ -1289,7 +1514,7 @@ const _expandedCols = new Set(Object.keys(expandedColsMap).filter(k => expandedC
       setCompanies(co);
       setGroupStructure(gs);
 
-      // Default: latest Actual period — try both casings
+      // Default: latest Actual period
       setSource("Actual");
 
       // Default structure
@@ -1304,7 +1529,8 @@ const _expandedCols = new Set(Object.keys(expandedColsMap).filter(k => expandedC
       setMetaReady(true);
     });
   }, [token, headers]);
-/* ── Auto-find latest period with data ──────────────────── */
+
+  /* ── Auto-find latest period with data ──────────────────── */
   useEffect(() => {
     if (!metaReady || !source || !structure) return;
     if (autoPeriodDone.current) return;
@@ -1340,7 +1566,7 @@ const _expandedCols = new Set(Object.keys(expandedColsMap).filter(k => expandedC
     })();
   }, [metaReady, source, structure, headers]);
 
-/* ── Fetch breakers from Supabase ───────────────────────── */
+  /* ── Fetch breakers from Supabase ───────────────────────── */
   useEffect(() => {
     if (!rawData.length) return;
     if (breakersFetchedRef.current) return;
@@ -1362,7 +1588,7 @@ const _expandedCols = new Set(Object.keys(expandedColsMap).filter(k => expandedC
         ? `${SUPABASE_URL}/spanish_ifrs_breakers?select=*`
         : `${SUPABASE_URL}/danish_breakers?select=*`;
 
-fetch(endpoint, { headers: sbHeaders })
+    fetch(endpoint, { headers: sbHeaders })
       .then(r => r.json())
       .then(rows => {
         if (!Array.isArray(rows)) return;
@@ -1404,7 +1630,7 @@ fetch(endpoint, { headers: sbHeaders })
     }).catch(() => setLoading(false));
   }, [year, month, source, structure, metaReady, headers]);
 
-/* ── Fetch compare data ─────────────────────────────────── */
+  /* ── Fetch compare data ─────────────────────────────────── */
   useEffect(() => {
     if (!compareMode || !cmpYear || !cmpMonth || !cmpSource || !cmpStructure || !metaReady) return;
     setCmpLoading(true);
@@ -1416,15 +1642,64 @@ fetch(endpoint, { headers: sbHeaders })
       .catch(() => { setCmpRawData([]); setCmpLoading(false); });
   }, [compareMode, cmpYear, cmpMonth, cmpSource, cmpStructure, metaReady, headers]);
 
+  /* ── Derive parent options & children-of-perspective from groupStructure ── */
+  // A "parent" is any company that has at least one child in the current
+  // structure. The empty option means "no perspective" (default flat view).
+  const { parentOptions, childrenOfPerspective } = useMemo(() => {
+    const gsRows = groupStructure.map(g => ({
+      company:   g.CompanyShortName ?? g.companyShortName ?? "",
+      parent:    g.ParentShortName  ?? g.parentShortName  ?? "",
+      structure: g.GroupStructure   ?? g.groupStructure   ?? "",
+      hasChild:  g.HasChild         ?? g.hasChild         ?? false,
+      detached:  g.Detached         ?? g.detached         ?? false,
+    })).filter(g => !g.detached && (!g.structure || g.structure === structure));
+
+    // Parents = companies that have at least one child OR have hasChild flag
+    const childCountByParent = new Map();
+    gsRows.forEach(g => {
+      if (g.parent) childCountByParent.set(g.parent, (childCountByParent.get(g.parent) ?? 0) + 1);
+    });
+
+    const parentSet = new Set();
+    gsRows.forEach(g => {
+      if (g.hasChild || childCountByParent.has(g.company)) parentSet.add(g.company);
+    });
+
+    const parentList = [...parentSet]
+      .map(p => {
+        const legal = companies.find(c => (c.CompanyShortName ?? c.companyShortName) === p)?.CompanyLegalName
+          ?? companies.find(c => (c.CompanyShortName ?? c.companyShortName) === p)?.companyLegalName
+          ?? p;
+        return { value: p, label: legal };
+      })
+      .sort((a, b) => a.label.localeCompare(b.label, "es", { sensitivity: "base" }));
+
+    const opts = [{ value: "", label: "None (all companies)" }, ...parentList];
+
+    // Contributors to the selected perspective = the parent itself + its
+    // direct children. The parent is a contributor too because it has its own
+    // operational amounts (it's both the holding entity AND an operating
+    // company in its own right). This mirrors the consolidation sheet's
+    // `[selected, ...kids]` pattern.
+    const kids = perspective
+      ? gsRows.filter(g => g.parent === perspective).map(g => g.company)
+      : [];
+    const contributors = perspective ? [perspective, ...kids] : [];
+
+    return { parentOptions: opts, childrenOfPerspective: contributors };
+  }, [groupStructure, structure, companies, perspective]);
+
+  const perspectiveMode = !!perspective;
+
   /* ── Derive pivot data ──────────────────────────────────── */
-const types = ["B/S", "P/L", "C/F"];
+  const types = ["B/S", "P/L", "C/F"];
 
-const { accountMap, pivot, tree, cols, journalPivot, cmpPivot } = useMemo(() => {
-if (!rawData.length) return { accountMap: new Map(), pivot: new Map(), tree: [], cols: [], journalPivot: new Map(), cmpPivot: new Map() };
+  const { accountMap, pivot, tree, cols, journalPivot, cmpPivot } = useMemo(() => {
+    if (!rawData.length) return { accountMap: new Map(), pivot: new Map(), tree: [], cols: [], journalPivot: new Map(), cmpPivot: new Map() };
 
-const accountMap = new Map();
+    const accountMap = new Map();
 
-const filtered = rawData.filter(r => {
+    const filtered = rawData.filter(r => {
       const role = r.CompanyRole ?? r.companyRole ?? "";
       if (role !== "Contribution" && role !== "Contributive" && role !== "Subsidiary") return false;
       if (typeFilter) {
@@ -1432,6 +1707,11 @@ const filtered = rawData.filter(r => {
         const matchesPL = typeFilter === "P/L" && (t === "P/L" || t === "DIS");
         const matchesCF = typeFilter === "C/F" && (t === "C/F" || t === "CFS");
         if (!matchesPL && !matchesCF && t !== typeFilter) return false;
+      }
+      // PERSPECTIVE FILTER: only keep companies that are children of the selected parent
+      if (perspectiveMode) {
+        const co = r.CompanyShortName ?? r.companyShortName ?? "";
+        if (!childrenOfPerspective.includes(co)) return false;
       }
       return true;
     });
@@ -1457,12 +1737,12 @@ const filtered = rawData.filter(r => {
       if (!pivot.has(code)) pivot.set(code, {});
       const c = pivot.get(code);
       if (!c[co]) c[co] = { total: 0, rows: [] };
-c[co].total += -(Number(r.ReportingAmountYTD ?? r.reportingAmountYTD ?? r.AmountYTD ?? r.amountYTD) || 0);
+      c[co].total += -(Number(r.ReportingAmountYTD ?? r.reportingAmountYTD ?? r.AmountYTD ?? r.amountYTD) || 0);
       c[co].rows.push(r);
     });
 
     const rawTree = buildTree([...accountMap.values()]);
-        const TYPE_ORDER = { "P/L": 0, "DIS": 0, "B/S": 1, "C/F": 2, "CFS": 2 };
+    const TYPE_ORDER = { "P/L": 0, "DIS": 0, "B/S": 1, "C/F": 2, "CFS": 2 };
 
     const tree = [...rawTree].sort((a, b) => {
       const tA = TYPE_ORDER[a.AccountType ?? a.accountType ?? ""] ?? 99;
@@ -1511,10 +1791,15 @@ c[co].total += -(Number(r.ReportingAmountYTD ?? r.reportingAmountYTD ?? r.Amount
     };
     tree.forEach(rollUp);
 
-const cmpPivot = new Map();
+    const cmpPivot = new Map();
     cmpRawData.filter(r => {
       const role = r.CompanyRole ?? r.companyRole ?? "";
-      return role === "Contribution" || role === "Contributive" || role === "Subsidiary";
+      if (role !== "Contribution" && role !== "Contributive" && role !== "Subsidiary") return false;
+      if (perspectiveMode) {
+        const co = r.CompanyShortName ?? r.companyShortName ?? "";
+        if (!childrenOfPerspective.includes(co)) return false;
+      }
+      return true;
     }).forEach(r => {
       const code = r.AccountCode ?? r.accountCode ?? "";
       const co   = r.CompanyShortName ?? r.companyShortName ?? "";
@@ -1526,7 +1811,7 @@ const cmpPivot = new Map();
     });
 
     return { accountMap, pivot, tree, cols, journalPivot: rolled, cmpPivot };
-}, [rawData, journalData, typeFilter, cmpRawData]);
+  }, [rawData, journalData, typeFilter, cmpRawData, perspectiveMode, childrenOfPerspective]);
 
 
   const toggleExpand = useCallback(code => {
@@ -1540,7 +1825,7 @@ const cmpPivot = new Map();
   const colTotal = co => [...accountMap.keys()].reduce((s, code) => s + (pivot.get(code)?.[co]?.total ?? 0), 0);
   const _grandTotal = cols.reduce((s, co) => s + colTotal(co), 0);
 
-  // Filter options — handle both casings
+  // Filter options
   const getP = (p, k) => p[k] ?? p[k.charAt(0).toUpperCase() + k.slice(1)];
 
   const yearOpts = [...new Set(periods.map(p => Number(getP(p,"year")||0)).filter(n => n > 0))]
@@ -1561,65 +1846,93 @@ const cmpPivot = new Map();
   }).filter(Boolean))].map(v => ({ value: v, label: v }));
 
   const hasData = rawData.length > 0 && tree.length > 0;
+
+  // Effective cols after company filter — always derived from current `cols`,
+  // which is already perspective-filtered.
+const baseEffectiveCols = selectedCompanies.length === 0
+    ? cols
+    : cols.filter(c => selectedCompanies.includes(c));
+
+  // Apply user's drag-and-drop ordering. Any cols not yet in colOrder
+  // (e.g. newly-arrived after a perspective change) get appended at the end.
+  const effectiveCols = useMemo(() => {
+    if (colOrder.length === 0) return baseEffectiveCols;
+    const ordered = colOrder.filter(c => baseEffectiveCols.includes(c));
+    const rest = baseEffectiveCols.filter(c => !ordered.includes(c));
+    return [...ordered, ...rest];
+  }, [baseEffectiveCols, colOrder]);
+
+  const reorderCols = useCallback((from, to) => {
+    setColOrder(prev => {
+      const current = prev.length > 0 ? [...prev] : [...effectiveCols];
+      const fromIdx = current.indexOf(from);
+      const toIdx = current.indexOf(to);
+      if (fromIdx === -1 || toIdx === -1) return prev;
+      const [moved] = current.splice(fromIdx, 1);
+      current.splice(toIdx, 0, moved);
+      return current;
+    });
+  }, [effectiveCols]);
+
   return (
     <div className="flex flex-col gap-4 h-full min-h-0">
-<style>{`
+      <style>{`
         .contributive-body::-webkit-scrollbar { width: 0px; height: 6px; }
         .contributive-body::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
         .contributive-body::-webkit-scrollbar-track { background: transparent; }
       `}</style>
-{showJournals && (
-  <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setShowJournals(false)}>
-    <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" />
-    <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[95vw] max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
-      <div className="px-5 py-4 flex items-center justify-between flex-shrink-0" style={{ backgroundColor: colors.primary }}>
-        <div>
-          <p style={header2Style}>Journal Entries</p>
-          <p style={underscore2Style}>{journalData.length} entries · {year} · {MONTHS.find(m => m.value === Number(month))?.label} · {source}</p>
-        </div>
-        <button onClick={() => setShowJournals(false)} className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center">
-          <X size={13} className="text-white/70" />
-        </button>
-      </div>
-      <div className="overflow-auto flex-1">
-        <table className="w-full border-collapse">
-<thead className="sticky top-0 z-10">
-  <tr>
-    {["Company","Account","Type","Journal #","Header","J.Type","Layer","Counterparty","Dimension","Amount YTD","CCY","Row Text","Posted","Sys Gen"].map(h => (
-      <th key={h}
-        className="text-left px-3 py-2.5 whitespace-nowrap"
-        style={{
-          backgroundColor: colors.primary,
-          boxShadow: "inset 0 0 0 9999px rgba(0,0,0,0.1)",
-        }}>
-        <span style={{ ...underscore1Style, position: "relative" }}>{h}</span>
-      </th>
-    ))}
-  </tr>
-</thead>
-<tbody>
-  {journalData.map((r, i) => {
-    const amt = Number(r.AmountYTD ?? r.amountYTD) || 0;
-    return (
-      <tr key={i} className={`border-b border-gray-50 hover:bg-blue-50/30 transition-colors ${i % 2 === 0 ? "" : "bg-gray-50/40"}`} style={body2Style}>
-        <td className="px-3 py-2 whitespace-nowrap">{r.CompanyShortName ?? r.companyShortName}</td>
-        <td className="px-3 py-2 whitespace-nowrap"><span className="mr-1 opacity-60">{r.AccountCode ?? r.accountCode}</span><span>{r.AccountName ?? r.accountName}</span></td>
-        <td className="px-3 py-2 whitespace-nowrap">{r.AccountType ?? r.accountType}</td>
-        <td className="px-3 py-2 whitespace-nowrap">{r.JournalNumber ?? r.journalNumber}</td>
-        <td className="px-3 py-2 whitespace-nowrap max-w-[180px] truncate">{r.JournalHeader ?? r.journalHeader}</td>
-        <td className="px-3 py-2 whitespace-nowrap"><span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600">{r.JournalType ?? r.journalType}</span></td>
-        <td className="px-3 py-2 whitespace-nowrap">{r.JournalLayer ?? r.journalLayer}</td>
-        <td className="px-3 py-2 whitespace-nowrap">{r.CounterpartyShortName ?? r.counterpartyShortName}</td>
-        <td className="px-3 py-2 whitespace-nowrap">{r.DimensionName ?? r.dimensionName}</td>
-        <td className="px-3 py-2 whitespace-nowrap text-right" style={{ color: amt === 0 ? "#D1D5DB" : amt < 0 ? "#EF4444" : "#000000" }}>{fmtAmt(amt)}</td>
-        <td className="px-3 py-2 whitespace-nowrap">{r.CurrencyCode ?? r.currencyCode}</td>
-        <td className="px-3 py-2 max-w-[160px] truncate">{r.RowText ?? r.rowText}</td>
-        <td className="px-3 py-2 whitespace-nowrap"><span className={`px-1.5 py-0.5 rounded ${(r.Posted ?? r.posted) ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-600"}`}>{(r.Posted ?? r.posted) ? "Yes" : "No"}</span></td>
-        <td className="px-3 py-2 whitespace-nowrap"><span className={`px-1.5 py-0.5 rounded ${(r.SystemGenerated ?? r.systemGenerated) ? "bg-gray-100 text-gray-500" : "bg-white text-gray-400"}`}>{(r.SystemGenerated ?? r.systemGenerated) ? "Yes" : "No"}</span></td>
-      </tr>
-    );
-  })}
-</tbody>
+      {showJournals && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setShowJournals(false)}>
+          <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[95vw] max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 flex items-center justify-between flex-shrink-0" style={{ backgroundColor: colors.primary }}>
+              <div>
+                <p style={header2Style}>Journal Entries</p>
+                <p style={underscore2Style}>{journalData.length} entries · {year} · {MONTHS.find(m => m.value === Number(month))?.label} · {source}</p>
+              </div>
+              <button onClick={() => setShowJournals(false)} className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center">
+                <X size={13} className="text-white/70" />
+              </button>
+            </div>
+            <div className="overflow-auto flex-1">
+              <table className="w-full border-collapse">
+                <thead className="sticky top-0 z-10">
+                  <tr>
+                    {["Company","Account","Type","Journal #","Header","J.Type","Layer","Counterparty","Dimension","Amount YTD","CCY","Row Text","Posted","Sys Gen"].map(h => (
+                      <th key={h}
+                        className="text-left px-3 py-2.5 whitespace-nowrap"
+                        style={{
+                          backgroundColor: colors.primary,
+                          boxShadow: "inset 0 0 0 9999px rgba(0,0,0,0.1)",
+                        }}>
+                        <span style={{ ...underscore1Style, position: "relative" }}>{h}</span>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {journalData.map((r, i) => {
+                    const amt = Number(r.AmountYTD ?? r.amountYTD) || 0;
+                    return (
+                      <tr key={i} className={`border-b border-gray-50 hover:bg-blue-50/30 transition-colors ${i % 2 === 0 ? "" : "bg-gray-50/40"}`} style={body2Style}>
+                        <td className="px-3 py-2 whitespace-nowrap">{r.CompanyShortName ?? r.companyShortName}</td>
+                        <td className="px-3 py-2 whitespace-nowrap"><span className="mr-1 opacity-60">{r.AccountCode ?? r.accountCode}</span><span>{r.AccountName ?? r.accountName}</span></td>
+                        <td className="px-3 py-2 whitespace-nowrap">{r.AccountType ?? r.accountType}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">{r.JournalNumber ?? r.journalNumber}</td>
+                        <td className="px-3 py-2 whitespace-nowrap max-w-[180px] truncate">{r.JournalHeader ?? r.journalHeader}</td>
+                        <td className="px-3 py-2 whitespace-nowrap"><span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600">{r.JournalType ?? r.journalType}</span></td>
+                        <td className="px-3 py-2 whitespace-nowrap">{r.JournalLayer ?? r.journalLayer}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">{r.CounterpartyShortName ?? r.counterpartyShortName}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">{r.DimensionName ?? r.dimensionName}</td>
+                        <td className="px-3 py-2 whitespace-nowrap text-right" style={{ color: amt === 0 ? "#D1D5DB" : amt < 0 ? "#EF4444" : "#000000" }}>{fmtAmt(amt)}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">{r.CurrencyCode ?? r.currencyCode}</td>
+                        <td className="px-3 py-2 max-w-[160px] truncate">{r.RowText ?? r.rowText}</td>
+                        <td className="px-3 py-2 whitespace-nowrap"><span className={`px-1.5 py-0.5 rounded ${(r.Posted ?? r.posted) ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-600"}`}>{(r.Posted ?? r.posted) ? "Yes" : "No"}</span></td>
+                        <td className="px-3 py-2 whitespace-nowrap"><span className={`px-1.5 py-0.5 rounded ${(r.SystemGenerated ?? r.systemGenerated) ? "bg-gray-100 text-gray-500" : "bg-white text-gray-400"}`}>{(r.SystemGenerated ?? r.systemGenerated) ? "Yes" : "No"}</span></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
               </table>
             </div>
           </div>
@@ -1638,80 +1951,94 @@ const cmpPivot = new Map();
         />
       )}
 
-{/* Header */}
+      {/* Header */}
       <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <div className="w-1.5 h-10 rounded-full" style={{ backgroundColor: colors.primary }} />
           <div>
             <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Accounts</p>
-            <h1 className="leading-none" style={header1Style}>Contr</h1>
+            <h1 className="leading-none" style={header1Style}>Contribution</h1>
           </div>
         </div>
 
-<div className="w-px h-8 bg-gray-100 flex-shrink-0" />
+        <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
 
-{types.length > 0 && (() => {
-  const tabs = [{ key: "", label: "All" }, ...types.map(t => ({ key: t, label: t }))];
-  const activeIdx = Math.max(0, tabs.findIndex(t => t.key === typeFilter));
-  return <TabSelector tabs={tabs} activeIdx={activeIdx} onSelect={setTypeFilter} filterStyle={filterStyle} />;
-})()}
+        {types.length > 0 && (() => {
+          const tabs = [{ key: "", label: "All" }, ...types.map(t => ({ key: t, label: t }))];
+          const activeIdx = Math.max(0, tabs.findIndex(t => t.key === typeFilter));
+          return <TabSelector tabs={tabs} activeIdx={activeIdx} onSelect={setTypeFilter} filterStyle={filterStyle} />;
+        })()}
 
         <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
 
-<div className="flex items-center gap-2 flex-wrap">
-  {sourceOpts.length > 0    && <FilterPill label="SRC"    value={source}    onChange={setSource}    options={sourceOpts}    filterStyle={filterStyle} colors={colors} />}
-  {yearOpts.length > 0      && <FilterPill label="YR"      value={year}      onChange={setYear}      options={yearOpts}      filterStyle={filterStyle} colors={colors} />}
-  {monthOpts.length > 0     && <FilterPill label="MNTH"     value={month}     onChange={setMonth}     options={monthOpts}     filterStyle={filterStyle} colors={colors} />}
-  {structureOpts.length > 0 && <FilterPill label="STURCT" value={structure} onChange={setStructure} options={structureOpts} filterStyle={filterStyle} colors={colors} />}
-{cols.length > 0 && <CompanyFilterPill cols={cols} selected={selectedCompanies} onChange={setSelectedCompanies} filterStyle={filterStyle} colors={colors} />}
-</div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {sourceOpts.length > 0    && <FilterPill label="SRC"    value={source}    onChange={setSource}    options={sourceOpts}    filterStyle={filterStyle} colors={colors} />}
+          {yearOpts.length > 0      && <FilterPill label="YR"      value={year}      onChange={setYear}      options={yearOpts}      filterStyle={filterStyle} colors={colors} />}
+          {monthOpts.length > 0     && <FilterPill label="MNTH"     value={month}     onChange={setMonth}     options={monthOpts}     filterStyle={filterStyle} colors={colors} />}
+          {structureOpts.length > 0 && <FilterPill label="STURCT" value={structure} onChange={setStructure} options={structureOpts} filterStyle={filterStyle} colors={colors} />}
 
-<div className="ml-auto flex items-center gap-3 flex-shrink-0 mr-6">
+          {/* NEW: Perspective pill — pick a parent to roll up its children */}
+          {parentOptions.length > 1 && (
+            <FilterPill
+              label="PERSP"
+              value={perspective}
+              onChange={(v) => { setPerspective(v); setSelectedCompanies([]); }}
+              options={parentOptions}
+              filterStyle={filterStyle}
+              colors={colors}
+            />
+          )}
+
+          {cols.length > 0 && <CompanyFilterPill cols={cols} selected={selectedCompanies} onChange={setSelectedCompanies} filterStyle={filterStyle} colors={colors} />}
+        </div>
+
+        <div className="ml-auto flex items-center gap-3 flex-shrink-0 mr-6">
           {loading && <Loader2 size={13} className="animate-spin text-[#1a2f8a]" />}
-{journalData.length > 0 && (
-  <button onClick={() => setShowJournals(true)}
-    title={`Journal Entries (${journalData.length})`}
-    className="relative flex items-center justify-center w-10 h-10 rounded-xl transition-all hover:scale-110 hover:shadow-md"
-    style={{ backgroundColor: `${colors.primary}15` }}>
-    <BookOpen size={18} style={{ color: colors.primary }} />
-    <span
-      className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center text-[10px] font-black text-white"
-      style={{ backgroundColor: colors.primary }}>
-      {journalData.length}
-    </span>
-  </button>
-)}
-<button className="transition-all hover:opacity-80 hover:scale-105" title="Export Excel"
-  onClick={() => generateContributiveXlsx({
-    tree, pivot,
-    cols: selectedCompanies.length === 0 ? cols : cols.filter(c => selectedCompanies.includes(c)),
-    cmpPivot, companies, groupStructure,
-    compareMode, month, year, source, structure,
-    cmpMonth, cmpYear, cmpSource, cmpStructure,
-  })}>
-  <img src="https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png" width="44" height="36" alt="Excel" />
-</button>
-<button className="transition-all hover:opacity-80 hover:scale-105" title="Export PDF"
-  onClick={() => generateContributivePdf({
-    tree, pivot,
-    cols: selectedCompanies.length === 0 ? cols : cols.filter(c => selectedCompanies.includes(c)),
-    cmpPivot, companies, groupStructure,
-    compareMode, month, year, source, structure,
-    cmpMonth, cmpYear, cmpSource, cmpStructure,
-  })}>
-  <img src="https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png" width="30" height="36" alt="PDF" />
-</button>
+          {journalData.length > 0 && (
+            <button onClick={() => setShowJournals(true)}
+              title={`Journal Entries (${journalData.length})`}
+              className="relative flex items-center justify-center w-10 h-10 rounded-xl transition-all hover:scale-110 hover:shadow-md"
+              style={{ backgroundColor: `${colors.primary}15` }}>
+              <BookOpen size={18} style={{ color: colors.primary }} />
+              <span
+                className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center text-[10px] font-black text-white"
+                style={{ backgroundColor: colors.primary }}>
+                {journalData.length}
+              </span>
+            </button>
+          )}
+          <button className="transition-all hover:opacity-80 hover:scale-105" title="Export Excel"
+            onClick={() => generateContributiveXlsx({
+              tree, pivot,
+              cols: effectiveCols,
+              cmpPivot, companies, groupStructure,
+              compareMode, month, year, source, structure,
+              cmpMonth, cmpYear, cmpSource, cmpStructure,
+              perspectiveMode, perspectiveParent: perspective,
+            })}>
+            <img src="https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png" width="44" height="36" alt="Excel" />
+          </button>
+          <button className="transition-all hover:opacity-80 hover:scale-105" title="Export PDF"
+            onClick={() => generateContributivePdf({
+              tree, pivot,
+              cols: effectiveCols,
+              cmpPivot, companies, groupStructure,
+              compareMode, month, year, source, structure,
+              cmpMonth, cmpYear, cmpSource, cmpStructure,
+              perspectiveMode, perspectiveParent: perspective,
+            })}>
+            <img src="https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png" width="30" height="36" alt="PDF" />
+          </button>
         </div>
       </div>
 
       {/* Table */}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex flex-col flex-1 min-h-0" style={{ overflow: "hidden" }}>
-               {!metaReady || loading || probingPeriod ? (
-
+        {!metaReady || loading || probingPeriod ? (
           <div className="flex items-center justify-center flex-1">
             <div className="flex flex-col items-center gap-3">
               <Loader2 size={28} className="animate-spin text-[#1a2f8a]" />
-                            <p className="text-xs text-gray-400">{!metaReady ? "Loading metadata…" : probingPeriod ? "Finding latest period…" : "Building contributive view…"}</p>
+              <p className="text-xs text-gray-400">{!metaReady ? "Loading metadata…" : probingPeriod ? "Finding latest period…" : "Building contributive view…"}</p>
             </div>
           </div>
         ) : !hasData ? (
@@ -1721,56 +2048,63 @@ const cmpPivot = new Map();
                 <RefreshCw size={20} className="text-[#1a2f8a]" />
               </div>
               <p className="text-sm font-bold text-gray-400">No data for selected filters</p>
-              <p className="text-xs text-gray-300 mt-1">Try adjusting the source, year or month</p>
+              <p className="text-xs text-gray-300 mt-1">
+                {perspectiveMode
+                  ? `No contribution data for children of ${perspective}`
+                  : "Try adjusting the source, year or month"}
+              </p>
             </div>
           </div>
-) : (
-<SyncedTable
-  cols={selectedCompanies.length === 0 ? cols : cols.filter(c => selectedCompanies.includes(c))}
-  tree={tree}
-  body1Style={body1Style}
-  body2Style={body2Style}
-  header2Style={header2Style}
-  header3Style={header3Style}
-  underscore1Style={underscore1Style}
-  underscore2Style={underscore2Style}
-  filterStyle={filterStyle}
-  colors={colors}
-  expandedSet={expandedSet}
-  expandedColsMap={expandedColsMap}
-  toggleCol={toggleCol}
-  toggleExpand={toggleExpand}
-  pivot={pivot}
-  journalPivot={journalPivot}
-  accountMap={accountMap}
-  companies={companies}
-  groupStructure={groupStructure}
-  hasData={hasData}
-  collapseAll={collapseAll}
-  expandAll={expandAll}
-  setDrilldown={setDrilldown}
-getReportingCurrency={getReportingCurrency}
-  breakers={breakers}
-  compareMode={compareMode}
-  onToggleCompare={() => {
-    if (!compareMode) {
-      setCmpYear(year); setCmpMonth(month);
-      setCmpSource(source); setCmpStructure(structure);
-    }
-    setCompareMode(c => !c);
-  }}
-  cmpPivot={cmpPivot}
-  cmpLoading={cmpLoading}
-  cmpYear={cmpYear} setCmpYear={setCmpYear}
-  cmpMonth={cmpMonth} setCmpMonth={setCmpMonth}
-  cmpSource={cmpSource} setCmpSource={setCmpSource}
-  cmpStructure={cmpStructure} setCmpStructure={setCmpStructure}
-  yearOpts={yearOpts}
-  monthOpts={monthOpts}
-  sourceOpts={sourceOpts}
-  structureOpts={structureOpts}
-/>
-)}
+        ) : (
+          <SyncedTable
+            cols={effectiveCols}
+            tree={tree}
+            body1Style={body1Style}
+            body2Style={body2Style}
+            header2Style={header2Style}
+            header3Style={header3Style}
+            underscore1Style={underscore1Style}
+            underscore2Style={underscore2Style}
+            filterStyle={filterStyle}
+            colors={colors}
+            expandedSet={expandedSet}
+            expandedColsMap={expandedColsMap}
+            toggleCol={toggleCol}
+            toggleExpand={toggleExpand}
+            pivot={pivot}
+            journalPivot={journalPivot}
+            accountMap={accountMap}
+            companies={companies}
+            groupStructure={groupStructure}
+            hasData={hasData}
+            collapseAll={collapseAll}
+            expandAll={expandAll}
+            setDrilldown={setDrilldown}
+            getReportingCurrency={getReportingCurrency}
+            breakers={breakers}
+            compareMode={compareMode}
+            onToggleCompare={() => {
+              if (!compareMode) {
+                setCmpYear(year); setCmpMonth(month);
+                setCmpSource(source); setCmpStructure(structure);
+              }
+              setCompareMode(c => !c);
+            }}
+            cmpPivot={cmpPivot}
+            cmpLoading={cmpLoading}
+            cmpYear={cmpYear} setCmpYear={setCmpYear}
+            cmpMonth={cmpMonth} setCmpMonth={setCmpMonth}
+            cmpSource={cmpSource} setCmpSource={setCmpSource}
+            cmpStructure={cmpStructure} setCmpStructure={setCmpStructure}
+            yearOpts={yearOpts}
+            monthOpts={monthOpts}
+            sourceOpts={sourceOpts}
+structureOpts={structureOpts}
+            perspectiveMode={perspectiveMode}
+            perspectiveParent={perspective}
+            reorderCols={reorderCols}
+          />
+        )}
       </div>
     </div>
   );

@@ -109,16 +109,17 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
                 onMouseEnter={() => { clearTimeout(closeTimer.current); handleMouseEnter(item.key, hasChildren); }}
                 onMouseLeave={() => { closeTimer.current = setTimeout(() => setHoveredKey(null), 300); }}
               >
-                <button
+<button
                   onClick={() => !hasChildren && onNavigate?.(item.key)}
-                  className="w-full flex items-center py-2.5 transition-colors hover:bg-gray-100"
+                  onMouseEnter={(e) => { if (!isActiveParent) { e.currentTarget.style.backgroundColor = `${colors.primary}10`; e.currentTarget.style.color = colors.primary; } }}
+                  onMouseLeave={(e) => { if (!isActiveParent) { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = body1Style?.color ?? "#2f3138"; } }}
+                  className="w-full flex items-center py-2.5 transition-all duration-200"
                   style={{
                     justifyContent: "flex-start",
                     paddingLeft: "1.25rem",
                     paddingRight: "1rem",
                     color: isActiveParent ? colors.primary : (body1Style?.color ?? "#2f3138"),
-                    backgroundColor: isActiveParent ? `${colors.primary}0d` : "transparent",
-                    borderRight: isActiveParent ? `2px solid ${colors.primary}` : "none",
+                    backgroundColor: "transparent",
                   }}
                 >
                   <item.icon size={20} className="flex-shrink-0" style={{ minWidth: 16 }} />
@@ -135,6 +136,9 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
                   >
                     {item.label}
                   </span>
+                  {isActiveParent && !collapsed && (
+                    <span className="ml-2 w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: colors.primary }} />
+                  )}
                 </button>
 
                 {/* Inline submenu */}
@@ -147,19 +151,23 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
                     {item.children.map((child, ci) => {
                       const isActive = activePage === child.key;
                       return (
-                        <button
+<button
                           key={child.key}
                           onClick={() => { onNavigate?.(child.key); setHoveredKey(null); }}
-                          className="w-full flex items-center gap-2 pl-10 pr-4 py-2 text-left relative"
+                          onMouseEnter={(e) => { if (!isActive) { e.currentTarget.style.backgroundColor = `${colors.primary}10`; e.currentTarget.style.color = colors.primary; } }}
+                          onMouseLeave={(e) => { if (!isActive) { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = body2Style?.color ?? "#9ca3af"; } }}
+                          className="w-full flex items-center gap-2 pl-10 pr-4 py-2 text-left relative transition-all duration-200"
                           style={{
                             color: isActive ? colors.primary : (body2Style?.color ?? "#9ca3af"),
                             animation: (!collapsed && isHovered) ? `navSlideIn 200ms ease ${ci * 45}ms both` : "none",
                           }}
                         >
-                          {isActive && <span className="absolute left-5 top-1/2 -translate-y-1/2 w-0.5 h-3.5 rounded-full" style={{ backgroundColor: colors.primary }} />}
-                          <span className="whitespace-nowrap" style={{ ...body2Style, color: isActive ? colors.primary : body2Style?.color }}>
+                          <span className="whitespace-nowrap" style={{ ...body2Style, fontSize: 12, color: isActive ? colors.primary : body2Style?.color }}>
                             {child.label}
                           </span>
+                          {isActive && (
+                            <span className="ml-1 w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: colors.primary }} />
+                          )}
                         </button>
                       );
                     })}
@@ -174,16 +182,17 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
             {(() => {
               const isActive = activePage === "settings";
               return (
-                <button
+<button
                   onClick={() => onNavigate?.("settings")}
-                  className="w-full flex items-center py-2.5 transition-colors hover:bg-gray-100"
+                  onMouseEnter={(e) => { if (!isActive) { e.currentTarget.style.backgroundColor = `${colors.primary}10`; e.currentTarget.style.color = colors.primary; } }}
+                  onMouseLeave={(e) => { if (!isActive) { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = body1Style?.color ?? "#2f3138"; } }}
+                  className="w-full flex items-center py-2.5 transition-all duration-200"
                   style={{
                     justifyContent: "flex-start",
                     paddingLeft: "1.25rem",
                     paddingRight: "1rem",
                     color: isActive ? colors.primary : (body1Style?.color ?? "#2f3138"),
-                    backgroundColor: isActive ? `${colors.primary}0d` : "transparent",
-                    borderRight: isActive ? `2px solid ${colors.primary}` : "none",
+                    backgroundColor: "transparent",
                   }}
                 >
                   <Settings size={20} className="flex-shrink-0" style={{ minWidth: 16 }} />
@@ -200,6 +209,9 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
                   >
                     Settings
                   </span>
+                  {isActive && !collapsed && (
+                    <span className="ml-2 w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: colors.primary }} />
+                  )}
                 </button>
               );
             })()}
@@ -221,13 +233,7 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
               <p className="text-xs font-semibold text-gray-700 truncate">{user?.username}</p>
             </div>
           </div>
-     <div className="flex gap-1">
-  <button
-    onClick={onRefresh}
-    className="flex-1 flex items-center justify-center py-1.5 text-gray-400 hover:text-[#1a2f8a] hover:bg-gray-50 rounded-xl transition-colors"
-  >
-    <RefreshCw size={14} />
-  </button>
+<div className="flex">
   <button
     onClick={onToggleCollapse}
     className="flex-1 flex items-center justify-center py-1.5 text-gray-400 hover:text-[#1a2f8a] hover:bg-gray-50 rounded-xl transition-colors"
@@ -253,14 +259,18 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
 <button
                 key={child.key}
                 onClick={() => { onNavigate?.(child.key); setHoveredKey(null); }}
-                className="flex items-center gap-2 px-3 py-2 w-full text-left whitespace-nowrap rounded-lg transition-colors hover:bg-blue-50/50"
+                onMouseEnter={(e) => { if (!isActive) { e.currentTarget.style.backgroundColor = `${colors.primary}10`; e.currentTarget.style.color = colors.primary; } }}
+                onMouseLeave={(e) => { if (!isActive) { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = body2Style?.color ?? "#6b7280"; } }}
+                className="flex items-center gap-2 px-3 py-2 w-full text-left whitespace-nowrap rounded-lg transition-all duration-200"
                 style={{
                   color: isActive ? colors.primary : (body2Style?.color ?? "#6b7280"),
                   animation: `navSlideIn 180ms ease ${ci * 40}ms both`,
                 }}
               >
-                {isActive && <span className="w-0.5 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: colors.primary }} />}
-                <span className="whitespace-nowrap" style={{ ...body2Style, color: isActive ? colors.primary : body2Style?.color }}>{child.label}</span>
+                <span className="whitespace-nowrap" style={{ ...body2Style, fontSize: 12, color: isActive ? colors.primary : body2Style?.color }}>{child.label}</span>
+                {isActive && (
+                  <span className="ml-auto w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: colors.primary }} />
+                )}
               </button>
               
             );

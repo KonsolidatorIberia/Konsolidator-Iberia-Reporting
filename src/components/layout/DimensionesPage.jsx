@@ -3,6 +3,235 @@ import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Search, Database, Git
 import { useTypo, useSettings } from "./SettingsContext";
 const BASE_URL = "";
 
+// ════════════════════════════════════════════════════════════════════════════
+// KPI RESOLVER — inline. Same logic used in KpiIndividualesPage. Loads cc_tag
+// mapping for the active accounting standard from Supabase and builds a map
+// of cc_tag → list of account codes that resolve to it via parent inheritance.
+// This is what makes the same KPI definition work across PGC / Danish IFRS /
+// Spanish IFRS-ES without per-standard formula overrides.
+// ════════════════════════════════════════════════════════════════════════════
+
+const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
+const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
+
+const SB_HEADERS = {
+  apikey:        SUPABASE_APIKEY,
+  Authorization: `Bearer ${SUPABASE_APIKEY}`,
+};
+const sbGet = (path) =>
+  fetch(`${SUPABASE_URL}/${path}`, { headers: SB_HEADERS }).then(r => r.json());
+
+function detectStandard(groupAccounts) {
+  if (!groupAccounts?.length) return null;
+  const codes = [];
+  groupAccounts.forEach(n => {
+    const ac = String(n.accountCode ?? n.AccountCode ?? "");
+    const pc = String(n.parentCode  ?? n.ParentCode  ?? "");
+    if (ac) codes.push(ac);
+    if (pc) codes.push(pc);
+  });
+  if (codes.length === 0) return null;
+  const isPGC = codes.some(c => c.endsWith(".S"));
+  const isSpanishIfrsEs = !isPGC && codes.some(c => c.endsWith(".PL"));
+  const isSpanishIFRS = !isPGC && !isSpanishIfrsEs && codes.some(c => /^[A-Z]\.\d/.test(c));
+  const isDanishIFRS = !isPGC && !isSpanishIfrsEs && !isSpanishIFRS && codes.some(c => /^\d{5,6}$/.test(c));
+  if (isPGC)           return "PGC";
+  if (isSpanishIfrsEs) return "SpanishIFRS-ES";
+  if (isSpanishIFRS)   return "SpanishIFRS";
+  if (isDanishIFRS)    return "DanishIFRS";
+  return null;
+}
+
+const STANDARD_TO_PL_TABLE = {
+  PGC: "pgc_pl_rows",
+  DanishIFRS: "danish_ifrs_pl_rows",
+  "SpanishIFRS-ES": "spanish_ifrs_es_pl_rows",
+};
+
+async function loadStandardMapping(standard, groupAccounts) {
+  const plTable = STANDARD_TO_PL_TABLE[standard];
+  if (!plTable) return null;
+
+  const plRows = await sbGet(`${plTable}?select=account_code,account_name,section_code,parent_code,is_sum,cc_tag`);
+  const allRows = Array.isArray(plRows) ? plRows : [];
+
+  // Build code → cc_tag from the taxonomy table (pgc_pl_rows etc).
+  const codeCcTag = new Map();
+  for (const r of allRows) {
+    if (r.cc_tag) codeCcTag.set(String(r.account_code), r.cc_tag);
+  }
+
+  // Build child → parent from groupAccounts so we can walk a posting account
+  // up to whatever ancestor carries a cc_tag.
+  const parentOf = new Map();
+  for (const ga of (groupAccounts || [])) {
+    if (ga.AccountCode && ga.SumAccountCode) {
+      parentOf.set(String(ga.AccountCode), String(ga.SumAccountCode));
+    }
+  }
+
+  // Helper: for a given account code (which may not be in the taxonomy at all,
+  // because journals can have posting codes outside it), walk its parent chain
+  // until we hit a code that has a cc_tag. Returns the cc_tag string, or null.
+  const resolveCcTag = (code) => {
+    let cur = String(code);
+    let hops = 0;
+    while (cur && hops < 25) {
+      if (codeCcTag.has(cur)) return codeCcTag.get(cur);
+      cur = parentOf.get(cur);
+      hops++;
+    }
+    return null;
+  };
+
+  // Eager precompute for groupAccounts (used by `cc` evaluator's fallback path).
+  const ccTagToCodes = new Map();
+  for (const ga of (groupAccounts || [])) {
+    const code = String(ga.AccountCode);
+    const foundTag = resolveCcTag(code);
+    if (foundTag) {
+      if (!ccTagToCodes.has(foundTag)) ccTagToCodes.set(foundTag, []);
+      ccTagToCodes.get(foundTag).push(code);
+    }
+  }
+
+  console.log(`[DimResolver] ${standard} mapping loaded: ${ccTagToCodes.size} cc_tags`);
+  return { ccTagToCodes, resolveCcTag };
+}
+
+async function loadKpiLibrary() {
+  const defs = await sbGet("kpi_definitions?select=*&order=sort_order.asc");
+  if (!Array.isArray(defs)) return [];
+  return defs.map(d => ({
+    id:       d.id,
+    label:    d.label,
+    category: d.category ?? "",
+    format:   d.format ?? "currency",
+    formula:  d.formula,
+  }));
+}
+
+// Hook: load standard mapping + KPI library reactively
+function useKpiResolver(groupAccounts) {
+  const standard = useMemo(() => detectStandard(groupAccounts), [groupAccounts]);
+  const [state, setState] = useState({
+    kpiList: [],
+    ccTagToCodes: new Map(),
+    resolveCcTag: () => null,
+    standard: null,
+    ready: false,
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!standard) { setState(s => ({ ...s, ready: true })); return; }
+    setState(s => ({ ...s, ready: false }));
+    Promise.all([loadStandardMapping(standard, groupAccounts), loadKpiLibrary()])
+      .then(([mapping, kpiList]) => {
+        if (cancelled) return;
+        setState({
+          kpiList,
+          ccTagToCodes: mapping?.ccTagToCodes ?? new Map(),
+          resolveCcTag: mapping?.resolveCcTag ?? (() => null),
+          standard,
+          ready: true,
+        });
+      })
+      .catch(e => {
+        if (cancelled) return;
+        console.error("[DimResolver] load failed:", e);
+        setState(s => ({ ...s, ready: true }));
+      });
+    return () => { cancelled = true; };
+  }, [standard, groupAccounts]);
+
+  return state;
+}
+
+// Pivot helpers
+function pivotSum(pivot, codes) {
+  if (!codes || codes.length === 0) return 0;
+  let total = 0;
+  codes.forEach(code => { total += (pivot.get(code) ?? 0); });
+  return total;
+}
+
+// Evaluator that understands cc/ref/op/fn/manual/text formula nodes.
+// `pivot` here is a flat Map<accountCode, number> (for one specific dim col).
+function evalFormulaWithCcTags(node, pivot, cache, kpiList, ccTagToCodes, resolveCcTag) {
+  if (!node) return 0;
+  switch (node.type) {
+    case "manual": return Number(node.value) || 0;
+    case "op": {
+const l = evalFormulaWithCcTags(node.left,  pivot, cache, kpiList, ccTagToCodes, resolveCcTag);
+      const r = evalFormulaWithCcTags(node.right, pivot, cache, kpiList, ccTagToCodes, resolveCcTag);
+      if (node.op === "+") return l + r;
+      if (node.op === "-") return l - r;
+      if (node.op === "*") return l * r;
+      if (node.op === "/") return r === 0 ? null : l / r;
+      return 0;
+    }
+    case "fn": {
+const a = evalFormulaWithCcTags(node.arg, pivot, cache, kpiList, ccTagToCodes, resolveCcTag);
+      if (a === null) return null;
+      if (node.fn === "abs") return Math.abs(a);
+      if (node.fn === "neg") return -a;
+      if (node.fn === "pct") return a * 100;
+      return a;
+    }
+    case "ref": {
+      if (cache.has(node.kpiId)) return cache.get(node.kpiId);
+      const ref = kpiList.find(k => k.id === node.kpiId);
+      if (!ref) return 0;
+const val = evalFormulaWithCcTags(ref.formula, pivot, cache, kpiList, ccTagToCodes, resolveCcTag);
+      cache.set(node.kpiId, val);
+      return val;
+    }
+    case "text": {
+      if (!node.expression || !node.variables) return 0;
+      try {
+        let expr = node.expression;
+        Object.entries(node.variables).forEach(([letter, varNode]) => {
+const v = varNode ? evalFormulaWithCcTags(varNode, pivot, cache, kpiList, ccTagToCodes, resolveCcTag) : 0;
+          expr = expr.replaceAll(letter, `(${v ?? 0})`);
+        });
+        return Function(`"use strict"; return (${expr})`)() ?? 0;
+      } catch { return null; }
+    }
+case "cc": {
+      // Two-pass approach:
+      //   1) Sum the precomputed account codes that we already know belong to
+      //      this cc_tag (via the taxonomy).
+      //   2) For any account in the pivot that we DON'T have an entry for in
+      //      ccTagToCodes (typically posting codes the journal uses but the
+      //      taxonomy doesn't list directly), resolve them on the fly by
+      //      walking up to a parent that carries a cc_tag.
+      const knownCodes = ccTagToCodes.get(node.tag) ?? [];
+      const knownSet = new Set(knownCodes);
+      let total = 0;
+      // Sum knownCodes that exist in the pivot
+      for (const code of knownCodes) {
+        total += pivot.get(code) ?? 0;
+      }
+      // Add unknown codes that resolve to this cc_tag
+      if (resolveCcTag) {
+        pivot.forEach((val, code) => {
+          if (knownSet.has(code)) return; // already counted above
+          const tag = resolveCcTag(code);
+          if (tag === node.tag) total += val;
+        });
+      }
+      // Sign convention: -sum (revenue positive in journal flips here)
+      return -total;
+    }
+    default: return 0;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// END KPI RESOLVER
+// ════════════════════════════════════════════════════════════════════════════
+
 const MONTHS = [
   { value: 1, label: "January" }, { value: 2, label: "February" },
   { value: 3, label: "March" }, { value: 4, label: "April" },
@@ -19,6 +248,18 @@ function fmtAmt(n) {
   const num = typeof n === "number" ? n : Number(n);
   if (isNaN(num) || num === 0) return "—";
   return num.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// Parses the API's Dimensions field which is a string like "Group:Code" or
+// "Group1:Code1||Group2:Code2" when a transaction is tagged with multiple dimensions.
+// Returns an array of [group, code] tuples.
+function parseDimensions(raw) {
+  if (!raw || typeof raw !== "string") return [];
+  return raw.split("||").map(s => s.trim()).filter(Boolean).map(pair => {
+    const idx = pair.indexOf(":");
+    if (idx === -1) return null;
+    return [pair.slice(0, idx).trim(), pair.slice(idx + 1).trim()];
+  }).filter(Boolean);
 }
 
 function parseAmt(val) {
@@ -70,20 +311,36 @@ function buildTree(accounts) {
   const sorted = [...normalized].sort(pgcSort);
   const map = new Map();
   sorted.forEach(a => map.set(a.AccountCode, { ...a, children: [] }));
+
+  // Detect chart type: PGC uses `.S`-suffixed summary accounts; Danish/numeric
+  // standards just have a hierarchy of numeric codes where any account can have
+  // children. The two need different attachment rules.
+  const hasPgcSummaries = sorted.some(a => /\.S$/i.test(a.AccountCode));
+
   const roots = [];
   sorted.forEach(a => {
     const parent = a.SumAccountCode ? map.get(a.SumAccountCode) : null;
-    if (parent && !/\.S$/i.test(parent.AccountCode)) {
+
+    // Attach to parent when:
+    // - PGC: parent must NOT be a `.S` summary (PGC quirk: `.S` siblings, not parents)
+    // - Numeric / Danish: any existing parent in the map is valid
+    const canAttach = parent && (hasPgcSummaries ? !/\.S$/i.test(parent.AccountCode) : true);
+
+    if (canAttach) {
       parent.children.push(map.get(a.AccountCode));
     } else {
-      const isNum = /^\d/.test(a.AccountCode);
-      const missing = a.SumAccountCode && !map.has(a.SumAccountCode);
-      if (!(isNum && missing)) roots.push(map.get(a.AccountCode));
+      // PGC-only filter: drop numeric leaves whose `.S` parent isn't in the map
+      // (those are orphans of an unloaded section). Doesn't apply to non-PGC.
+      if (hasPgcSummaries) {
+        const isNum   = /^\d/.test(a.AccountCode);
+        const missing = a.SumAccountCode && !map.has(a.SumAccountCode);
+        if (isNum && missing) return;
+      }
+      roots.push(map.get(a.AccountCode));
     }
   });
   return roots;
 }
-
 function FilterPill({ label, value, onChange, options }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -253,18 +510,10 @@ function AccountsTab({ data }) {
   );
 }
 
-const PGC_LINES = [
-  { key: "all",        label: "All",            test: () => true },
-  { key: "revenue",    label: "Revenue",         test: c => c.startsWith("7") },
-  { key: "costs",      label: "Costs",           test: c => c.startsWith("6") },
-  { key: "gross",      label: "Gross Profit",    test: c => c.startsWith("6") || c.startsWith("7") },
-  { key: "personnel",  label: "Personnel",       test: c => c.startsWith("64") },
-  { key: "da",         label: "D&A",             test: c => c.startsWith("68") },
-  { key: "financial",  label: "Financial",       test: c => c.startsWith("66") || c.startsWith("76") },
-];
+
 
 /* ── Pivot Tab ────────────────────────────────────────────── */
-function PivotTab({ data, dimensions, groupAccounts = [], onShowAccounts, selGroup, compareMode, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "" }) {
+function PivotTab({ data, dimensions, groupAccounts = [], onShowAccounts, selGroup, compareMode, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null }) {
   const header2Style = useTypo("header2");
     const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
@@ -285,28 +534,20 @@ const [expandedSet, setExpandedSet] = useState(new Set());
     });
   }, []);
 
-  // Dims for selected group
-  const groupDimCodes = useMemo(() => {
-    if (!selGroup) return null; // null = all dims
-    return new Set(
-      dimensions
-        .filter(d => (d.DimensionGroup ?? d.dimensionGroup ?? "") === selGroup)
-        .map(d => d.DimensionCode ?? d.dimensionCode ?? "")
-        .filter(Boolean)
-    );
-  }, [dimensions, selGroup]);
-
 // Build pivot from data
   const { tree, accountMap: allAccountMap, dimCols, pivot } = useMemo(() => {
     if (!data.length) return { tree: [], accountMap: new Map(), dimCols: [], pivot: new Map() };
 
-    // Filter rows by selected group
-    const rows = groupDimCodes
-      ? data.filter(r => {
-          const dc = r.DimensionCode ?? r.dimensionCode ?? "";
-          return !dc || groupDimCodes.has(dc);
-        })
-      : data;
+    // Filter rows by selected group: keep rows that have AT LEAST ONE dim
+    // in the selected group, OR rows with no dim at all (totals).
+    const rows = !selGroup
+      ? data
+      : data.filter(r => {
+          const pairs = parseDimensions(r.Dimensions);
+          if (pairs.length === 0) return true; // untagged rows are always included
+          return pairs.some(([group]) => group === selGroup);
+        });
+
 // Get codes that actually have data in this period (with their names from data rows)
     const dataAccountInfo = new Map();
     rows.forEach(r => {
@@ -369,13 +610,20 @@ const [expandedSet, setExpandedSet] = useState(new Set());
 console.log("[TREE DEBUG] accounts:", [...accountMap.values()].slice(0, 5));
 console.log("[TREE DEBUG] tree roots:", tree.length, "first:", tree[0]);
 console.log("[TREE DEBUG] sample with children:", tree.find(n => n.children?.length > 0));
-    // Unique dim columns
-    const dimMap = new Map();
+// Unique dim columns — derived from the journal's Dimensions field.
+    // When a Dim Group is selected, we restrict columns to that group; otherwise
+    // we show ALL groups together (each dim code as its own column).
+    const dimMap = new Map();  // code → { code, name, group }
     rows.forEach(r => {
-      const dc = r.DimensionCode ?? r.dimensionCode ?? null;
-      const dn = r.DimensionName ?? r.dimensionName ?? null;
-      const key = dc ?? "__none__";
-      if (!dimMap.has(key)) dimMap.set(key, { code: dc, name: dn || dc || "No Dimension" });
+      const pairs = parseDimensions(r.Dimensions);
+      if (pairs.length === 0) {
+        if (!dimMap.has("__none__")) dimMap.set("__none__", { code: null, name: "No Dimension", group: null });
+        return;
+      }
+      for (const [group, code] of pairs) {
+        if (selGroup && group !== selGroup) continue;
+        if (!dimMap.has(code)) dimMap.set(code, { code, name: code, group });
+      }
     });
     const dimCols = [...dimMap.values()].sort((a, b) => {
       if (!a.code && b.code) return 1;
@@ -383,24 +631,34 @@ console.log("[TREE DEBUG] sample with children:", tree.find(n => n.children?.len
       return (a.name ?? "").localeCompare(b.name ?? "");
     });
 
-    // Build pivot
+    // Build pivot: for each row, for each dim it carries (matching the selected
+    // group, if any), add the amount into the (account, dimCode) cell.
     const pivot = new Map();
     rows.forEach(r => {
       const ac  = r.AccountCode ?? r.accountCode ?? "";
-      const dc  = r.DimensionCode ?? r.dimensionCode ?? null;
-      const key = dc ?? "__none__";
       const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? r.AmountPeriod ?? r.amountPeriod ?? 0);
-const lacCheck = r.LocalAccountCode ?? r.localAccountCode ?? "";
+      const lacCheck = r.LocalAccountCode ?? r.localAccountCode ?? "";
       const acType = r.AccountType ?? r.accountType ?? "";
       if (!ac) return;
       if (lacCheck && lacCheck !== "—") return;
-      if (acType && acType !== "P/L") return; // only P/L summary rows
-      if (!pivot.has(ac)) pivot.set(ac, new Map());
-      pivot.get(ac).set(key, (pivot.get(ac).get(key) ?? 0) + amt);
+      if (acType && acType !== "P/L") return;
+
+      const pairs = parseDimensions(r.Dimensions);
+      if (pairs.length === 0) {
+        if (!pivot.has(ac)) pivot.set(ac, new Map());
+        pivot.get(ac).set("__none__", (pivot.get(ac).get("__none__") ?? 0) + amt);
+        return;
+      }
+
+      for (const [group, code] of pairs) {
+        if (selGroup && group !== selGroup) continue;
+        if (!pivot.has(ac)) pivot.set(ac, new Map());
+        pivot.get(ac).set(code, (pivot.get(ac).get(code) ?? 0) + amt);
+      }
     });
 
 return { tree, accountMap, dimCols, pivot };
-  }, [data, groupDimCodes, groupAccounts]);
+  }, [data, selGroup, groupAccounts]);
 
   const expandAll = useCallback(() => {
     setExpandedSet(new Set([...allAccountMap.keys()]));
@@ -438,19 +696,28 @@ const buildPivot = useCallback((rows) => {
     const p = new Map();
     rows.forEach(r => {
       const ac  = r.AccountCode ?? r.accountCode ?? "";
-      const dc  = r.DimensionCode ?? r.dimensionCode ?? null;
-      const key = dc ?? "__none__";
       const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
       const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
       const acType = r.AccountType ?? r.accountType ?? "";
       if (!ac) return;
       if (lac && lac !== "—") return;
       if (acType && acType !== "P/L") return;
-      if (!p.has(ac)) p.set(ac, new Map());
-      p.get(ac).set(key, (p.get(ac).get(key) ?? 0) + amt);
+
+      const pairs = parseDimensions(r.Dimensions);
+      if (pairs.length === 0) {
+        if (!p.has(ac)) p.set(ac, new Map());
+        p.get(ac).set("__none__", (p.get(ac).get("__none__") ?? 0) + amt);
+        return;
+      }
+
+      for (const [group, code] of pairs) {
+        if (selGroup && group !== selGroup) continue;
+        if (!p.has(ac)) p.set(ac, new Map());
+        p.get(ac).set(code, (p.get(ac).get(code) ?? 0) + amt);
+      }
     });
     return p;
-  }, []);
+  }, [selGroup]);
 
 const pivot2 = useMemo(() => buildPivot(cmp2Data), [cmp2Data, buildPivot]);
   const pivot3 = useMemo(() => buildPivot(cmp3Data), [cmp3Data, buildPivot]);
@@ -512,9 +779,53 @@ useEffect(() => {
   const cmpMonths     = MONTHS.map(m => ({ value: String(m.value), label: m.label }));
   const cmpStructures = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
   const cmpCompanies  = [...new Set(companies.map(c => typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : String(c)).filter(Boolean))].map(v => ({ value: v, label: v }));
-
-  const ACOL = 300, DCOL = 140, TCOL = 150;
+const ACOL = 300, DCOL = 140, TCOL = 150;
   const totalWidth = ACOL + dimCols.length * DCOL + TCOL;
+
+  // Compute which KPI lines actually produce data given the current 3 pivots
+  // and dim columns. Lines that evaluate to 0 across every dim col (in every
+  // scenario) are dropped from the dropdown. We always keep "All".
+  const lineOptions = useMemo(() => {
+    const visibleDims = dimCols.filter(d => !!d.code);
+    const evalKpiAcrossDims = (kpi, p, pPrev) => {
+      // Returns true as soon as any dim column has a non-zero result.
+      for (const dim of visibleDims) {
+        const dk = dim.code;
+        const flat = new Map();
+        p.forEach((dimMap, acCode) => {
+          const ytd = dimMap.get(dk) ?? 0;
+          if (viewMode === "monthly" && pPrev) {
+            const prevYtd = pPrev.get(acCode)?.get(dk) ?? 0;
+            flat.set(acCode, ytd - prevYtd);
+          } else {
+            flat.set(acCode, ytd);
+          }
+        });
+        const cache = new Map();
+const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes, resolveCcTag);
+        if (v !== null && !isNaN(v) && Math.abs(v) > 0.005) return true;
+      }
+      return false;
+    };
+
+    const opts = [{ value: "all", label: "All" }];
+    kpiList
+      .filter(k => k.format !== "percent")
+      .forEach(k => {
+        const has = evalKpiAcrossDims(k, pivot, prevPivot)
+                 || evalKpiAcrossDims(k, pivot2, prevPivot2)
+                 || evalKpiAcrossDims(k, pivot3, prevPivot3);
+        if (has) opts.push({ value: k.id, label: k.label });
+      });
+    return opts;
+ }, [kpiList, ccTagToCodes, resolveCcTag, dimCols, viewMode, pivot, prevPivot, pivot2, prevPivot2, pivot3, prevPivot3]);
+
+  // If the selected line was filtered out (no data anymore), reset to "all"
+  useEffect(() => {
+    if (line !== "all" && !lineOptions.some(o => o.value === line)) {
+      setLine("all");
+    }
+  }, [lineOptions, line]);
 
 if (compareMode) {
     return (
@@ -558,9 +869,14 @@ if (compareMode) {
             </div>
           </div>
 
-          {/* Line filter — applies to all */}
+{/* Line filter — applies to all. Uses cc_tag KPIs from Supabase.
+              Only KPIs that produce a non-zero value in at least one of the
+              visible dim columns (any of the 3 scenarios) are shown — empty
+              lines are hidden so the dropdown stays manageable. */}
           <div className="bg-white rounded-2xl border border-gray-100 shadow-sm flex items-center justify-center flex-shrink-0 self-stretch w-[20vw]">
-            <FilterPill label="Line" value={line} onChange={setLine} options={PGC_LINES.map(l => ({ value: l.key, label: l.label }))} />
+            <FilterPill label="Line" value={line}
+              onChange={setLine}
+              options={lineOptions} />
           </div>
         </div>
 
@@ -596,28 +912,60 @@ if (compareMode) {
                 </tr>
               </thead>
 <tbody>
-                {dimCols.filter(dim => !!dim.code).map(dim => {
+{dimCols.filter(dim => !!dim.code).map(dim => {
                   const dimKey = dim.code ?? "__none__";
 
-                  const lineDef = PGC_LINES.find(l => l.key === line) ?? PGC_LINES[0];
-                  const sumPivot = (p, pPrev) => {
-                    let total = 0;
+                  // Build a flat Map<accountCode, number> for THIS dim col,
+                  // applying the monthly delta if needed, then evaluate the
+                  // selected KPI's formula against it.
+                  const flattenForDim = (p, pPrev) => {
+                    const flat = new Map();
                     p.forEach((dimMap, acCode) => {
-                      if (lineDef.test(acCode)) {
-                        const ytd = dimMap.get(dimKey) ?? 0;
-                        if (viewMode === "monthly" && pPrev) {
-                          const prevYtd = pPrev.get(acCode)?.get(dimKey) ?? 0;
-                          total += ytd - prevYtd;
-                        } else {
-                          total += ytd;
-                        }
+                      const ytd = dimMap.get(dimKey) ?? 0;
+                      if (viewMode === "monthly" && pPrev) {
+                        const prevYtd = pPrev.get(acCode)?.get(dimKey) ?? 0;
+                        flat.set(acCode, ytd - prevYtd);
+                      } else {
+                        flat.set(acCode, ytd);
                       }
                     });
-                    return total;
+                    return flat;
                   };
-                  const v1 = sumPivot(pivot, prevPivot);
-                  const v2 = sumPivot(pivot2, prevPivot2);
-                  const v3 = sumPivot(pivot3, prevPivot3);
+const evalLine = (p, pPrev, label) => {
+                    const flat = flattenForDim(p, pPrev);
+                    if (line === "all") {
+                      let total = 0;
+                      flat.forEach(v => { total += v; });
+                      return total;
+                    }
+                    const kpi = kpiList.find(k => k.id === line);
+                    if (!kpi) return 0;
+if (label === "Standard" && kpi.id === "revenue") {
+                      const flatNonZero = [...flat.entries()].filter(([, v]) => Math.abs(v) > 0.005);
+                      if (flatNonZero.length > 0) {
+                        const flatCodes = flatNonZero.map(([code]) => code);
+                        const revenueCodes = ccTagToCodes.get("CC_01-Revenue") ?? [];
+                        const flatSet = new Set(flatCodes);
+                        const revSet  = new Set(revenueCodes);
+                        const intersection = flatCodes.filter(c => revSet.has(c));
+                        const inFlatNotInCcTag = flatCodes.filter(c => !revSet.has(c));
+                        console.log(`[Dim ${dimKey}] flat codes:`, flatCodes);
+                        console.log(`[Dim ${dimKey}] CC_01-Revenue codes (sample):`, revenueCodes.slice(0, 15));
+                        console.log(`[Dim ${dimKey}] intersection:`, intersection);
+                        console.log(`[Dim ${dimKey}] in flat NOT in cc_tag:`, inFlatNotInCcTag);
+                      }
+                    }
+const cache = new Map();
+                    const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes, resolveCcTag);
+                    if (dimKey === visibleDims[0]?.code && label) {
+                      console.log(`[Dim ${dimKey} / ${label}] result=${v}`);
+                    }
+                    return (v === null || isNaN(v)) ? 0 : v;
+                  };
+                  const visibleDims = dimCols.filter(d => !!d.code);
+                  const v1 = evalLine(pivot,  prevPivot,  "Standard");
+                  const v2 = evalLine(pivot2, prevPivot2, "Cmp1");
+                  const v3 = evalLine(pivot3, prevPivot3, "Cmp2");
                   const valColor = v => v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : body1Style?.color ?? "#000000";
                   const devColor = v => v === 0 ? "#D1D5DB" : v >= 0 ? "#059669" : "#EF4444";
                   return (
@@ -649,28 +997,40 @@ if (compareMode) {
                     </tr>
                   );
                 })}
-                {(() => {
-                  const lineDef = PGC_LINES.find(l => l.key === line) ?? PGC_LINES[0];
-                  const sumAll = (p, pPrev) => {
+{(() => {
+                  // Total row = sum of the line value across every dim column.
+                  // We build one flat pivot per dim col, evaluate the KPI on
+                  // each, and sum the results.
+                  const evalAll = (p, pPrev) => {
                     let total = 0;
-                    p.forEach((dimMap, acCode) => {
-                      if (lineDef.test(acCode)) {
-                        dimCols.filter(d => !!d.code).forEach(d => {
-                          const dk = d.code;
-                          const ytd = dimMap.get(dk) ?? 0;
-                          if (viewMode === "monthly" && pPrev) {
-                            total += ytd - (pPrev.get(acCode)?.get(dk) ?? 0);
-                          } else {
-                            total += ytd;
-                          }
-                        });
+                    dimCols.filter(d => !!d.code).forEach(d => {
+                      const dk = d.code;
+                      const flat = new Map();
+                      p.forEach((dimMap, acCode) => {
+                        const ytd = dimMap.get(dk) ?? 0;
+                        if (viewMode === "monthly" && pPrev) {
+                          const prevYtd = pPrev.get(acCode)?.get(dk) ?? 0;
+                          flat.set(acCode, ytd - prevYtd);
+                        } else {
+                          flat.set(acCode, ytd);
+                        }
+                      });
+                      if (line === "all") {
+                        flat.forEach(v => { total += v; });
+                      } else {
+                        const kpi = kpiList.find(k => k.id === line);
+                        if (kpi) {
+const cache = new Map();
+                          const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes, resolveCcTag);
+                          if (v !== null && !isNaN(v)) total += v;
+                        }
                       }
                     });
                     return total;
                   };
-                  const t1 = sumAll(pivot, prevPivot);
-                  const t2 = sumAll(pivot2, prevPivot2);
-                  const t3 = sumAll(pivot3, prevPivot3);
+                  const t1 = evalAll(pivot,  prevPivot);
+                  const t2 = evalAll(pivot2, prevPivot2);
+                  const t3 = evalAll(pivot3, prevPivot3);
                   const valColor = v => v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : body1Style?.color ?? "#000000";
                   const devColor = v => v === 0 ? "#D1D5DB" : v >= 0 ? "#059669" : "#EF4444";
                   return (
@@ -807,7 +1167,7 @@ const [loading,   setLoading]   = useState(true);
 
 const probedRef = useRef({ source: "", structure: "", company: "" });
 // Load group accounts hierarchy (needed for drill-down tree)
-  const [groupAccountsLocal, setGroupAccountsLocal] = useState([]);
+const [groupAccountsLocal, setGroupAccountsLocal] = useState([]);
   useEffect(() => {
     if (!token) return;
     fetch(`${BASE_URL}/v2/group-accounts`, {
@@ -822,6 +1182,9 @@ const probedRef = useRef({ source: "", structure: "", company: "" });
       })
       .catch(e => console.error("group-accounts fetch failed:", e));
   }, [token]);
+
+// Resolve KPIs against the current accounting standard
+  const { kpiList, ccTagToCodes, resolveCcTag } = useKpiResolver(groupAccountsLocal);
   useEffect(() => {
     if (!token) return;
     fetch(`${BASE_URL}/v2/periods`, {
@@ -934,15 +1297,17 @@ useEffect(() => {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  const dimGroups = useMemo(() => {
+// Derive dim groups from the journal's `Dimensions` field — more reliable
+// than the /v2/dimensions endpoint because we know the data is there if we
+// see it here.
+const dimGroups = useMemo(() => {
     const seen = new Set();
-    const groups = [];
-    dimensions.forEach(d => {
-      const g = d.DimensionGroup ?? d.dimensionGroup ?? "";
-      if (g && !seen.has(g)) { seen.add(g); groups.push(g); }
+    rawData.forEach(r => {
+      const pairs = parseDimensions(r.Dimensions);
+      pairs.forEach(([group]) => { if (group) seen.add(group); });
     });
-    return groups.sort();
-  }, [dimensions]);
+    return [...seen].sort();
+  }, [rawData]);
 
   const sourceOpts    = [...new Set(sources.map(s  => typeof s === "object" ? (s.source    ?? s.Source    ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
   const structureOpts = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
@@ -957,7 +1322,7 @@ useEffect(() => {
           <div className="w-1.5 h-10 rounded-full" style={{ background: colors.primary }} />
           <div>
            <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Individual</p>
-            <h1 style={{ ...header1Style, lineHeight: 1 }}>Dimensiones</h1>
+            <h1 style={{ ...header1Style, lineHeight: 1 }}>Dimensions</h1>
           </div>
         </div>
 
@@ -1010,7 +1375,7 @@ useEffect(() => {
           </div>
         </div>
 ) : (
-   <PivotTab data={rawData} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroup={selGroup} dimGroups={dimGroups} compareMode={compareMode} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} />
+ <PivotTab data={rawData} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroup={selGroup} dimGroups={dimGroups} compareMode={compareMode} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} kpiList={kpiList} ccTagToCodes={ccTagToCodes} resolveCcTag={resolveCcTag} />
       )}
 
       {showAccounts && (

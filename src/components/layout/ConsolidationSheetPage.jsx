@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { ChevronDown, ChevronRight, Loader2, RefreshCw, Maximize2, Minimize2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, RefreshCw, Maximize2, Minimize2, GitMerge } from "lucide-react";
 import { useTypo, useSettings } from "./SettingsContext";
 const BASE = "https://api.konsolidator.com/v2";
 
@@ -168,15 +168,15 @@ const elimTotal = consTotal - contribSum;
     const pct = compare !== 0 ? (delta / Math.abs(compare)) * 100 : null;
     const baseColor = compare === 0 ? "#D1D5DB" : compare < 0 ? "#EF4444" : "#000000";
     const deltaColor = delta === 0 ? "#D1D5DB" : delta < 0 ? "#EF4444" : "#10B981";
-    return [
+   return [
       <td key={`${key}-cmp`}
         className="px-3 py-2.5 text-center whitespace-nowrap"
-        style={{ minWidth: 110, backgroundColor: "#fffbf0", borderLeft: "2px solid rgba(251,191,36,0.25)", ...rowStyle, color: baseColor }}>
+        style={{ minWidth: 110, backgroundColor: "#fafafa", borderLeft: "1px solid #e5e7eb", ...rowStyle, color: baseColor }}>
         {fmt(compare)}
       </td>,
       <td key={`${key}-delta`}
         className="px-3 py-2.5 text-center whitespace-nowrap"
-        style={{ minWidth: 130, backgroundColor: "#fffbf0", borderRight: "2px solid rgba(251,191,36,0.25)", ...rowStyle, color: deltaColor }}>
+        style={{ minWidth: 130, backgroundColor: "#fafafa", borderRight: "1px solid #e5e7eb", ...rowStyle, color: deltaColor }}>
         {delta === 0 ? "—" : (
           <span className="flex flex-col items-center gap-0.5 leading-tight">
             <span>{(delta > 0 ? "+" : "") + fmt(delta)}</span>
@@ -664,9 +664,39 @@ const cmpPivot = useMemo(() => {
 
   const getLegal = co => companies.find(c => c.CompanyShortName === co)?.CompanyLegalName || co;
 
-  return (
+return (
     <div className="flex flex-col gap-4 h-full min-h-0">
-
+<style>{`
+        /* Outer wrapper clips the vertical scrollbar by being narrower than the inner scroller */
+        .consolidation-scroll-outer {
+          position: relative;
+          overflow: hidden;
+        }
+        .consolidation-scroll {
+          overflow: auto;
+          height: 100%;
+          /* Push the vertical scrollbar outside the visible area */
+          padding-right: 16px;
+          margin-right: -16px;
+          /* Firefox */
+          scrollbar-width: thin;
+          scrollbar-color: #94a3b8 #f1f5f9;
+        }
+        .consolidation-scroll::-webkit-scrollbar {
+          height: 10px;
+          width: 10px;
+        }
+        .consolidation-scroll::-webkit-scrollbar-thumb {
+          background: #94a3b8;
+          border-radius: 5px;
+        }
+        .consolidation-scroll::-webkit-scrollbar-thumb:hover {
+          background: #64748b;
+        }
+        .consolidation-scroll::-webkit-scrollbar-track {
+          background: #f1f5f9;
+        }
+      `}</style>
 {/* ── Header ── */}
       <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
         <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -705,7 +735,7 @@ const cmpPivot = useMemo(() => {
 </div>
 <div className="ml-auto flex items-center gap-3 flex-shrink-0 mr-6">
           {loading && <Loader2 size={13} className="animate-spin text-[#1a2f8a]" />}
-          <button
+<button
             onClick={() => {
               if (!compareMode) {
                 setCmpYear(year); setCmpMonth(month);
@@ -713,12 +743,13 @@ const cmpPivot = useMemo(() => {
               }
               setCompareMode(c => !c);
             }}
-            className="flex items-center gap-1 text-[10px] px-3 py-1.5 rounded-2xl transition-all font-bold uppercase tracking-widest"
+            title={compareMode ? "Disable comparison" : "Compare with another period"}
+            className="flex items-center justify-center w-9 h-9 rounded-xl transition-all hover:scale-110 hover:shadow-md"
             style={{
               backgroundColor: compareMode ? colors.primary : `${colors.primary}15`,
               color: compareMode ? "white" : colors.primary,
             }}>
-            Compare
+            <GitMerge size={16} />
           </button>
           <button className="transition-all hover:opacity-80 hover:scale-105" title="Export Excel">
             <img src="https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png" width="44" height="36" alt="Excel" />
@@ -733,9 +764,9 @@ const cmpPivot = useMemo(() => {
       {compareMode && (
         <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
           <div className="flex items-center gap-1.5 flex-shrink-0">
-            <div className="w-1.5 h-8 rounded-full" style={{ backgroundColor: "#FCD34D" }} />
+            <div className="w-1.5 h-8 rounded-full bg-gray-300" />
             <p className="text-[10px] font-black uppercase tracking-widest leading-none" style={{ color: "#0c1d55" }}>
-              Compare<br/>Period
+              Compare Period
             </p>
           </div>
           <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
@@ -750,7 +781,7 @@ const cmpPivot = useMemo(() => {
             <FilterPill label="Structure" value={cmpStructure} onChange={setCmpStructure}
               options={structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s }))}
               filterStyle={filterStyle} colors={colors} />
-            {cmpLoading && <Loader2 size={13} className="animate-spin text-amber-400 flex-shrink-0" />}
+          {cmpLoading && <Loader2 size={13} className="animate-spin text-gray-400 flex-shrink-0" />}
           </div>
         </div>
       )}
@@ -767,8 +798,9 @@ const cmpPivot = useMemo(() => {
               <div className="flex items-center justify-center flex-1 text-xs text-gray-300 font-black uppercase tracking-widest">
                 No data for selected filters
               </div>
-            ) : (
-<div className="flex-1 min-h-0" style={{ overflowX: "auto", overflowY: "auto" }}>
+) : (
+<div className="consolidation-scroll-outer flex-1 min-h-0" style={{ minWidth: 0 }}>
+              <div className="consolidation-scroll" style={{ minWidth: 0 }}>
                 <table className="text-xs border-collapse" style={{ borderSpacing: 0, width: "max-content", minWidth: "100%", tableLayout: "auto" }}>
 <thead className="sticky top-0 z-30">
                     {/* ── Row 1: overarching group headers ── */}
@@ -804,7 +836,7 @@ const cmpPivot = useMemo(() => {
 </th>
                     </tr>
 {/* ── Row 2: individual column headers ── */}
-<tr style={{ borderBottom: "2px solid rgba(255,255,255,0.1)" }}>
+<tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
 <th className="px-4 py-2.5 text-center border-l border-white/20" style={{ minWidth: 100, backgroundColor: colors.primary }}>
     <div className="flex flex-col items-center gap-0.5">
       <span style={underscore1Style}>{topParent || "Total"}</span>
@@ -813,13 +845,13 @@ const cmpPivot = useMemo(() => {
   </th>
   {compareMode && (
     <>
-      <th className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "2px solid rgba(251,191,36,0.35)" }}>
+      <th className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
         <div className="flex flex-col items-center gap-0.5">
           <span style={{ ...underscore1Style, color: "#Ffffff" }}>Compare</span>
           <span style={underscore2Style}>&nbsp;</span>
         </div>
       </th>
-      <th className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "2px solid rgba(251,191,36,0.35)" }}>
+      <th className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "1px solid rgba(255,255,255,0.15)" }}>
         <div className="flex flex-col items-center gap-0.5">
           <span style={{ ...underscore1Style, color: "#Ffffff" }}>Δ</span>
           <span style={underscore2Style}>&nbsp;</span>
@@ -839,13 +871,13 @@ const cmpPivot = useMemo(() => {
   </th>
   {compareMode && (
     <>
-      <th className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "2px solid rgba(251,191,36,0.35)" }}>
+      <th className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
         <div className="flex flex-col items-center gap-0.5">
           <span style={{ ...underscore1Style, color: "#Ffffff" }}>Compare</span>
           <span style={underscore2Style}>&nbsp;</span>
         </div>
       </th>
-      <th className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "2px solid rgba(251,191,36,0.35)" }}>
+      <th className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "1px solid rgba(255,255,255,0.15)" }}>
         <div className="flex flex-col items-center gap-0.5">
           <span style={{ ...underscore1Style, color: "#Ffffff" }}>Δ</span>
           <span style={underscore2Style}>&nbsp;</span>
@@ -878,13 +910,13 @@ const cmpPivot = useMemo(() => {
   </th>
   {compareMode && (
     <>
-      <th className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "2px solid rgba(251,191,36,0.35)" }}>
+      <th className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
         <div className="flex flex-col items-center gap-0.5">
           <span style={{ ...underscore1Style, color: "#Ffffff" }}>Compare</span>
           <span style={underscore2Style}>&nbsp;</span>
         </div>
       </th>
-      <th className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "2px solid rgba(251,191,36,0.35)" }}>
+      <th className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "1px solid rgba(255,255,255,0.15)" }}>
         <div className="flex flex-col items-center gap-0.5">
           <span style={{ ...underscore1Style, color: "#Ffffff" }}>Δ</span>
           <span style={underscore2Style}>&nbsp;</span>
@@ -902,15 +934,15 @@ const cmpPivot = useMemo(() => {
       </div>
     </th>,
     ...(compareMode ? [
-      <th key={`${c}-cmp`} className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "2px solid rgba(251,191,36,0.35)" }}>
+<th key={`${c}-cmp`} className="px-3 py-2.5 text-center" style={{ minWidth: 110,backgroundColor: "#0a1547", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
         <div className="flex flex-col items-center gap-0.5">
-          <span style={{ ...underscore1Style, color: "#Ffffff" }}>Compare</span>
+          <span style={{ ...underscore1Style, opacity: 0.85, position: "relative" }}>Compare</span>
           <span style={underscore2Style}>&nbsp;</span>
         </div>
       </th>,
-      <th key={`${c}-delta`} className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "2px solid rgba(251,191,36,0.35)" }}>
+      <th key={`${c}-delta`} className="px-3 py-2.5 text-center" style={{ minWidth: 130,backgroundColor: "#0a1547", borderRight: "1px solid rgba(255,255,255,0.15)" }}>
         <div className="flex flex-col items-center gap-0.5">
-          <span style={{ ...underscore1Style, color: "#Ffffff" }}>Δ</span>
+          <span style={{ ...underscore1Style, opacity: 0.85, position: "relative" }}>Δ</span>
           <span style={underscore2Style}>&nbsp;</span>
         </div>
       </th>,
@@ -930,8 +962,9 @@ const cmpPivot = useMemo(() => {
     compareMode={compareMode} cmpPivot={cmpPivot}
     body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style} />
 ))}
-                  </tbody>
+</tbody>
                 </table>
+              </div>
               </div>
             )}
           </div>
