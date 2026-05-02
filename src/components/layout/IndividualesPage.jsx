@@ -10,6 +10,27 @@ import MappingsModal from "./Mappings.jsx";
 const BASE_URL = "";
 
 /* ═══════════════════════════════════════════════════════════════
+   DIMENSION PARSING — Konsolidator API Dimensions field
+   Format: "Grupo1:Valor1||Grupo2:Valor2||Grupo3:Valor3"
+═══════════════════════════════════════════════════════════════ */
+function parseDimensionsField(str) {
+  if (!str || typeof str !== "string") return [];
+  return str.split("||").map(pair => {
+    const idx = pair.indexOf(":");
+    if (idx === -1) return null;
+    return { group: pair.slice(0, idx).trim(), code: pair.slice(idx + 1).trim() };
+  }).filter(Boolean);
+}
+
+function rowMatchesDim(r, group, code) {
+  const raw = r.Dimensions ?? r.dimensions ?? "";
+  const dims = parseDimensionsField(raw);
+  if (!dims.length) return false;
+  if (code) return dims.some(d => d.group === group && String(d.code) === String(code));
+  return dims.some(d => d.group === group);
+}
+
+/* ═══════════════════════════════════════════════════════════════
    SHARED UTILITIES
 ═══════════════════════════════════════════════════════════════ */
 function formatCellValue(val) {
@@ -5928,7 +5949,6 @@ setPlCmpLoading(true);
     finally { setGrpLoading(false); }
   }, [headers]);
 
-  // ── AUTO-LOAD: fire all three fetches once source+structure are known ──
 useEffect(() => {
   if (upSource && upStructure && upYear && upMonth && upCompany) {
 fetchUploaded(upYear, upMonth, upSource, upStructure, upCompany);
@@ -5936,6 +5956,8 @@ fetchUploaded(upYear, upMonth, upSource, upStructure, upCompany);
     fetchJournal(upYear, upMonth, upSource, upStructure, upCompany);
   }
 }, [upSource, upStructure, upYear, upMonth, upCompany]);
+
+
 
 const fetchJournal = useCallback(async (year, month, source, structure, company) => {
   const y = year ?? upYear; const m = month ?? upMonth;
@@ -6476,22 +6498,16 @@ return (
   groupAccounts={grpData}
 uploadedAccounts={
   upDimension
-    ? upData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === upDimension)
+    ? upData.filter(r => rowMatchesDim(r, upDimGroup, upDimension))
     : upDimGroup
-      ? upData.filter(r => filteredDims.some(d => {
-          const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d);
-          return String(r.dimensionCode ?? r.DimensionCode ?? "") === v;
-        }))
+      ? upData.filter(r => rowMatchesDim(r, upDimGroup, null))
       : upData
 }
 prevUploadedAccounts={
   upDimension
-    ? prevData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === upDimension)
+    ? prevData.filter(r => rowMatchesDim(r, upDimGroup, upDimension))
     : upDimGroup
-      ? prevData.filter(r => filteredDims.some(d => {
-          const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d);
-          return String(r.dimensionCode ?? r.DimensionCode ?? "") === v;
-        }))
+      ? prevData.filter(r => rowMatchesDim(r, upDimGroup, null))
       : prevData
 }
   compareMode={compareMode}
@@ -6515,8 +6531,8 @@ prevUploadedAccounts={
     }
     setCompareMode(c => !c);
   }}
-cmpUploadedAccounts={cmpDimension ? cmpData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === cmpDimension) : cmpData}
-  cmpPrevUploadedAccounts={cmpDimension ? cmpPrevData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === cmpDimension) : cmpPrevData}
+cmpUploadedAccounts={cmpDimension ? cmpData.filter(r => rowMatchesDim(r, cmpDimGroup, cmpDimension)) : cmpDimGroup ? cmpData.filter(r => rowMatchesDim(r, cmpDimGroup, null)) : cmpData}
+  cmpPrevUploadedAccounts={cmpDimension ? cmpPrevData.filter(r => rowMatchesDim(r, cmpDimGroup, cmpDimension)) : cmpDimGroup ? cmpPrevData.filter(r => rowMatchesDim(r, cmpDimGroup, null)) : cmpPrevData}
 cmpFilters={{
     year: cmpYear,
     month: cmpMonth,
@@ -6585,14 +6601,11 @@ pgcMapping={pgcMapping ?? danishIfrsPlMapping ?? spanishIfrsEsPlMapping}
   upDimGroup={upDimGroup}
   filteredDims={filteredDims}
   groupAccounts={grpData}
-  uploadedAccounts={
+uploadedAccounts={
     upDimension
-      ? upData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === upDimension)
+      ? upData.filter(r => rowMatchesDim(r, upDimGroup, upDimension))
       : upDimGroup
-        ? upData.filter(r => filteredDims.some(d => {
-            const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d);
-            return String(r.dimensionCode ?? r.DimensionCode ?? "") === v;
-          }))
+        ? upData.filter(r => rowMatchesDim(r, upDimGroup, null))
         : upData
   }
   loading={probingPeriod || (anyLoading && (!upData.length || !grpData.length))}
