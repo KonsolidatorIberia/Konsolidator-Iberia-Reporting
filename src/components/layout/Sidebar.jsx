@@ -16,12 +16,12 @@ const NAV = [
       { key: "individual-dimensiones", label: "Dimensiones", icon: Filter   },
     ],
   },
-  {
+{
     key: "consolidated", label: "Consolidated", icon: Layers,
     children: [
       { key: "individual-contributive", label: "Contributive",        icon: PieChart  },
       { key: "consolidated-sheet",      label: "Consolidation Sheet", icon: Table     },
-      { key: "consolidated-mgmt",       label: "Consolidating Mgmt",  icon: BarChart3 },
+      { key: "consolidated-cashflow",   label: "Cash Flow",           icon: TrendingUp },
       { key: "consolidated-notes",      label: "Memory Notes",        icon: BookOpen  },
     ],
   },

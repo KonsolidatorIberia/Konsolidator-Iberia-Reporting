@@ -3267,14 +3267,10 @@ const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.valu
         </div>
       )}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden">
-<div className="bg-[#1a2f8a] px-6 py-4 flex items-center justify-between">
-  <div>
-        <p className="k-panel-title font-black text-base">PROFIT & LOSS</p>
-
-  </div>
-  {/* Hidden export trigger */}
-  <button id="__plExportTrigger" onClick={handleExportPdf} className="hidden" />
-  <button id="__plXlsxTrigger" onClick={handleExportXlsx} className="hidden" />
+{/* Hidden export trigger */}
+<button id="__plExportTrigger" onClick={handleExportPdf} className="hidden" />
+<button id="__plXlsxTrigger" onClick={handleExportXlsx} className="hidden" />
+<div style={{ display: "none" }}>
   <div className="flex items-center gap-3">
 {compareMode && (
       <button onClick={() => setFiltersOpen(o => !o)}
@@ -3442,13 +3438,94 @@ options={[{ value: "", label: "All" }, ...cmp2FilteredDims.map(d => { const v = 
 
 
 
-<div className="overflow-auto" style={{ maxHeight: !compareMode ? "calc(78.5vh)" : filtersOpen ? cmp2Enabled ? "calc(65.5vh)" : "calc(72vh)" : "calc(78.5vh)" }}>
+<div className="overflow-auto scrollbar-hide" style={{ maxHeight: !compareMode ? "calc(85.5vh)" : filtersOpen ? cmp2Enabled ? "calc(72.5vh)" : "calc(80vh)" : "calc(85.5vh)" }}>
 <table className="w-full">
 <thead className="sticky top-0 z-10">
   {/* cmpLabel/cmp2Label defined as vars above thead */}
 
 <tr className="border-b border-gray-100" style={{ backgroundColor: colors.primary }}>
-  <th className="text-left px-6 py-3 uppercase tracking-widest" style={{ ...header2Style, backgroundColor: colors.primary }}>Account</th>
+<th className="text-left px-6" style={{ backgroundColor: colors.primary, height: "56px" }}>
+  <div className="flex items-center gap-3">
+    <span className="uppercase tracking-widest" style={header2Style}>Account</span>
+    <div className="ml-auto flex items-center gap-2">
+      {compareMode && (
+        <button onClick={() => setFiltersOpen(o => !o)}
+          className="flex items-center gap-1.5 rounded-lg text-[11px] font-black transition-all"
+          style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, padding: "8px 12px", lineHeight: 1 }}>
+          <ChevronDown size={11} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
+          {filtersOpen ? "Hide filters" : "Show filters"}
+        </button>
+      )}
+      <button onClick={() => {
+        if (Object.values(expandedMap).some(Boolean)) { setExpandedMap({}); return; }
+        const next = {};
+        const walk = (node, outerCode, depth, parentCode) => {
+          (node.uploadLeaves || []).forEach((leaf, i) => {
+            if (leaf.type !== "plain") next[`drill-leaf-${outerCode}-${parentCode}-${depth}-${i}`] = true;
+          });
+          (node.children || [])
+            .filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType))
+            .forEach(child => {
+              next[`drill-${outerCode}-${child.code}`] = true;
+              walk(child, outerCode, depth + 1, child.code);
+            });
+        };
+        (summaryMode ? summaryRows : allSumRows).forEach(node => {
+          next[node.code] = true;
+          walk(node, node.code, 0, node.code);
+        });
+        setExpandedMap(next);
+      }}
+        className="flex items-center justify-center rounded-lg transition-all"
+        style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, width: 32, height: 32 }}
+        title={Object.values(expandedMap).some(Boolean) ? "Collapse all" : "Expand all"}>
+        {Object.values(expandedMap).some(Boolean)
+          ? <svg width="13" height="13" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          : <svg width="13" height="13" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        }
+      </button>
+      <button onClick={onToggleCompare}
+        className="flex items-center gap-1.5 rounded-lg text-[11px] font-black transition-all"
+        style={compareMode
+          ? { backgroundColor: colors.quaternary ?? "#F59E0B", color: colors.primary ?? "#1a2f8a", padding: "8px 12px", lineHeight: 1 }
+          : { background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, padding: "8px 12px", lineHeight: 1 }}>
+        <GitMerge size={12} /> Compare
+      </button>
+      <div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
+        <button onClick={() => setYtdOnly(false)}
+          className="rounded-md text-[11px] font-black transition-colors"
+          style={{ backgroundColor: !ytdOnly ? (colors.quaternary ?? "#F59E0B") : "transparent",
+                   color: !ytdOnly ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
+                   padding: "7px 12px", lineHeight: 1 }}>
+          Monthly
+        </button>
+        <button onClick={() => setYtdOnly(true)}
+          className="rounded-md text-[11px] font-black transition-colors"
+          style={{ backgroundColor: ytdOnly ? (colors.quaternary ?? "#F59E0B") : "transparent",
+                   color: ytdOnly ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
+                   padding: "7px 12px", lineHeight: 1 }}>
+          YTD
+        </button>
+      </div>
+      <div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
+        <button onClick={() => setSummaryMode(false)}
+          className="rounded-md text-[11px] font-black transition-colors"
+          style={{ backgroundColor: !summaryMode ? (colors.quaternary ?? "#F59E0B") : "transparent",
+                   color: !summaryMode ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
+                   padding: "7px 12px", lineHeight: 1 }}>
+          Detailed
+        </button>
+        <button onClick={() => setSummaryMode(true)}
+          className="rounded-md text-[11px] font-black transition-colors"
+          style={{ backgroundColor: summaryMode ? (colors.quaternary ?? "#F59E0B") : "transparent",
+                   color: summaryMode ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
+                   padding: "7px 12px", lineHeight: 1 }}>
+          Summary
+        </button>
+      </div>
+    </div>
+  </div>
+</th>
   {!ytdOnly && <th className="text-right pr-6 py-3 uppercase tracking-widest w-36" style={{ ...header2Style, backgroundColor: colors.primary }}>Monthly</th>}
   {!ytdOnly && compareMode && <th colSpan={3} className="text-center pr-6 py-3 text-[11px] font-black text-[#CF305D] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{cmpLabel}</th>}
   {!ytdOnly && compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 text-[11px] font-black text-[#57aa78] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{cmp2Label}</th>}
@@ -5136,12 +5213,8 @@ if (expandedCmp && hasMoreCmp) {
           </div>
         </div>
       )}
-{/* Header */}
-      <div className="bg-[#1a2f8a] px-6 py-4 flex items-center justify-between">
-        <div>
-          <p className="k-panel-title font-black text-base">Balance Sheet</p>
-
-        </div>
+{/* Header (hidden) */}
+      <div style={{ display: "none" }}>
         <div className="flex items-center gap-3">
 {compareMode && (
             <button onClick={() => setFiltersOpen(o => !o)}
@@ -5240,7 +5313,7 @@ const tabs = ["summary","assets","equity"];
       )}
 
       {/* Table */}
-<div style={{ overflowX: "auto", overflowY: "auto", maxHeight: !compareMode ? "calc(78.5vh)" : filtersOpen ? cmp2Enabled ? "calc(65.5vh)" : "calc(71.5vh)" : "calc(78.5vh)" }}>
+<div className="scrollbar-hide" style={{ overflowX: "auto", overflowY: "auto", maxHeight: !compareMode ? "calc(86vh)" : filtersOpen ? cmp2Enabled ? "calc(72.5vh)" : "calc(79.5vh)" : "calc(85.5vh)" }}>
 <table className="w-full">
           <colgroup>
             <col style={{ width: "auto" }} />
@@ -5251,7 +5324,54 @@ const tabs = ["summary","assets","equity"];
 <thead>
 {(pgcBsMapping || bsView === "summary") ? (
 <tr className="border-b border-gray-100" style={{ position: "sticky", top: 0, zIndex: 10, backgroundColor: colors.primary }}>
-  <th className="text-left px-4 py-3 uppercase tracking-widest" style={{ ...header2Style, backgroundColor: colors.primary }}>Account</th>
+  <th className="text-left px-6" style={{ backgroundColor: colors.primary, height: "56px" }}>
+    <div className="flex items-center gap-3">
+      <span className="uppercase tracking-widest" style={header2Style}>Account</span>
+      <div className="ml-auto flex items-center gap-2">
+        {compareMode && (
+          <button onClick={() => setFiltersOpen(o => !o)}
+            className="flex items-center gap-1.5 rounded-lg text-[11px] font-black transition-all"
+            style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, padding: "8px 12px", lineHeight: 1 }}>
+            <ChevronDown size={11} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
+            {filtersOpen ? "Hide filters" : "Show filters"}
+          </button>
+        )}
+        <button onClick={() => {
+          if (!compareMode) {
+            setCmpYear(String(year)); setCmpMonth(String(month)); setCmpSource(source);
+            setCmpStructure(structure); setCmpCompany(company);
+            setCmp2Year(String(year)); setCmp2Month(String(month)); setCmp2Source(source);
+            setCmp2Structure(structure); setCmp2Company(company);
+            if (bsView !== "summary") {
+              fetchAllCompaniesCmp(String(year), String(month), source, structure);
+              fetchAllCompaniesCmp2(String(year), String(month), source, structure);
+            }
+          }
+          setCompareMode(c => !c);
+        }}
+          className="flex items-center gap-1.5 rounded-lg text-[11px] font-black transition-all"
+          style={compareMode
+            ? { backgroundColor: colors.quaternary ?? "#F59E0B", color: colors.primary ?? "#1a2f8a", padding: "8px 12px", lineHeight: 1 }
+            : { background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, padding: "8px 12px", lineHeight: 1 }}>
+          <GitMerge size={12} /> Compare
+        </button>
+        <div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
+          {[["summary","Summary"],["assets","Assets"],["equity","Equity & Liab."]].map(([v, label]) => (
+            <button key={v} onClick={() => setBsView(v)}
+              className="rounded-md text-[11px] font-black transition-colors"
+              style={{
+                backgroundColor: bsView === v ? (colors.quaternary ?? "#F59E0B") : "transparent",
+                color: bsView === v ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
+                padding: "7px 12px",
+                lineHeight: 1
+              }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  </th>
   <th className="text-right pr-4 py-3 uppercase tracking-widest w-36" style={{ ...header2Style, backgroundColor: colors.primary }}>Actual</th>
   {compareMode && <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black text-[#CF305D] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{[cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource].filter(Boolean).join(" · ")}</th>}
   {compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black text-[#57aa78] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{[cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source].filter(Boolean).join(" · ")}</th>}
@@ -5259,7 +5379,54 @@ const tabs = ["summary","assets","equity"];
 ) : (
   <>
 <tr className="border-b border-gray-100" style={{ backgroundColor: colors.primary }}>
-  <th className="text-left px-6 py-3 uppercase tracking-widest" style={{ ...header2Style, position: "sticky", top: 0, left: 0, zIndex: 20, backgroundColor: colors.primary }}>Account</th>
+  <th className="text-left px-6" style={{ position: "sticky", top: 0, left: 0, zIndex: 20, backgroundColor: colors.primary, height: "56px" }}>
+    <div className="flex items-center gap-3">
+      <span className="uppercase tracking-widest" style={header2Style}>Account</span>
+      <div className="ml-auto flex items-center gap-2">
+        {compareMode && (
+          <button onClick={() => setFiltersOpen(o => !o)}
+            className="flex items-center gap-1.5 rounded-lg text-[11px] font-black transition-all"
+            style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, padding: "8px 12px", lineHeight: 1 }}>
+            <ChevronDown size={11} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
+            {filtersOpen ? "Hide filters" : "Show filters"}
+          </button>
+        )}
+        <button onClick={() => {
+          if (!compareMode) {
+            setCmpYear(String(year)); setCmpMonth(String(month)); setCmpSource(source);
+            setCmpStructure(structure); setCmpCompany(company);
+            setCmp2Year(String(year)); setCmp2Month(String(month)); setCmp2Source(source);
+            setCmp2Structure(structure); setCmp2Company(company);
+            if (bsView !== "summary") {
+              fetchAllCompaniesCmp(String(year), String(month), source, structure);
+              fetchAllCompaniesCmp2(String(year), String(month), source, structure);
+            }
+          }
+          setCompareMode(c => !c);
+        }}
+          className="flex items-center gap-1.5 rounded-lg text-[11px] font-black transition-all"
+          style={compareMode
+            ? { backgroundColor: colors.quaternary ?? "#F59E0B", color: colors.primary ?? "#1a2f8a", padding: "8px 12px", lineHeight: 1 }
+            : { background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, padding: "8px 12px", lineHeight: 1 }}>
+          <GitMerge size={12} /> Compare
+        </button>
+        <div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
+          {[["summary","Summary"],["assets","Assets"],["equity","Equity & Liab."]].map(([v, label]) => (
+            <button key={v} onClick={() => setBsView(v)}
+              className="rounded-md text-[11px] font-black transition-colors"
+              style={{
+                backgroundColor: bsView === v ? (colors.quaternary ?? "#F59E0B") : "transparent",
+                color: bsView === v ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
+                padding: "7px 12px",
+                lineHeight: 1
+              }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  </th>
   {companyColumns.map(({ source, currency }) => (
     <React.Fragment key={source}>
       <th className="text-right pr-4 py-3 uppercase tracking-widest whitespace-nowrap min-w-[120px]" style={{ ...header2Style, position: "sticky", top: 0, backgroundColor: colors.primary }}>Actual</th>
@@ -6355,6 +6522,8 @@ return (
         .bg-\\[\\#57aa78\\] { background-color: ${colors.tertiary} !important; }
         .border-\\[\\#57aa78\\] { border-color: ${colors.tertiary} !important; }
         .k-panel-title { color: ${colors.quaternary ?? "#F59E0B"} !important; }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
       `}</style>
       {ExportModal}
       

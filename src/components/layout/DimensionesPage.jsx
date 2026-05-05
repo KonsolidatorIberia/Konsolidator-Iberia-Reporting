@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Search, Database, GitMerge, Maximize2, Minimize2 } from "lucide-react";
 import { useTypo, useSettings } from "./SettingsContext";
 const BASE_URL = "";
@@ -384,9 +384,13 @@ function FilterPill({ label, value, onChange, options }) {
 
 const INDENT = 14;
 
-function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, body1Style, body2Style, header2Style, colors }) {
+function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, body1Style, body2Style, header2Style, colors, excludeCodes = null }) {
   const code = node.AccountCode;
-  const hasChildren = node.children?.length > 0;
+  // Filter out children that are already shown as siblings in the flat list
+  const visibleChildren = excludeCodes
+    ? (node.children || []).filter(c => !excludeCodes.has(String(c.AccountCode)))
+    : (node.children || []);
+  const hasChildren = visibleChildren.length > 0;
   const isExpanded = expandedSet.has(code);
 // Get value: prefer the node's own value (backend subtotal), fall back to summing children
   const getNodeVal = (dimKey) => {
@@ -443,12 +447,13 @@ const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 
           {rowTotal === 0 ? "—" : fmtAmt(rowTotal)}
         </td>
       </tr>
-{isExpanded && hasChildren && node.children.map(child => (
+{isExpanded && hasChildren && visibleChildren.map(child => (
         <DimensionRow key={child.AccountCode} node={child} depth={depth + 1}
           expandedSet={expandedSet} onToggle={onToggle}
           dimCols={dimCols} getVal={getVal}
           body1Style={body1Style} body2Style={body2Style}
-          header2Style={header2Style} colors={colors} />
+          header2Style={header2Style} colors={colors}
+          excludeCodes={excludeCodes} />
       ))}
     </>
   );
@@ -513,11 +518,16 @@ function AccountsTab({ data }) {
 
 
 /* ── Pivot Tab ────────────────────────────────────────────── */
-function PivotTab({ data, dimensions, groupAccounts = [], onShowAccounts, selGroup, compareMode, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null }) {
+function PivotTab({ data, dimensions, groupAccounts = [], onShowAccounts, selGroup, compareMode, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null }) {
   const header2Style = useTypo("header2");
     const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
+  const header3Style = useTypo("header3");
   const { colors } = useSettings();
+
+  // P&L vs B/S toggle and Summary/Detailed toggle (only used in non-compare mode)
+  const [statementType, setStatementType] = useState("pl"); // "pl" | "bs"
+  const [summaryMode, setSummaryMode] = useState(true);
 
   const headerRef = useRef(null);
   const bodyRef   = useRef(null);
@@ -779,7 +789,7 @@ useEffect(() => {
   const cmpMonths     = MONTHS.map(m => ({ value: String(m.value), label: m.label }));
   const cmpStructures = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
   const cmpCompanies  = [...new Set(companies.map(c => typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : String(c)).filter(Boolean))].map(v => ({ value: v, label: v }));
-const ACOL = 300, DCOL = 140, TCOL = 150;
+const ACOL = 480, DCOL = 140, TCOL = 150;
   const totalWidth = ACOL + dimCols.length * DCOL + TCOL;
 
   // Compute which KPI lines actually produce data given the current 3 pivots
@@ -1070,40 +1080,196 @@ const cache = new Map();
     );
   }
 
+// ─────────────────────────────────────────────────────────
+  // Filter & order accounts by accountType + Supabase mapping
+  // ─────────────────────────────────────────────────────────
+  const activeMapping = statementType === "pl" ? plMapping : bsMapping;
+  const targetAccountType = statementType === "pl" ? ["P/L", "DIS"] : ["B/S"];
+
+  // Re-derive the displayed accounts based on the current toggle. The pivot
+  // already has data for both P&L and B/S — we just filter at render time.
+  const displayedTree = useMemo(() => {
+    if (!data.length) return [];
+    const groupMap = new Map();
+    (groupAccounts || []).forEach(a => {
+      const code = a.AccountCode ?? a.accountCode ?? "";
+      const acType = a.AccountType ?? a.accountType ?? "";
+      if (!code) return;
+      if (!targetAccountType.includes(acType)) return;
+      groupMap.set(code, {
+        AccountCode: code,
+        AccountName: a.AccountName ?? a.accountName ?? "",
+        SumAccountCode: a.SumAccountCode ?? a.sumAccountCode ?? "",
+        AccountType: acType,
+        IsSumAccount: a.IsSumAccount ?? a.isSumAccount ?? false,
+      });
+    });
+
+    const dataAccountInfo = new Map();
+    data.forEach(r => {
+      const code = r.AccountCode ?? r.accountCode ?? "";
+      if (!code) return;
+      const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
+      if (lac && lac !== "—") return;
+      const acType = r.AccountType ?? r.accountType ?? "";
+      if (!targetAccountType.includes(acType)) return;
+      if (selGroup) {
+        const pairs = parseDimensions(r.Dimensions);
+        if (pairs.length > 0 && !pairs.some(([g]) => g === selGroup)) return;
+      }
+      if (!dataAccountInfo.has(code)) {
+        dataAccountInfo.set(code, {
+          AccountCode: code,
+          AccountName: r.AccountName ?? r.accountName ?? "",
+          SumAccountCode: r.SumAccountCode ?? r.sumAccountCode ?? "",
+          AccountType: acType,
+        });
+      }
+    });
+
+    const accountMap = new Map();
+    if (groupMap.size > 0) {
+      const includeWithAncestors = (code) => {
+        if (accountMap.has(code)) return;
+        const a = groupMap.get(code);
+        if (!a) {
+          const fb = dataAccountInfo.get(code);
+          if (fb) accountMap.set(code, fb);
+          return;
+        }
+        accountMap.set(code, a);
+        if (a.SumAccountCode) includeWithAncestors(a.SumAccountCode);
+      };
+      dataAccountInfo.forEach((_, code) => includeWithAncestors(code));
+    } else {
+      dataAccountInfo.forEach((info, code) => accountMap.set(code, info));
+    }
+
+    return buildTree([...accountMap.values()]);
+  }, [data, groupAccounts, selGroup, statementType]);
+
+  // Build the row list: in summaryMode, show only mapping-flagged "showInSummary"
+  // rows ordered by sortOrder; otherwise show only `isSum` rows ordered the same
+  // way. Falls back to flat tree roots when no mapping is loaded.
+  const treeIndex = useMemo(() => {
+    const idx = new Map();
+    const walk = (nodes) => nodes.forEach(n => { idx.set(String(n.AccountCode), n); walk(n.children || []); });
+    walk(displayedTree);
+    return idx;
+  }, [displayedTree]);
+
+  const orderedRows = useMemo(() => {
+    if (activeMapping?.rows) {
+      const filterFn = summaryMode ? (info => info.showInSummary) : (info => info.isSum);
+      return [...activeMapping.rows.entries()]
+        .filter(([, info]) => filterFn(info))
+        .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+        .map(([code]) => treeIndex.get(code))
+        .filter(Boolean);
+    }
+    // Fallback: just the tree roots
+    return displayedTree;
+  }, [activeMapping, summaryMode, treeIndex, displayedTree]);
+
+  // Build divider map: first occurrence of each section in the rendered list
+  const palette = [colors.primary, colors.secondary, colors.tertiary];
+  const dividerMap = useMemo(() => {
+    if (!activeMapping?.rows || !activeMapping?.sections) return {};
+    const seen = new Set();
+    const out = {};
+    let i = 0;
+    for (const node of orderedRows) {
+      const m = activeMapping.rows.get(String(node.AccountCode));
+      if (!m) continue;
+      if (seen.has(m.section)) continue;
+      seen.add(m.section);
+      const sec = activeMapping.sections.get(m.section);
+      if (sec) {
+        out[String(node.AccountCode)] = { label: sec.label, color: palette[i] ?? sec.color };
+        i++;
+      }
+    }
+    return out;
+  }, [activeMapping, orderedRows, colors]);
+
   return (
     <div className="flex flex-col gap-3 flex-1 min-h-0">
-
-<div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
-
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
 
         {/* Synced header */}
-       <div ref={headerRef} style={{ overflowX: "auto", overflowY: "hidden", flexShrink: 0, scrollbarWidth: "none", msOverflowStyle: "none" }} onScroll={onHeaderScroll}>
-          <table style={{ borderCollapse: "collapse", minWidth: totalWidth, width: "100%", tableLayout: "fixed" }}>
+        <div ref={headerRef} style={{ overflowX: "auto", overflowY: "hidden", flexShrink: 0, scrollbarWidth: "none", msOverflowStyle: "none" }} onScroll={onHeaderScroll}>
+<table style={{ borderCollapse: "collapse", minWidth: totalWidth, width: "100%", tableLayout: "fixed" }}>
             <colgroup>
-              <col style={{ width: ACOL, minWidth: ACOL }} />
+              <col style={{ width: 480, minWidth: 480 }} />
               {dimCols.map((_, i) => <col key={i} style={{ width: DCOL, minWidth: DCOL }} />)}
               <col style={{ width: TCOL, minWidth: TCOL }} />
             </colgroup>
-<thead>
+            <thead>
               <tr style={{ backgroundColor: colors.primary }}>
-<th className="sticky left-0 z-30 text-center px-5 py-3 border-r border-white/20" style={{ backgroundColor: colors.primary }}>
-                  <div className="flex items-center justify-between gap-3">
-                    <span style={header2Style}>ACCOUNT</span>
-                    <div className="flex items-center gap-2">
+<th className="sticky left-0 z-30 text-left px-6 border-r border-white/20" style={{ backgroundColor: colors.primary, height: "56px" }}>
+                  <div className="flex items-center gap-3" style={{ minWidth: ACOL }}>
+                    <span className="uppercase tracking-widest" style={header2Style}>Account</span>
+                    <div className="flex items-center gap-2 ml-auto">
                       <button onClick={() => expandedSet.size > 0 ? collapseAll() : expandAll()}
-                        className="flex items-center justify-center w-6 h-6 rounded-lg bg-white/10 hover:bg-white/20 transition-all"
+                        className="flex items-center justify-center rounded-lg transition-all"
+                        style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, width: 32, height: 32 }}
                         title={expandedSet.size > 0 ? "Collapse all" : "Expand all"}>
-                        {expandedSet.size > 0 ? <Minimize2 size={12} className="text-white/70"/> : <Maximize2 size={12} className="text-white/70"/>}
+                        {expandedSet.size > 0 ? <Minimize2 size={13}/> : <Maximize2 size={13}/>}
                       </button>
                       <button onClick={onShowAccounts}
-                        className="flex items-center justify-center w-6 h-6 rounded-lg bg-white/10 hover:bg-white/20 transition-all"
+                        className="flex items-center justify-center rounded-lg transition-all"
+                        style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, width: 32, height: 32 }}
                         title="View uploaded accounts">
-                        <Database size={12} className="text-white/70" />
+                        <Database size={13} />
                       </button>
+                      <div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
+                        <button onClick={() => setStatementType("pl")}
+                          className="rounded-md text-[11px] font-black transition-colors"
+                          style={{
+                            backgroundColor: statementType === "pl" ? (colors.quaternary ?? "#F59E0B") : "transparent",
+                            color: statementType === "pl" ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
+                            padding: "7px 12px",
+                            lineHeight: 1
+                          }}>
+                          P&L
+                        </button>
+                        <button onClick={() => setStatementType("bs")}
+                          className="rounded-md text-[11px] font-black transition-colors"
+                          style={{
+                            backgroundColor: statementType === "bs" ? (colors.quaternary ?? "#F59E0B") : "transparent",
+                            color: statementType === "bs" ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
+                            padding: "7px 12px",
+                            lineHeight: 1
+                          }}>
+                          B/S
+                        </button>
+                      </div>
+                      <div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
+                        <button onClick={() => setSummaryMode(false)}
+                          className="rounded-md text-[11px] font-black transition-colors"
+                          style={{
+                            backgroundColor: !summaryMode ? (colors.quaternary ?? "#F59E0B") : "transparent",
+                            color: !summaryMode ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
+                            padding: "7px 12px",
+                            lineHeight: 1
+                          }}>
+                          Detailed
+                        </button>
+                        <button onClick={() => setSummaryMode(true)}
+                          className="rounded-md text-[11px] font-black transition-colors"
+                          style={{
+                            backgroundColor: summaryMode ? (colors.quaternary ?? "#F59E0B") : "transparent",
+                            color: summaryMode ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
+                            padding: "7px 12px",
+                            lineHeight: 1
+                          }}>
+                          Summary
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </th>
-{dimCols.map(dim => (
+                {dimCols.map(dim => (
                   <th key={dim.code ?? "__none__"} className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary }}>
                     <span className="leading-tight truncate max-w-[120px] inline-block" style={header2Style}>{dim.name}</span>
                   </th>
@@ -1117,7 +1283,7 @@ const cache = new Map();
         </div>
 
         {/* Synced body */}
-        <div ref={bodyRef} style={{ flex: 1, minHeight: 0, overflowX: "auto", overflowY: "auto", scrollbarWidth: "none", msOverflowStyle: "none" }} onScroll={onBodyScroll}>
+        <div ref={bodyRef} className="scrollbar-hide" style={{ flex: 1, minHeight: 0, overflowX: "auto", overflowY: "auto" }} onScroll={onBodyScroll}>
           <table style={{ borderCollapse: "collapse", minWidth: totalWidth, width: "100%", tableLayout: "fixed" }}>
             <colgroup>
               <col style={{ width: ACOL, minWidth: ACOL }} />
@@ -1125,13 +1291,32 @@ const cache = new Map();
               <col style={{ width: TCOL, minWidth: TCOL }} />
             </colgroup>
 <tbody>
-              {tree.map(node => (
-                <DimensionRow key={node.AccountCode} node={node} depth={0}
-                  expandedSet={expandedSet} onToggle={toggleExpand}
-                  dimCols={dimCols} getVal={getVal}
-                  body1Style={body1Style} body2Style={body2Style}
-                  header2Style={header2Style} colors={colors} />
-              ))}
+              {(() => {
+                // Codes that are already siblings in the flat list — drill-down
+                // expansion should NOT re-render these as descendants, otherwise
+                // the same account appears twice (once as a sibling, once nested).
+                const flatCodes = new Set(orderedRows.map(n => String(n.AccountCode)));
+                return orderedRows.map(node => {
+                  const divider = dividerMap[String(node.AccountCode)];
+                  return (
+                    <React.Fragment key={node.AccountCode}>
+                      {divider && (
+                        <tr>
+                          <td colSpan={dimCols.length + 2} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
+                            <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
+                          </td>
+                        </tr>
+                      )}
+                      <DimensionRow node={node} depth={0}
+                        expandedSet={expandedSet} onToggle={toggleExpand}
+                        dimCols={dimCols} getVal={getVal}
+                        body1Style={body1Style} body2Style={body2Style}
+                        header2Style={header2Style} colors={colors}
+                        excludeCodes={flatCodes} />
+                    </React.Fragment>
+                  );
+                });
+              })()}
             </tbody>
           </table>
         </div>
@@ -1140,6 +1325,7 @@ const cache = new Map();
   );
 }
 
+/* ── Main ─────────────────────────────────────────────────── */
 /* ── Main ─────────────────────────────────────────────────── */
 export default function DimensionesPage({ token, sources = [], structures = [], companies = [], dimensions = [], groupAccounts = [] }) {
   const { colors } = useSettings();
@@ -1185,6 +1371,57 @@ const [groupAccountsLocal, setGroupAccountsLocal] = useState([]);
 
 // Resolve KPIs against the current accounting standard
   const { kpiList, ccTagToCodes, resolveCcTag } = useKpiResolver(groupAccountsLocal);
+
+  // Load Supabase row/section mappings for breakers (PGC / Danish / Spanish IFRS-ES)
+  const [pgcPlMapping, setPgcPlMapping] = useState(null);
+  const [pgcBsMapping, setPgcBsMapping] = useState(null);
+  const [danishPlMapping, setDanishPlMapping] = useState(null);
+  const [danishBsMapping, setDanishBsMapping] = useState(null);
+  const [spIfrsEsPlMapping, setSpIfrsEsPlMapping] = useState(null);
+  const [spIfrsEsBsMapping, setSpIfrsEsBsMapping] = useState(null);
+
+  useEffect(() => {
+    if (!groupAccountsLocal.length) return;
+    const codes = groupAccountsLocal.map(g => String(g.AccountCode ?? g.accountCode ?? ""));
+    const isPGC = codes.some(c => /[a-zA-Z]/.test(c) && c.endsWith(".S"));
+    const isSpEs = !isPGC && codes.some(c => /\.PL$/.test(c));
+    const isDan = !isPGC && !isSpEs && codes.some(c => /^\d{5,6}$/.test(c));
+
+    const loadMapping = async (rowsTable, sectionsTable, setter) => {
+      try {
+        const [rowsArr, secsArr] = await Promise.all([
+          sbGet(`${rowsTable}?select=*&order=sort_order.asc`),
+          sbGet(`${sectionsTable}?select=*&order=sort_order.asc`),
+        ]);
+        if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
+        const rows = new Map();
+        rowsArr.forEach(r => rows.set(String(r.account_code), {
+          section: String(r.section_code),
+          sortOrder: Number(r.sort_order),
+          isSum: !!r.is_sum,
+          showInSummary: !!r.show_in_summary,
+          level: Number(r.level ?? 0),
+        }));
+        const sections = new Map();
+        secsArr.forEach(s => sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) }));
+        setter({ rows, sections });
+      } catch { setter(null); }
+    };
+
+    if (isPGC) {
+      loadMapping("pgc_pl_rows", "pgc_pl_sections", setPgcPlMapping);
+      loadMapping("pgc_bs_rows", "pgc_bs_sections", setPgcBsMapping);
+    } else if (isDan) {
+      loadMapping("danish_ifrs_pl_rows", "danish_ifrs_pl_sections", setDanishPlMapping);
+      loadMapping("danish_ifrs_bs_rows", "danish_ifrs_bs_sections", setDanishBsMapping);
+    } else if (isSpEs) {
+      loadMapping("spanish_ifrs_es_pl_rows", "spanish_ifrs_es_pl_sections", setSpIfrsEsPlMapping);
+      loadMapping("spanish_ifrs_es_bs_rows", "spanish_ifrs_es_bs_sections", setSpIfrsEsBsMapping);
+    }
+  }, [groupAccountsLocal]);
+
+  const plMapping = pgcPlMapping ?? danishPlMapping ?? spIfrsEsPlMapping;
+  const bsMapping = pgcBsMapping ?? danishBsMapping ?? spIfrsEsBsMapping;
   useEffect(() => {
     if (!token) return;
     fetch(`${BASE_URL}/v2/periods`, {
@@ -1375,7 +1612,7 @@ const dimGroups = useMemo(() => {
           </div>
         </div>
 ) : (
- <PivotTab data={rawData} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroup={selGroup} dimGroups={dimGroups} compareMode={compareMode} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} kpiList={kpiList} ccTagToCodes={ccTagToCodes} resolveCcTag={resolveCcTag} />
+ <PivotTab data={rawData} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroup={selGroup} dimGroups={dimGroups} compareMode={compareMode} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} kpiList={kpiList} ccTagToCodes={ccTagToCodes} resolveCcTag={resolveCcTag} plMapping={plMapping} bsMapping={bsMapping} />
       )}
 
       {showAccounts && (

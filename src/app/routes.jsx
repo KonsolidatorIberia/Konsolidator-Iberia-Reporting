@@ -6,6 +6,7 @@ import DimensionesPage from "../components/layout/DimensionesPage.jsx";
 import ConsolidationSheetPage from "../components/layout/ConsolidationSheetPage.jsx";
 import StructurePage from "../components/layout/StructurePage.jsx";
 import SettingsPage from "../components/layout/SettingsPage.jsx";
+import CashFlowPage from "../components/layout/CashFlowPage.jsx";
 
 export default function AppRoutes({ token, activePage, preloadedData }) {
   const sharedData = preloadedData ?? {};
@@ -46,9 +47,10 @@ export default function AppRoutes({ token, activePage, preloadedData }) {
     />
   );
 
-  if (activePage === "consolidated-sheet") return (
+if (activePage === "consolidated-sheet") return (
     <ConsolidationSheetPage token={token} />
   );
+
 
   if (activePage === "individual-kpis") return (
     <KpiIndividualesPage
@@ -58,6 +60,9 @@ export default function AppRoutes({ token, activePage, preloadedData }) {
       companies={sharedData.companies ?? []}
       dimensions={sharedData.dimensions ?? []}
     />
+  );
+  if (activePage === "consolidated-cashflow") return (
+    <CashFlowPage token={token} />
   );
 
   if (activePage === "settings") return <SettingsPage />;
