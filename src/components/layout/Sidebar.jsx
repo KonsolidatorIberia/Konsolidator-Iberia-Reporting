@@ -8,21 +8,23 @@ import { useTypo, useSettings } from "./SettingsContext";
 
 const NAV = [
   { key: "home",      label: "Home",      icon: Home },
-  {
+{
     key: "individual", label: "Individual", icon: FileText,
     children: [
-      { key: "individual-data",        label: "Data",        icon: Table    },
+      { key: "individual-data",        label: "Data",        icon: Table     },
       { key: "individual-kpis",        label: "KPIs",        icon: BarChart3 },
-      { key: "individual-dimensiones", label: "Dimensiones", icon: Filter   },
+      { key: "individual-dimensiones", label: "Dimensiones", icon: Filter    },
+      { key: "individual-cashflow",    label: "Cash Flow",   icon: TrendingUp },
     ],
   },
 {
     key: "consolidated", label: "Consolidated", icon: Layers,
     children: [
-      { key: "individual-contributive", label: "Contributive",        icon: PieChart  },
-      { key: "consolidated-sheet",      label: "Consolidation Sheet", icon: Table     },
-      { key: "consolidated-cashflow",   label: "Cash Flow",           icon: TrendingUp },
-      { key: "consolidated-notes",      label: "Memory Notes",        icon: BookOpen  },
+      { key: "individual-contributive",     label: "Contributive",        icon: PieChart  },
+      { key: "consolidated-sheet",          label: "Consolidation Sheet", icon: Table     },
+      { key: "consolidated-cashflow",       label: "Cash Flow",           icon: TrendingUp },
+      { key: "consolidated-dimensiones",    label: "Dimensiones",         icon: Filter    },
+      { key: "consolidated-notes",          label: "Memory Notes",        icon: BookOpen  },
     ],
   },
   {

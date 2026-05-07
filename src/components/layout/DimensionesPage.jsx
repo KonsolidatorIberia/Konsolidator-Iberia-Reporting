@@ -830,12 +830,118 @@ const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes,
     return opts;
  }, [kpiList, ccTagToCodes, resolveCcTag, dimCols, viewMode, pivot, prevPivot, pivot2, prevPivot2, pivot3, prevPivot3]);
 
-  // If the selected line was filtered out (no data anymore), reset to "all"
+// If the selected line was filtered out (no data anymore), reset to "all"
   useEffect(() => {
     if (line !== "all" && !lineOptions.some(o => o.value === line)) {
       setLine("all");
     }
   }, [lineOptions, line]);
+
+  // ─────────────────────────────────────────────────────────
+  // Filter & order accounts by accountType + Supabase mapping
+  // (Hooks must run unconditionally — placed BEFORE early return)
+  // ─────────────────────────────────────────────────────────
+  const activeMapping = statementType === "pl" ? plMapping : bsMapping;
+  const targetAccountType = statementType === "pl" ? ["P/L", "DIS"] : ["B/S"];
+
+  const displayedTree = useMemo(() => {
+    if (!data.length) return [];
+    const groupMap = new Map();
+    (groupAccounts || []).forEach(a => {
+      const code = a.AccountCode ?? a.accountCode ?? "";
+      const acType = a.AccountType ?? a.accountType ?? "";
+      if (!code) return;
+      if (!targetAccountType.includes(acType)) return;
+      groupMap.set(code, {
+        AccountCode: code,
+        AccountName: a.AccountName ?? a.accountName ?? "",
+        SumAccountCode: a.SumAccountCode ?? a.sumAccountCode ?? "",
+        AccountType: acType,
+        IsSumAccount: a.IsSumAccount ?? a.isSumAccount ?? false,
+      });
+    });
+
+    const dataAccountInfo = new Map();
+    data.forEach(r => {
+      const code = r.AccountCode ?? r.accountCode ?? "";
+      if (!code) return;
+      const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
+      if (lac && lac !== "—") return;
+      const acType = r.AccountType ?? r.accountType ?? "";
+      if (!targetAccountType.includes(acType)) return;
+      if (selGroup) {
+        const pairs = parseDimensions(r.Dimensions);
+        if (pairs.length > 0 && !pairs.some(([g]) => g === selGroup)) return;
+      }
+      if (!dataAccountInfo.has(code)) {
+        dataAccountInfo.set(code, {
+          AccountCode: code,
+          AccountName: r.AccountName ?? r.accountName ?? "",
+          SumAccountCode: r.SumAccountCode ?? r.sumAccountCode ?? "",
+          AccountType: acType,
+        });
+      }
+    });
+
+    const accountMap = new Map();
+    if (groupMap.size > 0) {
+      const includeWithAncestors = (code) => {
+        if (accountMap.has(code)) return;
+        const a = groupMap.get(code);
+        if (!a) {
+          const fb = dataAccountInfo.get(code);
+          if (fb) accountMap.set(code, fb);
+          return;
+        }
+        accountMap.set(code, a);
+        if (a.SumAccountCode) includeWithAncestors(a.SumAccountCode);
+      };
+      dataAccountInfo.forEach((_, code) => includeWithAncestors(code));
+    } else {
+      dataAccountInfo.forEach((info, code) => accountMap.set(code, info));
+    }
+
+    return buildTree([...accountMap.values()]);
+  }, [data, groupAccounts, selGroup, statementType]);
+
+  const treeIndex = useMemo(() => {
+    const idx = new Map();
+    const walk = (nodes) => nodes.forEach(n => { idx.set(String(n.AccountCode), n); walk(n.children || []); });
+    walk(displayedTree);
+    return idx;
+  }, [displayedTree]);
+
+  const orderedRows = useMemo(() => {
+    if (activeMapping?.rows) {
+      const filterFn = summaryMode ? (info => info.showInSummary) : (info => info.isSum);
+      return [...activeMapping.rows.entries()]
+        .filter(([, info]) => filterFn(info))
+        .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+        .map(([code]) => treeIndex.get(code))
+        .filter(Boolean);
+    }
+    return displayedTree;
+  }, [activeMapping, summaryMode, treeIndex, displayedTree]);
+
+  const palette = [colors.primary, colors.secondary, colors.tertiary];
+  const dividerMap = useMemo(() => {
+    if (!activeMapping?.rows || !activeMapping?.sections) return {};
+    const seen = new Set();
+    const out = {};
+    let i = 0;
+    for (const node of orderedRows) {
+      const m = activeMapping.rows.get(String(node.AccountCode));
+      if (!m) continue;
+      if (seen.has(m.section)) continue;
+      seen.add(m.section);
+      const sec = activeMapping.sections.get(m.section);
+      if (sec) {
+        out[String(node.AccountCode)] = { label: sec.label, color: palette[i] ?? sec.color };
+        i++;
+      }
+    }
+    return out;
+  }, [activeMapping, orderedRows, colors]);
 
 if (compareMode) {
     return (
@@ -941,7 +1047,8 @@ if (compareMode) {
                     });
                     return flat;
                   };
-const evalLine = (p, pPrev, label) => {
+const visibleDims = dimCols.filter(d => !!d.code);
+                  const evalLine = (p, pPrev, label) => {
                     const flat = flattenForDim(p, pPrev);
                     if (line === "all") {
                       let total = 0;
@@ -972,7 +1079,6 @@ const cache = new Map();
                     }
                     return (v === null || isNaN(v)) ? 0 : v;
                   };
-                  const visibleDims = dimCols.filter(d => !!d.code);
                   const v1 = evalLine(pivot,  prevPivot,  "Standard");
                   const v2 = evalLine(pivot2, prevPivot2, "Cmp1");
                   const v3 = evalLine(pivot3, prevPivot3, "Cmp2");
@@ -1080,119 +1186,7 @@ const cache = new Map();
     );
   }
 
-// ─────────────────────────────────────────────────────────
-  // Filter & order accounts by accountType + Supabase mapping
-  // ─────────────────────────────────────────────────────────
-  const activeMapping = statementType === "pl" ? plMapping : bsMapping;
-  const targetAccountType = statementType === "pl" ? ["P/L", "DIS"] : ["B/S"];
-
-  // Re-derive the displayed accounts based on the current toggle. The pivot
-  // already has data for both P&L and B/S — we just filter at render time.
-  const displayedTree = useMemo(() => {
-    if (!data.length) return [];
-    const groupMap = new Map();
-    (groupAccounts || []).forEach(a => {
-      const code = a.AccountCode ?? a.accountCode ?? "";
-      const acType = a.AccountType ?? a.accountType ?? "";
-      if (!code) return;
-      if (!targetAccountType.includes(acType)) return;
-      groupMap.set(code, {
-        AccountCode: code,
-        AccountName: a.AccountName ?? a.accountName ?? "",
-        SumAccountCode: a.SumAccountCode ?? a.sumAccountCode ?? "",
-        AccountType: acType,
-        IsSumAccount: a.IsSumAccount ?? a.isSumAccount ?? false,
-      });
-    });
-
-    const dataAccountInfo = new Map();
-    data.forEach(r => {
-      const code = r.AccountCode ?? r.accountCode ?? "";
-      if (!code) return;
-      const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
-      if (lac && lac !== "—") return;
-      const acType = r.AccountType ?? r.accountType ?? "";
-      if (!targetAccountType.includes(acType)) return;
-      if (selGroup) {
-        const pairs = parseDimensions(r.Dimensions);
-        if (pairs.length > 0 && !pairs.some(([g]) => g === selGroup)) return;
-      }
-      if (!dataAccountInfo.has(code)) {
-        dataAccountInfo.set(code, {
-          AccountCode: code,
-          AccountName: r.AccountName ?? r.accountName ?? "",
-          SumAccountCode: r.SumAccountCode ?? r.sumAccountCode ?? "",
-          AccountType: acType,
-        });
-      }
-    });
-
-    const accountMap = new Map();
-    if (groupMap.size > 0) {
-      const includeWithAncestors = (code) => {
-        if (accountMap.has(code)) return;
-        const a = groupMap.get(code);
-        if (!a) {
-          const fb = dataAccountInfo.get(code);
-          if (fb) accountMap.set(code, fb);
-          return;
-        }
-        accountMap.set(code, a);
-        if (a.SumAccountCode) includeWithAncestors(a.SumAccountCode);
-      };
-      dataAccountInfo.forEach((_, code) => includeWithAncestors(code));
-    } else {
-      dataAccountInfo.forEach((info, code) => accountMap.set(code, info));
-    }
-
-    return buildTree([...accountMap.values()]);
-  }, [data, groupAccounts, selGroup, statementType]);
-
-  // Build the row list: in summaryMode, show only mapping-flagged "showInSummary"
-  // rows ordered by sortOrder; otherwise show only `isSum` rows ordered the same
-  // way. Falls back to flat tree roots when no mapping is loaded.
-  const treeIndex = useMemo(() => {
-    const idx = new Map();
-    const walk = (nodes) => nodes.forEach(n => { idx.set(String(n.AccountCode), n); walk(n.children || []); });
-    walk(displayedTree);
-    return idx;
-  }, [displayedTree]);
-
-  const orderedRows = useMemo(() => {
-    if (activeMapping?.rows) {
-      const filterFn = summaryMode ? (info => info.showInSummary) : (info => info.isSum);
-      return [...activeMapping.rows.entries()]
-        .filter(([, info]) => filterFn(info))
-        .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
-        .map(([code]) => treeIndex.get(code))
-        .filter(Boolean);
-    }
-    // Fallback: just the tree roots
-    return displayedTree;
-  }, [activeMapping, summaryMode, treeIndex, displayedTree]);
-
-  // Build divider map: first occurrence of each section in the rendered list
-  const palette = [colors.primary, colors.secondary, colors.tertiary];
-  const dividerMap = useMemo(() => {
-    if (!activeMapping?.rows || !activeMapping?.sections) return {};
-    const seen = new Set();
-    const out = {};
-    let i = 0;
-    for (const node of orderedRows) {
-      const m = activeMapping.rows.get(String(node.AccountCode));
-      if (!m) continue;
-      if (seen.has(m.section)) continue;
-      seen.add(m.section);
-      const sec = activeMapping.sections.get(m.section);
-      if (sec) {
-        out[String(node.AccountCode)] = { label: sec.label, color: palette[i] ?? sec.color };
-        i++;
-      }
-    }
-    return out;
-  }, [activeMapping, orderedRows, colors]);
-
-  return (
+return (
     <div className="flex flex-col gap-3 flex-1 min-h-0">
       <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
 
@@ -1511,7 +1505,7 @@ useEffect(() => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companies]);
 
-  const fetchData = useCallback(async () => {
+const fetchData = useCallback(async () => {
     if (!metaReady || !year || !month || !source || !structure || !company) return;
     setLoading(true);
     setError(null);
@@ -1525,9 +1519,10 @@ useEffect(() => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setRawData(json.value ?? (Array.isArray(json) ? json : []));
+      // Defer setLoading(false) so React commits the new data first
+      requestAnimationFrame(() => setLoading(false));
     } catch (e) {
       setError(e.message);
-    } finally {
       setLoading(false);
     }
 }, [metaReady, year, month, source, structure, company, authHeaders]);

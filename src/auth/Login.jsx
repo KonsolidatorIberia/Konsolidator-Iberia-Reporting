@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { supabase, sbAccounts, getReportingStatus } from "../lib/supabaseClient";
+import { useNavigate } from "react-router-dom";
 
 const TOKEN_URL = "https://konsolidatorsignin.b2clogin.com/konsolidatorsignin.onmicrosoft.com/B2C_1_ropc/oauth2/v2.0/token";
 const CLIENT_ID = "20e20379-2661-4066-b297-90c2e089e899";
@@ -220,30 +222,77 @@ export default function Login({ onLogin }) {
   const [error, setError] = useState("");
   const [focused, setFocused] = useState(null);
 
-  const handleLogin = async () => {
-    if (!username || !password) { setError("Enter your credentials"); return; }
-    setLoading(true);
-    setError("");
-    try {
-      const params = new URLSearchParams();
-      params.append("grant_type", "password");
-      params.append("client_id", CLIENT_ID);
-      params.append("scope", SCOPE);
-      params.append("username", username);
-      params.append("password", password);
-      const res = await fetch(TOKEN_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: params,
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error_description || data.error);
-      onLogin(data.access_token, { username }, { username, password });
-    } catch {
-      setError("Invalid credentials. Please try again.");
-      setLoading(false);
+const navigate = useNavigate();
+
+const handleLogin = async () => {
+  if (!username || !password) { setError("Enter your credentials"); return; }
+  setLoading(true);
+  setError("");
+
+  // ════════════════════════════════════════════════════════
+  // PASO 1: Probar Supabase Auth para super-admin
+  // ════════════════════════════════════════════════════════
+  try {
+    const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
+      email: username,
+      password,
+    });
+
+    if (!authErr && authData?.user) {
+      const { data: userRow } = await sbAccounts
+        .from("users")
+        .select("is_super_admin, is_active")
+        .eq("id", authData.user.id)
+        .single();
+
+      if (userRow?.is_super_admin && userRow?.is_active) {
+        setLoading(false);
+        navigate("/admin");
+        return;
+      }
+      // No es super-admin: cerramos sesión Supabase y seguimos al flujo B2C.
+      await supabase.auth.signOut();
     }
-  };
+  } catch {
+    // Ignoramos
+  }
+
+  // ════════════════════════════════════════════════════════
+  // PASO 2: Login Konsolidator B2C
+  // ════════════════════════════════════════════════════════
+  let b2cToken = null;
+  try {
+    const params = new URLSearchParams();
+    params.append("grant_type", "password");
+    params.append("client_id", CLIENT_ID);
+    params.append("scope", SCOPE);
+    params.append("username", username);
+    params.append("password", password);
+    const res = await fetch(TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error_description || data.error);
+    b2cToken = data.access_token;
+  } catch {
+    setError("Invalid credentials. Please try again.");
+    setLoading(false);
+    return;
+  }
+
+  // ════════════════════════════════════════════════════════
+  // PASO 3: Comprobar estado de reporting en Supabase
+  // ════════════════════════════════════════════════════════
+  const reporting = await getReportingStatus(username, password);
+
+  setLoading(false);
+
+  // Pasamos a App el token B2C + el estado de reporting
+  // App.jsx decide qué renderizar.
+  onLogin(b2cToken, { username }, { username, password }, reporting);
+};
 
   return (
     <div className="min-h-screen flex bg-[#1a2f8a]">
