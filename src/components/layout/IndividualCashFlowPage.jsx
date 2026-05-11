@@ -1,7 +1,13 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
-import { ChevronDown, Loader2 } from "lucide-react";
+import { ChevronDown, Loader2, Download, Library } from "lucide-react";
 import { useTypo, useSettings } from "./SettingsContext";
+import PageHeader, { MultiFilterPill } from "./PageHeader.jsx";
+import MappingsModal from "./Mappings.jsx";
+import ExcelJS from "exceljs";
+import { saveAs } from "file-saver";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
 const BASE = "https://api.konsolidator.com/v2";
 
@@ -150,7 +156,7 @@ function MultiSelectPill({ label, values, onChange, options, filterStyle, colors
 function SheetRow({
   node, depth, pivot, visibleCompanies,
   body1Style, body2Style, subbody1Style,
-  isSubtotal,
+  isSubtotal, compareMode = false, cmpPivot = new Map(),
 }) {
   const rowStyle = isSubtotal ? body1Style : body2Style;
   const cellStyle = (v) => {
@@ -172,22 +178,38 @@ function SheetRow({
           <span className="flex-shrink-0 mr-2" style={rowStyle}>{node.AccountCode}</span>
           <span className="truncate" style={{ ...rowStyle, maxWidth: 260 }}>{node.AccountName}</span>
         </div>
-      </td>
-
+     </td>
       {visibleCompanies.map(c => {
         const val = getContrib(c);
+        const cmpVal = compareMode
+          ? (cmpPivot?.get(node.AccountCode)?.[c] ?? []).reduce((s, r) => s + Number(r._cfAmount ?? 0), 0)
+          : null;
+        const delta = cmpVal !== null ? Math.round(val) - Math.round(cmpVal) : null;
         return (
-          <td key={c}
-            className="px-4 py-2.5 text-center whitespace-nowrap border-l border-gray-100"
-            style={{ minWidth: 120, ...cellStyle(val) }}>
-            {fmt(val)}
-          </td>
+          <Fragment key={c}>
+            <td className="px-4 py-2.5 text-center whitespace-nowrap border-l border-gray-100"
+              style={{ minWidth: 120, ...cellStyle(val) }}>
+              {fmt(val)}
+            </td>
+            {compareMode && (
+              <td className="px-4 py-2.5 text-center whitespace-nowrap border-l border-gray-100 bg-[#fafbff]"
+                style={{ minWidth: 110, ...cellStyle(cmpVal ?? 0) }}>
+                {fmt(cmpVal ?? 0)}
+              </td>
+            )}
+            {compareMode && (
+              <td className="px-4 py-2.5 text-center whitespace-nowrap border-l border-gray-100 bg-[#f5f7ff]"
+                style={{ minWidth: 100, ...rowStyle, color: !delta ? "#D1D5DB" : delta > 0 ? "#059669" : "#EF4444" }}>
+                {delta ? fmt(delta) : "—"}
+              </td>
+            )}
+          </Fragment>
         );
       })}
     </tr>
   );
 }
-
+ 
 /* ═══════════════════════════════════════════════════════════════════════
    MAIN
    ═══════════════════════════════════════════════════════════════════════ */
@@ -550,9 +572,188 @@ export default function IndividualCashFlowPage({ token }) {
   const availableYears  = [...new Set(periods.map(p => p.Year))].sort((a,b) => b-a).map(y => ({ value: String(y), label: String(y) }));
   const availableMonths = [...new Set(periods.map(p => p.Month))].sort((a,b) => a-b).map(m => ({ value: String(m), label: MONTHS.find(x => x.value === m)?.label ?? String(m) }));
 
-  const getLegal = co => companies.find(c => c.CompanyShortName === co)?.CompanyLegalName || co;
-
+ const getLegal = co => companies.find(c => c.CompanyShortName === co)?.CompanyLegalName || co;
   const hasData = uploadedData.length > 0;
+
+const [exporting, setExporting] = useState(false);
+  const [viewsModalOpen, setViewsModalOpen] = useState(false);
+  const [compareMode, setCompareMode] = useState(false);
+  const [cmpYear,  setCmpYear]  = useState("");
+  const [cmpMonth, setCmpMonth] = useState("");
+  const [cmpSource, setCmpSource] = useState("");
+  const [cmpPivot, setCmpPivot] = useState(new Map());
+  const [cmpLoading, setCmpLoading] = useState(false);
+
+ // Fetch compare period when compare mode is active
+  useEffect(() => {
+    if (!compareMode || !cmpYear || !cmpMonth || !cmpSource || !structure) { setCmpPivot(new Map()); return; }
+    let cancelled = false;
+    setCmpLoading(true);
+    const baseFilter = `Year eq ${cmpYear} and Month eq ${cmpMonth} and Source eq '${cmpSource}' and GroupStructure eq '${structure}'`;
+    fetch(`${BASE}/reports/uploaded-accounts?$filter=${encodeURIComponent(baseFilter)}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json()).then(d => {
+        if (cancelled) return;
+        const rows = d.value || [];
+        const piv = new Map();
+        rows.forEach(r => {
+          const localCode = r.LocalAccountCode ?? r.localAccountCode ?? null;
+          const groupCode = String(r.AccountCode ?? r.accountCode ?? "");
+          const co = r.CompanyShortName ?? r.companyShortName ?? "";
+          if (!localCode || !groupCode || !co) return;
+          const cfs = groupToCf.get(groupCode);
+          if (!cfs) return;
+          const amt = parseAmt(r.AmountYTD ?? r.amountYTD);
+          cfs.forEach(cfCode => {
+            if (!piv.has(cfCode)) piv.set(cfCode, {});
+            const c = piv.get(cfCode);
+            if (!c[co]) c[co] = [];
+            c[co].push({ _cfAmount: amt });
+          });
+        });
+        // bubble up to parents
+        [...piv.keys()].forEach(leafCode => {
+          const meta = cfMetadata.get(leafCode);
+          if (!meta) return;
+          let parent = meta.sumParent;
+          const seen = new Set([leafCode]);
+          while (parent && !seen.has(parent)) {
+            seen.add(parent);
+            const lp = piv.get(leafCode) || {};
+            if (!piv.has(parent)) piv.set(parent, {});
+            const pp = piv.get(parent);
+            Object.entries(lp).forEach(([co, arr]) => {
+              if (!pp[co]) pp[co] = [];
+              pp[co].push({ _cfAmount: arr.reduce((s, r) => s + (r._cfAmount ?? 0), 0) });
+            });
+            parent = cfMetadata.get(parent)?.sumParent || "";
+          }
+        });
+        setCmpPivot(piv);
+        setCmpLoading(false);
+      }).catch(() => { if (!cancelled) setCmpLoading(false); });
+    return () => { cancelled = true; };
+  }, [compareMode, cmpYear, cmpMonth, cmpSource, structure, token, groupToCf, cfMetadata]);
+
+  // Init compare filters on toggle
+  useEffect(() => {
+    if (!compareMode) return;
+    if (!cmpSource) setCmpSource(source);
+    if (!cmpYear)   setCmpYear(String(parseInt(year) - 1 || year));
+    if (!cmpMonth)  setCmpMonth(month);
+  }, [compareMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const filterStr = [source, structure,
+    year && month ? `${MONTHS.find(m => m.value === parseInt(month))?.label ?? month} ${year}` : ""
+  ].filter(Boolean).join(" · ");
+
+  const handleExportXlsx = async () => {
+    const C = { primary: "FF1A2F8A", white: "FFFFFFFF", highlight: "FFEEF1FB", band2: "FFF8F9FF", red: "FFDC2626", gray: "FF9CA3AF" };
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Cash Flow", { views: [{ state: "frozen", xSplit: 1, ySplit: 4 }] });
+    const totalCols = 1 + visibleCompanies.length;
+
+    ws.mergeCells(1, 1, 1, totalCols);
+    Object.assign(ws.getCell(1, 1), { value: "Cash Flow — By Company", fill: { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } }, font: { name: "Calibri", size: 16, bold: true, color: { argb: C.white } }, alignment: { vertical: "middle", horizontal: "left", indent: 1 } });
+    ws.getRow(1).height = 28;
+    ws.mergeCells(2, 1, 2, totalCols);
+    Object.assign(ws.getCell(2, 1), { value: filterStr || "—", fill: { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } }, font: { name: "Calibri", size: 10, color: { argb: C.white } }, alignment: { vertical: "middle", horizontal: "left", indent: 1 } });
+    ws.getRow(2).height = 18;
+    ws.getRow(3).height = 6;
+
+    const hRow = ws.getRow(4);
+    hRow.height = 24;
+    ["Account", ...visibleCompanies.map(c => getLegal(c))].forEach((h, i) => {
+      const c = hRow.getCell(i + 1);
+      c.value = h;
+      c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+      c.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+      c.alignment = { vertical: "middle", horizontal: i === 0 ? "left" : "right", indent: i === 0 ? 1 : 0 };
+    });
+
+    let rn = 5;
+    sectionOrder.forEach(sec => {
+      const codes = bySection.get(sec);
+      if (!codes?.length) return;
+      const secInfo = activeCfMapping?.sections?.get(sec);
+
+      ws.mergeCells(rn, 1, rn, totalCols);
+      const sc = ws.getCell(rn, 1);
+      sc.value = (secInfo?.label || sec).toUpperCase();
+      sc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF" + (secInfo?.color || "#1a2f8a").replace("#", "").toUpperCase().padStart(6, "0") } };
+      sc.font = { name: "Calibri", size: 9, bold: true, color: { argb: C.white } };
+      sc.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+      ws.getRow(rn).height = 18;
+      rn++;
+
+      codes.forEach((code, idx) => {
+        const name = nameFor(code);
+        const isSubtotal = subtotalCodes.has(code);
+        const band = idx % 2 === 0 ? "FFFFFFFF" : C.band2;
+        const lc = ws.getCell(rn, 1);
+        lc.value = `${code}  ${name}`.trim();
+        lc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
+        lc.font = { name: "Calibri", size: 10, bold: isSubtotal, color: { argb: C.primary } };
+        lc.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+        visibleCompanies.forEach((co, ci) => {
+          const byCo = pivot.get(code) || {};
+          const val = Math.round((byCo[co] ?? []).reduce((s, r) => s + (Number(r._cfAmount ?? 0)), 0));
+          const vc = ws.getCell(rn, 2 + ci);
+          if (val !== 0) { vc.value = val; vc.numFmt = '#,##0;[Red]-#,##0'; vc.font = { name: "Calibri", size: 10, bold: isSubtotal, color: { argb: val < 0 ? C.red : "FF000000" } }; }
+          else { vc.font = { name: "Calibri", size: 10, color: { argb: C.gray } }; }
+          vc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
+          vc.alignment = { vertical: "middle", horizontal: "right" };
+        });
+        ws.getRow(rn).height = 18;
+        rn++;
+      });
+    });
+
+    ws.getColumn(1).width = 42;
+    visibleCompanies.forEach((_, i) => { ws.getColumn(2 + i).width = 18; });
+    const buf = await wb.xlsx.writeBuffer();
+    saveAs(new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), `CashFlow_${year}_${String(month).padStart(2, "0")}.xlsx`);
+  };
+
+  const handleExportPdf = () => {
+    const H = { primary: "#1A2F8A", white: "#FFFFFF", band2: "#F8F9FF", red: "#DC2626" };
+    const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    doc.setFillColor(H.primary); doc.rect(0, 0, pageWidth, 60, "F");
+    doc.setTextColor(H.white); doc.setFont("helvetica", "bold"); doc.setFontSize(16);
+    doc.text("Cash Flow — By Company", 24, 28);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9);
+    doc.text(filterStr || "—", 24, 46);
+
+    const head = [["Account", ...visibleCompanies.map(c => getLegal(c))]];
+    const body = [];
+    sectionOrder.forEach(sec => {
+      const codes = bySection.get(sec);
+      if (!codes?.length) return;
+      const secInfo = activeCfMapping?.sections?.get(sec);
+      body.push([{ content: (secInfo?.label || sec).toUpperCase(), colSpan: 1 + visibleCompanies.length, styles: { fillColor: secInfo?.color || H.primary, textColor: H.white, fontStyle: "bold" } }]);
+      codes.forEach(code => {
+        const name = nameFor(code);
+        const isSubtotal = subtotalCodes.has(code);
+        const fmtVal = v => { const r = Math.round(v); return r === 0 ? "—" : r.toLocaleString("de-DE"); };
+        body.push([
+          { content: `${code}  ${name}`.trim(), styles: { fontStyle: isSubtotal ? "bold" : "normal", halign: "left" } },
+          ...visibleCompanies.map(co => {
+            const byCo = pivot.get(code) || {};
+            const val = (byCo[co] ?? []).reduce((s, r) => s + Number(r._cfAmount ?? 0), 0);
+            return { content: fmtVal(val), styles: { halign: "right", textColor: val < 0 ? H.red : "#000000" } };
+          }),
+        ]);
+      });
+    });
+
+    autoTable(doc, { head, body, startY: 80, theme: "plain",
+      styles: { font: "helvetica", fontSize: 7, cellPadding: 3, textColor: H.primary },
+      headStyles: { fillColor: H.primary, textColor: H.white, fontStyle: "bold", halign: "right" },
+      columnStyles: { 0: { halign: "left", fontStyle: "bold", cellWidth: 130 } },
+      alternateRowStyles: { fillColor: H.band2 },
+    });
+    doc.save(`CashFlow_${year}_${String(month).padStart(2, "0")}.pdf`);
+  };
 
   return (
     <div className="flex flex-col gap-4 h-full min-h-0">
@@ -573,58 +774,93 @@ export default function IndividualCashFlowPage({ token }) {
         .cf-scroll thead tr:first-child th:last-child  { border-top-right-radius: 1rem; }
       `}</style>
 
-      <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          <div className="w-1.5 h-10 rounded-full" style={{ backgroundColor: colors.primary }} />
-          <div>
-            <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Reports</p>
-            <h1 className="leading-none" style={header1Style}>Cash Flow</h1>
-          </div>
-        </div>
+ <PageHeader
+        kicker="Reports"
+        title="Cash Flow"
+        filters={[
+          ...(sources.length > 0
+            ? [{ label: "Source", value: source, onChange: setSource,
+                options: sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s })) }]
+            : []),
+          ...(availableYears.length > 0
+            ? [{ label: "Year", value: year, onChange: setYear, options: availableYears }]
+            : []),
+          ...(availableMonths.length > 0
+            ? [{ label: "Month", value: month, onChange: setMonth, options: availableMonths }]
+            : []),
+          ...(structures.length > 0
+            ? [{ label: "Structure", value: structure, onChange: setStructure,
+                options: structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s })) }]
+            : []),
+          ...(contributionCompanies.length > 1
+            ? [{
+                label: "Companies",
+                multiselect: true,
+                values: selectedCompanies,
+                onChange: setSelectedCompanies,
+                options: contributionCompanies.map(c => ({
+                  value: c,
+                  label: companies.find(x => x.CompanyShortName === c)?.CompanyLegalName || c,
+                })),
+              }]
+            : []),
+        ]}
+        compareToggle={{ active: compareMode, onChange: setCompareMode }}
+fabActions={[
+          {
+            id: "views",
+            icon: Library,
+            label: "Views",
+            onClick: () => setViewsModalOpen(true),
+          },
+          {
+            id: "export",
+            icon: Download,
+            label: "Export",
+            subActions: [
+              {
+                id: "excel",
+                label: "Excel",
+                src: "https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png",
+                alt: "Excel",
+                onClick: async () => {
+                  setExporting(true);
+                  try { await handleExportXlsx(); }
+                  finally { setExporting(false); }
+                },
+              },
+              {
+                id: "pdf",
+                label: "PDF",
+                src: "https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png",
+                alt: "PDF",
+                onClick: () => { handleExportPdf(); },
+              },
+            ],
+          },
+        ]}
+      />
 
-        <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
+<MappingsModal
+        open={viewsModalOpen}
+        onClose={() => setViewsModalOpen(false)}
+        groupAccounts={[]}
+        onApply={() => {}}
+      />
 
-        <div className="flex items-center gap-2 flex-wrap">
-          {sources.length > 0 && (
-            <FilterPill label="Source" value={source} onChange={setSource}
-              options={sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s }))}
-              filterStyle={filterStyle} colors={colors} />
-          )}
-          {availableYears.length > 0 && (
-            <FilterPill label="Year" value={year} onChange={setYear} options={availableYears}
-              filterStyle={filterStyle} colors={colors} />
-          )}
-          {availableMonths.length > 0 && (
-            <FilterPill label="Month" value={month} onChange={setMonth} options={availableMonths}
-              filterStyle={filterStyle} colors={colors} />
-          )}
-          {structures.length > 0 && (
-            <FilterPill label="Structure" value={structure} onChange={setStructure}
-              options={structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s }))}
-              filterStyle={filterStyle} colors={colors} />
-          )}
-          {contributionCompanies.length > 1 && (
-            <MultiSelectPill label="Companies"
-              values={selectedCompanies}
-              onChange={setSelectedCompanies}
-              options={contributionCompanies.map(c => ({
-                value: c,
-                label: companies.find(x => x.CompanyShortName === c)?.CompanyLegalName || c
-              }))}
-              filterStyle={filterStyle} colors={colors} />
-          )}
+      {compareMode && (
+        <div className="flex items-center gap-2 flex-wrap px-4 py-2.5 bg-white rounded-2xl border border-gray-100 shadow-sm flex-shrink-0">
+          <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50 mr-1">Compare with</span>
+          <FilterPill label="Source" value={cmpSource} onChange={setCmpSource}
+            options={sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s }))}
+            filterStyle={filterStyle} colors={colors} />
+          <FilterPill label="Year" value={cmpYear} onChange={setCmpYear}
+            options={availableYears} filterStyle={filterStyle} colors={colors} />
+          <FilterPill label="Month" value={cmpMonth} onChange={setCmpMonth}
+            options={availableMonths} filterStyle={filterStyle} colors={colors} />
+          {cmpLoading && <Loader2 size={11} className="animate-spin text-[#1a2f8a] ml-2" />}
         </div>
-
-        <div className="ml-auto flex items-center gap-3 flex-shrink-0 mr-6">
-          {loading && <Loader2 size={13} className="animate-spin text-[#1a2f8a]" />}
-          <button className="transition-all hover:opacity-80 hover:scale-105" title="Export Excel">
-            <img src="https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png" width="44" height="36" alt="Excel" />
-          </button>
-          <button className="transition-all hover:opacity-80 hover:scale-105" title="Export PDF">
-            <img src="https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png" width="30" height="36" alt="PDF" />
-          </button>
-        </div>
-      </div>
+      )}
 
       <div className="flex-1 min-h-0 flex flex-col">
         <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
@@ -648,7 +884,7 @@ export default function IndividualCashFlowPage({ token }) {
                         <span style={header2Style}>ACCOUNT</span>
                       </th>
 
-                      <th colSpan={visibleCompanies.length}
+                      <th colSpan={visibleCompanies.length * (compareMode ? 3 : 1)}
                         className="px-4 py-2 text-center"
                         style={{ backgroundColor: colors.primary, boxShadow: "inset 1px 0 0 rgba(255,255,255,0.25), inset 0 0 0 9999px rgba(0,0,0,0.1)" }}>
                         <span style={{ ...header2Style, textTransform: "uppercase", position: "relative" }}>
@@ -657,20 +893,39 @@ export default function IndividualCashFlowPage({ token }) {
                       </th>
                     </tr>
 
-                    <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-                      <th style={{ backgroundColor: colors.primary }} />
-                      {visibleCompanies.map(c => {
+<tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                      <th className="sticky left-0 z-40"
+                        style={{ minWidth: 220, width: 220, backgroundColor: colors.primary,
+                          boxShadow: "inset -1px 0 0 rgba(255,255,255,0.25)" }} />
+{visibleCompanies.map(c => {
                         const ccy = companies.find(x => x.CompanyShortName === c)?.CurrencyCode || "—";
                         return (
-                          <th key={c} className="px-4 py-2.5 text-center"
-                            style={{ minWidth: 120, backgroundColor: colors.primary }}>
-                            <div className="flex flex-col items-center gap-0.5">
-                              <span className="block overflow-hidden text-ellipsis whitespace-nowrap max-w-full" style={underscore1Style} title={getLegal(c)}>
-                                {getLegal(c)}
-                              </span>
-                              <span style={underscore2Style}>{ccy}</span>
-                            </div>
-                          </th>
+                          <Fragment key={c}>
+                            <th className="px-4 py-2.5 text-center"
+                              style={{ minWidth: 120, backgroundColor: colors.primary }}>
+                              <div className="flex flex-col items-center gap-0.5">
+                                <span className="block overflow-hidden text-ellipsis whitespace-nowrap max-w-full" style={underscore1Style} title={getLegal(c)}>
+                                  {getLegal(c)}
+                                </span>
+                                <span style={underscore2Style}>{ccy}</span>
+                              </div>
+                            </th>
+                            {compareMode && (
+                              <th className="px-4 py-2.5 text-center"
+                                style={{ minWidth: 110, backgroundColor: colors.primary, opacity: 0.8 }}>
+                                <div className="flex flex-col items-center gap-0.5">
+                                  <span style={{ ...underscore1Style, fontSize: 9 }}>Cmp</span>
+                                  <span style={underscore2Style}>{ccy}</span>
+                                </div>
+                              </th>
+                            )}
+                            {compareMode && (
+                              <th className="px-4 py-2.5 text-center"
+                                style={{ minWidth: 100, backgroundColor: colors.primary, opacity: 0.65 }}>
+                                <span style={{ ...underscore1Style, fontSize: 9 }}>Δ</span>
+                              </th>
+                            )}
+                          </Fragment>
                         );
                       })}
                     </tr>
@@ -682,19 +937,22 @@ export default function IndividualCashFlowPage({ token }) {
                       if (!codes || codes.length === 0) return null;
 
                       const secInfo = activeCfMapping?.sections?.get(sec);
-                      const totalCols = 1 + visibleCompanies.length;
+                                            const totalCols = 1 + visibleCompanies.length * (compareMode ? 3 : 1);
 
                       return (
                         <Fragment key={`section-${sec}`}>
-                          <tr>
-                            <td colSpan={totalCols}
+<tr>
+                            <td className="sticky left-0 z-10"
                               style={{
                                 backgroundColor: secInfo?.color || colors.primary,
                                 color: "#fff", padding: "8px 16px",
                                 fontSize: 11, fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase",
+                                minWidth: 220, width: 220,
                               }}>
                               {secInfo?.label || sec}
                             </td>
+                            <td colSpan={totalCols - 1}
+                              style={{ backgroundColor: secInfo?.color || colors.primary }} />
                           </tr>
                           {codes.map(code => {
                             const isSubtotal = subtotalCodes.has(code);
@@ -703,10 +961,11 @@ export default function IndividualCashFlowPage({ token }) {
                               AccountName: nameFor(code),
                             };
                             return (
-                              <SheetRow key={code} node={node} depth={0}
+<SheetRow key={code} node={node} depth={0}
                                 pivot={pivot} visibleCompanies={visibleCompanies}
                                 body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style}
-                                isSubtotal={isSubtotal} />
+                                isSubtotal={isSubtotal}
+                                compareMode={compareMode} cmpPivot={cmpPivot} />
                             );
                           })}
                         </Fragment>

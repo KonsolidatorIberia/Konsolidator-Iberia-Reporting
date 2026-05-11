@@ -15,6 +15,7 @@ const NAV = [
       { key: "individual-kpis",        label: "KPIs",        icon: BarChart3 },
       { key: "individual-dimensiones", label: "Dimensiones", icon: Filter    },
       { key: "individual-cashflow",    label: "Cash Flow",   icon: TrendingUp },
+      { key: "individual-memory-notes", label: "Memory Notes",  icon: BookOpen   },
     ],
   },
 {

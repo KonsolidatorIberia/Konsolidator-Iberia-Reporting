@@ -1,6 +1,11 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Search, Database, GitMerge, Maximize2, Minimize2 } from "lucide-react";
-import { useTypo, useSettings } from "./SettingsContext";
+import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Search, Database, GitMerge, Maximize2, Minimize2, Library, CheckCircle2, AlertTriangle, TrendingUp, Scale, Download } from "lucide-react";import { useTypo, useSettings } from "./SettingsContext";
+import PageHeader from "./PageHeader.jsx";
+import MappingsModal from "./Mappings.jsx";
+import ExcelJS from "exceljs";
+import { saveAs } from "file-saver";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 const BASE_URL = "";
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -231,6 +236,96 @@ case "cc": {
 // ════════════════════════════════════════════════════════════════════════════
 // END KPI RESOLVER
 // ════════════════════════════════════════════════════════════════════════════
+
+// ── Mapping → cc_tag override helpers ─────────────────────────────────────────
+// More specific terms first; first match wins to prevent collisions.
+const CC_TAG_SYNONYMS = {
+  personnel_costs:     ["gastos de personal", "personnel costs", "personnel"],
+  cost_of_goods:       ["coste de ventas", "costo de ventas", "cost of goods", "cogs", "aprovisionamientos"],
+  gross_profit:        ["margen bruto", "beneficio bruto", "resultado bruto", "gross profit", "gross margin"],
+  ebitda:              ["ebitda"],
+  ebit:                ["resultado de explotacion", "operating income", "resultado operativo", "ebit"],
+  ebt:                 ["resultado antes de impuestos", "pre-tax", "ebt", "rai"],
+  net_result:          ["resultado neto", "resultado del ejercicio", "net result", "net income", "beneficio neto"],
+  current_assets:      ["activo corriente", "activo circulante", "current assets"],
+  current_liabilities: ["pasivo corriente", "pasivo circulante", "current liabilities"],
+  total_assets:        ["total activo", "activo total", "total assets", "total de activos"],
+  total_equity:        ["patrimonio neto", "fondos propios", "total equity", "total de capital"],
+  total_liabilities:   ["pasivo total", "total pasivo", "total liabilities", "total de pasivo"],
+  revenue:             ["ingresos", "revenue", "ventas", "sales", "income", "facturacion"],
+  operating_expenses:  ["gastos operativos", "gastos de explotacion", "operating expenses", "opex"],
+};
+
+function normalizeLabel(s) {
+  return String(s || "").toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Walks pl_tree/bs_tree and returns Map<sectionLabel, [accountCodes]>
+function extractSectionsFromTree(tree) {
+  if (!Array.isArray(tree) || tree.length === 0) return new Map();
+  const result = new Map();
+  function walk(nodes, currentLabel) {
+    for (const node of nodes) {
+      if (!node) continue;
+      if (node.kind === "breaker") {
+        const label = String(node.name ?? "").trim();
+        if (label && !result.has(label)) result.set(label, []);
+        walk(node.children || [], label);
+      } else {
+        const code = String(node.code ?? "");
+        if (code && currentLabel && result.has(currentLabel)) {
+          result.get(currentLabel).push(code);
+        }
+        walk(node.children || [], currentLabel);
+      }
+    }
+  }
+  walk(tree, null);
+  return result;
+}
+
+// Convert saved mapping tree (jsonb) into the {rows, sections} shape that
+// PivotTab uses for row ordering and section breakers.
+function convertSavedMappingTree(tree) {
+  if (!Array.isArray(tree) || tree.length === 0) return null;
+  const rows = new Map();
+  const sections = new Map();
+  let sortCounter = 0;
+  let defaultSecCounter = 0;
+  function walk(nodes, depth, parentSection) {
+    for (const node of nodes) {
+      if (!node) continue;
+      if (node.kind === "breaker") {
+        const secCode = node.sectionCode || `section_${defaultSecCounter++}`;
+        sections.set(secCode, {
+          label: String(node.name ?? "Section"),
+          color: node.color || "#1a2f8a",
+        });
+        walk(node.children || [], depth, secCode);
+      } else {
+        const code = String(node.code ?? "");
+        if (!code) continue;
+        const sec = parentSection || "_default";
+        if (!sections.has(sec)) sections.set(sec, { label: "", color: "#1a2f8a" });
+        rows.set(code, {
+          section: sec,
+          sortOrder: sortCounter++,
+          isSum: true,
+          showInSummary: !!node.showInSummary,
+          level: depth,
+        });
+        walk(node.children || [], depth + 1, sec);
+      }
+    }
+  }
+  walk(tree, 0, null);
+  if (rows.size === 0) return null;
+  return { rows, sections };
+}
 
 const MONTHS = [
   { value: 1, label: "January" }, { value: 2, label: "February" },
@@ -518,15 +613,16 @@ function AccountsTab({ data }) {
 
 
 /* ── Pivot Tab ────────────────────────────────────────────── */
-function PivotTab({ data, dimensions, groupAccounts = [], onShowAccounts, selGroup, compareMode, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null }) {
+function PivotTab({ data, dimensions, groupAccounts = [], onShowAccounts, selGroup, compareMode, statementType = "pl", sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, exportRef = null }) {
+
   const header2Style = useTypo("header2");
     const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
   const header3Style = useTypo("header3");
   const { colors } = useSettings();
 
-  // P&L vs B/S toggle and Summary/Detailed toggle (only used in non-compare mode)
-  const [statementType, setStatementType] = useState("pl"); // "pl" | "bs"
+// Summary/Detailed toggle (only used in non-compare mode). statementType
+  // is lifted to DimensionesPage to drive PageHeader tabs.
   const [summaryMode, setSummaryMode] = useState(true);
 
   const headerRef = useRef(null);
@@ -623,6 +719,13 @@ console.log("[TREE DEBUG] sample with children:", tree.find(n => n.children?.len
 // Unique dim columns — derived from the journal's Dimensions field.
     // When a Dim Group is selected, we restrict columns to that group; otherwise
     // we show ALL groups together (each dim code as its own column).
+    const dimNameLookup = new Map();
+    (dimensions || []).forEach(d => {
+      const code = d.code ?? d.Code ?? d.dimensionCode ?? d.DimensionCode ?? "";
+      const name = d.name ?? d.Name ?? d.dimensionName ?? d.DimensionName ?? code;
+      if (code) dimNameLookup.set(String(code), name);
+    });
+
     const dimMap = new Map();  // code → { code, name, group }
     rows.forEach(r => {
       const pairs = parseDimensions(r.Dimensions);
@@ -632,7 +735,7 @@ console.log("[TREE DEBUG] sample with children:", tree.find(n => n.children?.len
       }
       for (const [group, code] of pairs) {
         if (selGroup && group !== selGroup) continue;
-        if (!dimMap.has(code)) dimMap.set(code, { code, name: code, group });
+        if (!dimMap.has(code)) dimMap.set(code, { code, name: dimNameLookup.get(code) ?? code, group });
       }
     });
     const dimCols = [...dimMap.values()].sort((a, b) => {
@@ -943,6 +1046,278 @@ const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes,
     return out;
   }, [activeMapping, orderedRows, colors]);
 
+// ── Export helpers ──────────────────────────────────────────────────────
+  const C = {
+    primary:   "FF1A2F8A",
+    highlight: "FFEEF1FB",
+    white:     "FFFFFFFF",
+    band1:     "FFFFFFFF",
+    band2:     "FFF8F9FF",
+    gray400:   "FF9CA3AF",
+    red:       "FFDC2626",
+  };
+  const toArgb = (hex) => "FF" + String(hex ?? "#1a2f8a").replace("#", "").toUpperCase().padStart(6, "0");
+  const filterStr = [masterSource, masterStructure, masterYear && masterMonth
+    ? `${MONTHS[parseInt(masterMonth) - 1]?.label ?? masterMonth} ${masterYear}` : ""].filter(Boolean).join(" · ");
+
+  const handleExportXlsx = useCallback(async () => {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = "Konsolidator";
+
+    if (compareMode) {
+      // ── Compare sheet: rows = dims, cols = Std / Cmp1 / ΔAmt / Δ% / Cmp2 / ΔAmt / Δ%
+      const ws = wb.addWorksheet("Dimensions Compare", { views: [{ state: "frozen", xSplit: 1, ySplit: 4 }] });
+      const headers = ["Dimension", "Standard", "Compare 1", "Δ Amt", "Δ %", "Compare 2", "Δ Amt", "Δ %"];
+      const totalCols = headers.length;
+
+      ws.mergeCells(1, 1, 1, totalCols);
+      Object.assign(ws.getCell(1, 1), { value: "Dimensions — Compare", fill: { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } }, font: { name: "Calibri", size: 16, bold: true, color: { argb: C.white } }, alignment: { vertical: "middle", horizontal: "left", indent: 1 } });
+      ws.getRow(1).height = 28;
+      ws.mergeCells(2, 1, 2, totalCols);
+      Object.assign(ws.getCell(2, 1), { value: filterStr || "—", fill: { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } }, font: { name: "Calibri", size: 10, color: { argb: C.white } }, alignment: { vertical: "middle", horizontal: "left", indent: 1 } });
+      ws.getRow(2).height = 18;
+      ws.getRow(3).height = 6;
+
+      const hRow = ws.getRow(4);
+      hRow.height = 24;
+      headers.forEach((h, i) => {
+        const c = hRow.getCell(i + 1);
+        c.value = h;
+        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+        c.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+        c.alignment = { vertical: "middle", horizontal: i === 0 ? "left" : "right", indent: i === 0 ? 1 : 0 };
+      });
+
+      const visibleDims = dimCols.filter(d => !!d.code);
+      const flattenForDim = (p, pPrev, dk) => {
+        const flat = new Map();
+        p.forEach((dimMap, acCode) => {
+          const ytd = dimMap.get(dk) ?? 0;
+          if (viewMode === "monthly" && pPrev) {
+            flat.set(acCode, ytd - (pPrev.get(acCode)?.get(dk) ?? 0));
+          } else {
+            flat.set(acCode, ytd);
+          }
+        });
+        return flat;
+      };
+      const evalLineExport = (p, pPrev, dk) => {
+        const flat = flattenForDim(p, pPrev, dk);
+        if (line === "all") { let t = 0; flat.forEach(v => { t += v; }); return t; }
+        const kpi = kpiList.find(k => k.id === line);
+        if (!kpi) return 0;
+        const cache = new Map();
+        const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes, resolveCcTag);
+        return (v === null || isNaN(v)) ? 0 : v;
+      };
+
+      let rn = 5;
+      visibleDims.forEach((dim, idx) => {
+        const dk = dim.code;
+        const v1 = evalLineExport(pivot,  prevPivot,  dk);
+        const v2 = evalLineExport(pivot2, prevPivot2, dk);
+        const v3 = evalLineExport(pivot3, prevPivot3, dk);
+        const band = idx % 2 === 0 ? C.band1 : C.band2;
+        const row = ws.getRow(rn);
+        row.height = 18;
+        const setCell = (col, val, opts = {}) => {
+          const c = row.getCell(col);
+          c.value = val;
+          c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: opts.bg ?? band } };
+          c.font = { name: "Calibri", size: 10, bold: !!opts.bold, color: { argb: opts.color ?? "FF000000" } };
+          c.alignment = { vertical: "middle", horizontal: col === 1 ? "left" : "right", indent: col === 1 ? 1 : 0 };
+          if (opts.numFmt) c.numFmt = opts.numFmt;
+        };
+        const numFmt = '#,##0.00;[Red]-#,##0.00';
+        setCell(1, dim.name);
+        setCell(2, v1 === 0 ? null : v1, { numFmt, color: v1 < 0 ? C.red : "FF000000" });
+        setCell(3, v2 === 0 ? null : v2, { numFmt, color: v2 < 0 ? C.red : "FF000000" });
+        const d12 = v1 - v2;
+        setCell(4, v1 === 0 && v2 === 0 ? null : d12, { numFmt, color: d12 >= 0 ? "FF059669" : C.red });
+        setCell(5, v2 === 0 ? null : parseFloat((((v1 - v2) / Math.abs(v2)) * 100).toFixed(1)), { numFmt: '0.0"%"', color: d12 >= 0 ? "FF059669" : C.red });
+        setCell(6, v3 === 0 ? null : v3, { numFmt, color: v3 < 0 ? C.red : "FF000000" });
+        const d13 = v1 - v3;
+        setCell(7, v1 === 0 && v3 === 0 ? null : d13, { numFmt, color: d13 >= 0 ? "FF059669" : C.red });
+        setCell(8, v3 === 0 ? null : parseFloat((((v1 - v3) / Math.abs(v3)) * 100).toFixed(1)), { numFmt: '0.0"%"', color: d13 >= 0 ? "FF059669" : C.red });
+        rn++;
+      });
+
+      ws.getColumn(1).width = 30;
+      for (let i = 2; i <= totalCols; i++) ws.getColumn(i).width = 17;
+
+    } else {
+      // ── Pivot sheet: rows = accounts, cols = dims
+      const ws = wb.addWorksheet(`Dimensions ${statementType.toUpperCase()}`, { views: [{ state: "frozen", xSplit: 1, ySplit: 4 }] });
+      const totalCols = 1 + dimCols.length + 1;
+
+      ws.mergeCells(1, 1, 1, totalCols);
+      Object.assign(ws.getCell(1, 1), { value: `Dimensions — ${statementType === "pl" ? "P&L" : "Balance Sheet"}`, fill: { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } }, font: { name: "Calibri", size: 16, bold: true, color: { argb: C.white } }, alignment: { vertical: "middle", horizontal: "left", indent: 1 } });
+      ws.getRow(1).height = 28;
+      ws.mergeCells(2, 1, 2, totalCols);
+      Object.assign(ws.getCell(2, 1), { value: filterStr || "—", fill: { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } }, font: { name: "Calibri", size: 10, color: { argb: C.white } }, alignment: { vertical: "middle", horizontal: "left", indent: 1 } });
+      ws.getRow(2).height = 18;
+      ws.getRow(3).height = 6;
+
+      const hRow = ws.getRow(4);
+      hRow.height = 24;
+      ["Account", ...dimCols.map(d => d.name ?? d.code ?? "—"), "TOTAL"].forEach((h, i) => {
+        const c = hRow.getCell(i + 1);
+        c.value = h;
+        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+        c.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+        c.alignment = { vertical: "middle", horizontal: i === 0 ? "left" : "right", indent: i === 0 ? 1 : 0 };
+      });
+
+      let rn = 5;
+      orderedRows.forEach((node, idx) => {
+        const divider = dividerMap[String(node.AccountCode)];
+        if (divider) {
+          ws.mergeCells(rn, 1, rn, totalCols);
+          const dc = ws.getCell(rn, 1);
+          dc.value = divider.label.toUpperCase();
+          dc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: toArgb(divider.color) } };
+          dc.font = { name: "Calibri", size: 9, bold: true, color: { argb: C.white } };
+          dc.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+          ws.getRow(rn).height = 18;
+          rn++;
+        }
+
+        const band = idx % 2 === 0 ? C.band1 : C.band2;
+        const lc = ws.getCell(rn, 1);
+        lc.value = `${node.AccountCode}  ${node.AccountName ?? ""}`.trim();
+        lc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
+        lc.font = { name: "Calibri", size: 10, color: { argb: C.primary } };
+        lc.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+
+        let rowTotal = 0;
+        dimCols.forEach((dim, di) => {
+          const val = getVal(node.AccountCode, dim.code ?? "__none__");
+          rowTotal += val;
+          const vc = ws.getCell(rn, 2 + di);
+          if (val === 0) {
+            vc.font = { name: "Calibri", size: 10, color: { argb: C.gray400 } };
+          } else {
+            vc.value = val;
+            vc.numFmt = '#,##0.00;[Red]-#,##0.00';
+            vc.font = { name: "Calibri", size: 10, color: { argb: val < 0 ? C.red : "FF000000" } };
+          }
+          vc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
+          vc.alignment = { vertical: "middle", horizontal: "right" };
+        });
+
+        const tc = ws.getCell(rn, 2 + dimCols.length);
+        if (rowTotal !== 0) {
+          tc.value = rowTotal;
+          tc.numFmt = '#,##0.00;[Red]-#,##0.00';
+          tc.font = { name: "Calibri", size: 10, bold: true, color: { argb: rowTotal < 0 ? C.red : "FF000000" } };
+        } else {
+          tc.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.gray400 } };
+        }
+        tc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.highlight } };
+        tc.alignment = { vertical: "middle", horizontal: "right" };
+        ws.getRow(rn).height = 18;
+        rn++;
+      });
+
+      ws.getColumn(1).width = 44;
+      for (let i = 2; i <= totalCols; i++) ws.getColumn(i).width = 18;
+    }
+
+    const buffer = await wb.xlsx.writeBuffer();
+    saveAs(new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+      `Konsolidator_Dimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.xlsx`);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compareMode, statementType, orderedRows, dimCols, getVal, dividerMap, pivot, prevPivot, pivot2, prevPivot2, pivot3, prevPivot3, viewMode, line, kpiList, ccTagToCodes, resolveCcTag, masterYear, masterMonth, masterSource, masterStructure]);
+
+  const handleExportPdf = useCallback(() => {
+    const H = { primary: "#1A2F8A", highlight: "#EEF1FB", white: "#FFFFFF", band2: "#F8F9FF", red: "#DC2626", green: "#059669", gray: "#9CA3AF" };
+    const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+    const pageWidth = doc.internal.pageSize.getWidth();
+
+    doc.setFillColor(H.primary);
+    doc.rect(0, 0, pageWidth, 60, "F");
+    doc.setTextColor(H.white);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(16);
+    doc.text(`Dimensions — ${compareMode ? "Compare" : statementType === "pl" ? "P&L" : "Balance Sheet"}`, 24, 28);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.text(filterStr || "—", 24, 46);
+
+    if (compareMode) {
+      const visibleDims = dimCols.filter(d => !!d.code);
+      const flattenForDim = (p, pPrev, dk) => {
+        const flat = new Map();
+        p.forEach((dMap, ac) => {
+          const ytd = dMap.get(dk) ?? 0;
+          flat.set(ac, viewMode === "monthly" && pPrev ? ytd - (pPrev.get(ac)?.get(dk) ?? 0) : ytd);
+        });
+        return flat;
+      };
+      const evalLine = (p, pPrev, dk) => {
+        const flat = flattenForDim(p, pPrev, dk);
+        if (line === "all") { let t = 0; flat.forEach(v => { t += v; }); return t; }
+        const kpi = kpiList.find(k => k.id === line);
+        if (!kpi) return 0;
+        const cache = new Map();
+        const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes, resolveCcTag);
+        return (v === null || isNaN(v)) ? 0 : v;
+      };
+
+      const head = [["Dimension", "Standard", "Compare 1", "Δ Amt", "Δ %", "Compare 2", "Δ Amt", "Δ %"]];
+      const body = visibleDims.map(dim => {
+        const dk = dim.code;
+        const v1 = evalLine(pivot, prevPivot, dk);
+        const v2 = evalLine(pivot2, prevPivot2, dk);
+        const v3 = evalLine(pivot3, prevPivot3, dk);
+        const fmt = v => v === 0 ? "—" : v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        return [
+          dim.name,
+          fmt(v1), fmt(v2),
+          v1 === 0 && v2 === 0 ? "—" : fmt(v1 - v2),
+          v2 === 0 ? "—" : `${(((v1 - v2) / Math.abs(v2)) * 100).toFixed(1)}%`,
+          fmt(v3),
+          v1 === 0 && v3 === 0 ? "—" : fmt(v1 - v3),
+          v3 === 0 ? "—" : `${(((v1 - v3) / Math.abs(v3)) * 100).toFixed(1)}%`,
+        ];
+      });
+
+      autoTable(doc, { head, body, startY: 80, theme: "plain",
+        styles: { font: "helvetica", fontSize: 8, cellPadding: 4, textColor: H.primary },
+        headStyles: { fillColor: H.primary, textColor: H.white, fontStyle: "bold", halign: "right" },
+        columnStyles: { 0: { halign: "left", fontStyle: "bold", cellWidth: 120 } },
+        alternateRowStyles: { fillColor: H.band2 },
+      });
+    } else {
+      const head = [["Account", ...dimCols.map(d => d.name ?? d.code ?? "—"), "TOTAL"]];
+      const body = orderedRows.map(node => {
+        const fmt = v => v === 0 ? "—" : v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const vals = dimCols.map(dim => getVal(node.AccountCode, dim.code ?? "__none__"));
+        const total = vals.reduce((s, v) => s + v, 0);
+        return [`${node.AccountCode}  ${node.AccountName ?? ""}`.trim(), ...vals.map(fmt), fmt(total)];
+      });
+
+      autoTable(doc, { head, body, startY: 80, theme: "plain",
+        styles: { font: "helvetica", fontSize: 7, cellPadding: 3, textColor: H.primary },
+        headStyles: { fillColor: H.primary, textColor: H.white, fontStyle: "bold", halign: "right" },
+        columnStyles: { 0: { halign: "left", fontStyle: "bold", cellWidth: 140 }, [dimCols.length + 1]: { fillColor: H.highlight, fontStyle: "bold" } },
+        alternateRowStyles: { fillColor: H.band2 },
+        didParseCell: (d) => { if (d.section === "body" && d.column.index > 0) d.cell.styles.halign = "right"; },
+      });
+    }
+
+    doc.save(`Konsolidator_Dimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.pdf`);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compareMode, statementType, orderedRows, dimCols, getVal, pivot, prevPivot, pivot2, prevPivot2, pivot3, prevPivot3, viewMode, line, kpiList, ccTagToCodes, resolveCcTag, masterYear, masterMonth, masterSource, masterStructure, filterStr]);
+
+  // Wire export functions to the ref so DimensionesPage FAB can call them
+  useEffect(() => {
+    if (!exportRef) return;
+    exportRef.current.xlsx = handleExportXlsx;
+    exportRef.current.pdf  = handleExportPdf;
+  }, [exportRef, handleExportXlsx, handleExportPdf]);
+  // ── End export helpers ───────────────────────────────────────────────────
+
 if (compareMode) {
     return (
       <div className="flex flex-col gap-3 flex-1 min-h-0">
@@ -1203,7 +1578,7 @@ return (
 <th className="sticky left-0 z-30 text-left px-6 border-r border-white/20" style={{ backgroundColor: colors.primary, height: "56px" }}>
                   <div className="flex items-center gap-3" style={{ minWidth: ACOL }}>
                     <span className="uppercase tracking-widest" style={header2Style}>Account</span>
-                    <div className="flex items-center gap-2 ml-auto">
+                    <div className="flex items-center gap-2">
                       <button onClick={() => expandedSet.size > 0 ? collapseAll() : expandAll()}
                         className="flex items-center justify-center rounded-lg transition-all"
                         style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, width: 32, height: 32 }}
@@ -1216,28 +1591,7 @@ return (
                         title="View uploaded accounts">
                         <Database size={13} />
                       </button>
-                      <div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
-                        <button onClick={() => setStatementType("pl")}
-                          className="rounded-md text-[11px] font-black transition-colors"
-                          style={{
-                            backgroundColor: statementType === "pl" ? (colors.quaternary ?? "#F59E0B") : "transparent",
-                            color: statementType === "pl" ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
-                            padding: "7px 12px",
-                            lineHeight: 1
-                          }}>
-                          P&L
-                        </button>
-                        <button onClick={() => setStatementType("bs")}
-                          className="rounded-md text-[11px] font-black transition-colors"
-                          style={{
-                            backgroundColor: statementType === "bs" ? (colors.quaternary ?? "#F59E0B") : "transparent",
-                            color: statementType === "bs" ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
-                            padding: "7px 12px",
-                            lineHeight: 1
-                          }}>
-                          B/S
-                        </button>
-                      </div>
+
                       <div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
                         <button onClick={() => setSummaryMode(false)}
                           className="rounded-md text-[11px] font-black transition-colors"
@@ -1335,6 +1689,28 @@ const [source,    setSource]    = useState("");
 const [showAccounts, setShowAccounts] = useState(false);
 const [selGroup, setSelGroup] = useState("");
 const [compareMode, setCompareMode] = useState(false);
+  // P&L / B/S statement type — lifted from PivotTab to drive PageHeader tabs
+  const [statementType, setStatementType] = useState("pl");
+  // Mapping application — Views modal + active custom mapping override
+  const [viewsModalOpen, setViewsModalOpen]     = useState(false);
+  const [activeMapping, setActiveMapping]       = useState(null);
+  const [warningDismissed, setWarningDismissed] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const pivotExportRef = useRef({ xlsx: null, pdf: null });
+
+  const handleApplyMapping = useCallback((m) => {
+    setActiveMapping({
+      mapping_id:  m.mapping_id,
+      name:        m.name,
+      standard:    m.standard,
+      plConverted: convertSavedMappingTree(m.pl_tree),
+      bsConverted: convertSavedMappingTree(m.bs_tree),
+      plSections:  extractSectionsFromTree(m.pl_tree),
+      bsSections:  extractSectionsFromTree(m.bs_tree),
+    });
+    setWarningDismissed(false);
+  }, []);
+
   const [rawData,   setRawData]   = useState([]);
 const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState(null);
@@ -1364,7 +1740,11 @@ const [groupAccountsLocal, setGroupAccountsLocal] = useState([]);
   }, [token]);
 
 // Resolve KPIs against the current accounting standard
-  const { kpiList, ccTagToCodes, resolveCcTag } = useKpiResolver(groupAccountsLocal);
+  const {
+    kpiList,
+    ccTagToCodes: defaultCcTagToCodes,
+    resolveCcTag: defaultResolveCcTag,
+  } = useKpiResolver(groupAccountsLocal);
 
   // Load Supabase row/section mappings for breakers (PGC / Danish / Spanish IFRS-ES)
   const [pgcPlMapping, setPgcPlMapping] = useState(null);
@@ -1414,8 +1794,66 @@ const [groupAccountsLocal, setGroupAccountsLocal] = useState([]);
     }
   }, [groupAccountsLocal]);
 
-  const plMapping = pgcPlMapping ?? danishPlMapping ?? spIfrsEsPlMapping;
-  const bsMapping = pgcBsMapping ?? danishBsMapping ?? spIfrsEsBsMapping;
+const defaultPlMapping = pgcPlMapping ?? danishPlMapping ?? spIfrsEsPlMapping;
+  const defaultBsMapping = pgcBsMapping ?? danishBsMapping ?? spIfrsEsBsMapping;
+
+  // When a custom mapping is applied, its converted tree takes over for row
+  // ordering and section breakers.
+  const plMapping = activeMapping?.plConverted ?? defaultPlMapping;
+  const bsMapping = activeMapping?.bsConverted ?? defaultBsMapping;
+
+  // Effective ccTagToCodes + resolveCcTag. When a mapping is active:
+  //   - Each section label is fuzzy-matched against cc_tag synonyms; matches
+  //     override the default codes for that tag.
+  //   - resolveCcTag is wrapped so any code the user has placed in the
+  //     mapping (matched OR unmatched) doesn't get auto-resolved via the
+  //     standard taxonomy — that would double-count.
+  const { ccTagToCodes, resolveCcTag, mappingMatched, mappingUnmatched } = useMemo(() => {
+    if (!activeMapping) {
+      return {
+        ccTagToCodes:     defaultCcTagToCodes,
+        resolveCcTag:     defaultResolveCcTag,
+        mappingMatched:   [],
+        mappingUnmatched: [],
+      };
+    }
+    const override = new Map(defaultCcTagToCodes);
+    const matched = [];
+    const unmatched = [];
+    const mappedCodes = new Set();
+    const allSections = new Map([
+      ...(activeMapping.plSections || new Map()),
+      ...(activeMapping.bsSections || new Map()),
+    ]);
+    allSections.forEach((codes, label) => {
+      if (!codes || codes.length === 0) return;
+      codes.forEach(c => mappedCodes.add(String(c)));
+      const norm = normalizeLabel(label);
+      let foundTag = null;
+      for (const [ccTag, synonyms] of Object.entries(CC_TAG_SYNONYMS)) {
+        if (synonyms.some(syn => norm.includes(normalizeLabel(syn)))) {
+          foundTag = ccTag;
+          break;
+        }
+      }
+      if (foundTag) {
+        override.set(foundTag, codes);
+        matched.push({ ccTag: foundTag, label, codeCount: codes.length });
+      } else {
+        unmatched.push({ label, codeCount: codes.length });
+      }
+    });
+    const wrappedResolve = (code) => {
+      if (mappedCodes.has(String(code))) return null;
+      return defaultResolveCcTag(code);
+    };
+    return {
+      ccTagToCodes:     override,
+      resolveCcTag:     wrappedResolve,
+      mappingMatched:   matched,
+      mappingUnmatched: unmatched,
+    };
+  }, [activeMapping, defaultCcTagToCodes, defaultResolveCcTag]);
   useEffect(() => {
     if (!token) return;
     fetch(`${BASE_URL}/v2/periods`, {
@@ -1548,41 +1986,132 @@ const dimGroups = useMemo(() => {
   return (
     <div className="flex flex-col gap-4 h-full min-h-0">
 
-      {/* Header */}
-      <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
-<div className="flex items-center gap-1.5 flex-shrink-0">
-          <div className="w-1.5 h-10 rounded-full" style={{ background: colors.primary }} />
-          <div>
-           <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Individual</p>
-            <h1 style={{ ...header1Style, lineHeight: 1 }}>Dimensions</h1>
-          </div>
-        </div>
+{/* Header */}
+<PageHeader
+        kicker="Individual"
+        title="Dimensions"
+        tabs={[
+          { id: "pl", label: "P&L",           icon: TrendingUp },
+          { id: "bs", label: "Balance Sheet", icon: Scale },
+        ]}
+        activeTab={statementType}
+        onTabChange={setStatementType}
+        filters={[
+          ...(YEARS.length > 0
+            ? [{ label: "Year", value: year, onChange: setYear,
+                options: YEARS.map(y => ({ value: String(y), label: String(y) })) }]
+            : []),
+          ...(MONTHS.length > 0
+            ? [{ label: "Month", value: month, onChange: setMonth,
+                options: MONTHS.map(m => ({ value: String(m.value), label: m.label })) }]
+            : []),
+          ...(sourceOpts.length > 0
+            ? [{ label: "Source", value: source, onChange: setSource, options: sourceOpts }]
+            : []),
+          ...(structureOpts.length > 0
+            ? [{ label: "Structure", value: structure, onChange: setStructure, options: structureOpts }]
+            : []),
+          ...(companyOpts.length > 0
+            ? [{ label: "Company", value: company, onChange: setCompany, options: companyOpts }]
+            : []),
+          ...(dimGroups.length > 0
+            ? [{
+                label: "Dim Group",
+                value: selGroup,
+                onChange: setSelGroup,
+                options: [{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))],
+              }]
+            : []),
+        ]}
+        compareToggle={{
+          active: compareMode,
+          onChange: setCompareMode,
+        }}
+fabActions={[
+          {
+            id: "views",
+            icon: Library,
+            label: "Views",
+            onClick: () => setViewsModalOpen(true),
+          },
+          {
+            id: "export",
+            icon: Download,
+            label: "Export",
+            subActions: [
+              {
+                id: "excel",
+                label: "Excel",
+                src: "https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png",
+                alt: "Excel",
+                onClick: async () => {
+                  setExporting(true);
+                  try { await pivotExportRef.current.xlsx?.(); }
+                  finally { setExporting(false); }
+                },
+              },
+              {
+                id: "pdf",
+                label: "PDF",
+                src: "https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png",
+                alt: "PDF",
+                onClick: async () => {
+                  setExporting(true);
+                  try { await pivotExportRef.current.pdf?.(); }
+                  finally { setExporting(false); }
+                },
+              },
+            ],
+          },
+        ]}
+      />
 
-<div className="w-px h-8 bg-gray-100 flex-shrink-0" />
+      <MappingsModal
+        open={viewsModalOpen}
+        onClose={() => setViewsModalOpen(false)}
+        groupAccounts={groupAccountsLocal}
+        onApply={handleApplyMapping}
+      />
 
-        {/* Filters */}
-        <div className="flex items-center gap-2 flex-wrap">
-          {sourceOpts.length > 0    && <FilterPill label="Source"    value={source}    onChange={setSource}    options={sourceOpts} />}
-          {YEARS.length > 0         && <FilterPill label="Year"      value={year}      onChange={setYear}      options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />}
-          {MONTHS.length > 0        && <FilterPill label="Month"     value={month}     onChange={setMonth}     options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />}
-          {structureOpts.length > 0 && <FilterPill label="Structure" value={structure} onChange={setStructure} options={structureOpts} />}
-{companyOpts.length > 0   && <FilterPill label="Company"   value={company}   onChange={setCompany}   options={companyOpts} />}
-          {dimGroups.length > 0     && <FilterPill label="Dim Group" value={selGroup}   onChange={setSelGroup}  options={[{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))]} />}
-        </div>
-
-
-
-<div className="ml-auto flex items-center gap-3 flex-shrink-0 mr-6">
-          {loading && <Loader2 size={13} className="animate-spin text-[#1a2f8a]" />}
-<button onClick={() => setCompareMode(c => !c)}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black transition-all shadow-xl"
-            style={compareMode
-              ? { backgroundColor: colors.primary, color: "#ffffff" }
-              : { backgroundColor: "#ffffff", color: "#6b7280", border: "1px solid #e5e7eb" }}>
-            <GitMerge size={12} /> Compare
+      {activeMapping && (
+        <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm flex-shrink-0">
+          <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
+          <span className="text-xs text-emerald-700 font-medium">
+            Custom mapping active: <strong className="font-black">{activeMapping.name}</strong>
+            <span className="text-emerald-500/70 ml-2">· {activeMapping.standard}</span>
+          </span>
+          <button
+            onClick={() => setActiveMapping(null)}
+            className="ml-auto flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
+            title="Clear mapping and use default"
+          >
+            <X size={11} />
+            Clear
           </button>
         </div>
-      </div>
+      )}
+
+      {activeMapping && !warningDismissed && (
+        <div className="flex items-start gap-2 px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-200 shadow-sm flex-shrink-0">
+          <AlertTriangle size={14} className="text-amber-600 mt-0.5 flex-shrink-0" />
+          <div className="flex-1 text-xs text-amber-800 leading-relaxed">
+            <strong className="font-black">Heads up:</strong> los cálculos se han recomputado con el mapping en lo posible.
+            {mappingMatched.length > 0 && (
+              <> <span className="font-black text-amber-900">{mappingMatched.length}</span> sección{mappingMatched.length === 1 ? "" : "es"} emparejada{mappingMatched.length === 1 ? "" : "s"} ({mappingMatched.slice(0, 3).map(m => m.label).join(", ")}{mappingMatched.length > 3 ? "…" : ""}).</>
+            )}
+            {mappingUnmatched.length > 0 && (
+              <> <span className="font-black text-amber-900">{mappingUnmatched.length}</span> sin emparejar — siguen usando la taxonomía por defecto.</>
+            )}
+          </div>
+          <button
+            onClick={() => setWarningDismissed(true)}
+            className="flex-shrink-0 w-6 h-6 rounded-md hover:bg-amber-100 text-amber-600 flex items-center justify-center transition-colors"
+            title="Dismiss"
+          >
+            <X size={11} />
+          </button>
+        </div>
+      )}
 
       {/* Content */}
       {loading ? (
@@ -1607,7 +2136,8 @@ const dimGroups = useMemo(() => {
           </div>
         </div>
 ) : (
- <PivotTab data={rawData} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroup={selGroup} dimGroups={dimGroups} compareMode={compareMode} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} kpiList={kpiList} ccTagToCodes={ccTagToCodes} resolveCcTag={resolveCcTag} plMapping={plMapping} bsMapping={bsMapping} />
+<PivotTab data={rawData} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroup={selGroup} dimGroups={dimGroups} compareMode={compareMode} statementType={statementType} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} kpiList={kpiList} ccTagToCodes={ccTagToCodes} resolveCcTag={resolveCcTag} plMapping={plMapping} bsMapping={bsMapping} exportRef={pivotExportRef} />
+
       )}
 
       {showAccounts && (

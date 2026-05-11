@@ -1,12 +1,13 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef,  useLayoutEffect } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef, } from "react";
 import {
   FileText, Search, Loader2, AlertCircle, Filter,
-  ChevronDown, ChevronRight, Hash, Calendar, Database, Network,
-  RefreshCw, X, GitMerge, BookOpen, Upload, BarChart2, TrendingUp,Library,
+  ChevronDown, ChevronRight, Hash, Download, Calendar, Database, Network,
+  RefreshCw, X, GitMerge, BookOpen, Upload, BarChart2, TrendingUp, Library,
+  CheckCircle2,
 } from "lucide-react";
 import { useSettings, useTypo } from "./SettingsContext.jsx";
 import MappingsModal from "./Mappings.jsx";
-
+import PageHeader from "./PageHeader.jsx";
 const BASE_URL = "";
 
 /* ═══════════════════════════════════════════════════════════════
@@ -2788,8 +2789,9 @@ dimGroups = [], cmpFilteredDims = [], cmp2FilteredDims = [],
 cmp2Enabled = true, onCmp2EnabledChange,
 loading, error, month, year, source, structure,
 journalEntries = [], journalEntriesCmp = [], journalEntriesCmp2 = [], dimensionActive = false,
-  breakers = { pl: {}, bs: {}, cf: {} },
+breakers = { pl: {}, bs: {}, cf: {} },
   pgcMapping = null,
+  ytdOnly = false,
 }) {
 const { colors } = useSettings();
 const header3Style = useTypo("header3");
@@ -2801,7 +2803,6 @@ const subbody2Style = useTypo("subbody2");
 const header2Style = useTypo("header2");
 const [expandedMap, setExpandedMap] = useState({});
 const [summaryMode, setSummaryMode] = useState(true);
-const [ytdOnly, setYtdOnly] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(true);
   
 const [jrnPopup, setJrnPopup] = useState(null);
@@ -3266,9 +3267,7 @@ const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.valu
           </div>
         </div>
       )}
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden">
-{/* Hidden export trigger */}
-<button id="__plExportTrigger" onClick={handleExportPdf} className="hidden" />
+<div className="bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col" style={{ maxHeight: "100%", minHeight: 0, boxShadow: "0 20px 40px -8px rgba(26, 47, 138, 0.25), 0 8px 16px -4px rgba(26, 47, 138, 0.15), 0 0 0 1px rgba(26, 47, 138, 0.04)" }}><button id="__plExportTrigger" onClick={handleExportPdf} className="hidden" />
 <button id="__plXlsxTrigger" onClick={handleExportXlsx} className="hidden" />
 <div style={{ display: "none" }}>
   <div className="flex items-center gap-3">
@@ -3438,7 +3437,7 @@ options={[{ value: "", label: "All" }, ...cmp2FilteredDims.map(d => { const v = 
 
 
 
-<div className="overflow-auto scrollbar-hide" style={{ maxHeight: !compareMode ? "calc(85.5vh)" : filtersOpen ? cmp2Enabled ? "calc(72.5vh)" : "calc(80vh)" : "calc(85.5vh)" }}>
+<div className="overflow-auto scrollbar-hide" style={{ flex: 1, minHeight: 0 }}>
 <table className="w-full">
 <thead className="sticky top-0 z-10">
   {/* cmpLabel/cmp2Label defined as vars above thead */}
@@ -3484,29 +3483,7 @@ options={[{ value: "", label: "All" }, ...cmp2FilteredDims.map(d => { const v = 
           : <svg width="13" height="13" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
         }
       </button>
-      <button onClick={onToggleCompare}
-        className="flex items-center gap-1.5 rounded-lg text-[11px] font-black transition-all"
-        style={compareMode
-          ? { backgroundColor: colors.quaternary ?? "#F59E0B", color: colors.primary ?? "#1a2f8a", padding: "8px 12px", lineHeight: 1 }
-          : { background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, padding: "8px 12px", lineHeight: 1 }}>
-        <GitMerge size={12} /> Compare
-      </button>
-      <div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
-        <button onClick={() => setYtdOnly(false)}
-          className="rounded-md text-[11px] font-black transition-colors"
-          style={{ backgroundColor: !ytdOnly ? (colors.quaternary ?? "#F59E0B") : "transparent",
-                   color: !ytdOnly ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
-                   padding: "7px 12px", lineHeight: 1 }}>
-          Monthly
-        </button>
-        <button onClick={() => setYtdOnly(true)}
-          className="rounded-md text-[11px] font-black transition-colors"
-          style={{ backgroundColor: ytdOnly ? (colors.quaternary ?? "#F59E0B") : "transparent",
-                   color: ytdOnly ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
-                   padding: "7px 12px", lineHeight: 1 }}>
-          YTD
-        </button>
-      </div>
+
       <div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
         <button onClick={() => setSummaryMode(false)}
           className="rounded-md text-[11px] font-black transition-colors"
@@ -3932,7 +3909,7 @@ function FinancialReport({ groupAccounts, uploadedAccounts, loading, error }) {
           <p className="text-gray-300 text-xs mt-1">Try a different type filter or clear the search</p>
         </div>
       ) : (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden">
+        <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col" style={{ maxHeight: "100%", minHeight: 0, boxShadow: "0 8px 24px -4px rgba(26, 47, 138, 0.15), 0 4px 8px -2px rgba(26, 47, 138, 0.08)" }}>
           <div className="overflow-x-auto">
             <table className="w-full table-fixed">
               <thead>
@@ -4003,6 +3980,66 @@ const PL_HIGHLIGHTED_CODES = new Set([
   '89999',  // Profit/loss for the year
 ]);
 
+/* ═══════════════════════════════════════════════════════════════
+   SAVED-MAPPING → {rows, sections} CONVERTER
+   Walks the saved pl_tree / bs_tree JSON (which has hierarchical
+   nodes + "breaker" section dividers) and flattens it into the
+   shape PLStatement / BalanceSheet already expect for pgcMapping.
+═══════════════════════════════════════════════════════════════ */
+function normalizeBSSectionCode(label) {
+  const lc = String(label || "").toLowerCase();
+  if (/(activo|asset)/.test(lc))            return "ACTIVO";
+  if (/(pasivo|liabilit)/.test(lc))         return "PASIVO";
+  if (/(patrimonio|equity|net\s*worth)/.test(lc)) return "PATRIMONIO";
+  return null;
+}
+
+function convertSavedMappingTree(tree, opts = {}) {
+  if (!Array.isArray(tree) || tree.length === 0) return null;
+  const { normalizeBS = false } = opts;
+
+  const rows = new Map();
+  const sections = new Map();
+  let sortCounter = 0;
+  let defaultSecCounter = 0;
+
+  function walk(nodes, depth, parentSection) {
+    for (const node of nodes) {
+      if (!node) continue;
+      if (node.kind === "breaker") {
+        let secCode = node.sectionCode || `section_${defaultSecCounter++}`;
+        if (normalizeBS) {
+          const canon = normalizeBSSectionCode(node.name);
+          if (canon) secCode = canon;
+        }
+        sections.set(secCode, {
+          label: String(node.name ?? "Section"),
+          color: node.color || "#1a2f8a",
+        });
+        walk(node.children || [], depth, secCode);
+      } else {
+        const code = String(node.code ?? "");
+        if (!code) continue;
+        const sec = parentSection || "_default";
+        if (!sections.has(sec)) {
+          sections.set(sec, { label: "", color: "#1a2f8a" });
+        }
+        rows.set(code, {
+          section: sec,
+          sortOrder: sortCounter++,
+          isSum: true,                       // every mapping row is renderable in detailed view
+          showInSummary: !!node.showInSummary,
+          level: depth,
+        });
+        walk(node.children || [], depth + 1, sec);
+      }
+    }
+  }
+
+  walk(tree, 0, null);
+  if (rows.size === 0) return null;
+  return { rows, sections };
+}
 
 function BSAmountCell({ value, divider, typoStyle }) {
   const isEmpty = value === 0;
@@ -5278,9 +5315,9 @@ const tabs = ["summary","assets","equity"];
         </div>
       </div>
 
-      {/* Compare filters */}
+{/* Compare filters */}
       {compareMode && filtersOpen && (
-        <div className="border-t border-white/10">
+        <div className="border-t border-white/10" style={{ flex: "none" }}>
           <div className="bg-[#ffffff] px-6 py-3 flex items-center gap-2 flex-wrap shadow-sm">
             <div className="w-3 h-3 rounded-full border-2 border-[#CF305D] flex-shrink-0" />
             {[
@@ -5336,26 +5373,7 @@ const tabs = ["summary","assets","equity"];
             {filtersOpen ? "Hide filters" : "Show filters"}
           </button>
         )}
-        <button onClick={() => {
-          if (!compareMode) {
-            setCmpYear(String(year)); setCmpMonth(String(month)); setCmpSource(source);
-            setCmpStructure(structure); setCmpCompany(company);
-            setCmp2Year(String(year)); setCmp2Month(String(month)); setCmp2Source(source);
-            setCmp2Structure(structure); setCmp2Company(company);
-            if (bsView !== "summary") {
-              fetchAllCompaniesCmp(String(year), String(month), source, structure);
-              fetchAllCompaniesCmp2(String(year), String(month), source, structure);
-            }
-          }
-          setCompareMode(c => !c);
-        }}
-          className="flex items-center gap-1.5 rounded-lg text-[11px] font-black transition-all"
-          style={compareMode
-            ? { backgroundColor: colors.quaternary ?? "#F59E0B", color: colors.primary ?? "#1a2f8a", padding: "8px 12px", lineHeight: 1 }
-            : { background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, padding: "8px 12px", lineHeight: 1 }}>
-          <GitMerge size={12} /> Compare
-        </button>
-        <div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
+<div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
           {[["summary","Summary"],["assets","Assets"],["equity","Equity & Liab."]].map(([v, label]) => (
             <button key={v} onClick={() => setBsView(v)}
               className="rounded-md text-[11px] font-black transition-colors"
@@ -5391,26 +5409,7 @@ const tabs = ["summary","assets","equity"];
             {filtersOpen ? "Hide filters" : "Show filters"}
           </button>
         )}
-        <button onClick={() => {
-          if (!compareMode) {
-            setCmpYear(String(year)); setCmpMonth(String(month)); setCmpSource(source);
-            setCmpStructure(structure); setCmpCompany(company);
-            setCmp2Year(String(year)); setCmp2Month(String(month)); setCmp2Source(source);
-            setCmp2Structure(structure); setCmp2Company(company);
-            if (bsView !== "summary") {
-              fetchAllCompaniesCmp(String(year), String(month), source, structure);
-              fetchAllCompaniesCmp2(String(year), String(month), source, structure);
-            }
-          }
-          setCompareMode(c => !c);
-        }}
-          className="flex items-center gap-1.5 rounded-lg text-[11px] font-black transition-all"
-          style={compareMode
-            ? { backgroundColor: colors.quaternary ?? "#F59E0B", color: colors.primary ?? "#1a2f8a", padding: "8px 12px", lineHeight: 1 }
-            : { background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, padding: "8px 12px", lineHeight: 1 }}>
-          <GitMerge size={12} /> Compare
-        </button>
-        <div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
+<div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
           {[["summary","Summary"],["assets","Assets"],["equity","Equity & Liab."]].map(([v, label]) => (
             <button key={v} onClick={() => setBsView(v)}
               className="rounded-md text-[11px] font-black transition-colors"
@@ -5476,6 +5475,7 @@ const [activeTab, setActiveTab]   = useState("pl");
 const [prevTab, setPrevTab]       = useState(null);
 const [animKey, setAnimKey]       = useState(0);
   const [dataSubTab, setDataSubTab] = useState("uploaded");
+  const [ytdOnly, setYtdOnly]     = useState(false);  // ← lifted from PLStatement; PageHeader periodToggle controls this
 const [plCmpLoading, setPlCmpLoading] = useState(false);
 const [plCmp2Loading, setPlCmp2Loading] = useState(false);
 const [plCmp2Enabled, setPlCmp2Enabled] = useState(true);
@@ -5556,22 +5556,7 @@ useEffect(() => {
   fetchMetadata();
 }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const TAB_ORDER = ["pl", "bs", "uploaded"];
-  const tabsContainerRef = useRef(null);
-const [pillStyle, setPillStyle] = useState({});
-
-useLayoutEffect(() => {
-  if (!tabsContainerRef.current) return;
-  const buttons = tabsContainerRef.current.querySelectorAll("button");
-  const idx = TABS.findIndex(t => t.id === activeTab);
-  const btn = buttons[idx];
-  if (btn) {
-    setPillStyle({
-      left: btn.offsetLeft + "px",
-      width: btn.offsetWidth + "px",
-    });
-  }
-}, [activeTab]);
+const TAB_ORDER = ["pl", "bs", "uploaded"];
 
 const handleTabChange = (newTab) => {
   if (newTab === activeTab) return;
@@ -5941,6 +5926,20 @@ useEffect(() => {
 
 const [exportModal, setExportModal] = useState(false);
 const [viewsModalOpen, setViewsModalOpen] = useState(false);
+
+const [activeMapping, setActiveMapping] = useState(null);
+// activeMapping shape: { mapping_id, name, standard, plConverted, bsConverted } | null
+
+const handleApplyMapping = useCallback((m) => {
+  setActiveMapping({
+    mapping_id: m.mapping_id,
+    name: m.name,
+    standard: m.standard,
+    plConverted: convertSavedMappingTree(m.pl_tree),
+    bsConverted: convertSavedMappingTree(m.bs_tree, { normalizeBS: true }),
+  });
+}, []);
+
 const [exportOpts, setExportOpts] = useState({
   plSummary: true, plDetailed: true,
   bsSummary: true, bsAssets: true, bsEquity: true,
@@ -6510,8 +6509,13 @@ const ExportModal = exportModal ? (
 ) : null;
 
 return (
-    <div className="space-y-2">
+    <div className="flex flex-col" style={{ height: "100%", minHeight: 0, overflow: "visible" }}>
 <style>{`
+        .tab-content { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+        .tab-content > div { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+        .tab-content > div > div { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+   .tab-content .overflow-auto { flex: 1; min-height: 0; max-height: none !important; padding-bottom: 4px; }
+        .tab-content > div > div > div { margin-bottom: 6px; }
         .text-\\[\\#1a2f8a\\] { color: ${colors.primary} !important; }
         .bg-\\[\\#1a2f8a\\] { background-color: ${colors.primary} !important; }
         .border-\\[\\#1a2f8a\\] { border-color: ${colors.primary} !important; }
@@ -6527,143 +6531,132 @@ return (
       `}</style>
       {ExportModal}
       
-{/* Page header + Tab switcher + Filters — all in one row */}
-<div className="flex items-center gap-4 flex-wrap">
- {/* Left: title */}
-<div className="flex items-center gap-1.5 flex-shrink-0">
-    <div className="w-1.5 h-10 rounded-full" style={{ background: colors.primary }} />
-    <div>
-      <p className="uppercase tracking-widest leading-none mb-0.5 text-[12px] font-bold text-gray-600">Accounts</p>
-      <h1 style={{ ...headerStyle, lineHeight: 1 }}>{tab.label}</h1>
-    </div>
-  </div>
-
-  {/* Divider */}
-  <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
-
-  {/* Tab pills */}
-<div ref={tabsContainerRef} className="flex items-center gap-1 p-1 bg-[#e6e6e6] rounded-2xl flex-shrink-0 shadow-xl relative">
-  <span
-    style={{
-      position: "absolute",
-      top: 4, bottom: 4,
-      left: pillStyle.left,
-      width: pillStyle.width,
-      background: "white",
-      borderRadius: 12,
-      boxShadow: "0 1px 3px rgba(0,0,0,0.12)",
-      transition: "left 0.25s cubic-bezier(0.4,0,0.2,1), width 0.25s cubic-bezier(0.4,0,0.2,1)",
-    }}
-  />
-{TABS.map(t => {
-    const Icon = t.icon;
-    const active = activeTab === t.id;
-    return (
-      <button
-        key={t.id}
-        onClick={() => handleTabChange(t.id)}
-        className="flex items-center gap-1.5 px-3 py-2 rounded-2xl relative z-10"
-        style={{
-          ...filterStyle,
-          color: active ? filterStyle.color : "#636363",
-          transition: "color 0.2s",
-        }}
-      >
-        <Icon size={16} style={active ? { color: colors.primary } : {}} />
-        {t.label}
-      </button>
-    );
-  })}
-</div>
-
-  {/* Divider */}
-  <div className="w-px h-6 bg-gray-100 flex-shrink-0" />
-
-  {/* Filters */}
-  <div className="flex items-center gap-2 flex-wrap">
-    <FilterPill label="Yr"      value={upYear}      onChange={setUpYear}
-      options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-    <FilterPill label="Mnth"     value={upMonth}     onChange={setUpMonth}
-      options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-    <FilterPill label="Src"    value={upSource}    onChange={setUpSource}
-      options={effectiveSources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
-    <FilterPill label="Struct" value={upStructure} onChange={setUpStructure}
-    options={effectiveStructures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-<FilterPill label="Comp"   value={upCompany}   onChange={setUpCompany}
-     options={effectiveCompanies.map(c => {
+{/* Page header — built from shared <PageHeader> */}
+<PageHeader
+  kicker="Accounts"
+  title={tab.label}
+  tabs={TABS}
+  activeTab={activeTab}
+  onTabChange={handleTabChange}
+  filters={[
+    { label: "Year",     value: upYear,     onChange: setUpYear,
+      options: YEARS.map(y => ({ value: String(y), label: String(y) })) },
+    { label: "Month",    value: upMonth,    onChange: setUpMonth,
+      options: MONTHS.map(m => ({ value: String(m.value), label: m.label })) },
+    { label: "Source",   value: upSource,   onChange: setUpSource,
+      options: effectiveSources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; }) },
+    { label: "Structure",value: upStructure,onChange: setUpStructure,
+      options: effectiveStructures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; }) },
+    { label: "Company",  value: upCompany,  onChange: setUpCompany,
+      options: effectiveCompanies.map(c => {
         const v = typeof c === "object"
           ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "")
           : String(c);
         return { value: v, label: v };
-      })} />
-<FilterPill label="Dim Grp" value={upDimGroup} onChange={v => { setUpDimGroup(v); setUpDimension(""); }}
-      options={[
-        { value: "", label: "All" },
-        ...dimGroups.map(g => ({ value: g, label: g }))
-      ]} />
-    <FilterPill label="Dim" value={upDimension} onChange={setUpDimension}
-      options={[
+      }) },
+    { label: "Dim Group",value: upDimGroup, onChange: v => { setUpDimGroup(v); setUpDimension(""); },
+      options: [{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))] },
+    { label: "Dimension",value: upDimension,onChange: setUpDimension,
+      options: [
         { value: "", label: "All" },
         ...filteredDims.map(d => {
           const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d);
           const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d);
           return { value: v, label: l };
         })
-      ]} />
-  </div>
-
-<div className="ml-auto flex items-center gap-3 flex-shrink-0 pr-6 mt-1">
-
-  <button
-    onClick={() => setViewsModalOpen(true)}
-    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border-2 border-gray-100 hover:border-[#1a2f8a]/30 hover:bg-[#eef1fb]/40 text-xs font-black text-[#1a2f8a] transition-all shadow-sm"
-    title="Mappings library"
-  >
-    <Library size={13} />
-    Views
-  </button>
-
-{(activeTab === "pl" || activeTab === "bs") && (
-      <>
-<button
-          onClick={() => { setExportOpts(o=>({...o,format:'xlsx'})); setExportModal(true); }}
-          className="transition-all hover:opacity-80 hover:scale-105"
-          title="Export Excel"
-        >
-<img
-            src="https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png"
-            width="44"
-            height="36"
-            alt="Excel"
-          />
-        </button>
-<button
-          onClick={() => { setExportOpts(o=>({...o,format:'pdf'})); setExportModal(true); }}
-          className="transition-all hover:opacity-80 hover:scale-105"
-          title="Export PDF"
-        >
-<img
-            src="https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png"
-            width="30"
-            height="36"
-            alt="PDF"
-          />
-        </button>
-      </>
-    )}
-  </div>
+] },
+  ]}
+  periodToggle={activeTab === "pl" ? {
+    value: ytdOnly ? "ytd" : "monthly",
+    onChange: (next) => setYtdOnly(next === "ytd"),
+  } : null}
+  compareToggle={
+    activeTab === "pl" ? {
+      active: compareMode,
+      onChange: () => {
+        if (!compareMode) {
+          setCmpYear(upYear); setCmpMonth(upMonth); setCmpSource(upSource);
+          setCmpStructure(upStructure); setCmpCompany(upCompany);
+          setCmpDimGroup(upDimGroup); setCmpDimension(upDimension);
+          setCmp2Year(upYear); setCmp2Month(upMonth); setCmp2Source(upSource);
+          setCmp2Structure(upStructure); setCmp2Company(upCompany);
+          setCmp2DimGroup(upDimGroup); setCmp2Dimension(upDimension);
+        }
+        setCompareMode(c => !c);
+      },
+    } : activeTab === "bs" ? {
+      active: bsCompareMode,
+      onChange: () => {
+        if (!bsCompareMode) {
+          setBsCmpYear(String(upYear)); setBsCmpMonth(String(upMonth));
+          setBsCmpSource(upSource); setBsCmpStructure(upStructure); setBsCmpCompany(upCompany);
+          setBsCmp2Year(String(upYear)); setBsCmp2Month(String(upMonth));
+          setBsCmp2Source(upSource); setBsCmp2Structure(upStructure); setBsCmp2Company(upCompany);
+        }
+        setBsCompareMode(c => !c);
+      },
+    } : null
+  }
+  fabActions={[
+    {
+      id: "views",
+      icon: Library,
+      label: "Views",
+      onClick: () => setViewsModalOpen(true),
+    },
+    ...((activeTab === "pl" || activeTab === "bs") ? [{
+      id: "export",
+      icon: Download,
+      label: "Export",
+      subActions: [
+        {
+          id: "excel",
+          label: "Excel",
+          src: "https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png",
+          alt: "Excel",
+          onClick: () => { setExportOpts(o => ({ ...o, format: "xlsx" })); setExportModal(true); },
+        },
+        {
+          id: "pdf",
+          label: "PDF",
+          src: "https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png",
+          alt: "PDF",
+          onClick: () => { setExportOpts(o => ({ ...o, format: "pdf" })); setExportModal(true); },
+        },
+      ],
+    }] : [])
+  ]}
+/>
 
 <MappingsModal
-    open={viewsModalOpen}
-    onClose={() => setViewsModalOpen(false)}
-    groupAccounts={grpData}
-  />
-</div>
-{/* ── P&L STATEMENT */}
+  open={viewsModalOpen}
+  onClose={() => setViewsModalOpen(false)}
+  groupAccounts={grpData}
+  onApply={handleApplyMapping}
+/>
+{activeMapping && (
+  <div className="flex items-center gap-2 mt-3 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm">
+    <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
+    <span className="text-xs text-emerald-700 font-medium">
+      Custom mapping active: <strong className="font-black">{activeMapping.name}</strong>
+      <span className="text-emerald-500/70 ml-2">· {activeMapping.standard}</span>
+    </span>
+    <button
+      onClick={() => setActiveMapping(null)}
+      className="ml-auto flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
+      title="Clear mapping and use default"
+    >
+      <X size={11} />
+      Clear
+    </button>
+  </div>
+)}
+<div className="flex-1 scrollbar-hide" style={{ marginTop: 12, minHeight: 0, display: "flex", flexDirection: "column", overflow: "visible" }}>
 {activeTab === "pl" && (
 <div key={`pl-${animKey}`} className="tab-content" style={{ "--slide-from": TAB_ORDER.indexOf("pl") > TAB_ORDER.indexOf(prevTab ?? "pl") ? "30px" : "-30px" }}>
 <PLStatement
- dimensionActive={!!upDimension || !!upDimGroup}
+  ytdOnly={ytdOnly}
+  dimensionActive={!!upDimension || !!upDimGroup}
   groupAccounts={grpData}
 uploadedAccounts={
   upDimension
@@ -6756,7 +6749,7 @@ journalEntries={jrnData}
 journalEntriesCmp={jrnCmpData}
 journalEntriesCmp2={jrnCmp2Data}
   breakers={breakers}
-pgcMapping={pgcMapping ?? danishIfrsPlMapping ?? spanishIfrsEsPlMapping}
+pgcMapping={activeMapping?.plConverted ?? pgcMapping ?? danishIfrsPlMapping ?? spanishIfrsEsPlMapping}
 />
 </div>
 )}
@@ -6817,7 +6810,7 @@ uploadedAccounts={
 externalCmp2Enabled={bsCmp2Enabled}
   onBsCmp2EnabledChange={setBsCmp2Enabled}
 breakers={breakers}
-pgcBsMapping={pgcBsMapping ?? danishIfrsBsMapping ?? spanishIfrsEsBsMapping}
+pgcBsMapping={activeMapping?.bsConverted ?? pgcBsMapping ?? danishIfrsBsMapping ?? spanishIfrsEsBsMapping}
 />
 </div>
 )}
@@ -6901,6 +6894,7 @@ pgcBsMapping={pgcBsMapping ?? danishIfrsBsMapping ?? spanishIfrsEsBsMapping}
       </div>
 )}
 
+    </div>
     </div>
   );
 }

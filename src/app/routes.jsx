@@ -7,7 +7,8 @@ import ConsolidationSheetPage from "../components/layout/ConsolidationSheetPage.
 import StructurePage from "../components/layout/StructurePage.jsx";
 import SettingsPage from "../components/layout/SettingsPage.jsx";
 import CashFlowPage from "../components/layout/CashFlowPage.jsx";
-import IndividualCashFlowPage from "../components/layout/IndividualCashFlowPage.jsx";
+import IndividualCashFlowPage    from "../components/layout/IndividualCashFlowPage.jsx";
+import MemoryNotesPage            from "../components/layout/MemoryNotesPage.jsx";
 import ConsolidatedDimensionesPage from "../components/layout/ConsolidatedDimensionesPage.jsx";
 
 export default function AppRoutes({ token, activePage, preloadedData }) {
@@ -69,6 +70,15 @@ if (activePage === "consolidated-cashflow") return (
 
 if (activePage === "individual-cashflow") return (
     <IndividualCashFlowPage token={token} />
+  );
+
+  if (activePage === "individual-memory-notes") return (
+    <MemoryNotesPage
+      token={token}
+      sources={sharedData.sources ?? []}
+      structures={sharedData.structures ?? []}
+      companies={sharedData.companies ?? []}
+    />
   );
 
   if (activePage === "consolidated-dimensiones") return (

@@ -987,27 +987,47 @@ export default function AdminPortal() {
 
 const handleDeleteUser = async (id) => {
   const confirmed = window.confirm(
-    "¿Eliminar usuario?\n\n" +
-    "El usuario quedará desactivado y oculto de esta lista. " +
-    "Para eliminarlo COMPLETAMENTE de Supabase Auth, hazlo manualmente desde " +
-    "Authentication → Users en el dashboard de Supabase.\n\n" +
+    "¿Eliminar usuario completamente?\n\n" +
+    "Esto borrará al usuario de Supabase Auth, de la tabla accounts.users, " +
+    "y de todas sus empresas asignadas. Esta acción NO se puede deshacer.\n\n" +
     "¿Continuar?"
   );
   if (!confirmed) return;
 
-  // Soft delete: marcamos inactivo y borramos sus links de empresas.
-  // No tocamos auth.users (eso requiere service_role + Edge Function).
-  const [{ error: linksErr }, { error: userErr }] = await Promise.all([
-    sbAccounts.from("user_companies").delete().eq("user_id", id),
-    sbAccounts.from("users").update({ is_active: false }).eq("id", id),
-  ]);
-
-  if (userErr || linksErr) {
-    showToast("error", (userErr ?? linksErr).message);
+  // Hard delete via Edge Function (uses service_role on server side):
+  // 1. Verifies caller is super-admin
+  // 2. Deletes from auth.users → ON DELETE CASCADE removes accounts.users + user_companies
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) {
+    showToast("error", "Sesión expirada, vuelve a iniciar sesión");
     return;
   }
-  showToast("success", "Usuario desactivado");
-  reload();
+
+  try {
+const res = await fetch(
+      "https://gmcawsapzkzmgrtiqebv.supabase.co/functions/v1/delete-user",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":  "application/json",
+          apikey:          "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA",
+          Authorization:   `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ user_id: id }),
+      }
+    );
+    const result = await res.json();
+
+    if (!res.ok) {
+      showToast("error", result.error ?? `Error ${res.status}`);
+      return;
+    }
+
+    showToast("success", "Usuario eliminado completamente");
+    reload();
+  } catch (e) {
+    showToast("error", `Error de red: ${e.message}`);
+  }
 };
 
   const usersEnriched = useMemo(() => {

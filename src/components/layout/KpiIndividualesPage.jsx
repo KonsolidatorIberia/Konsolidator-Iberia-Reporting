@@ -341,8 +341,17 @@ import {
   ChevronDown, Loader2, X, Plus, Trash2, Edit3,
   GripVertical, Hash, Percent, DollarSign,
   Check, Sigma, BarChart3, Building2, Layers,
-  GitCompareArrows
+  GitCompareArrows, Library, Download,
+  CheckCircle2, AlertTriangle,
 } from "lucide-react";
+import PageHeader from "./PageHeader.jsx";
+import MappingsModal from "./Mappings.jsx";
+import {
+  listCompanyKpis, createCompanyKpi, updateCompanyKpi, archiveCompanyKpi,
+  getUserDashboard, saveUserDashboard,
+} from "../../lib/kpisApi";
+import { getActiveCompanyId } from "../../lib/mappingsApi";
+import { supabase } from "../../lib/supabaseClient";
 import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
 import jsPDF from "jspdf";
@@ -480,6 +489,63 @@ function parseDimensions(raw) {
     if (idx === -1) return null;
     return [pair.slice(0, idx).trim(), pair.slice(idx + 1).trim()];
   }).filter(Boolean);
+}
+
+// ── Mapping → KPI override helpers ────────────────────────────────────────────
+// When a user applies a custom mapping, we re-bind known cc_tags (revenue,
+// ebitda, etc.) to the account codes the user has grouped under each mapping
+// section. Matching is fuzzy by label — more specific terms first because the
+// first match wins (so "Gastos de personal" doesn't collide with the generic
+// "Gastos operativos" bucket).
+const CC_TAG_SYNONYMS = {
+  personnel_costs:     ["gastos de personal", "personnel costs", "personnel"],
+  cost_of_goods:       ["coste de ventas", "costo de ventas", "cost of goods", "cogs", "aprovisionamientos"],
+  gross_profit:        ["margen bruto", "beneficio bruto", "resultado bruto", "gross profit", "gross margin"],
+  ebitda:              ["ebitda"],
+  ebit:                ["resultado de explotacion", "operating income", "resultado operativo", "ebit"],
+  ebt:                 ["resultado antes de impuestos", "pre-tax", "ebt", "rai"],
+  net_result:          ["resultado neto", "resultado del ejercicio", "net result", "net income", "beneficio neto"],
+  current_assets:      ["activo corriente", "activo circulante", "current assets"],
+  current_liabilities: ["pasivo corriente", "pasivo circulante", "current liabilities"],
+  total_assets:        ["total activo", "activo total", "total assets", "total de activos"],
+  total_equity:        ["patrimonio neto", "fondos propios", "total equity", "total de capital"],
+  total_liabilities:   ["pasivo total", "total pasivo", "total liabilities", "total de pasivo"],
+  // General last — these are broad and would over-match if placed before
+  // the specific entries above.
+  revenue:             ["ingresos", "revenue", "ventas", "sales", "income", "facturacion"],
+  operating_expenses:  ["gastos operativos", "gastos de explotacion", "operating expenses", "opex"],
+};
+
+function normalizeLabel(s) {
+  return String(s || "").toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Walks a saved mapping pl_tree / bs_tree and extracts { sectionLabel → [accountCodes] }.
+function extractSectionsFromTree(tree) {
+  if (!Array.isArray(tree) || tree.length === 0) return new Map();
+  const result = new Map();
+  function walk(nodes, currentLabel) {
+    for (const node of nodes) {
+      if (!node) continue;
+      if (node.kind === "breaker") {
+        const label = String(node.name ?? "").trim();
+        if (label && !result.has(label)) result.set(label, []);
+        walk(node.children || [], label);
+      } else {
+        const code = String(node.code ?? "");
+        if (code && currentLabel && result.has(currentLabel)) {
+          result.get(currentLabel).push(code);
+        }
+        walk(node.children || [], currentLabel);
+      }
+    }
+  }
+  walk(tree, null);
+  return result;
 }
 
 function parseAmt(val) {
@@ -1685,7 +1751,7 @@ function TextFormulaBuilder({ formula, onChange, kpiList, accountCodes }) {
   );
 }
 
-function KpiEditorModal({ kpi, onSave, onClose, kpiList, accountCodes, builtInIds = new Set() }) {
+function KpiEditorModal({ kpi, onSave, onClose, kpiList, allLocalKpis = [], accountCodes, builtInIds = new Set() }) {
   const [mode, setMode] = useState(kpi ? "custom" : "library"); // "library" | "custom" | "customList"
 
   const [label, setLabel] = useState(kpi?.label ?? "");
@@ -1744,7 +1810,7 @@ const [benchmark, setBenchmark] = useState(kpi?.benchmark ?? {
               <span className="text-[10px] font-black px-2 py-0.5 rounded-md text-white bg-[#1a2f8a]">KPI personalizado</span>
             </div>
             <div className="overflow-y-auto flex-1 px-5 pb-5">
-             {kpiList.filter(k => !builtInIds.has(k.id)).length === 0 ? (
+             {allLocalKpis.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-12 text-center">
                   <div className="w-12 h-12 rounded-2xl bg-[#eef1fb] flex items-center justify-center mb-3">
                     <Sigma size={20} className="text-[#1a2f8a]/40" />
@@ -1753,13 +1819,25 @@ const [benchmark, setBenchmark] = useState(kpi?.benchmark ?? {
                   <p className="text-[10px] text-gray-300 mt-1">Crea tu primero con el botón de abajo</p>
                 </div>
               ) : (
-                <div className="grid grid-cols-2 gap-2 mb-4 pt-2">
-                  {kpiList.filter(k => !builtInIds.has(k.id)).map(k => (
+<div className="grid grid-cols-2 gap-2 mb-4 pt-2">
+                  {allLocalKpis.map(k => (
                     <button key={k.id} onClick={() => onSave(k)}
                       className="text-left p-4 rounded-xl border border-gray-100 hover:border-[#1a2f8a]/30 hover:bg-[#eef1fb] transition-all group">
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm font-black text-[#1a2f8a] leading-snug">{k.label}</p>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <p className="text-sm font-black text-[#1a2f8a] leading-snug">{k.label}</p>
+                            {k._contextMappingId !== undefined && (
+                              <span className="px-1.5 py-0.5 rounded-md flex-shrink-0 text-[8px] font-black uppercase tracking-widest"
+                                style={{
+                                  backgroundColor: k._contextMappingId ? "#fef3c7" : "#dcfce7",
+                                  color:           k._contextMappingId ? "#92400e" : "#15803d",
+                                }}
+                                title={k._contextMappingId ? "Bajo un mapping personalizado" : "Vista estándar"}>
+                                {k._contextMappingId ? "MAPPED" : "STD"}
+                              </span>
+                            )}
+                          </div>
                           <p className="text-xs text-gray-400 mt-1 leading-snug">{k.description}</p>
                         </div>
                         <span className={`flex-shrink-0 text-[10px] font-black px-2 py-1 rounded-md ${k.format === "percent" ? "bg-emerald-50 text-emerald-700" : k.format === "currency" ? "bg-[#eef1fb] text-[#1a2f8a]" : "bg-gray-50 text-gray-500"}`}>
@@ -2472,12 +2550,63 @@ const [companyDataCmpPrev, setCompanyDataCmpPrev] = useState(new Map()); // prev
 const {
   kpiList: resolvedKpiList,
   allKpis: resolvedAllKpis,
-  ccTagToCodes,
+  ccTagToCodes: defaultCcTagToCodes,
   sectionCodes,
   standard: detectedStandard,
   ready:    kpiResolverReady,
   error:    kpiResolverError,
 } = useResolvedKpiList(groupAccounts);
+
+// activeMapping comes from the Views/Mappings modal. When set, we override
+// the cc_tag → account-code map so KPIs are computed against the user's
+// custom grouping wherever a section label fuzzy-matches a known cc_tag.
+// All downstream computation (companyResults, dimensionResults, GraphSection,
+// fetchSectionData) reads `ccTagToCodes` from this scope — so they pick up
+// the override automatically without further plumbing.
+const [activeMapping, setActiveMapping] = useState(null);
+const [warningDismissed, setWarningDismissed] = useState(false);
+
+const { ccTagToCodes, mappingMatched, mappingUnmatched } = useMemo(() => {
+  if (!activeMapping) {
+    return { ccTagToCodes: defaultCcTagToCodes, mappingMatched: [], mappingUnmatched: [] };
+  }
+  const override = new Map(defaultCcTagToCodes);
+  const matched = [];
+  const unmatched = [];
+  const allSections = new Map([
+    ...(activeMapping.plSections || new Map()),
+    ...(activeMapping.bsSections || new Map()),
+  ]);
+  allSections.forEach((codes, label) => {
+    if (!codes || codes.length === 0) return;
+    const norm = normalizeLabel(label);
+    let foundTag = null;
+    for (const [ccTag, synonyms] of Object.entries(CC_TAG_SYNONYMS)) {
+      if (synonyms.some(syn => norm.includes(normalizeLabel(syn)))) {
+        foundTag = ccTag;
+        break;
+      }
+    }
+    if (foundTag) {
+      override.set(foundTag, codes);
+      matched.push({ ccTag: foundTag, label, codeCount: codes.length });
+    } else {
+      unmatched.push({ label, codeCount: codes.length });
+    }
+  });
+  return { ccTagToCodes: override, mappingMatched: matched, mappingUnmatched: unmatched };
+}, [activeMapping, defaultCcTagToCodes]);
+
+const handleApplyMapping = useCallback((m) => {
+  setActiveMapping({
+    mapping_id: m.mapping_id,
+    name: m.name,
+    standard: m.standard,
+    plSections: extractSectionsFromTree(m.pl_tree),
+    bsSections: extractSectionsFromTree(m.bs_tree),
+  });
+  setWarningDismissed(false);
+}, []);
 
 // Diagnostic logging — easy way to see what's going on in console
 useEffect(() => {
@@ -2494,14 +2623,114 @@ useEffect(() => {
   console.groupEnd();
 }, [kpiResolverReady, detectedStandard, resolvedKpiList.length, ccTagToCodes.size, sectionCodes.size, kpiResolverError]);
 
-const [localKpis, setLocalKpis] = useState([]);
-const kpiList = useMemo(
-  () => [...resolvedKpiList, ...localKpis],
-  [resolvedKpiList, localKpis]
-);
-const setKpiList = (updater) => {
-  setLocalKpis(prev => typeof updater === "function" ? updater(prev) : updater);
-};
+// Auth + company resolved from Supabase session (mirrors Mappings pattern).
+const [authUserId, setAuthUserId] = useState(null);
+const [companyId, setCompanyId]   = useState(null);
+
+// Custom KPIs fetched from Supabase — the company-wide LIBRARY (shared).
+const [companyKpis, setCompanyKpis] = useState([]);
+
+// User's PERSONAL dashboard — ordered list of KPI ids (built-in OR custom).
+// null = not loaded yet; defaults applied once fetch resolves.
+const [dashboardKpiIds, setDashboardKpiIds] = useState(null);
+
+// Resolve session + company on mount
+useEffect(() => {
+  (async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const uid = session?.user?.id ?? null;
+    setAuthUserId(uid);
+    if (uid) {
+      const cid = await getActiveCompanyId(uid);
+      setCompanyId(cid);
+    }
+  })();
+}, []);
+
+// Fetch the company's shared KPI library (every saved custom KPI)
+useEffect(() => {
+  if (!companyId) return;
+  listCompanyKpis({ companyId, contextMappingId: "*" })
+    .then(rows => setCompanyKpis(rows ?? []))
+    .catch(e => console.error("[KpiPage] listCompanyKpis:", e));
+}, [companyId]);
+
+// Fetch this user's personal dashboard
+useEffect(() => {
+  if (!authUserId || !companyId) return;
+  (async () => {
+    try {
+      const row = await getUserDashboard({ userId: authUserId, companyId });
+      if (row && Array.isArray(row.kpi_ids) && row.kpi_ids.length > 0) {
+        setDashboardKpiIds(row.kpi_ids);
+      } else {
+        // First time on this company — start with the 4 built-in defaults
+        setDashboardKpiIds(["revenue", "gross_profit", "net_result", "net_margin"]);
+      }
+    } catch (e) {
+      console.error("[KpiPage] getUserDashboard:", e);
+      setDashboardKpiIds(["revenue", "gross_profit", "net_result", "net_margin"]);
+    }
+  })();
+}, [authUserId, companyId]);
+
+// Adapt Supabase rows to the renderer's KPI shape. _contextMappingId is UI
+// metadata for badges + context filtering.
+const localKpis = useMemo(() => companyKpis.map(k => ({
+  id:                k.kpi_id,
+  label:             k.label,
+  description:       k.description ?? "",
+  category:          k.category    ?? "",
+  tag:               k.tag         ?? "",
+  format:            k.format,
+  formula:           k.formula,
+  benchmark:         k.benchmark,
+  _contextMappingId: k.context_mapping_id ?? null,
+  _createdBy:        k.created_by,
+})), [companyKpis]);
+
+// Persist dashboard changes to Supabase (optimistic — UI updates first)
+const persistDashboard = useCallback(async (ids) => {
+  if (!authUserId || !companyId) return;
+  try {
+    await saveUserDashboard({ userId: authUserId, companyId, kpiIds: ids });
+  } catch (e) {
+    console.error("[KpiPage] saveUserDashboard:", e);
+  }
+}, [authUserId, companyId]);
+
+const addToDashboard = useCallback((kpiId) => {
+  setDashboardKpiIds(prev => {
+    if (!prev) return prev;
+    if (prev.includes(kpiId)) return prev;
+    const next = [...prev, kpiId];
+    persistDashboard(next);
+    return next;
+  });
+}, [persistDashboard]);
+
+const removeFromDashboard = useCallback((kpiId) => {
+  setDashboardKpiIds(prev => {
+    if (!prev) return prev;
+    const next = prev.filter(id => id !== kpiId);
+    persistDashboard(next);
+    return next;
+  });
+}, [persistDashboard]);
+
+// Visible KPIs: resolve every dashboard id from built-ins or the custom
+// library and drop anything that can't be found (e.g. removed from library).
+// We DON'T filter by mapping context here — the badge on each row tells the
+// user where the KPI was created, and the cc_tag override system already
+// recomputes values against the active mapping. Hiding KPIs on mapping change
+// is more confusing than helpful.
+const kpiList = useMemo(() => {
+  if (!dashboardKpiIds) return [];
+  const byId = new Map();
+  resolvedKpiList.forEach(k => byId.set(k.id, k));
+  localKpis.forEach(k => byId.set(k.id, k));
+  return dashboardKpiIds.map(id => byId.get(id)).filter(Boolean);
+}, [dashboardKpiIds, resolvedKpiList, localKpis]);
   const [editingKpi, setEditingKpi] = useState(null);
 const [viewMode, setViewMode] = useState("company"); // "company" | "dimension"
 const [viewPeriod, setViewPeriod] = useState("ytd"); // "monthly" | "ytd"
@@ -2521,7 +2750,8 @@ const [cmpMonth, setCmpMonth] = useState("");
   const [selGroup, setSelGroup] = useState("");
   const [selDim, setSelDim] = useState("");
   const graphSectionsRef = useRef({}); // { 1: {...}, 2: {...}, 3: {...} }
-  const [exporting, setExporting] = useState(false);
+const [exporting, setExporting] = useState(false);
+  const [viewsModalOpen, setViewsModalOpen] = useState(false);
   const handleGraphSectionState = useCallback((sid, state) => {
     graphSectionsRef.current[sid] = state;
   }, []);
@@ -3004,16 +3234,78 @@ const companyResults = useMemo(() => {
     });
     return results;
   }, [dimensionPivotsCmp, kpiList, ccTagToCodes, sectionCodes, resolvedAllKpis]);
-  // KPI CRUD
-  const saveKpi = (data) => {
-    if (editingKpi === "new") {
-      setKpiList(prev => [...prev, { id: makeId(), ...data }]);
-    } else {
-      setKpiList(prev => prev.map(k => k.id === editingKpi.id ? { ...k, ...data } : k));
+// KPI CRUD — three paths:
+  //   1. Editing existing → UPDATE library entry (visible to other users too)
+  //   2. Clicked existing in library picker → ADD to dashboard only
+  //   3. New from preset / custom builder → CREATE in library + ADD to dashboard
+  const saveKpi = useCallback(async (data) => {
+    if (!companyId || !authUserId) {
+      alert("Sesión o empresa no resueltas — no se puede guardar.");
+      return;
     }
-    setEditingKpi(null);
-  };
-  const deleteKpi = (id) => setKpiList(prev => prev.filter(k => k.id !== id));
+
+    // Path 1: editing existing custom KPI from the table pencil icon
+    if (editingKpi !== "new" && editingKpi && typeof editingKpi === "object" && editingKpi.id) {
+      const inLibrary = companyKpis.some(k => k.kpi_id === editingKpi.id);
+      if (!inLibrary) {
+        alert("Esto es un KPI built-in y no se puede editar.\nDuplícalo como personalizado para crear una variante.");
+        setEditingKpi(null);
+        return;
+      }
+      try {
+        const updated = await updateCompanyKpi({
+          kpiId: editingKpi.id, userId: authUserId,
+          label:       data.label,
+          description: data.description ?? null,
+          category:    data.category    ?? null,
+          tag:         data.tag         ?? null,
+          format:      data.format      ?? "currency",
+          formula:     data.formula,
+          benchmark:   data.benchmark   ?? null,
+        });
+        setCompanyKpis(prev => prev.map(k => k.kpi_id === updated.kpi_id ? updated : k));
+        setEditingKpi(null);
+      } catch (e) {
+        alert(`No se pudo actualizar: ${e.message}`);
+      }
+      return;
+    }
+
+    // Path 2: user clicked an existing custom KPI in the library picker
+    // (data.id matches an entry in companyKpis) → just add to dashboard
+    const existing = data.id ? companyKpis.find(k => k.kpi_id === data.id) : null;
+    if (existing) {
+      addToDashboard(existing.kpi_id);
+      setEditingKpi(null);
+      return;
+    }
+
+    // Path 3: brand-new KPI (preset or custom builder) → create in library + add to dashboard
+    try {
+      const created = await createCompanyKpi({
+        companyId, userId: authUserId,
+        label:       data.label,
+        description: data.description ?? null,
+        category:    data.category    ?? null,
+        tag:         data.tag         ?? null,
+        format:      data.format      ?? "currency",
+        formula:     data.formula,
+        benchmark:   data.benchmark   ?? null,
+        contextMappingId: activeMapping?.mapping_id ?? null,
+      });
+      setCompanyKpis(prev => [...prev, created]);
+      addToDashboard(created.kpi_id);
+      setEditingKpi(null);
+    } catch (e) {
+      alert(`No se pudo crear: ${e.message}`);
+    }
+  }, [companyId, authUserId, editingKpi, activeMapping, companyKpis, addToDashboard]);
+
+  // Trash icon removes the KPI from THIS user's dashboard only — the library
+  // entry stays so other users on the company still have it.
+  const deleteKpi = useCallback((id) => {
+    removeFromDashboard(id);
+  }, [removeFromDashboard]);
 
  const fetchSectionData = useCallback(async (sectionConfig) => {
     const { company, startY, startM, endY, endM, source: secSource, structure: secStructure,
@@ -3175,15 +3467,25 @@ const imageDataUrl = await renderChartToImage({
     finally { setExporting(false); }
   };
 
-const handleDragEnd = () => {
-    if (dragIdx !== null && dragOverIdx !== null && dragIdx !== dragOverIdx) {
+const handleDragEnd = useCallback(() => {
+    if (dragIdx !== null && dragOverIdx !== null && dragIdx !== dragOverIdx && dashboardKpiIds) {
       const newRows = [...kpiList];
       const [moved] = newRows.splice(dragIdx, 1);
       newRows.splice(dragOverIdx, 0, moved);
-      setKpiList(newRows);
+      // Reorder visible KPIs WITHIN the dashboard, keeping hidden items
+      // (those from non-active mapping contexts) in their relative positions.
+      const oldVisibleIds = kpiList.map(k => k.id);
+      const newVisibleIds = newRows.map(k => k.id);
+      const visibleSet = new Set(oldVisibleIds);
+      const queue = [...newVisibleIds];
+      const newDashboard = dashboardKpiIds.map(id =>
+        visibleSet.has(id) ? queue.shift() : id
+      );
+      setDashboardKpiIds(newDashboard);
+      persistDashboard(newDashboard);
     }
     setDragIdx(null); setDragOverIdx(null);
-  };
+  }, [dragIdx, dragOverIdx, kpiList, dashboardKpiIds, persistDashboard]);
 
   const handleColDragEnd = () => {
     if (colDragIdx !== null && colDragOverIdx !== null && colDragIdx !== colDragOverIdx) {
@@ -3208,64 +3510,133 @@ const orderedCols = colOrder && colOrder.length === activeCols.length ? colOrder
   return (
     <div className="flex flex-col gap-4 h-full min-h-0">
 
-{/* Header */}
-      <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          <div className="w-1.5 h-10 rounded-full" style={{ backgroundColor: colors.primary }} />
-          <div>
-            <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Individual</p>
-            <h1 className="leading-none" style={header1Style}>KPIs</h1>
+{/* Header — built from shared <PageHeader> */}
+      <PageHeader
+        kicker="Individual"
+        title="KPIs"
+        tabs={[
+          { id: "company",   label: "Company",   icon: Building2 },
+          { id: "dimension", label: "Dimension", icon: Layers },
+          { id: "graphs",    label: "Graphs",    icon: BarChart3 },
+        ]}
+        activeTab={viewMode}
+        onTabChange={setViewMode}
+        filters={viewMode === "graphs" ? [] : [
+          { label: "Year",  value: year,  onChange: setYear,
+            options: YEARS.map(y => ({ value: String(y), label: String(y) })) },
+          { label: "Month", value: month, onChange: setMonth,
+            options: MONTHS.map(m => ({ value: String(m.value), label: m.label })) },
+          ...(sourceOpts.length > 0
+            ? [{ label: "Source", value: source, onChange: setSource, options: sourceOpts }]
+            : []),
+          ...(structureOpts.length > 0
+            ? [{ label: "Structure", value: structure, onChange: setStructure, options: structureOpts }]
+            : []),
+          ...(dimGroups.length > 0
+            ? [{
+                label: "Dim Group",
+                value: selGroup,
+                onChange: v => { setSelGroup(v); setSelDim(""); },
+                options: [{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))],
+              }]
+            : []),
+          ...(selGroup && groupDimOptions.length > 0
+            ? [{
+                label: "Dimension",
+                value: selDim,
+                onChange: setSelDim,
+                options: [
+                  { value: "", label: "All" },
+                  ...groupDimOptions.map(d => ({ value: d.code, label: d.name || d.code })),
+                ],
+              }]
+            : []),
+        ]}
+periodToggle={{
+          value: viewPeriod,
+          onChange: setViewPeriod,
+        }}
+        compareToggle={{
+          active: compareMode,
+          onChange: setCompareMode,
+        }}
+        fabActions={[
+          {
+            id: "views",
+            icon: Library,
+            label: "Views",
+            onClick: () => setViewsModalOpen(true),
+          },
+          {
+            id: "export",
+            icon: Download,
+            label: "Export",
+            subActions: [
+              {
+                id: "excel",
+                label: "Excel",
+                src: "https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png",
+                alt: "Excel",
+                onClick: handleExportXlsx,
+              },
+              {
+                id: "pdf",
+                label: "PDF",
+                src: "https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png",
+                alt: "PDF",
+                onClick: handleExportPdf,
+              },
+            ],
+          },
+        ]}
+      />
+
+<MappingsModal
+        open={viewsModalOpen}
+        onClose={() => setViewsModalOpen(false)}
+        groupAccounts={groupAccounts}
+        onApply={handleApplyMapping}
+      />
+
+      {activeMapping && (
+        <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm flex-shrink-0">
+          <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
+          <span className="text-xs text-emerald-700 font-medium">
+            Custom mapping active: <strong className="font-black">{activeMapping.name}</strong>
+            <span className="text-emerald-500/70 ml-2">· {activeMapping.standard}</span>
+          </span>
+          <button
+            onClick={() => setActiveMapping(null)}
+            className="ml-auto flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
+            title="Clear mapping and use default"
+          >
+            <X size={11} />
+            Clear
+          </button>
+        </div>
+      )}
+
+      {activeMapping && !warningDismissed && (
+        <div className="flex items-start gap-2 px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-200 shadow-sm flex-shrink-0">
+          <AlertTriangle size={14} className="text-amber-600 mt-0.5 flex-shrink-0" />
+          <div className="flex-1 text-xs text-amber-800 leading-relaxed">
+            <strong className="font-black">Heads up:</strong> los cálculos de KPI se han recalculado con el nuevo mapeo en lo posible.
+            {mappingMatched.length > 0 && (
+              <> <span className="font-black text-amber-900">{mappingMatched.length}</span> sección{mappingMatched.length === 1 ? "" : "es"} emparejada{mappingMatched.length === 1 ? "" : "s"} ({mappingMatched.slice(0, 3).map(m => m.label).join(", ")}{mappingMatched.length > 3 ? "…" : ""}).</>
+            )}
+            {mappingUnmatched.length > 0 && (
+              <> <span className="font-black text-amber-900">{mappingUnmatched.length}</span> sin emparejar — siguen usando la taxonomía por defecto, revísalos.</>
+            )}
           </div>
-        </div>
-{viewMode !== "graphs" && (
-          <>
-            <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
-            <div className="flex items-center gap-2 flex-wrap">
-              {sourceOpts.length > 0 && <FilterPill label="Source" value={source} onChange={setSource} options={sourceOpts} filterStyle={filterStyle} colors={colors} />}
-              <FilterPill label="Year" value={year} onChange={setYear} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} filterStyle={filterStyle} colors={colors} />
-              <FilterPill label="Month" value={month} onChange={setMonth} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} filterStyle={filterStyle} colors={colors} />
-              {structureOpts.length > 0 && <FilterPill label="Structure" value={structure} onChange={setStructure} options={structureOpts} filterStyle={filterStyle} colors={colors} />}
-              {dimGroups.length > 0 && <FilterPill label="Dim Group" value={selGroup} onChange={v => { setSelGroup(v); setSelDim(""); }} options={[{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))]} filterStyle={filterStyle} colors={colors} />}
-              {selGroup && groupDimOptions.length > 0 && <FilterPill label="Dimension" value={selDim} onChange={setSelDim} options={[{ value: "", label: "All" }, ...groupDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))]} filterStyle={filterStyle} colors={colors} />}
-            </div>
-          </>
-        )}
-<div className="ml-auto flex items-center gap-3 flex-shrink-0 mr-6">
-          {loading && <Loader2 size={13} className="animate-spin text-[#1a2f8a]" />}
-
-
-<AnimatedTabSelector
-            tabs={[
-              { key: "company",   label: "",   icon: <Building2 size={16} /> },
-              { key: "dimension", label: "", icon: <Layers size={16} /> },
-              { key: "graphs",    label: "",    icon: <BarChart3 size={16} /> },
-            ]}
-            activeKey={viewMode}
-            onSelect={setViewMode}
-            colors={colors}
-          />
-
- <button onClick={handleExportXlsx} disabled={exporting}
-            title="Export to Excel"
-            className="transition-all hover:opacity-80 hover:scale-105 disabled:opacity-40">
-            {exporting
-              ? <Loader2 size={20} className="animate-spin text-[#107C41]" />
-              : <img
-                  src="https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png"
-                  width="40" height="36" alt="Excel" />}
-          </button>
-          <button onClick={handleExportPdf} disabled={exporting}
-            title="Export to PDF"
-            className="transition-all hover:opacity-80 hover:scale-105 disabled:opacity-40">
-            {exporting
-              ? <Loader2 size={20} className="animate-spin text-[#D93025]" />
-              : <img
-                  src="https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png"
-                  width="27" height="36" alt="PDF" />}
+          <button
+            onClick={() => setWarningDismissed(true)}
+            className="flex-shrink-0 w-6 h-6 rounded-md hover:bg-amber-100 text-amber-600 flex items-center justify-center transition-colors"
+            title="Dismiss"
+          >
+            <X size={11} />
           </button>
         </div>
-      </div>
-
+      )}
 
 
 {!metaReady || (loading && companyData.size === 0) ? (
@@ -3361,35 +3732,8 @@ kpiList={kpiList}
                     }
                     return cells;
                   })}
-<th className="sticky right-0 top-0 z-50 px-4 py-3 whitespace-nowrap border-l border-white/20 min-w-[300px]" style={{ backgroundColor: colors.primary }}>
-                    <div className="flex items-center justify-between gap-2 w-full">
-                      <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
-                        <AnimatedTabSelector
-                          tabs={[
-                            { key: "monthly", label: "Monthly", icon: null },
-                            { key: "ytd",     label: "YTD",     icon: null },
-                          ]}
-                          activeKey={viewPeriod}
-                          onSelect={setViewPeriod}
-                          colors={colors}
-                          pillColor={colors.quaternary}
-                          bgColor="rgba(0,0,0,0.2)"
-                          inactiveColor="rgba(255,255,255,0.6)"
-                          activeColor={colors.primary}
-                        />
-                        <button
-                          onClick={() => setCompareMode(c => !c)}
-                          title={compareMode ? "Exit compare" : "Compare with another period"}
-                          className="w-7 h-7 rounded-lg flex items-center justify-center transition-all"
-                          style={{
-                            backgroundColor: compareMode ? colors.quaternary : "rgba(0,0,0,0.2)",
-                            color: compareMode ? colors.primary : colors.quaternary,
-                          }}>
-                          <GitCompareArrows size={13} />
-                        </button>
-                      </div>
-                      <span style={header2Style}>Total / Avg</span>
-                    </div>
+<th className="sticky right-0 top-0 z-50 px-4 py-3 whitespace-nowrap border-l border-white/20 min-w-[160px] text-center" style={{ backgroundColor: colors.primary }}>
+                    <span style={header2Style}>Total / Avg</span>
                   </th>
                 </tr>
               </thead>
@@ -3424,10 +3768,22 @@ kpiList={kpiList}
 <div className="flex flex-col gap-0.5 flex-1 min-w-0">
   <div className="flex items-center gap-1.5">
     <span className="truncate" style={body1Style}>{kpi.label}</span>
-    {kpi.category && (
+{kpi.category && (
       <span className="px-1.5 py-0.5 rounded-md flex-shrink-0"
         style={{ backgroundColor: colors.primary, ...underscore2Style }}>
         {kpi.category}
+      </span>
+    )}
+    {kpi._contextMappingId !== undefined && (
+      <span className="px-1.5 py-0.5 rounded-md flex-shrink-0 text-[8px] font-black uppercase tracking-widest"
+        style={{
+          backgroundColor: kpi._contextMappingId ? "#fef3c7" : "#dcfce7",
+          color:           kpi._contextMappingId ? "#92400e" : "#15803d",
+        }}
+        title={kpi._contextMappingId
+          ? "Custom KPI · under a custom mapping"
+          : "Custom KPI · standard view"}>
+        {kpi._contextMappingId ? "MAPPED" : "CUSTOM"}
       </span>
     )}
   </div>
@@ -3549,7 +3905,8 @@ if (compareMode) {
           onSave={saveKpi}
           onClose={() => setEditingKpi(null)}
           kpiList={kpiList}
-accountCodes={allAccountCodes}
+          allLocalKpis={localKpis}
+          accountCodes={allAccountCodes}
           builtInIds={new Set(resolvedKpiList.map(k => k.id))}
         />
       )}
