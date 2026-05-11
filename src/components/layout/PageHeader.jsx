@@ -371,15 +371,136 @@ export function ActionFAB({ actions = [] }) {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
-const RADIUS = 70;
+
+  const useVertical = actions.length >= 3;
+
+  if (useVertical) {
+    return (
+      <div ref={ref} className="relative flex-shrink-0" style={{ width: 36, height: 36 }}>
+        {actions.map((action, i) => {
+          const Icon = action.icon;
+          const isHovered = hoveredId === action.id;
+          const hasSubs = Array.isArray(action.subActions) && action.subActions.length > 0;
+          return (
+            <div key={action.id} className="absolute z-30"
+              style={{
+                left: '50%', top: '50%',
+                transform: open
+                  ? `translate(-50%, ${(i + 1) * 52}px) scale(1)`
+                  : `translate(-50%, 0px) scale(0.3)`,
+                opacity: open ? 1 : 0,
+                transition: open
+                  ? `transform 380ms ${SPRING} ${i * 60}ms, opacity 260ms ${SMOOTH} ${i * 60}ms`
+                  : `transform 200ms ${SMOOTH} ${(actions.length - 1 - i) * 30}ms, opacity 160ms ${SMOOTH}`,
+                pointerEvents: open ? 'auto' : 'none',
+              }}
+              onMouseEnter={() => setHoveredId(action.id)}
+              onMouseLeave={() => setHoveredId(null)}
+            >
+              {/* Sub-actions expanding LEFT */}
+              {hasSubs && (
+                <div className="absolute flex flex-row-reverse items-center gap-2"
+style={{
+                    right: '100%', top: '50%',
+                    transform: 'translateY(-50%)',
+                    paddingRight: '12px',
+                    pointerEvents: isHovered ? 'auto' : 'none',
+                  }}
+                >
+                  {action.subActions.map((sub, j) => (
+                    <div key={sub.id}
+                      style={{
+                        transform: isHovered ? 'scale(1)' : 'scale(0)',
+                        opacity: isHovered ? 1 : 0,
+                        transition: isHovered
+                          ? `transform 320ms ${SPRING} ${j * 55}ms, opacity 220ms ${SMOOTH} ${j * 55}ms`
+                          : `transform 160ms ${SMOOTH}, opacity 120ms ${SMOOTH}`,
+                      }}
+                    >
+                      <div className="relative group/sub">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); sub.onClick?.(); setOpen(false); setHoveredId(null); }}
+                          title={sub.label}
+                          className="flex items-center justify-center w-9 h-9 rounded-full transition-transform hover:scale-110"
+                          style={{
+                            background: 'white',
+                            border: '1px solid rgba(26,47,138,0.08)',
+                            boxShadow: '0 6px 16px -4px rgba(26,47,138,0.22), 0 0 0 1px rgba(255,255,255,0.5) inset',
+                          }}
+                        >
+{sub.src
+                            ? <img src={sub.src} alt={sub.alt ?? sub.label} className="w-7 h-7 object-contain" />
+                            : sub.icon && React.createElement(sub.icon, { size: 26, strokeWidth: 2.2, style: { color: colors.primary } })
+                          }
+                        </button>
+                        <span className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-md whitespace-nowrap pointer-events-none opacity-0 group-hover/sub:opacity-100 transition-opacity"
+                          style={{ background: colors.primary, color: 'white' }}>
+                          {sub.label}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Action button */}
+              <button
+                onClick={hasSubs ? undefined : action.onClick}
+                title={action.label}
+                className="flex items-center justify-center w-10 h-10 rounded-full relative z-10"
+                style={{
+                  background: 'white',
+                  border: '1px solid rgba(26,47,138,0.08)',
+                  boxShadow: isHovered
+                    ? '0 12px 28px -8px rgba(26,47,138,0.35), 0 0 0 1px rgba(26,47,138,0.12)'
+                    : '0 6px 16px -4px rgba(26,47,138,0.18)',
+                  color: colors.primary,
+                  transform: isHovered ? 'scale(1.08)' : 'scale(1)',
+                  transition: `all 280ms ${SPRING}`,
+                }}
+              >
+                {Icon && <Icon size={16} strokeWidth={2.4} />}
+              </button>
+
+              {/* Label left (no subs only) */}
+              {!hasSubs && (
+                <div className="absolute right-full mr-2 top-1/2 pointer-events-none"
+                  style={{ transform: 'translateY(-50%)', opacity: isHovered ? 1 : 0, transition: `opacity 200ms ${SMOOTH}` }}>
+                  <span className="text-[9px] font-black uppercase tracking-[0.16em] px-2 py-1 rounded-md whitespace-nowrap"
+                    style={{ background: colors.primary, color: 'white', boxShadow: '0 4px 12px -2px rgba(26,47,138,0.4)' }}>
+                    {action.label}
+                  </span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        <button onClick={() => setOpen(o => !o)} title="More actions"
+          className="relative flex items-center justify-center w-9 h-9 rounded-full z-40"
+          style={{
+            background: open ? colors.primary : 'rgba(26,47,138,0.06)',
+            color: open ? 'white' : colors.primary,
+            border: open ? `1px solid ${colors.primary}` : '1px solid rgba(26,47,138,0.1)',
+            boxShadow: open ? '0 10px 28px -6px rgba(26,47,138,0.5), 0 0 0 4px rgba(26,47,138,0.08)' : '0 2px 6px -2px rgba(26,47,138,0.15)',
+            transform: open ? 'rotate(90deg) scale(1.05)' : 'rotate(0deg) scale(1)',
+            transition: `all 360ms ${SPRING}`,
+          }}>
+          <MoreHorizontal size={17} strokeWidth={2.5} />
+        </button>
+      </div>
+    );
+  }
+
+  // Radial mode for < 3 actions
+  const RADIUS = 70;
   const SUB_RADIUS = 60;
   const startAngle = 125;
-  const endAngle   = 185;
+  const endAngle = 185;
   const span = endAngle - startAngle;
 
   return (
     <div ref={ref} className="relative flex-shrink-0" style={{ width: 36, height: 36 }}>
-
       {actions.map((action, i) => {
         const t = actions.length === 1 ? 0.5 : i / (actions.length - 1);
         const angle = (startAngle + span * t) * Math.PI / 180;
@@ -388,10 +509,8 @@ const RADIUS = 70;
         const Icon = action.icon;
         const isHovered = hoveredId === action.id;
         const hasSubs = Array.isArray(action.subActions) && action.subActions.length > 0;
-
         return (
-          <div key={action.id}
-            className="absolute pointer-events-none"
+          <div key={action.id} className="absolute pointer-events-none"
             style={{
               top: 18, left: 18,
               transform: open
@@ -403,96 +522,50 @@ const RADIUS = 70;
                 : `transform 240ms ${SMOOTH} ${(actions.length - 1 - i) * 30}ms, opacity 200ms ${SMOOTH} ${(actions.length - 1 - i) * 30}ms`,
               zIndex: 30 - i,
             }}>
-<div className="pointer-events-auto relative"
+            <div className="pointer-events-auto relative"
               onMouseEnter={() => setHoveredId(action.id)}
               onMouseLeave={() => setHoveredId(null)}>
-              {/* Invisible bridge so cursor never leaves the hover region when moving to sub-actions */}
               {hasSubs && isHovered && (
-                <div
-                  className="absolute"
-                  style={{
-                    top: "50%",
-                    left: "50%",
-                    width: SUB_RADIUS * 2 + 80,
-                    height: SUB_RADIUS * 2 + 80,
-                    transform: "translate(-50%, -50%)",
-                    pointerEvents: "auto",
-                    zIndex: 35,
-                  }}
-                />
+                <div className="absolute"
+                  style={{ top: "50%", left: "50%", width: SUB_RADIUS * 2 + 80, height: SUB_RADIUS * 2 + 80, transform: "translate(-50%, -50%)", pointerEvents: "auto", zIndex: 35 }} />
               )}
-              <button
-                onClick={action.onClick}
-                title={action.label}
+              <button onClick={action.onClick} title={action.label}
                 className="flex items-center justify-center w-11 h-11 rounded-full"
                 style={{
-                  background: "white",
-                  border: "1px solid rgba(26,47,138,0.08)",
-                  boxShadow: isHovered
-                    ? "0 12px 28px -8px rgba(26,47,138,0.35), 0 0 0 1px rgba(26,47,138,0.12)"
-                    : "0 6px 16px -4px rgba(26,47,138,0.18), 0 0 0 1px rgba(255,255,255,0.5) inset",
-                  color: colors.primary,
-                  transform: isHovered ? "scale(1.1)" : "scale(1)",
-                  transition: `all 280ms ${SPRING}`,
+                  background: "white", border: "1px solid rgba(26,47,138,0.08)",
+                  boxShadow: isHovered ? "0 12px 28px -8px rgba(26,47,138,0.35), 0 0 0 1px rgba(26,47,138,0.12)" : "0 6px 16px -4px rgba(26,47,138,0.18), 0 0 0 1px rgba(255,255,255,0.5) inset",
+                  color: colors.primary, transform: isHovered ? "scale(1.1)" : "scale(1)", transition: `all 280ms ${SPRING}`,
                 }}>
                 {Icon && <Icon size={16} strokeWidth={2.4} />}
               </button>
-
-              {/* Caption below */}
-<div className="absolute left-1/2 pointer-events-none whitespace-nowrap"
-                style={{
-                  bottom: "calc(100% + 8px)",
-                  transform: `translateX(-50%) translateY(${isHovered ? 0 : 3}px)`,
-                  opacity: isHovered && !hasSubs ? 1 : 0,
-                  transition: `opacity 200ms ${SMOOTH}, transform 240ms ${SPRING}`,
-                }}>
+              <div className="absolute left-1/2 pointer-events-none whitespace-nowrap"
+                style={{ bottom: "calc(100% + 8px)", transform: `translateX(-50%) translateY(${isHovered ? 0 : 3}px)`, opacity: isHovered && !hasSubs ? 1 : 0, transition: `opacity 200ms ${SMOOTH}, transform 240ms ${SPRING}` }}>
                 <span className="text-[9px] font-black uppercase tracking-[0.16em] px-2 py-1 rounded-md"
-                  style={{
-                    background: colors.primary,
-                    color: "white",
-                    boxShadow: "0 4px 12px -2px rgba(26,47,138,0.4)",
-                  }}>
+                  style={{ background: colors.primary, color: "white", boxShadow: "0 4px 12px -2px rgba(26,47,138,0.4)" }}>
                   {action.label}
                 </span>
               </div>
-
-              {/* Sub-actions */}
               {hasSubs && action.subActions.map((sub, j) => {
                 const subT = action.subActions.length === 1 ? 0.5 : j / (action.subActions.length - 1);
                 const subAngle = (135 + 50 * subT) * Math.PI / 180;
                 const sdx = Math.cos(subAngle) * SUB_RADIUS;
                 const sdy = Math.sin(subAngle) * SUB_RADIUS;
-return (
-                  <div key={sub.id}
-                    className="absolute"
+                return (
+                  <div key={sub.id} className="absolute"
                     style={{
                       top: "50%", left: "50%",
-                      transform: isHovered
-                        ? `translate(${sdx}px, ${sdy}px) translate(-50%, -50%) scale(1)`
-                        : "translate(0,0) translate(-50%, -50%) scale(0.3)",
+                      transform: isHovered ? `translate(${sdx}px, ${sdy}px) translate(-50%, -50%) scale(1)` : "translate(0,0) translate(-50%, -50%) scale(0.3)",
                       opacity: isHovered ? 1 : 0,
-                      transition: isHovered
-                        ? `transform 420ms ${SPRING} ${j * 60}ms, opacity 300ms ${SMOOTH} ${j * 60}ms`
-                        : `transform 220ms ${SMOOTH}, opacity 180ms ${SMOOTH}`,
-                      pointerEvents: isHovered ? "auto" : "none",
-                      zIndex: 40,
+                      transition: isHovered ? `transform 420ms ${SPRING} ${j * 60}ms, opacity 300ms ${SMOOTH} ${j * 60}ms` : `transform 220ms ${SMOOTH}, opacity 180ms ${SMOOTH}`,
+                      pointerEvents: isHovered ? "auto" : "none", zIndex: 40,
                     }}>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); sub.onClick?.(); setOpen(false); setHoveredId(null); }}
-                      title={sub.label}
-                      className="flex items-center justify-center w-10 h-10 rounded-full"
-                      style={{
-                        background: "white",
-                        border: "1px solid rgba(26,47,138,0.08)",
-                        boxShadow: "0 8px 20px -4px rgba(26,47,138,0.25), 0 0 0 1px rgba(255,255,255,0.5) inset",
-                        transition: `transform 240ms ${SPRING}, box-shadow 240ms ${SMOOTH}`,
-                      }}
+                    <button onClick={(e) => { e.stopPropagation(); sub.onClick?.(); setOpen(false); setHoveredId(null); }}
+                      title={sub.label} className="flex items-center justify-center w-10 h-10 rounded-full"
+                      style={{ background: "white", border: "1px solid rgba(26,47,138,0.08)", boxShadow: "0 8px 20px -4px rgba(26,47,138,0.25), 0 0 0 1px rgba(255,255,255,0.5) inset", transition: `transform 240ms ${SPRING}, box-shadow 240ms ${SMOOTH}` }}
                       onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.15)"; }}
                       onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; }}>
-                      {sub.src
-                        ? <img src={sub.src} alt={sub.alt ?? sub.label} className="w-6 h-6 object-contain" />
-                        : sub.icon && React.createElement(sub.icon, { size: 14, strokeWidth: 2.4, style: { color: colors.primary } })
-                      }
+                      {sub.src ? <img src={sub.src} alt={sub.alt ?? sub.label} className="w-6 h-6 object-contain" />
+                        : sub.icon && React.createElement(sub.icon, { size: 14, strokeWidth: 2.4, style: { color: colors.primary } })}
                     </button>
                   </div>
                 );
@@ -501,19 +574,13 @@ return (
           </div>
         );
       })}
-
-      {/* The FAB itself */}
-      <button
-        onClick={() => setOpen(o => !o)}
-        title="More actions"
+      <button onClick={() => setOpen(o => !o)} title="More actions"
         className="relative flex items-center justify-center w-9 h-9 rounded-full z-40"
         style={{
           background: open ? colors.primary : "rgba(26,47,138,0.06)",
           color: open ? "white" : colors.primary,
           border: open ? `1px solid ${colors.primary}` : "1px solid rgba(26,47,138,0.1)",
-          boxShadow: open
-            ? "0 10px 28px -6px rgba(26,47,138,0.5), 0 0 0 4px rgba(26,47,138,0.08)"
-            : "0 2px 6px -2px rgba(26,47,138,0.15)",
+          boxShadow: open ? "0 10px 28px -6px rgba(26,47,138,0.5), 0 0 0 4px rgba(26,47,138,0.08)" : "0 2px 6px -2px rgba(26,47,138,0.15)",
           transform: open ? "rotate(90deg) scale(1.05)" : "rotate(0deg) scale(1)",
           transition: `all 360ms ${SPRING}`,
         }}>
@@ -522,7 +589,6 @@ return (
     </div>
   );
 }
-
 /* ═══════════════════════════════════════════════════════════════
    PageHeader — glass shell with internal segmentation.
    Title morphs to reflect the hovered tab (or active when no hover).

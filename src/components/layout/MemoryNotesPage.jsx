@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { Loader2, BookOpen, FileText, Sparkles, Settings2, Download, Save, RefreshCw, Upload } from "lucide-react";
-import { useTypo, useSettings } from "./SettingsContext";
+import { Loader2, BookOpen, FileText, Sparkles, Settings2, Download, Save, RefreshCw, Upload, Library, Scale } from "lucide-react";import { useTypo, useSettings } from "./SettingsContext";
+import PageHeader from "./PageHeader.jsx";
+import MappingsModal from "./Mappings.jsx";
 
 const BASE_URL = "";
 
@@ -62,6 +63,35 @@ function codeMatchesPrefix(accountCode, prefixes) {
     const pp = String(p);
     return ac === pp || ac.startsWith(pp);
   });
+}
+
+// ─── Export icon components ───────────────────────────────────────
+function ExcelIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+      <path d="M19 4H7a2 2 0 0 0-2 2v20a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V12l-8-8z" fill="#107C41"/>
+      <path d="M19 4v8h8" fill="#0B5E30"/>
+      <path d="M14.5 15.5 17 19l-2.5 3.5h1.8L18 20.1l1.7 2.4h1.8L19 19l2.5-3.5h-1.8L18 17.9l-1.7-2.4z" fill="#fff"/>
+    </svg>
+  );
+}
+function PdfIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+      <path d="M19 4H7a2 2 0 0 0-2 2v20a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V12l-8-8z" fill="#D93025"/>
+      <path d="M19 4v8h8" fill="#A1271B"/>
+      <text x="9" y="23" fill="#fff" fontSize="7" fontWeight="700" fontFamily="Arial,sans-serif">PDF</text>
+    </svg>
+  );
+}
+function WordIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+      <path d="M19 4H7a2 2 0 0 0-2 2v20a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V12l-8-8z" fill="#2B579A"/>
+      <path d="M19 4v8h8" fill="#1E3F7A"/>
+      <text x="8" y="23" fill="#fff" fontSize="7" fontWeight="700" fontFamily="Arial,sans-serif">DOC</text>
+    </svg>
+  );
 }
 
 // ─── FilterPill ────────────────────────────────────────────────────
@@ -457,8 +487,9 @@ export default function MemoryNotesPage({
   const [source, setSource]       = useState("");
   const [structure, setStructure] = useState("");
   const [company, setCompany]     = useState("");
-  const [templateId, setTemplateId] = useState("pgc_normal");
+const [templateId, setTemplateId] = useState("pgc_normal");
   const [activeNoteId, setActiveNoteId] = useState(null);
+  const [viewsModalOpen, setViewsModalOpen] = useState(false);
 
   // Data
   const [templates, setTemplates] = useState([]);
@@ -585,7 +616,11 @@ sbGet("memory", `template_columns?select=*&note_id=like.${templateId}%3A*&order=
   // Filter options
   const sourceOpts    = [...new Set(sources.map(s  => typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
   const structureOpts = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
-  const companyOpts   = [...new Set(companies.map(c  => typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : String(c)).filter(Boolean))].map(v => ({ value: v, label: v }));
+  const companyOpts = companies
+    .map(c => typeof c === "object"
+      ? { value: c.companyShortName ?? c.CompanyShortName ?? "", label: c.companyLegalName ?? c.CompanyLegalName ?? c.companyShortName ?? c.CompanyShortName ?? "" }
+      : { value: String(c), label: String(c) })
+    .filter(o => o.value);
 
 // ─── Export handlers ────────────────────────────────────────────
   const buildExportData = useCallback(() => {
@@ -817,43 +852,63 @@ sbGet("memory", `template_columns?select=*&note_id=like.${templateId}%3A*&order=
   return (
     <div className="flex flex-col gap-4 h-full min-h-0">
 
-      <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          <div className="w-1.5 h-10 rounded-full" style={{ background: colors.primary }} />
-          <div>
-            <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Individual</p>
-            <h1 style={{ ...header1Style, lineHeight: 1 }}>Memory Notes</h1>
-          </div>
-        </div>
+ <PageHeader
+        kicker="Individual"
+        title="Memory Notes"
+        tabs={templates.map(t => ({
+          id: t.id,
+          label: t.label,
+          icon: t.id?.includes("ifrs") ? Scale : t.id?.includes("pymes") ? BookOpen : FileText,
+        }))}
+        activeTab={templateId}
+        onTabChange={setTemplateId}
+        filters={[
+          ...(sourceOpts.length > 0
+            ? [{ label: "Source", value: source, onChange: setSource, options: sourceOpts }]
+            : []),
+          { label: "Year", value: year, onChange: setYear,
+            options: YEARS.map(y => ({ value: String(y), label: String(y) })) },
+          { label: "Month", value: month, onChange: setMonth,
+            options: MONTHS.map(m => ({ value: String(m.value), label: m.label })) },
+          ...(structureOpts.length > 0
+            ? [{ label: "Structure", value: structure, onChange: setStructure, options: structureOpts }]
+            : []),
+          ...(companyOpts.length > 0
+            ? [{ label: "Company", value: company, onChange: setCompany, options: companyOpts }]
+            : []),
+        ]}
+        fabActions={[
+          {
+            id: "views",
+            icon: Library,
+            label: "Views",
+            onClick: () => setViewsModalOpen(true),
+          },
+          {
+            id: "save",
+            icon: Save,
+            label: "Save",
+            onClick: () => {},
+          },
+          {
+            id: "export",
+            icon: Download,
+            label: "Export",
+            subActions: [
+{ id: "excel", label: "Excel", src: "https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png", alt: "Excel", onClick: handleExportExcel },
+              { id: "pdf",   label: "PDF",   src: "https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png", alt: "PDF", onClick: handleExportPdf },
+              { id: "word",  label: "Word",  icon: WordIcon, onClick: handleExportWord },
+            ],
+          },
+        ]}
+      />
 
-        <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
-
-        <div className="flex items-center gap-2 flex-wrap">
-          {sourceOpts.length > 0    && <FilterPill label="Source"    value={source}    onChange={setSource}    options={sourceOpts} />}
-          {YEARS.length > 0         && <FilterPill label="Year"      value={year}      onChange={setYear}      options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />}
-          {MONTHS.length > 0        && <FilterPill label="Month"     value={month}     onChange={setMonth}     options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />}
-          {structureOpts.length > 0 && <FilterPill label="Structure" value={structure} onChange={setStructure} options={structureOpts} />}
-          {companyOpts.length > 0   && <FilterPill label="Company"   value={company}   onChange={setCompany}   options={companyOpts} />}
-        </div>
-
-        <div className="ml-auto flex items-center gap-3 flex-shrink-0">
-          {loadingData && <Loader2 size={14} className="animate-spin text-[#1a2f8a]" />}
-          {templates.length > 0 && (
-            <StandardSelector value={templateId} onChange={setTemplateId} templates={templates} />
-          )}
-          <div className="w-px h-8 bg-gray-100" />
-          <button className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black bg-white border border-gray-100 text-gray-600 hover:border-[#1a2f8a]/30 transition-all"
-            title="Save (coming soon)">
-            <Save size={12} /> Save
-          </button>
-<ExportMenu
-            disabled={!activeNote}
-            onExportExcel={handleExportExcel}
-            onExportPdf={handleExportPdf}
-            onExportWord={handleExportWord}
-          />
-        </div>
-      </div>
+      <MappingsModal
+        open={viewsModalOpen}
+        onClose={() => setViewsModalOpen(false)}
+        groupAccounts={[]}
+        onApply={() => {}}
+      />
 
       <div className="flex-1 min-h-0 flex gap-4">
 

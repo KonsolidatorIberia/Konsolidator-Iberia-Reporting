@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Search, Database, GitMerge, Maximize2, Minimize2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Search, Database, GitMerge, Maximize2, Minimize2, Library, Download, TrendingUp, Scale } from "lucide-react";
+import PageHeader from "./PageHeader.jsx";
+import MappingsModal from "./Mappings.jsx";
 import { useTypo, useSettings } from "./SettingsContext";
 const BASE_URL = "";
 
@@ -474,6 +476,7 @@ function PivotTab({
   masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterTopParent = "",
   kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null,
   plMapping = null, bsMapping = null,
+  statementType = "pl",
 }) {
   const header2Style = useTypo("header2");
   const body1Style = useTypo("body1");
@@ -481,8 +484,7 @@ function PivotTab({
   const header3Style = useTypo("header3");
   const { colors } = useSettings();
 
-  const [statementType, setStatementType] = useState("pl");
-  const [summaryMode, setSummaryMode] = useState(true);
+const [summaryMode, setSummaryMode] = useState(true);
 
   const headerRef = useRef(null);
   const bodyRef   = useRef(null);
@@ -583,9 +585,15 @@ function PivotTab({
         if (!dimMap.has("__none__")) dimMap.set("__none__", { code: null, name: "No Dimension", group: null });
         return;
       }
-      for (const [group, code] of pairs) {
+for (const [group, code] of pairs) {
         if (selGroup && group !== selGroup) continue;
-        if (!dimMap.has(code)) dimMap.set(code, { code, name: code, group });
+        if (!dimMap.has(code)) {
+          const dimObj = dimensions?.find(d =>
+            (d.DimensionCode ?? d.dimensionCode ?? d.Code ?? d.code) === code
+          );
+          const fullName = dimObj?.DimensionName ?? dimObj?.dimensionName ?? dimObj?.Name ?? dimObj?.name ?? code;
+          dimMap.set(code, { code, name: fullName, group });
+        }
       }
     });
     const dimCols = [...dimMap.values()].sort((a, b) => {
@@ -1109,9 +1117,9 @@ function PivotTab({
             <thead>
               <tr style={{ backgroundColor: colors.primary }}>
                 <th className="sticky left-0 z-30 text-left px-6 border-r border-white/20" style={{ backgroundColor: colors.primary, height: "56px" }}>
-                  <div className="flex items-center gap-3" style={{ minWidth: ACOL }}>
+<div className="flex items-center gap-3" style={{ minWidth: ACOL }}>
                     <span className="uppercase tracking-widest" style={header2Style}>Account</span>
-                    <div className="flex items-center gap-2 ml-auto">
+                    <div className="flex items-center gap-2">
                       <button onClick={() => expandedSet.size > 0 ? collapseAll() : expandAll()}
                         className="flex items-center justify-center rounded-lg transition-all"
                         style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, width: 32, height: 32 }}
@@ -1124,28 +1132,7 @@ function PivotTab({
                         title="View consolidated rows">
                         <Database size={13} />
                       </button>
-                      <div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
-                        <button onClick={() => setStatementType("pl")}
-                          className="rounded-md text-[11px] font-black transition-colors"
-                          style={{
-                            backgroundColor: statementType === "pl" ? (colors.quaternary ?? "#F59E0B") : "transparent",
-                            color: statementType === "pl" ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
-                            padding: "7px 12px",
-                            lineHeight: 1
-                          }}>
-                          P&L
-                        </button>
-                        <button onClick={() => setStatementType("bs")}
-                          className="rounded-md text-[11px] font-black transition-colors"
-                          style={{
-                            backgroundColor: statementType === "bs" ? (colors.quaternary ?? "#F59E0B") : "transparent",
-                            color: statementType === "bs" ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
-                            padding: "7px 12px",
-                            lineHeight: 1
-                          }}>
-                          B/S
-                        </button>
-                      </div>
+
                       <div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
                         <button onClick={() => setSummaryMode(false)}
                           className="rounded-md text-[11px] font-black transition-colors"
@@ -1198,11 +1185,14 @@ function PivotTab({
                   const divider = dividerMap[String(node.AccountCode)];
                   return (
                     <React.Fragment key={node.AccountCode}>
-                      {divider && (
+{divider && (
                         <tr>
-                          <td colSpan={dimCols.length + 2} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
+                          <td className="sticky left-0 z-10 px-6 py-1.5"
+                            style={{ backgroundColor: divider.color }}>
                             <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
                           </td>
+                          <td colSpan={dimCols.length + 1}
+                            style={{ backgroundColor: divider.color }} />
                         </tr>
                       )}
                       <DimensionRow node={node} depth={0}
@@ -1237,7 +1227,9 @@ export default function ConsolidatedDimensionesPage({
   const [structure, setStructure] = useState("");
   const [topParent, setTopParent] = useState("");
 
-  const [showAccounts, setShowAccounts] = useState(false);
+const [showAccounts,    setShowAccounts]    = useState(false);
+  const [viewsModalOpen,  setViewsModalOpen]  = useState(false);
+  const [statementType,   setStatementType]   = useState("pl");
   const [selGroup, setSelGroup] = useState("");
   const [compareMode, setCompareMode] = useState(false);
   const [rawData,   setRawData]   = useState([]);
@@ -1533,37 +1525,75 @@ export default function ConsolidatedDimensionesPage({
   return (
     <div className="flex flex-col gap-4 h-full min-h-0">
 
-      <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          <div className="w-1.5 h-10 rounded-full" style={{ background: colors.primary }} />
-          <div>
-            <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Consolidated</p>
-            <h1 style={{ ...header1Style, lineHeight: 1 }}>Dimensions</h1>
-          </div>
-        </div>
+<PageHeader
+kicker="Consolidated"
+        title="Dimensions"
+        tabs={[
+          { id: "pl", label: "P&L",           icon: TrendingUp },
+          { id: "bs", label: "Balance Sheet",  icon: Scale      },
+        ]}
+        activeTab={statementType}
+        onTabChange={setStatementType}
+        filters={[
+          ...(sourceOpts.length > 0
+            ? [{ label: "Source", value: source, onChange: setSource, options: sourceOpts }]
+            : []),
+          { label: "Year", value: year, onChange: setYear,
+            options: YEARS.map(y => ({ value: String(y), label: String(y) })) },
+          { label: "Month", value: month, onChange: setMonth,
+            options: MONTHS.map(m => ({ value: String(m.value), label: m.label })) },
+          ...(structureOpts.length > 0
+            ? [{ label: "Structure", value: structure, onChange: setStructure, options: structureOpts }]
+            : []),
+          ...(holdingOptions.length > 0
+            ? [{ label: "Perspective", value: topParent, onChange: setTopParent, options: holdingOptions }]
+            : []),
+          ...(dimGroups.length > 0
+            ? [{ label: "Dim Group", value: selGroup, onChange: setSelGroup,
+                options: [{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))] }]
+            : []),
+        ]}
+        compareToggle={{
+          active: compareMode,
+          onChange: (newVal) => setCompareMode(newVal),
+        }}
+        fabActions={[
+          {
+            id: "views",
+            icon: Library,
+            label: "Views",
+            onClick: () => setViewsModalOpen(true),
+          },
+          {
+            id: "export",
+            icon: Download,
+            label: "Export",
+            subActions: [
+              {
+                id: "excel",
+                label: "Excel",
+                src: "https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png",
+                alt: "Excel",
+                onClick: () => {},
+              },
+              {
+                id: "pdf",
+                label: "PDF",
+                src: "https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png",
+                alt: "PDF",
+                onClick: () => {},
+              },
+            ],
+          },
+        ]}
+      />
 
-        <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
-
-        <div className="flex items-center gap-2 flex-wrap">
-          {sourceOpts.length > 0       && <FilterPill label="Source"      value={source}    onChange={setSource}    options={sourceOpts} />}
-          {YEARS.length > 0            && <FilterPill label="Year"        value={year}      onChange={setYear}      options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />}
-          {MONTHS.length > 0           && <FilterPill label="Month"       value={month}     onChange={setMonth}     options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />}
-          {structureOpts.length > 0    && <FilterPill label="Structure"   value={structure} onChange={setStructure} options={structureOpts} />}
-          {holdingOptions.length > 0   && <FilterPill label="Perspective" value={topParent} onChange={setTopParent} options={holdingOptions} />}
-          {dimGroups.length > 0        && <FilterPill label="Dim Group"   value={selGroup}  onChange={setSelGroup}  options={[{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))]} />}
-        </div>
-
-        <div className="ml-auto flex items-center gap-3 flex-shrink-0 mr-6">
-          {loading && <Loader2 size={13} className="animate-spin text-[#1a2f8a]" />}
-          <button onClick={() => setCompareMode(c => !c)}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black transition-all shadow-xl"
-            style={compareMode
-              ? { backgroundColor: colors.primary, color: "#ffffff" }
-              : { backgroundColor: "#ffffff", color: "#6b7280", border: "1px solid #e5e7eb" }}>
-            <GitMerge size={12} /> Compare
-          </button>
-        </div>
-      </div>
+      <MappingsModal
+        open={viewsModalOpen}
+        onClose={() => setViewsModalOpen(false)}
+        groupAccounts={groupAccountsLocal}
+        onApply={() => {}}
+      />
 
       {loading ? (
         <div className="flex items-center justify-center flex-1">
@@ -1604,11 +1634,12 @@ export default function ConsolidatedDimensionesPage({
           masterSource={source}
           masterStructure={structure}
           masterTopParent={topParent}
-          kpiList={kpiList}
+kpiList={kpiList}
           ccTagToCodes={ccTagToCodes}
           resolveCcTag={resolveCcTag}
           plMapping={plMapping}
-          bsMapping={bsMapping} />
+          bsMapping={bsMapping}
+          statementType={statementType} />
       )}
 
       {showAccounts && (

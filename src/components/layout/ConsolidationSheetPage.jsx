@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { ChevronDown, ChevronRight, Loader2, RefreshCw, Maximize2, Minimize2, GitMerge } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, RefreshCw, Maximize2, Minimize2, GitMerge, Download, Library } from "lucide-react";import PageHeader from "./PageHeader.jsx";
 import { useTypo, useSettings } from "./SettingsContext";
+import MappingsModal from "./Mappings.jsx";
 const BASE = "https://api.konsolidator.com/v2";
 
 
@@ -307,7 +308,8 @@ const [cmpMonth,     setCmpMonth]     = useState("");
 const [cmpSource,    setCmpSource]    = useState("");
 const [cmpStructure, setCmpStructure] = useState("");
 const [cmpRawData,   setCmpRawData]   = useState([]);
-const [cmpLoading,   setCmpLoading]   = useState(false);
+  const [cmpLoading,   setCmpLoading]   = useState(false);
+  const [viewsModalOpen, setViewsModalOpen] = useState(false);
 
   const autoPeriodDone = useRef(false);
 
@@ -697,92 +699,90 @@ return (
           background: #f1f5f9;
         }
       `}</style>
-{/* ── Header ── */}
-      <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          <div className="w-1.5 h-10 rounded-full" style={{ backgroundColor: colors.primary }} />
-          <div>
-            <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Consolidated</p>
-            <h1 className="leading-none" style={header1Style}>Sheet</h1>
-          </div>
-        </div>
-        <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
-<div className="flex items-center gap-2 flex-wrap">
-  {sources.length > 0 && (
-    <FilterPill label="Source" value={source} onChange={setSource}
-      options={sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s }))}
-      filterStyle={filterStyle} colors={colors} />
-  )}
-  {availableYears.length > 0 && (
-    <FilterPill label="Year" value={year} onChange={setYear} options={availableYears}
-      filterStyle={filterStyle} colors={colors} />
-  )}
-  {availableMonths.length > 0 && (
-    <FilterPill label="Month" value={month} onChange={setMonth} options={availableMonths}
-      filterStyle={filterStyle} colors={colors} />
-  )}
-  {structures.length > 0 && (
-    <FilterPill label="Structure" value={structure} onChange={setStructure}
-      options={structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s }))}
-      filterStyle={filterStyle} colors={colors} />
-  )}
-  {holdingOptions.length > 1 && (
-    <FilterPill label="Perspective" value={topParent} onChange={setPerspectiveCompany}
-      options={holdingOptions}
-      filterStyle={filterStyle} colors={colors} />
-  )}
+<PageHeader
+        kicker="Consolidated"
+        title="Sheet"
+        filters={[
+          ...(sources.length > 0
+            ? [{ label: "Source", value: source, onChange: setSource,
+                options: sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s })) }]
+            : []),
+          ...(availableYears.length > 0
+            ? [{ label: "Year", value: year, onChange: setYear, options: availableYears }]
+            : []),
+          ...(availableMonths.length > 0
+            ? [{ label: "Month", value: month, onChange: setMonth, options: availableMonths }]
+            : []),
+          ...(structures.length > 0
+            ? [{ label: "Structure", value: structure, onChange: setStructure,
+                options: structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s })) }]
+            : []),
+          ...(holdingOptions.length > 1
+            ? [{ label: "Perspective", value: topParent, onChange: setPerspectiveCompany, options: holdingOptions }]
+            : []),
+        ]}
+        compareToggle={{
+          active: compareMode,
+          onChange: (newVal) => {
+            if (newVal && !compareMode) {
+              setCmpYear(year); setCmpMonth(month);
+              setCmpSource(source); setCmpStructure(structure);
+            }
+            setCompareMode(newVal);
+          },
+        }}
+fabActions={[
+          {
+            id: "views",
+            icon: Library,
+            label: "Views",
+            onClick: () => setViewsModalOpen(true),
+          },
+          {
+            id: "export",
+            icon: Download,
+            label: "Export",
+            subActions: [
+              {
+                id: "excel",
+                label: "Excel",
+                src: "https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png",
+                alt: "Excel",
+                onClick: () => {},
+              },
+              {
+                id: "pdf",
+                label: "PDF",
+                src: "https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png",
+                alt: "PDF",
+                onClick: () => {},
+              },
+            ],
+          },
+        ]}
+      />
 
-</div>
-<div className="ml-auto flex items-center gap-3 flex-shrink-0 mr-6">
-          {loading && <Loader2 size={13} className="animate-spin text-[#1a2f8a]" />}
-<button
-            onClick={() => {
-              if (!compareMode) {
-                setCmpYear(year); setCmpMonth(month);
-                setCmpSource(source); setCmpStructure(structure);
-              }
-              setCompareMode(c => !c);
-            }}
-            title={compareMode ? "Disable comparison" : "Compare with another period"}
-            className="flex items-center justify-center w-9 h-9 rounded-xl transition-all hover:scale-110 hover:shadow-md"
-            style={{
-              backgroundColor: compareMode ? colors.primary : `${colors.primary}15`,
-              color: compareMode ? "white" : colors.primary,
-            }}>
-            <GitMerge size={16} />
-          </button>
-          <button className="transition-all hover:opacity-80 hover:scale-105" title="Export Excel">
-            <img src="https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png" width="44" height="36" alt="Excel" />
-          </button>
-<button className="transition-all hover:opacity-80 hover:scale-105" title="Export PDF">
-            <img src="https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png" width="30" height="36" alt="PDF" />
-          </button>
-        </div>
-      </div>
+<MappingsModal
+        open={viewsModalOpen}
+        onClose={() => setViewsModalOpen(false)}
+        groupAccounts={[...accountMap.values()]}
+        onApply={() => {}}
+      />
 
-      {/* ── Compare filter row ── */}
       {compareMode && (
-        <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
-          <div className="flex items-center gap-1.5 flex-shrink-0">
-            <div className="w-1.5 h-8 rounded-full bg-gray-300" />
-            <p className="text-[10px] font-black uppercase tracking-widest leading-none" style={{ color: "#0c1d55" }}>
-              Compare Period
-            </p>
-          </div>
-          <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
-          <div className="flex items-center gap-2 flex-wrap">
-            <FilterPill label="Source"    value={cmpSource}    onChange={setCmpSource}
-              options={sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s }))}
-              filterStyle={filterStyle} colors={colors} />
-            <FilterPill label="Year"      value={cmpYear}      onChange={setCmpYear}
-              options={availableYears} filterStyle={filterStyle} colors={colors} />
-            <FilterPill label="Month"     value={cmpMonth}     onChange={setCmpMonth}
-              options={availableMonths} filterStyle={filterStyle} colors={colors} />
-            <FilterPill label="Structure" value={cmpStructure} onChange={setCmpStructure}
-              options={structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s }))}
-              filterStyle={filterStyle} colors={colors} />
-          {cmpLoading && <Loader2 size={13} className="animate-spin text-gray-400 flex-shrink-0" />}
-          </div>
+        <div className="flex items-center gap-2 flex-wrap px-4 py-2.5 bg-white rounded-2xl border border-gray-100 shadow-sm flex-shrink-0">
+          <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50 mr-1">Compare with</span>
+          <FilterPill label="Source"    value={cmpSource}    onChange={setCmpSource}
+            options={sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s }))}
+            filterStyle={filterStyle} colors={colors} />
+          <FilterPill label="Year"      value={cmpYear}      onChange={setCmpYear}
+            options={availableYears} filterStyle={filterStyle} colors={colors} />
+          <FilterPill label="Month"     value={cmpMonth}     onChange={setCmpMonth}
+            options={availableMonths} filterStyle={filterStyle} colors={colors} />
+          <FilterPill label="Structure" value={cmpStructure} onChange={setCmpStructure}
+            options={structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s }))}
+            filterStyle={filterStyle} colors={colors} />
+          {cmpLoading && <Loader2 size={11} className="animate-spin text-[#1a2f8a] ml-2" />}
         </div>
       )}
 

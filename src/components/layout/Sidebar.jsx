@@ -24,7 +24,7 @@ const NAV = [
       { key: "individual-contributive",     label: "Contributive",        icon: PieChart  },
       { key: "consolidated-sheet",          label: "Consolidation Sheet", icon: Table     },
       { key: "consolidated-cashflow",       label: "Cash Flow",           icon: TrendingUp },
-      { key: "consolidated-dimensiones",    label: "Dimensiones",         icon: Filter    },
+      { key: "consolidated-dimensions",    label: "Dimensions",         icon: Filter    },
       { key: "consolidated-notes",          label: "Memory Notes",        icon: BookOpen  },
     ],
   },

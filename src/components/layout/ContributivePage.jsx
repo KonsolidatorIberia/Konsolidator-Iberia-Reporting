@@ -4,7 +4,10 @@ import { useTypo, useSettings } from "./SettingsContext";
 import {
   ChevronDown, ChevronRight, Loader2, Maximize2, Minimize2,
   X, RefreshCw, Filter, TrendingUp, TrendingDown, BookOpen, GitMerge,
+  Download, Scale, Layers, Library,
 } from "lucide-react";
+import PageHeader from "./PageHeader.jsx";
+import MappingsModal from "./Mappings.jsx";
 
 const BASE_URL = "";
 
@@ -1187,6 +1190,7 @@ function SyncedTable({
   cmpYear, setCmpYear, cmpMonth, setCmpMonth, cmpSource, setCmpSource, cmpStructure, setCmpStructure,
   yearOpts = [], monthOpts = [], sourceOpts = [], structureOpts = [],
   perspectiveMode = false, perspectiveParent = "", reorderCols = () => {},
+  onShowJournals = null, journalCount = 0,
 }) {
   const [dragCol, setDragCol] = useState(null);
   const [dragOverCol, setDragOverCol] = useState(null);
@@ -1329,21 +1333,22 @@ const isDragging = dragCol === co;
               <div className="flex items-center justify-between gap-3">
                 <span style={header2Style}>ACCOUNTS</span>
                 <div className="flex items-center gap-2">
-                  {hasData && (
+{hasData && (
                     <>
                       <button onClick={() => expandedSet.size > 0 ? collapseAll() : expandAll()}
                         className="flex items-center gap-1 text-[12px] px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 transition-all font-bold normal-case tracking-normal"
                         style={{ color: colors.quaternary }}>
                         {expandedSet.size > 0 ? <Minimize2 size={14}/> : <Maximize2 size={14}/>}
                       </button>
-                      <button onClick={onToggleCompare}
-                        className={`flex items-center gap-1 text-[10px] px-3 py-1 rounded-lg transition-all font-bold normal-case tracking-normal ${compareMode ? "" : "bg-white/10 hover:bg-white/20"}`}
-                        style={{
-                          color: compareMode ? colors.primary : colors.quaternary,
-                          backgroundColor: compareMode ? colors.quaternary : undefined,
-                        }}>
-                        <GitMerge size={12} /> Compare
-                      </button>
+                      {onShowJournals && journalCount > 0 && (
+                        <button onClick={onShowJournals}
+                          className="relative flex items-center gap-1 text-[10px] px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 transition-all font-bold normal-case tracking-normal"
+                          style={{ color: colors.quaternary }}>
+                          <BookOpen size={12} />
+                          <span>{journalCount}</span>
+                        </button>
+                      )}
+
                     </>
                   )}
                 </div>
@@ -1372,20 +1377,7 @@ const isDragging = dragCol === co;
   </th>
 )}
           </tr>
-          {compareMode && (
-            <tr style={{ backgroundColor: "white", borderBottom: "1px solid rgba(251,191,36,0.2)" }}>
-              <th className="px-5 py-2 sticky left-0 z-30" style={{ backgroundColor: "white" }}>
-                <div className="flex items-center gap-2">
-                  <FilterPill label="SRC"    value={cmpSource}    onChange={setCmpSource}    options={sourceOpts}    filterStyle={filterStyle} colors={colors} />
-                  <FilterPill label="YR"      value={cmpYear}      onChange={setCmpYear}      options={yearOpts}      filterStyle={filterStyle} colors={colors} />
-                  <FilterPill label="MNTH"     value={cmpMonth}     onChange={setCmpMonth}     options={monthOpts}     filterStyle={filterStyle} colors={colors} />
-                  <FilterPill label="STRUCT" value={cmpStructure} onChange={setCmpStructure} options={structureOpts} filterStyle={filterStyle} colors={colors} />
-                  {cmpLoading && <Loader2 size={11} className="animate-spin text-amber-400 flex-shrink-0" />}
-                </div>
-              </th>
-              <th colSpan={totalColSpan - 1} style={{ backgroundColor: "white" }} />
-            </tr>
-          )}
+
         </thead>
         <tbody>
           {tree.map((node, i) => {
@@ -1486,7 +1478,8 @@ export default function ContributivePage({ token }) {
   const [cmpStructure, setCmpStructure] = useState("");
   const [cmpRawData, setCmpRawData] = useState([]);
   const [cmpLoading, setCmpLoading] = useState(false);
-  const [drilldown,       setDrilldown]       = useState(null);
+const [drilldown,       setDrilldown]       = useState(null);
+  const [viewsModalOpen,  setViewsModalOpen]  = useState(false);
   const [expandedColsMap, setExpandedColsMap] = useState({});
   const _expandedCols = new Set(Object.keys(expandedColsMap).filter(k => expandedColsMap[k]));
   const toggleCol = co => setExpandedColsMap(prev => ({ ...prev, [co]: !prev[co] }));
@@ -1951,86 +1944,116 @@ const baseEffectiveCols = selectedCompanies.length === 0
         />
       )}
 
-      {/* Header */}
-      <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          <div className="w-1.5 h-10 rounded-full" style={{ backgroundColor: colors.primary }} />
-          <div>
-            <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Accounts</p>
-            <h1 className="leading-none" style={header1Style}>Contribution</h1>
-          </div>
+<PageHeader
+        kicker="Accounts"
+        title="Contribution"
+        tabs={[
+          { id: "",    label: "All",           icon: Filter    },
+          { id: "P/L", label: "P&L",           icon: TrendingUp },
+          { id: "B/S", label: "Balance Sheet", icon: Scale     },
+          { id: "C/F", label: "Cash Flow",     icon: Layers    },
+        ]}
+        activeTab={typeFilter}
+        onTabChange={setTypeFilter}
+        filters={[
+          ...(sourceOpts.length > 0
+            ? [{ label: "Source", value: source, onChange: setSource, options: sourceOpts }]
+            : []),
+          ...(yearOpts.length > 0
+            ? [{ label: "Year", value: year, onChange: setYear, options: yearOpts }]
+            : []),
+          ...(monthOpts.length > 0
+            ? [{ label: "Month", value: month, onChange: setMonth, options: monthOpts }]
+            : []),
+          ...(structureOpts.length > 0
+            ? [{ label: "Structure", value: structure, onChange: setStructure, options: structureOpts }]
+            : []),
+          ...(parentOptions.length > 1
+            ? [{ label: "Perspective", value: perspective, onChange: (v) => { setPerspective(v); setSelectedCompanies([]); }, options: parentOptions }]
+            : []),
+...(cols.length > 0
+            ? [{
+                label: "Companies",
+                multiselect: true,
+                values: selectedCompanies.length === 0 ? null : selectedCompanies,
+                onChange: (v) => setSelectedCompanies(v ?? []),
+                options: cols.map(co => ({
+                  value: co,
+                  label: companies.find(c =>
+                    (c.CompanyShortName ?? c.companyShortName) === co
+                  )?.CompanyLegalName ?? co,
+                })),
+              }]
+            : []),
+        ]}
+        compareToggle={{
+          active: compareMode,
+          onChange: (newVal) => {
+            if (newVal && !compareMode) {
+              setCmpYear(year); setCmpMonth(month);
+              setCmpSource(source); setCmpStructure(structure);
+            }
+            setCompareMode(newVal);
+          },
+        }}
+fabActions={[
+          {
+            id: "views",
+            icon: Library,
+            label: "Views",
+            onClick: () => setViewsModalOpen(true),
+          },
+          {
+            id: "export",
+            icon: Download,
+            label: "Export",
+            subActions: [
+              {
+                id: "excel",
+                label: "Excel",
+                src: "https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png",
+                alt: "Excel",
+                onClick: () => generateContributiveXlsx({
+                  tree, pivot, cols: effectiveCols, cmpPivot, companies, groupStructure,
+                  compareMode, month, year, source, structure,
+                  cmpMonth, cmpYear, cmpSource, cmpStructure,
+                  perspectiveMode, perspectiveParent: perspective,
+                }),
+              },
+              {
+                id: "pdf",
+                label: "PDF",
+                src: "https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png",
+                alt: "PDF",
+                onClick: () => generateContributivePdf({
+                  tree, pivot, cols: effectiveCols, cmpPivot, companies, groupStructure,
+                  compareMode, month, year, source, structure,
+                  cmpMonth, cmpYear, cmpSource, cmpStructure,
+                  perspectiveMode, perspectiveParent: perspective,
+                }),
+              },
+            ],
+          },
+        ]}
+      />
+
+<MappingsModal
+        open={viewsModalOpen}
+        onClose={() => setViewsModalOpen(false)}
+        groupAccounts={[...accountMap.keys()].map(code => ({ AccountCode: code, ...accountMap.get(code) }))}
+        onApply={() => {}}
+      />
+
+      {compareMode && (
+        <div className="flex items-center gap-2 flex-wrap px-4 py-2.5 bg-white rounded-2xl border border-gray-100 shadow-sm flex-shrink-0">
+          <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50 mr-1">Compare with</span>
+          <FilterPill label="Source"   value={cmpSource}    onChange={setCmpSource}    options={sourceOpts}    filterStyle={filterStyle} colors={colors} />
+          <FilterPill label="Year"      value={cmpYear}      onChange={setCmpYear}      options={yearOpts}      filterStyle={filterStyle} colors={colors} />
+          <FilterPill label="Month"     value={cmpMonth}     onChange={setCmpMonth}     options={monthOpts}     filterStyle={filterStyle} colors={colors} />
+          <FilterPill label="Structure" value={cmpStructure} onChange={setCmpStructure} options={structureOpts} filterStyle={filterStyle} colors={colors} />
+          {cmpLoading && <Loader2 size={11} className="animate-spin text-[#1a2f8a] ml-2" />}
         </div>
-
-        <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
-
-        {types.length > 0 && (() => {
-          const tabs = [{ key: "", label: "All" }, ...types.map(t => ({ key: t, label: t }))];
-          const activeIdx = Math.max(0, tabs.findIndex(t => t.key === typeFilter));
-          return <TabSelector tabs={tabs} activeIdx={activeIdx} onSelect={setTypeFilter} filterStyle={filterStyle} />;
-        })()}
-
-        <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
-
-        <div className="flex items-center gap-2 flex-wrap">
-          {sourceOpts.length > 0    && <FilterPill label="SRC"    value={source}    onChange={setSource}    options={sourceOpts}    filterStyle={filterStyle} colors={colors} />}
-          {yearOpts.length > 0      && <FilterPill label="YR"      value={year}      onChange={setYear}      options={yearOpts}      filterStyle={filterStyle} colors={colors} />}
-          {monthOpts.length > 0     && <FilterPill label="MNTH"     value={month}     onChange={setMonth}     options={monthOpts}     filterStyle={filterStyle} colors={colors} />}
-          {structureOpts.length > 0 && <FilterPill label="STURCT" value={structure} onChange={setStructure} options={structureOpts} filterStyle={filterStyle} colors={colors} />}
-
-          {/* NEW: Perspective pill — pick a parent to roll up its children */}
-          {parentOptions.length > 1 && (
-            <FilterPill
-              label="PERSP"
-              value={perspective}
-              onChange={(v) => { setPerspective(v); setSelectedCompanies([]); }}
-              options={parentOptions}
-              filterStyle={filterStyle}
-              colors={colors}
-            />
-          )}
-
-          {cols.length > 0 && <CompanyFilterPill cols={cols} selected={selectedCompanies} onChange={setSelectedCompanies} filterStyle={filterStyle} colors={colors} />}
-        </div>
-
-        <div className="ml-auto flex items-center gap-3 flex-shrink-0 mr-6">
-          {loading && <Loader2 size={13} className="animate-spin text-[#1a2f8a]" />}
-          {journalData.length > 0 && (
-            <button onClick={() => setShowJournals(true)}
-              title={`Journal Entries (${journalData.length})`}
-              className="relative flex items-center justify-center w-10 h-10 rounded-xl transition-all hover:scale-110 hover:shadow-md"
-              style={{ backgroundColor: `${colors.primary}15` }}>
-              <BookOpen size={18} style={{ color: colors.primary }} />
-              <span
-                className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center text-[10px] font-black text-white"
-                style={{ backgroundColor: colors.primary }}>
-                {journalData.length}
-              </span>
-            </button>
-          )}
-          <button className="transition-all hover:opacity-80 hover:scale-105" title="Export Excel"
-            onClick={() => generateContributiveXlsx({
-              tree, pivot,
-              cols: effectiveCols,
-              cmpPivot, companies, groupStructure,
-              compareMode, month, year, source, structure,
-              cmpMonth, cmpYear, cmpSource, cmpStructure,
-              perspectiveMode, perspectiveParent: perspective,
-            })}>
-            <img src="https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png" width="44" height="36" alt="Excel" />
-          </button>
-          <button className="transition-all hover:opacity-80 hover:scale-105" title="Export PDF"
-            onClick={() => generateContributivePdf({
-              tree, pivot,
-              cols: effectiveCols,
-              cmpPivot, companies, groupStructure,
-              compareMode, month, year, source, structure,
-              cmpMonth, cmpYear, cmpSource, cmpStructure,
-              perspectiveMode, perspectiveParent: perspective,
-            })}>
-            <img src="https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png" width="30" height="36" alt="PDF" />
-          </button>
-        </div>
-      </div>
+      )}
 
       {/* Table */}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex flex-col flex-1 min-h-0" style={{ overflow: "hidden" }}>
@@ -2100,9 +2123,11 @@ const baseEffectiveCols = selectedCompanies.length === 0
             monthOpts={monthOpts}
             sourceOpts={sourceOpts}
 structureOpts={structureOpts}
-            perspectiveMode={perspectiveMode}
+perspectiveMode={perspectiveMode}
             perspectiveParent={perspective}
             reorderCols={reorderCols}
+            onShowJournals={journalData.length > 0 ? () => setShowJournals(true) : null}
+            journalCount={journalData.length}
           />
         )}
       </div>
