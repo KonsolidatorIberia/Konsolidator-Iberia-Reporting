@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { useSettings } from "./SettingsContext";
+import { useSettings, useSettingsControls } from "./SettingsContext";
 
 const ENDPOINTS = [
   { key: "sources",     label: "Sources",     endpoint: "/v2/sources",     angle: -135 },
@@ -139,6 +139,7 @@ const TOTAL_MAX = 5000;
 
 export default function EpicLoader({ token, onReady, onDataLoaded }) {
   const { colors } = useSettings();
+  const { settings, setDetectedLocale } = useSettingsControls();
   const [phase, setPhase] = useState(PHASE.LOGO_IN.id);
   const [completedKeys, setCompletedKeys] = useState({});
   const [allDone, setAllDone] = useState(false);
@@ -249,8 +250,19 @@ export default function EpicLoader({ token, onReady, onDataLoaded }) {
     const t = setTimeout(() => {
       if (!allDone) {
         setPhase(PHASE.ZOOM_OUT.id);
-        setTimeout(() => {
+setTimeout(() => {
           setAllDone(true);
+          if ((settings?.locale ?? "auto") === "auto") {
+            const gAccounts = dataRef.current.groupAccounts ?? [];
+            const codes = [];
+            gAccounts.forEach(n => {
+              const ac = String(n.AccountCode ?? n.accountCode ?? "");
+              if (ac) codes.push(ac);
+            });
+            const isDanish = codes.some(c => /^\d{5,6}$/.test(c));
+            const isPGC    = codes.some(c => c.endsWith(".S"));
+            setDetectedLocale(isDanish ? "da" : isPGC ? "es" : "en");
+          }
           if (onDataLoaded) onDataLoaded(dataRef.current);
           if (onReady) onReady();
         }, PHASE.ZOOM_OUT.duration);

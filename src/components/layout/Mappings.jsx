@@ -322,7 +322,7 @@ export default function MappingsModal({ open, onClose, groupAccounts = [], onApp
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-6"
+      className="fixed inset-0 z-50 flex items-center justify-center p-0"
       onClick={handleClose}
     >
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />

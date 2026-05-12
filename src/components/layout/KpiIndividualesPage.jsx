@@ -2650,7 +2650,8 @@ useEffect(() => {
 // Fetch the company's shared KPI library (every saved custom KPI)
 useEffect(() => {
   if (!companyId) return;
-  listCompanyKpis({ companyId, contextMappingId: "*" })
+  listCompanyKpis({ companyId, contextMappingId: "*", scope: "individual" })
+
     .then(rows => setCompanyKpis(rows ?? []))
     .catch(e => console.error("[KpiPage] listCompanyKpis:", e));
 }, [companyId]);
@@ -2660,7 +2661,8 @@ useEffect(() => {
   if (!authUserId || !companyId) return;
   (async () => {
     try {
-      const row = await getUserDashboard({ userId: authUserId, companyId });
+      const row = await getUserDashboard({ userId: authUserId, companyId, scope: "individual" });
+
       if (row && Array.isArray(row.kpi_ids) && row.kpi_ids.length > 0) {
         setDashboardKpiIds(row.kpi_ids);
       } else {
@@ -2693,7 +2695,8 @@ const localKpis = useMemo(() => companyKpis.map(k => ({
 const persistDashboard = useCallback(async (ids) => {
   if (!authUserId || !companyId) return;
   try {
-    await saveUserDashboard({ userId: authUserId, companyId, kpiIds: ids });
+    await saveUserDashboard({ userId: authUserId, companyId, kpiIds: ids, scope: "individual" });
+
   } catch (e) {
     console.error("[KpiPage] saveUserDashboard:", e);
   }
@@ -2793,10 +2796,15 @@ useEffect(() => {
   compareInitDoneRef.current = true;
 }, [compareMode, source, structure, year, month]);
 
-  const companyCodes = useMemo(() =>
+const companyCodes = useMemo(() =>
     [...new Set(companies.map(c => typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : String(c)).filter(Boolean))],
     [companies]
   );
+
+  const companyLegalName = useCallback((shortName) => {
+    const co = companies.find(c => (c.companyShortName ?? c.CompanyShortName ?? "") === shortName);
+    return co?.CompanyLegalName ?? co?.companyLegalName ?? shortName;
+  }, [companies]);
 
   // Auto-find the latest period with data once source/structure/company are known
   useEffect(() => {
@@ -3080,7 +3088,9 @@ const companyPivots = useMemo(() => {
 
             const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
             const key = code;
-            if (!pivots.has(key)) pivots.set(key, { name: code, group, pivot: new Map() });
+            const dimEntry = dimensions.find(d => (d.DimensionCode ?? d.dimensionCode ?? "") === code);
+          const dimName = dimEntry?.DimensionName ?? dimEntry?.dimensionName ?? code;
+          if (!pivots.has(key)) pivots.set(key, { name: dimName, group, pivot: new Map() });
             const entry = pivots.get(key);
             entry.pivot.set(ac, (entry.pivot.get(ac) ?? 0) + amt);
           }
@@ -3282,7 +3292,7 @@ const companyResults = useMemo(() => {
 
     // Path 3: brand-new KPI (preset or custom builder) → create in library + add to dashboard
     try {
-      const created = await createCompanyKpi({
+const created = await createCompanyKpi({
         companyId, userId: authUserId,
         label:       data.label,
         description: data.description ?? null,
@@ -3292,6 +3302,7 @@ const companyResults = useMemo(() => {
         formula:     data.formula,
         benchmark:   data.benchmark   ?? null,
         contextMappingId: activeMapping?.mapping_id ?? null,
+        scope: "individual",
       });
       setCompanyKpis(prev => [...prev, created]);
       addToDashboard(created.kpi_id);
@@ -3704,7 +3715,7 @@ kpiList={kpiList}
     <span style={header2Style}>KPI</span>
   </th>
 {orderedCols.flatMap((col, ci) => {
-                    const label = viewMode === "dimension" ? (dimensionPivots.get(col)?.name ?? col) : col;
+                    const label = viewMode === "dimension" ? (dimensionPivots.get(col)?.name ?? col) : companyLegalName(col);
                     const cells = [
                       <th key={col}
                         draggable

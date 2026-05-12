@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useLayoutEffect } from "react";
 import { ChevronDown, MoreHorizontal, GitCompareArrows, Calendar, CalendarRange } from "lucide-react";
-import { useSettings, useTypo } from "./SettingsContext.jsx";
+import { useSettings, useTypo, useT } from "./SettingsContext.jsx";
 
 const SPRING = "cubic-bezier(0.34, 1.56, 0.64, 1)";
 const SMOOTH = "cubic-bezier(0.4, 0, 0.2, 1)";
@@ -600,12 +600,14 @@ export default function PageHeader({
   activeTab,
   onTabChange,
   filters = [],
-  periodToggle,   // { value: "monthly" | "ytd", onChange: (next) => void }
-  compareToggle,  // { active: boolean, onChange: (next) => void }
+  periodToggle,
+  compareToggle,
+  aiToggle,       // { onClick: () => void }
   fabActions,
 }) {
-  const { colors } = useSettings();
+const { colors } = useSettings();
   const headerStyle = useTypo("header1");
+  const t = useT();
 // Title is bound STRICTLY to the active tab — hovering a tab no longer
   // morphs the header text. The change happens on click only.
   const activeTabObj = tabs?.find(t => t.id === activeTab);
@@ -674,15 +676,33 @@ return (
 {/* Spacer pushes FAB to the right edge */}
         <div className="flex-grow" />
 
-        {/* Inline toggles (period + compare) — standardized icon buttons */}
-        {(periodToggle || compareToggle) && (
+{/* Inline toggles (period + compare + AI) — standardized icon buttons */}
+        {(periodToggle || compareToggle || aiToggle) && (
           <>
             <SoftDivider />
             <div className="flex items-center gap-1.5 px-3 flex-shrink-0">
+              {aiToggle && (
+                <button
+                  onClick={aiToggle.onClick}
+                  title="AI Finance Analyst"
+                  className="flex items-center gap-1.5 px-3 h-9 rounded-full flex-shrink-0 transition-all duration-200"
+                  style={{
+                    background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.secondary ?? "#CF305D"} 100%)`,
+                    boxShadow: `0 4px 14px -4px ${colors.primary}70`,
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.04)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"/>
+                  </svg>
+                  <span className="text-[10px] font-black text-white uppercase tracking-wider">AI</span>
+                </button>
+              )}
               {periodToggle && (
                 <button
                   onClick={() => periodToggle.onChange(periodToggle.value === "monthly" ? "ytd" : "monthly")}
-                  title={periodToggle.value === "ytd" ? "Year-to-date — click for Monthly" : "Monthly — click for YTD"}
+                 title={periodToggle.value === "ytd" ? `${t("mode_ytd")} — click for ${t("mode_monthly")}` : `${t("mode_monthly")} — click for ${t("mode_ytd")}`}
                   className="flex items-center justify-center w-9 h-9 rounded-full flex-shrink-0"
                   style={{
                     background: "rgba(26,47,138,0.06)",
@@ -701,7 +721,7 @@ return (
               {compareToggle && (
                 <button
                   onClick={() => compareToggle.onChange(!compareToggle.active)}
-                  title={compareToggle.active ? "Exit compare" : "Compare with another period"}
+                  title={compareToggle.active ? `${t("btn_compare")} ✕` : t("btn_compare_with")}
                   className="flex items-center justify-center w-9 h-9 rounded-full flex-shrink-0"
                   style={{
                     background: compareToggle.active ? colors.primary : "rgba(26,47,138,0.06)",

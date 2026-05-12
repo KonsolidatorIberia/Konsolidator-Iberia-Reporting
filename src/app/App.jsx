@@ -141,23 +141,28 @@ function MainApp() {
         <EpicLoader
           token={token}
           onDataLoaded={(d) => setPreloadedData(d)}
-          onReady={() => {
-            setShellReady(true);
-            setTimeout(() => setLoaderActive(false), 100);
-          }}
+onReady={() => {
+  setShellReady(true);
+  setTimeout(() => setLoaderActive(false), 100);
+  setTimeout(() => window.dispatchEvent(new Event('resize')), 200);
+  setTimeout(() => window.dispatchEvent(new Event('resize')), 600);
+}}
         />
       )}
-      <div
+<div
         style={{
           opacity: shellReady ? 1 : 0,
           transform: shellReady ? "scale(1)" : "scale(0.96)",
           transition: "opacity 600ms cubic-bezier(0.4,0,0.2,1) 100ms, transform 600ms cubic-bezier(0.4,0,0.2,1) 100ms",
+height: "100vh",
+          overflow: "hidden",
         }}
       >
         <Shell key={refreshKey} user={user} onLogout={handleLogout} onRefresh={handleRefresh}>
           {(activePage, onNavigate) => (
-            <AppRoutes
+<AppRoutes
               token={token}
+              user={user}
               activePage={activePage}
               onNavigate={onNavigate}
               preloadedData={preloadedData}

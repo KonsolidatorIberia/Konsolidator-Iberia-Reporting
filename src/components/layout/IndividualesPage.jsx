@@ -5,7 +5,7 @@ import {
   RefreshCw, X, GitMerge, BookOpen, Upload, BarChart2, TrendingUp, Library,
   CheckCircle2,
 } from "lucide-react";
-import { useSettings, useTypo } from "./SettingsContext.jsx";
+import { useSettings, useTypo, useT, useLocale } from "./SettingsContext.jsx";
 import MappingsModal from "./Mappings.jsx";
 import PageHeader from "./PageHeader.jsx";
 const BASE_URL = "";
@@ -2795,6 +2795,11 @@ breakers = { pl: {}, bs: {}, cf: {} },
 }) {
 const { colors } = useSettings();
 const header3Style = useTypo("header3");
+const t = useT();
+
+const localName = useCallback((node) => {
+  return pgcMapping?.names?.get(String(node.code)) ?? node.name;
+}, [pgcMapping]);
 
 const body1Style = useTypo("body1");
 const body2Style = useTypo("body2");
@@ -3503,10 +3508,10 @@ options={[{ value: "", label: "All" }, ...cmp2FilteredDims.map(d => { const v = 
     </div>
   </div>
 </th>
-  {!ytdOnly && <th className="text-right pr-6 py-3 uppercase tracking-widest w-36" style={{ ...header2Style, backgroundColor: colors.primary }}>Monthly</th>}
+  {!ytdOnly && <th className="text-right pr-6 py-3 uppercase tracking-widest w-36" style={{ ...header2Style, backgroundColor: colors.primary }}>{t("mode_monthly")}</th>}
   {!ytdOnly && compareMode && <th colSpan={3} className="text-center pr-6 py-3 text-[11px] font-black text-[#CF305D] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{cmpLabel}</th>}
   {!ytdOnly && compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 text-[11px] font-black text-[#57aa78] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{cmp2Label}</th>}
-  {ytdOnly && <th className="text-right pr-6 py-3 uppercase tracking-widest w-36" style={{ ...header2Style, backgroundColor: colors.primary }}>YTD</th>}
+ {ytdOnly && <th className="text-right pr-6 py-3 uppercase tracking-widest w-36" style={{ ...header2Style, backgroundColor: colors.primary }}>{t("mode_ytd")}</th>}
   {ytdOnly && compareMode && <th colSpan={3} className="text-center pr-6 py-3 text-[11px] font-black text-[#CF305D] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{cmpLabel}</th>}
   {ytdOnly && compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 text-[11px] font-black text-[#57aa78] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{cmp2Label}</th>}
 </tr>
@@ -3577,8 +3582,8 @@ divider ? (
         {expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
       </span>
     )}
-    <span style={body1Style}>
-      {node.name.charAt(0).toUpperCase() + node.name.slice(1).toLowerCase()}
+<span style={body1Style}>
+      {(() => { const n = localName(node); return n.charAt(0).toUpperCase() + n.slice(1).toLowerCase(); })()}
     </span>
   </div>
 </td>
@@ -3631,7 +3636,7 @@ rows.push(
         {hasMore
           ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{childExpanded ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
           : <span className="w-3 flex-shrink-0" />}
-        <span style={body2Style}>{child.name}</span>
+        <span style={body2Style}>{localName(child)}</span>
       </div>
     </td>
     {!ytdOnly && <PLAmountCell value={cMon} typoStyle={body2Style} />}
@@ -4085,8 +4090,14 @@ function BalanceSheet({ groupAccounts, uploadedAccounts, loading, error, month, 
   cmp2Year, setCmp2Year, cmp2Month, setCmp2Month, cmp2Source, setCmp2Source, cmp2Structure, setCmp2Structure, cmp2Company, setCmp2Company,
   cmp2Data, setCmp2Data,
 }) {
-  const { colors } = useSettings();
+const { colors } = useSettings();
+  const t = useT();
   const [filtersOpen, setFiltersOpen] = useState(true);
+
+  const localName = useCallback((node) => {
+    return pgcBsMapping?.names?.get(String(node.code)) ?? node.name;
+  }, [pgcBsMapping]);
+
   const [cmpLoading, setCmpLoading] = useState(false);
   const header3Style = useTypo("header3");
   const header2Style = useTypo("header2");
@@ -4557,8 +4568,8 @@ function renderNode(node, depth = 0) {
             {hasMore
               ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{expanded ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
               : <span className="w-3 flex-shrink-0" />}
-           <span className={`text-xs ${isBold ? "font-bold text-[#1a2f8a] uppercase tracking-wider" : "text-gray-600"}`}>
-  {isBold ? (node.name ?? "") : ((node.name ?? "").charAt(0).toUpperCase() + (node.name ?? "").slice(1).toLowerCase())}
+<span className={`text-xs ${isBold ? "font-bold text-[#1a2f8a] uppercase tracking-wider" : "text-gray-600"}`}>
+  {isBold ? (localName(node).toUpperCase()) : (() => { const n = localName(node); return n.charAt(0).toUpperCase() + n.slice(1).toLowerCase(); })()}
 </span>
           </div>
         </td>
@@ -4696,8 +4707,8 @@ rows.push(
             {expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
           </span>
         )}
-        <span style={rowStyle}>
-          {(node.name ?? "").charAt(0).toUpperCase() + (node.name ?? "").slice(1).toLowerCase()}
+<span style={rowStyle}>
+          {(() => { const n = localName(node); return n.charAt(0).toUpperCase() + n.slice(1).toLowerCase(); })()}
         </span>
       </div>
     </td>
@@ -5390,7 +5401,7 @@ const tabs = ["summary","assets","equity"];
       </div>
     </div>
   </th>
-  <th className="text-right pr-4 py-3 uppercase tracking-widest w-36" style={{ ...header2Style, backgroundColor: colors.primary }}>Actual</th>
+  <th className="text-right pr-4 py-3 uppercase tracking-widest w-36" style={{ ...header2Style, backgroundColor: colors.primary }}>{t("col_account") === "Cuenta" ? "Real" : t("col_account") === "Konto" ? "Faktisk" : "Actual"}</th>
   {compareMode && <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black text-[#CF305D] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{[cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource].filter(Boolean).join(" · ")}</th>}
   {compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black text-[#57aa78] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{[cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source].filter(Boolean).join(" · ")}</th>}
 </tr>
@@ -5470,6 +5481,8 @@ const headerStyle = useTypo("header1");
 const header3Style = useTypo("header3");
 const underscoreStyle = useTypo("underscore1");
 const filterStyle = useTypo("filter");
+const t = useT();
+const locale = useLocale();
 
 const [activeTab, setActiveTab]   = useState("pl");
 const [prevTab, setPrevTab]       = useState(null);
@@ -5680,9 +5693,10 @@ useEffect(() => {
     fetch(`${SUPABASE_URL}/pgc_pl_rows?select=*&order=sort_order.asc`,    { headers: sbHeaders }).then(r => r.json()),
     fetch(`${SUPABASE_URL}/pgc_pl_sections?select=*&order=sort_order.asc`, { headers: sbHeaders }).then(r => r.json()),
   ])
-    .then(([rowsArr, secsArr]) => {
+.then(([rowsArr, secsArr]) => {
       if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
-      const rows = new Map();
+const rows = new Map();
+      const names = new Map();
       rowsArr.forEach(r => {
         rows.set(String(r.account_code), {
           section:       String(r.section_code),
@@ -5690,17 +5704,19 @@ useEffect(() => {
           isSum:         !!r.is_sum,
           showInSummary: !!r.show_in_summary,
         });
+       const localizedName = r[`account_name_${locale}`] || r.account_name;
+        if (localizedName) names.set(String(r.account_code), String(localizedName));
       });
       const sections = new Map();
       secsArr.forEach(s => {
         sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) });
       });
-setPgcMapping({ rows, sections });
+setPgcMapping({ rows, sections, names });
     })
     .catch(() => setPgcMapping(null));
-}, [grpData]);
+}, [grpData, locale]);
 
-// ── PGC: load the new 3-section BALANCE SHEET mapping (pgc_bs_rows + pgc_bs_sections) ──
+// ── PGC: load the new 3-section BALANCE SHEET mapping(pgc_bs_rows + pgc_bs_sections) ──
 useEffect(() => {
   if (!grpData.length) { setPgcBsMapping(null); return; }
 
@@ -5723,7 +5739,8 @@ useEffect(() => {
   ])
     .then(([rowsArr, secsArr]) => {
       if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
-      const rows = new Map();
+const rows = new Map();
+      const names = new Map();
       rowsArr.forEach(r => {
         rows.set(String(r.account_code), {
           section:       String(r.section_code),
@@ -5732,17 +5749,19 @@ useEffect(() => {
           showInSummary: !!r.show_in_summary,
           level:         Number(r.level ?? 0),
         });
+        const localizedName = r[`account_name_${locale}`] || r.account_name;
+if (localizedName) names.set(String(r.account_code), String(localizedName));
       });
       const sections = new Map();
       secsArr.forEach(s => {
         sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) });
       });
-setPgcBsMapping({ rows, sections });
+setPgcBsMapping({ rows, sections, names });
     })
     .catch(() => setPgcBsMapping(null));
-}, [grpData]);
+}, [grpData, locale]);
 
-// ── Danish IFRS: load PL mapping (danish_ifrs_pl_rows + danish_ifrs_pl_sections) ──
+// ── Danish IFRS: load PL mapping(danish_ifrs_pl_rows + danish_ifrs_pl_sections) ──
 useEffect(() => {
   console.log("[DanishPL useEffect] fired, grpData.length=", grpData.length);
   if (!grpData.length) { setDanishIfrsPlMapping(null); return; }
@@ -5751,8 +5770,9 @@ useEffect(() => {
     const c = String(n.accountCode ?? n.AccountCode ?? "");
     return /[a-zA-Z]/.test(c) && c.endsWith(".S");
   });
-  const isSpanishIFRS = !isPGC && grpData.some(n => /^[A-Z]\.\d/.test(String(n.accountCode ?? n.AccountCode ?? "")));
-  const isDanish = !isPGC && !isSpanishIFRS && grpData.some(n => /^\d{5,6}$/.test(String(n.accountCode ?? n.AccountCode ?? "")));
+const isSpanishIfrsEs = !isPGC && grpData.some(n => /\.PL$/.test(String(n.accountCode ?? n.AccountCode ?? "")));
+  const isSpanishIFRS = !isPGC && !isSpanishIfrsEs && grpData.some(n => /^[A-Z]\.\d/.test(String(n.accountCode ?? n.AccountCode ?? "")));
+  const isDanish = !isPGC && !isSpanishIFRS && !isSpanishIfrsEs && grpData.some(n => /^\d{5,6}$/.test(String(n.accountCode ?? n.AccountCode ?? "")));
 
   console.log("[DanishPL useEffect] isPGC=", isPGC, "isSpanishIFRS=", isSpanishIFRS, "isDanish=", isDanish);
 
@@ -5771,7 +5791,8 @@ useEffect(() => {
   ])
     .then(([rowsArr, secsArr]) => {
       if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
-      const rows = new Map();
+const rows = new Map();
+      const names = new Map();
       rowsArr.forEach(r => {
         rows.set(String(r.account_code), {
           section:       String(r.section_code),
@@ -5780,18 +5801,20 @@ useEffect(() => {
           showInSummary: !!r.show_in_summary,
           level:         Number(r.level ?? 0),
         });
+        const localizedName = r[`account_name_${locale}`] || r.account_name;
+        if (localizedName) names.set(String(r.account_code), String(localizedName));
       });
       const sections = new Map();
       secsArr.forEach(s => {
         sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) });
       });
 console.log("[DanishPL useEffect] SETTING mapping, rows=", rows.size, "sections=", sections.size);
-      setDanishIfrsPlMapping({ rows, sections });
+      setDanishIfrsPlMapping({ rows, sections, names });
     })
     .catch((e) => { console.log("[DanishPL useEffect] FETCH ERROR:", e); setDanishIfrsPlMapping(null); });
-}, [grpData]);
+}, [grpData, locale]);
 
-// ── Danish IFRS: load BS mapping (danish_ifrs_bs_rows + danish_ifrs_bs_sections) ──
+// ── Danish IFRS: load BS mapping(danish_ifrs_bs_rows + danish_ifrs_bs_sections) ──
 useEffect(() => {
   if (!grpData.length) { setDanishIfrsBsMapping(null); return; }
 
@@ -5817,7 +5840,8 @@ const isDanish = !isPGC && !isSpanishIFRS && grpData.some(n => /^\d{5,6}$/.test(
   ])
     .then(([rowsArr, secsArr]) => {
       if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
-      const rows = new Map();
+const rows = new Map();
+      const names = new Map();
       rowsArr.forEach(r => {
         rows.set(String(r.account_code), {
           section:       String(r.section_code),
@@ -5826,17 +5850,18 @@ const isDanish = !isPGC && !isSpanishIFRS && grpData.some(n => /^\d{5,6}$/.test(
           showInSummary: !!r.show_in_summary,
           level:         Number(r.level ?? 0),
         });
+        if (r.account_name) names.set(String(r.account_code), String(r.account_name));
       });
       const sections = new Map();
       secsArr.forEach(s => {
         sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) });
       });
-      setDanishIfrsBsMapping({ rows, sections });
+      setDanishIfrsBsMapping({ rows, sections, names });
     })
     .catch(() => setDanishIfrsBsMapping(null));
-}, [grpData]);
+}, [grpData, locale]);
 
-// ── Spanish IFRS ES (Españolizado): load PL mapping ──
+// ── Spanish IFRS ES Españolizado): load PL mapping ──
 useEffect(() => {
   if (!grpData.length) { setSpanishIfrsEsPlMapping(null); return; }
 
@@ -5861,7 +5886,8 @@ useEffect(() => {
   ])
     .then(([rowsArr, secsArr]) => {
       if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
-      const rows = new Map();
+const rows = new Map();
+      const names = new Map();
       rowsArr.forEach(r => {
         rows.set(String(r.account_code), {
           section:       String(r.section_code),
@@ -5870,17 +5896,19 @@ useEffect(() => {
           showInSummary: !!r.show_in_summary,
           level:         Number(r.level ?? 0),
         });
+const localizedName = r[`account_name_${locale}`] || r.account_name;
+        if (localizedName) names.set(String(r.account_code), String(localizedName));
       });
       const sections = new Map();
       secsArr.forEach(s => {
         sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) });
       });
-      setSpanishIfrsEsPlMapping({ rows, sections });
+      setSpanishIfrsEsPlMapping({ rows, sections, names });
     })
     .catch(() => setSpanishIfrsEsPlMapping(null));
-}, [grpData]);
+}, [grpData, locale]);
 
-// ── Spanish IFRS ES: load BS mapping ──
+// ── Spanish IFRS ES: load BS mapping──
 useEffect(() => {
   if (!grpData.length) { setSpanishIfrsEsBsMapping(null); return; }
 
@@ -5905,7 +5933,8 @@ useEffect(() => {
   ])
     .then(([rowsArr, secsArr]) => {
       if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
-      const rows = new Map();
+const rows = new Map();
+      const names = new Map();
       rowsArr.forEach(r => {
         rows.set(String(r.account_code), {
           section:       String(r.section_code),
@@ -5914,15 +5943,17 @@ useEffect(() => {
           showInSummary: !!r.show_in_summary,
           level:         Number(r.level ?? 0),
         });
+const localizedName = r[`account_name_${locale}`] || r.account_name;
+        if (localizedName) names.set(String(r.account_code), String(localizedName));
       });
       const sections = new Map();
       secsArr.forEach(s => {
         sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) });
       });
-      setSpanishIfrsEsBsMapping({ rows, sections });
+      setSpanishIfrsEsBsMapping({ rows, sections, names });
     })
-    .catch(() => setSpanishIfrsEsBsMapping(null));
-}, [grpData]);
+.catch(() => setSpanishIfrsEsBsMapping(null));
+}, [grpData, locale]);
 
 const [exportModal, setExportModal] = useState(false);
 const [viewsModalOpen, setViewsModalOpen] = useState(false);

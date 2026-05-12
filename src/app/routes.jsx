@@ -9,13 +9,15 @@ import SettingsPage from "../components/layout/SettingsPage.jsx";
 import CashFlowPage from "../components/layout/CashFlowPage.jsx";
 import IndividualCashFlowPage    from "../components/layout/IndividualCashFlowPage.jsx";
 import MemoryNotesPage            from "../components/layout/MemoryNotesPage.jsx";
-import ConsolidatedDimensionesPage from "../components/layout/ConsolidatedDimensionesPage.jsx";
+import ConsolidatedDimensionesPage    from "../components/layout/ConsolidatedDimensionesPage.jsx";
+import ConsolidatedMemoryNotesPage    from "../components/layout/ConsolidatedMemoryNotesPage.jsx";
+import ConsolidatedKpiPage            from "../components/layout/ConsolidatedKpiPage.jsx";
 
-export default function AppRoutes({ token, activePage, preloadedData }) {
+export default function AppRoutes({ token, user, activePage, preloadedData }) {
   const sharedData = preloadedData ?? {};
 
-  if (activePage === "home") return (
-    <HomePage token={token} initialData={sharedData} />
+if (activePage === "home") return (
+    <HomePage token={token} initialData={sharedData} user={user} />
   );
 
   if (activePage === "individual-data") return (
@@ -79,6 +81,14 @@ if (activePage === "individual-cashflow") return (
       structures={sharedData.structures ?? []}
       companies={sharedData.companies ?? []}
     />
+  );
+
+if (activePage === "consolidated-kpis") return (
+    <ConsolidatedKpiPage token={token} />
+  );
+
+  if (activePage === "consolidated-notes") return (
+    <ConsolidatedMemoryNotesPage token={token} />
   );
 
   if (activePage === "consolidated-dimensiones") return (

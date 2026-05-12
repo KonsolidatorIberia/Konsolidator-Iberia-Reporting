@@ -67,39 +67,36 @@ measure();
   return (
     <div className="h-screen overflow-hidden bg-[#f8f9ff] flex items-stretch relative">
       <div ref={asideWrapRef} className="contents">
-        <Sidebar
+<Sidebar
           activePage={activePage}
           onNavigate={setActivePage}
           user={user}
           collapsed={collapsed}
           onToggleCollapse={() => setCollapsed(c => !c)}
-          height="99vh"
+          height="100vh"
           onRefresh={onRefresh}
         />
       </div>
-
 <div className="flex-1 relative h-full" style={{ overflow: "visible" }}>
-        {geom && (
-          <div
-            style={{
-              position: "absolute",
-              top: geom.headerTop - 12,
-              height: (geom.bodyTop + geom.bodyHeight) - geom.headerTop + 24,
-              left: 0,
-              right: 0,
-              padding: "12px 12px 12px 0",
-              overflow: "visible",
-            }}
-          >
-            <div style={{ height: "100%", overflow: "visible", display: "flex", flexDirection: "column" }}>
-              {activePage === "user"
-                ? <UserPage user={user} onLogout={onLogout} />
-                : content
-              }
-            </div>
-          </div>
-        )}
-      </div>
+  <div
+    style={{
+      position: "absolute",
+      top: geom ? geom.headerTop - 12 : 12,
+      height: geom ? (geom.bodyTop + geom.bodyHeight) - geom.headerTop + 24 : "calc(100% - 24px)",
+      left: 0,
+      right: 0,
+      padding: "12px 12px 12px 0",
+      overflow: "visible",
+    }}
+  >
+    <div style={{ height: "100%", overflow: "visible", display: "flex", flexDirection: "column" }}>
+      {activePage === "user"
+        ? <UserPage user={user} onLogout={onLogout} />
+        : content
+      }
+    </div>
+  </div>
+</div>
     </div>
   );
 }

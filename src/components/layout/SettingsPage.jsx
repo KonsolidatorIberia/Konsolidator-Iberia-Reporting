@@ -1,8 +1,10 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import { useSettingsControls, DEFAULT_SETTINGS } from "./SettingsContext.jsx";
+import { LOCALES } from "../../lib/i18n";
 
 import {
   Type, Palette, RotateCcw, Check, ChevronDown,
-  Hash, AlignLeft, Minus, Save, Eye, Filter,
+  Hash, AlignLeft, Minus, Save, Eye, Filter, Loader2, Globe,
 } from "lucide-react";
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -39,32 +41,6 @@ const WEIGHTS = [
   { value: 900, label: "Black" },
 ];
 
-const DEFAULT_SETTINGS = {
-  typography: {
-    header1:      { font: "Inter, sans-serif", size: 29, weight: 900, color: "#1A2F8A" },
-    header2:      { font: "Inter, sans-serif", size: 12, weight: 800, color: "#ffffff" },
-    header3:      { font: "Inter, sans-serif", size: 12, weight: 700, color: "#FFFFFF" },
-    body1:        { font: "Inter, sans-serif", size: 12, weight: 600, color: "#2F3138" },
-    body2:        { font: "Inter, sans-serif", size: 11, weight: 400, color: "#5b5d62" },
-    subbody1:     { font: "Inter, sans-serif", size: 10, weight: 400, color: "#9CA3AF" },
-    subbody2:     { font: "Inter, sans-serif", size: 10, weight: 400, color: "#9CA3AF" },
-    underscore1:  { font: "Inter, sans-serif", size: 12, weight: 700, color: "#ffffff" },
-    underscore2:  { font: "Inter, sans-serif", size: 10, weight: 600, color: "#ffffff" },
-    underscore3:  { font: "Inter, sans-serif", size: 10, weight: 600, color: "#9CA3AF" },
-    headerNum:    { font: '"JetBrains Mono", "Courier New", monospace', size: 22, weight: 800, color: "#1A2F8A" },
-    bodyNum1:     { font: '"JetBrains Mono", "Courier New", monospace', size: 13, weight: 600, color: "#1A2F8A" },
-    bodyNum2:     { font: '"JetBrains Mono", "Courier New", monospace', size: 12, weight: 500, color: "#2F3138" },
-    bodyNum3:     { font: '"JetBrains Mono", "Courier New", monospace', size: 11, weight: 400, color: "#6B7280" },
-    underNum:     { font: '"JetBrains Mono", "Courier New", monospace', size: 10, weight: 500, color: "#9CA3AF" },
-    filter:       { font: "Inter, sans-serif", size: 12, weight: 600, color: "#1A2F8A" },
-  },
-  colors: {
-    primary:     "#1A2F8A",
-    secondary:   "#CF305D",
-    tertiary:    "#57AA78",
-    quaternary:  "#ffffff",
-  },
-};
 
 const STYLE_GROUPS = [
 {
@@ -460,49 +436,69 @@ function PreviewPanel({ settings }) {
 ═══════════════════════════════════════════════════════════════════════ */
 
 export default function SettingsPage() {
-  const [settings, setSettings] = useState(() => {
-    try {
-      const saved = localStorage.getItem("konsolidator_settings");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        // Merge so new fields in DEFAULT_SETTINGS don't break old saved state
-        return {
-          typography: { ...DEFAULT_SETTINGS.typography, ...(parsed.typography ?? {}) },
-          colors:     { ...DEFAULT_SETTINGS.colors,     ...(parsed.colors     ?? {}) },
-        };
-      }
-    } catch { /* ignore */ }
-    return DEFAULT_SETTINGS;
-  });
+  // Server-side settings come from the context (loaded from Supabase per-user).
+  // `settings` below is a LOCAL DRAFT — edits stay local until the user clicks
+  // Save. Variable name kept as `settings` so the JSX below doesn't change.
+  const {
+    settings:       serverSettings,
+    saveSettings:   persistToSupabase,
+    resetSettings:  resetInSupabase,
+    userId,
+    loading:        contextLoading,
+  } = useSettingsControls();
+
+  const [settings, setSettings] = useState(serverSettings);
+
+  // Sync draft to server settings when they change (e.g., after login, save, reset).
+  // Note: an in-progress edit will be overwritten if the user logs in mid-edit —
+  // acceptable since that's a rare race.
+  useEffect(() => {
+    setSettings(serverSettings);
+  }, [serverSettings]);
 
   const [activeTab, setActiveTab] = useState("typography"); // "typography" | "colors"
-  const [saved, setSaved] = useState(false);
+  const [saved, setSaved]   = useState(false);
+  const [saving, setSaving] = useState(false);
 
-  const isDirty = useMemo(() => {
-    try {
-      const saved = localStorage.getItem("konsolidator_settings");
-      if (!saved) return JSON.stringify(settings) !== JSON.stringify(DEFAULT_SETTINGS);
-      return saved !== JSON.stringify(settings);
-    } catch { return false; }
-  }, [settings]);
+  const isDirty = useMemo(
+    () => JSON.stringify(settings) !== JSON.stringify(serverSettings),
+    [settings, serverSettings]
+  );
 
-  const updateStyle = (key, newStyle) => {
+const updateStyle = (key, newStyle) => {
     setSettings(s => ({ ...s, typography: { ...s.typography, [key]: newStyle } }));
   };
   const updateColor = (key, value) => {
     setSettings(s => ({ ...s, colors: { ...s.colors, [key]: value } }));
   };
-
-  const handleSave = () => {
-    localStorage.setItem("konsolidator_settings", JSON.stringify(settings));
-    window.dispatchEvent(new Event("konsolidator-settings-changed"));
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+  const updateLocale = (value) => {
+    setSettings(s => ({ ...s, locale: value }));
   };
 
-  const handleReset = () => {
-    if (confirm("Reset all settings to defaults? This can't be undone.")) {
-      setSettings(DEFAULT_SETTINGS);
+  const handleSave = async () => {
+    if (!userId) { alert("You must be signed in to save settings."); return; }
+    setSaving(true);
+    try {
+      await persistToSupabase(settings);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      alert("Failed to save settings: " + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReset = async () => {
+    if (!confirm("Reset all settings to defaults? This can't be undone.")) return;
+    if (!userId) { setSettings(DEFAULT_SETTINGS); return; }
+    setSaving(true);
+    try {
+      await resetInSupabase();
+    } catch (e) {
+      alert("Failed to reset settings: " + e.message);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -520,11 +516,12 @@ export default function SettingsPage() {
 
         <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
 
-        {/* Tab switcher */}
+{/* Tab switcher */}
         <div className="flex items-center gap-1 p-1 bg-[#e6e6e6] rounded-2xl flex-shrink-0 shadow-xl">
           {[
             { key: "typography", label: "", icon: Type },
-            { key: "colors",     label: "",     icon: Palette },
+            { key: "colors",     label: "", icon: Palette },
+            { key: "language",   label: "", icon: Globe },
           ].map(t => {
             const Icon = t.icon;
             const active = activeTab === t.key;
@@ -554,13 +551,17 @@ export default function SettingsPage() {
           >
             <RotateCcw size={12} /> Reset
           </button>
-          <button
+<button
             onClick={handleSave}
-            disabled={!isDirty && !saved}
+            disabled={(!isDirty && !saved) || saving || contextLoading}
             className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-black text-white transition-all disabled:opacity-40"
             style={{ backgroundColor: saved ? "#059669" : settings.colors.primary }}
           >
-            {saved ? <><Check size={12} /> Saved</> : <><Save size={12} /> Save changes</>}
+            {saving
+              ? <><Loader2 size={12} className="animate-spin" /> Saving…</>
+              : saved
+                ? <><Check size={12} /> Saved</>
+                : <><Save size={12} /> Save changes</>}
           </button>
         </div>
       </div>
@@ -634,27 +635,48 @@ export default function SettingsPage() {
             </section>
           )}
 
+{activeTab === "language" && (
+            <section className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+              <header className="px-5 py-3 border-b border-gray-50 bg-gray-50/40 flex items-center gap-2">
+                <Globe size={13} className="text-[#1a2f8a]/60" />
+                <h2 className="text-xs font-black uppercase tracking-widest text-[#1a2f8a]">Language</h2>
+              </header>
+              <div className="p-6 flex flex-col gap-4">
+                <p className="text-xs text-gray-400 leading-relaxed">
+                  Choose the interface language. <span className="font-bold text-gray-500">Auto-detect</span> sets the language based on the accounting standard detected at login (Danish IFRS → Dansk, PGC → Español, otherwise English).
+                </p>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  {[
+                    { value: "auto", label: "Auto-detect", flag: "🌐" },
+                    ...Object.entries(LOCALES).map(([k, v]) => ({ value: k, label: v.label, flag: v.flag })),
+                  ].map(opt => {
+                    const active = (settings.locale ?? "auto") === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        onClick={() => updateLocale(opt.value)}
+                        className={`flex flex-col items-center gap-2 p-4 rounded-2xl border-2 transition-all ${
+                          active
+                            ? "border-[#1a2f8a] bg-[#eef1fb]"
+                            : "border-gray-100 hover:border-gray-200 bg-white"
+                        }`}
+                      >
+                        <span className="text-3xl">{opt.flag}</span>
+                        <span className={`text-xs font-black ${active ? "text-[#1a2f8a]" : "text-gray-500"}`}>
+                          {opt.label}
+                        </span>
+                        {active && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#1a2f8a]" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </section>
+          )}
+
   </div>
     </div>
   );
 }
-
-/* ═══════════════════════════════════════════════════════════════════════
-   EXPORT HELPER — use this from anywhere in the app to read saved settings
-═══════════════════════════════════════════════════════════════════════ */
-
-export function loadSavedSettings() {
-  try {
-    const saved = localStorage.getItem("konsolidator_settings");
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      return {
-        typography: { ...DEFAULT_SETTINGS.typography, ...(parsed.typography ?? {}) },
-        colors:     { ...DEFAULT_SETTINGS.colors,     ...(parsed.colors     ?? {}) },
-      };
-    }
-  } catch { /* ignore */ }
-  return DEFAULT_SETTINGS;
-}
-
-export { DEFAULT_SETTINGS };

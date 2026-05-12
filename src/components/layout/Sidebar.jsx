@@ -4,43 +4,44 @@ import {
   PieChart, Table, Table2, BookOpen, TrendingUp, BarChart3,
   ChevronRight, Eye, RefreshCw, Filter, Settings, Database,
 } from "lucide-react";
-import { useTypo, useSettings } from "./SettingsContext";
+import { useTypo, useSettings, useT } from "./SettingsContext";
 
-const NAV = [
-  { key: "home",      label: "Home",      icon: Home },
-{
-    key: "individual", label: "Individual", icon: FileText,
+const NAV_KEYS = [
+  { key: "home",      labelKey: "nav_home",         icon: Home },
+  {
+    key: "individual", labelKey: "nav_individual",   icon: FileText,
     children: [
-      { key: "individual-data",        label: "Data",        icon: Table     },
-      { key: "individual-kpis",        label: "KPIs",        icon: BarChart3 },
-      { key: "individual-dimensiones", label: "Dimensiones", icon: Filter    },
-      { key: "individual-cashflow",    label: "Cash Flow",   icon: TrendingUp },
-      { key: "individual-memory-notes", label: "Memory Notes",  icon: BookOpen   },
-    ],
-  },
-{
-    key: "consolidated", label: "Consolidated", icon: Layers,
-    children: [
-      { key: "individual-contributive",     label: "Contributive",        icon: PieChart  },
-      { key: "consolidated-sheet",          label: "Consolidation Sheet", icon: Table     },
-      { key: "consolidated-cashflow",       label: "Cash Flow",           icon: TrendingUp },
-      { key: "consolidated-dimensions",    label: "Dimensions",         icon: Filter    },
-      { key: "consolidated-notes",          label: "Memory Notes",        icon: BookOpen  },
+      { key: "individual-data",         labelKey: "nav_data",         icon: Table      },
+      { key: "individual-kpis",         labelKey: "nav_kpis",         icon: BarChart3  },
+      { key: "individual-dimensiones",  labelKey: "nav_dimensions",   icon: Filter     },
+      { key: "individual-cashflow",     labelKey: "nav_cashflow",     icon: TrendingUp },
+      { key: "individual-memory-notes", labelKey: "nav_memory_notes", icon: BookOpen   },
     ],
   },
   {
-    key: "controlling", label: "Controlling", icon: SlidersHorizontal,
+    key: "consolidated", labelKey: "nav_consolidated", icon: Layers,
     children: [
-      { key: "controlling-forecast",    label: "Forecasting", icon: TrendingUp        },
-      { key: "controlling-adjustments", label: "Adjustments", icon: SlidersHorizontal },
-      { key: "controlling-kpis",        label: "KPIs",        icon: BarChart3         },
+      { key: "individual-contributive",  labelKey: "nav_contributive",  icon: PieChart   },
+      { key: "consolidated-sheet",       labelKey: "nav_sheet",         icon: Table      },
+      { key: "consolidated-kpis",        labelKey: "nav_kpis",          icon: BarChart3  },
+      { key: "consolidated-dimensiones",  labelKey: "nav_dimensions",    icon: Filter     },
+      { key: "consolidated-cashflow",    labelKey: "nav_cashflow",      icon: TrendingUp },
+      { key: "consolidated-notes",       labelKey: "nav_memory_notes",  icon: BookOpen   },
     ],
   },
-  { key: "views", label: "Views", icon: Eye },
   {
-    key: "data-explorer", label: "Data Explorer", icon: Database,
+    key: "controlling", labelKey: "nav_controlling", icon: SlidersHorizontal,
     children: [
-      { key: "structure", label: "Structure", icon: Network },
+      { key: "controlling-forecast",    labelKey: "nav_forecasting",  icon: TrendingUp        },
+      { key: "controlling-adjustments", labelKey: "nav_adjustments",  icon: SlidersHorizontal },
+      { key: "controlling-kpis",        labelKey: "nav_kpis",         icon: BarChart3         },
+    ],
+  },
+  { key: "views",        labelKey: "nav_views",        icon: Eye      },
+  {
+    key: "data-explorer", labelKey: "nav_data_explorer", icon: Database,
+    children: [
+      { key: "structure", labelKey: "nav_structure", icon: Network },
     ],
   },
 ];
@@ -53,6 +54,17 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
   const { colors } = useSettings();
   const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
+  const t = useT();
+
+  // Resolve translated labels at render time
+  const NAV = NAV_KEYS.map(item => ({
+    ...item,
+    label: t(item.labelKey, item.labelKey),
+    children: item.children?.map(c => ({
+      ...c,
+      label: t(c.labelKey, c.labelKey),
+    })),
+  }));
 
   const [hoveredKey, setHoveredKey] = useState(null);
   const [flyoutTop,  setFlyoutTop]  = useState(0);
@@ -209,8 +221,8 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
                       marginLeft: "0.75rem",
                       transition: `max-width ${TRANSITION}, opacity ${TRANSITION}`,
                     }}
-                  >
-                    Settings
+>
+                    {t("nav_settings")}
                   </span>
                   {isActive && !collapsed && (
                     <span className="ml-2 w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: colors.primary }} />

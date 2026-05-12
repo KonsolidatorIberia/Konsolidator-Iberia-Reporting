@@ -2,14 +2,15 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import {
   TrendingUp, DollarSign, Target, Activity,
   Building2, Layers, Database, Network, Loader2, ArrowUp, ArrowDown,
-  Sparkles, ChevronRight, Wallet,
+  Sparkles, ChevronRight, Wallet, Settings, Search, ChevronDown,
 } from "lucide-react";
 import {
   AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from "recharts";
-import { useSettings, useTypo } from "./SettingsContext.jsx";
-
+import { useSettings, useTypo, useSettingsControls, useT } from "./SettingsContext.jsx";
+import AiPanel from "./AiPanel.jsx";
+import { supabase } from "../../lib/supabaseClient";
 const BASE_URL = "";
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -126,11 +127,14 @@ async function loadStandardMapping(standard, groupAccounts) {
   return { ccTagToCodes, sectionCodes };
 }
 
-async function loadKpiLibrary(standard) {
-  const [defs, overrides] = await Promise.all([
+async function loadKpiLibrary(standard, companyId) {
+  const [defs, overrides, custom] = await Promise.all([
     sbGet("kpi_definitions?select=*&order=sort_order.asc"),
     standard
       ? sbGet(`kpi_definitions_override?select=*&standard=eq.${encodeURIComponent(standard)}`)
+      : Promise.resolve([]),
+    companyId
+      ? sbGet(`company_kpis?select=*&company_id=eq.${encodeURIComponent(companyId)}&is_archived=eq.false`)
       : Promise.resolve([]),
   ]);
 
@@ -144,7 +148,7 @@ async function loadKpiLibrary(standard) {
     overrides.forEach(o => overrideByKpi.set(o.kpi_id, o.formula));
   }
 
-  return defs.map(d => ({
+  const standardKpis = defs.map(d => ({
     id:          d.id,
     label:       d.label,
     description: d.description ?? "",
@@ -153,10 +157,26 @@ async function loadKpiLibrary(standard) {
     tag:         d.tag ?? "",
     benchmark:   d.benchmark ?? null,
     formula:     overrideByKpi.get(d.id) ?? d.formula,
+    isCustom:    false,
   }));
+
+  const customKpis = Array.isArray(custom) ? custom.map(d => ({
+    id:          d.kpi_id,
+    label:       d.label,
+    description: d.description ?? "",
+    category:    d.category ?? "Custom",
+    format:      d.format ?? "currency",
+    tag:         d.tag ?? "",
+    benchmark:   d.benchmark ?? null,
+    formula:     d.formula,
+    isCustom:    true,
+  })) : [];
+
+  console.log(`[HomeResolver] loaded ${standardKpis.length} standard + ${customKpis.length} custom KPIs`);
+  return [...standardKpis, ...customKpis];
 }
 
-function useResolvedKpiList(groupAccounts) {
+function useResolvedKpiList(groupAccounts, companyId) {
   const standard = useMemo(() => detectStandard(groupAccounts), [groupAccounts]);
 
   const [state, setState] = useState({
@@ -176,7 +196,7 @@ function useResolvedKpiList(groupAccounts) {
     }
     setState(s => ({ ...s, ready: false, error: null }));
 
-    Promise.all([loadStandardMapping(standard, groupAccounts), loadKpiLibrary(standard)])
+    Promise.all([loadStandardMapping(standard, groupAccounts), loadKpiLibrary(standard, companyId)])
       .then(([{ ccTagToCodes, sectionCodes }, fullKpiList]) => {
         if (cancelled) return;
         setState({
@@ -194,8 +214,8 @@ function useResolvedKpiList(groupAccounts) {
         setState(s => ({ ...s, ready: true, error: String(e?.message ?? e) }));
       });
 
-    return () => { cancelled = true; };
-  }, [standard, groupAccounts]);
+return () => { cancelled = true; };
+  }, [standard, groupAccounts, companyId]);
 
   return state;
 }
@@ -286,7 +306,7 @@ function computeKpiById(id, pivot, kpiList, ccTagToCodes, sectionCodes, cache) {
 // END KPI RESOLVER
 // ════════════════════════════════════════════════════════════════════════════
 
-const MONTHS_ABBR = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const MONTHS_ABBR_EN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
 const NI_COLOR = "#7c3aed";
 const NI_ACCENT = "#a855f7";
@@ -446,9 +466,9 @@ function HeroKPI({ label, code, value, prevValue, trend, color, accent, icon: Ic
   return (
     <div
       className="relative overflow-hidden rounded-2xl p-4 transition-all duration-500 hover:scale-[1.015] hover:shadow-2xl group h-full flex flex-col"
-      style={{
+style={{
         background: `linear-gradient(135deg, ${color}f0 0%, ${color} 70%, ${accent ?? color} 100%)`,
-        boxShadow: `0 6px 20px -8px ${color}90, 0 3px 10px -4px ${color}60, inset 0 1px 0 rgba(255,255,255,0.15)`,
+        boxShadow: `0 16px 40px -8px ${color}90, 0 6px 16px -4px ${color}60, inset 0 1px 0 rgba(255,255,255,0.2)`,
         animation: `kCardEntry 0.6s cubic-bezier(0.4,0,0.2,1) ${delay}s both`,
       }}
     >
@@ -461,7 +481,7 @@ function HeroKPI({ label, code, value, prevValue, trend, color, accent, icon: Ic
       <div className="absolute -top-10 -right-10 w-32 h-32 rounded-full opacity-20 blur-2xl"
         style={{ background: "rgba(255,255,255,0.5)" }} />
 
-      <div className="relative z-10 flex flex-col h-full">
+<div className="relative z-10 flex flex-col h-full">
         <div className="flex items-start justify-between mb-2">
           <div className="flex items-center gap-2 min-w-0">
             <div className="w-8 h-8 rounded-lg bg-white/15 backdrop-blur-sm flex items-center justify-center border border-white/20 flex-shrink-0">
@@ -520,7 +540,7 @@ function MiniTile({ label, value, icon: Icon, color, delay = 0 }) {
   return (
     <div
       className="relative overflow-hidden rounded-xl p-3 bg-white/95 backdrop-blur-sm border border-gray-100/80 hover:shadow-md transition-all duration-300 group"
-      style={{ animation: `kCardEntry 0.6s cubic-bezier(0.4,0,0.2,1) ${delay}s both` }}
+style={{ animation: `kCardEntry 0.6s cubic-bezier(0.4,0,0.2,1) ${delay}s both`, boxShadow: "0 8px 24px -8px rgba(26,47,138,0.15), 0 2px 8px -2px rgba(0,0,0,0.06)" }}
     >
       <div className="absolute -top-4 -right-4 w-16 h-16 rounded-full opacity-10 blur-xl group-hover:opacity-20 transition-opacity"
         style={{ background: color }} />
@@ -555,11 +575,319 @@ function CustomTooltip({ active, payload, label }) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   PERIOD + SCOPE PICKER
+═══════════════════════════════════════════════════════════════ */
+function PeriodPicker({
+  year, month, onSelectPeriod,
+  viewScope, onScopeChange,
+  structures, companies,
+  selectedStructure, onStructureChange,
+  selectedCompany, onCompanyChange,
+  colors, onClose,
+}) {
+  const [browseYear, setBrowseYear] = useState(Number(year) || new Date().getFullYear());
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const currentYear = new Date().getFullYear();
+
+  return (
+    <div
+     className="absolute right-0 top-full mt-2 z-[200] rounded-2xl overflow-hidden"
+      style={{
+        width: 320,
+        background: "rgba(255,255,255,0.99)",
+        backdropFilter: "blur(24px)",
+        border: "1px solid rgba(26,47,138,0.1)",
+        boxShadow: "0 24px 60px -12px rgba(26,47,138,0.25), 0 0 0 1px rgba(255,255,255,0.5) inset",
+        animation: "dropdownIn 220ms cubic-bezier(0.34,1.56,0.64,1)",
+      }}
+      onClick={e => e.stopPropagation()}
+    >
+      {/* ── Month / Year selector ── */}
+      <div className="p-3 border-b border-gray-100">
+        <div className="flex items-center justify-between mb-2.5">
+          <button
+            onClick={() => setBrowseYear(y => y - 1)}
+            className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-gray-100 transition-colors text-gray-500"
+          >‹</button>
+          <span className="text-sm font-black text-gray-800">{browseYear}</span>
+          <button
+            onClick={() => setBrowseYear(y => Math.min(y + 1, currentYear))}
+            className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-gray-100 transition-colors text-gray-500"
+            disabled={browseYear >= currentYear}
+          >›</button>
+        </div>
+        <div className="grid grid-cols-4 gap-1">
+          {MONTHS.map((m, i) => {
+            const mNum = i + 1;
+            const isSelected = String(browseYear) === String(year) && String(mNum) === String(month);
+            const isFuture = browseYear === currentYear && mNum > new Date().getMonth() + 1;
+            return (
+              <button
+                key={m}
+                disabled={isFuture}
+                onClick={() => { onSelectPeriod(String(browseYear), String(mNum)); onClose(); }}
+                className="py-1.5 rounded-xl text-xs font-bold transition-all"
+                style={{
+                  background: isSelected ? colors.primary : isFuture ? "transparent" : "transparent",
+                  color: isSelected ? "#fff" : isFuture ? "#d1d5db" : "#374151",
+                  cursor: isFuture ? "not-allowed" : "pointer",
+                }}
+                onMouseEnter={e => { if (!isSelected && !isFuture) e.currentTarget.style.background = `${colors.primary}12`; }}
+                onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
+              >
+                {m}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── Scope toggle ── */}
+      <div className="p-3 border-b border-gray-100">
+        <p className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 mb-2">View</p>
+        <div className="flex gap-1.5 p-1 rounded-xl bg-gray-100">
+          {[
+            { value: "consolidated", label: "Consolidated" },
+            { value: "individual",   label: "Individual" },
+          ].map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => onScopeChange(opt.value)}
+              className="flex-1 py-1.5 rounded-lg text-xs font-black transition-all"
+              style={{
+                background: viewScope === opt.value ? "#fff" : "transparent",
+                color: viewScope === opt.value ? colors.primary : "#9ca3af",
+                boxShadow: viewScope === opt.value ? "0 1px 4px rgba(0,0,0,0.08)" : "none",
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Company / Structure selector ── */}
+      <div className="p-3 max-h-48 overflow-y-auto" style={{ scrollbarWidth: "none" }}>
+        <p className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 mb-2">
+          {viewScope === "consolidated" ? "Group Structure" : "Company"}
+        </p>
+        {viewScope === "consolidated" ? (
+          structures.length > 0 ? structures.map((s, i) => {
+            const val = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? String(s)) : String(s);
+            const active = val === selectedStructure;
+            return (
+              <button key={i}
+                onClick={() => { onStructureChange(val); onClose(); }}
+                className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold mb-0.5 transition-all"
+                style={{ background: active ? colors.primary : "transparent", color: active ? "#fff" : "#374151" }}
+                onMouseEnter={e => { if (!active) e.currentTarget.style.background = `${colors.primary}10`; }}
+                onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
+              >
+                {val}
+              </button>
+            );
+          }) : <p className="text-xs text-gray-300 px-2">No structures available</p>
+        ) : (
+          companies.length > 0 ? companies.map((c, i) => {
+            const val = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? String(c)) : String(c);
+            const active = val === selectedCompany;
+            return (
+              <button key={i}
+                onClick={() => { onCompanyChange(val); onClose(); }}
+                className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold mb-0.5 transition-all"
+                style={{ background: active ? colors.primary : "transparent", color: active ? "#fff" : "#374151" }}
+                onMouseEnter={e => { if (!active) e.currentTarget.style.background = `${colors.primary}10`; }}
+                onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
+              >
+                {val}
+              </button>
+            );
+          }) : <p className="text-xs text-gray-300 px-2">No companies available</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   KPI SLOT SELECTOR POPOVER
+═══════════════════════════════════════════════════════════════ */
+function KpiSelectorPopover({ kpiList, currentId, onSelect, onClose }) {
+  const [search, setSearch] = useState("");
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [onClose]);
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    return kpiList.filter(k =>
+      !q || k.label.toLowerCase().includes(q) || k.id.toLowerCase().includes(q) || (k.category ?? "").toLowerCase().includes(q)
+    );
+  }, [kpiList, search]);
+
+  const grouped = useMemo(() => filtered.reduce((acc, k) => {
+    const cat = k.category || "General";
+    if (!acc[cat]) acc[cat] = [];
+    acc[cat].push(k);
+    return acc;
+  }, {}), [filtered]);
+
+  return (
+    <div
+      ref={ref}
+      className="absolute top-full left-0 right-0 mt-2 z-[60] rounded-2xl overflow-hidden"
+      style={{
+        background: "rgba(255,255,255,0.98)",
+        backdropFilter: "blur(24px)",
+        border: "1px solid rgba(26,47,138,0.1)",
+        boxShadow: "0 24px 60px -12px rgba(26,47,138,0.3), 0 0 0 1px rgba(255,255,255,0.6) inset",
+        animation: "dropdownIn 240ms cubic-bezier(0.34,1.56,0.64,1)",
+      }}
+      onClick={e => e.stopPropagation()}
+    >
+      {/* Header */}
+      <div className="px-3 pt-3 pb-2 border-b border-gray-100">
+        <p className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 mb-2">Change KPI</p>
+        <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-gray-50 border border-gray-100">
+          <Search size={11} className="text-gray-400 flex-shrink-0" />
+          <input
+            autoFocus
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search KPIs…"
+            className="flex-1 text-xs outline-none bg-transparent text-gray-700 placeholder:text-gray-300"
+          />
+        </div>
+      </div>
+
+{/* List */}
+      <div className="overflow-y-auto p-1.5" style={{ maxHeight: 220 }}>
+        {Object.entries(grouped).map(([cat, kpis], catIdx) => {
+          const CAT_COLORS = [
+            "#1a2f8a", "#CF305D", "#57aa78", "#7c3aed",
+            "#d97706", "#0891b2", "#be185d", "#065f46",
+          ];
+          const catColor = CAT_COLORS[catIdx % CAT_COLORS.length];
+          return (
+            <div key={cat} className="mb-1">
+              {/* Section header */}
+              <div className="flex items-center gap-2 px-2 py-1.5 mb-0.5">
+                <div className="w-1.5 h-4 rounded-full flex-shrink-0" style={{ background: catColor }} />
+                <p className="text-[9px] font-black uppercase tracking-[0.2em]" style={{ color: catColor }}>
+                  {cat}
+                </p>
+                <div className="flex-1 h-px" style={{ background: `${catColor}25` }} />
+                <span className="text-[8px] font-bold tabular-nums" style={{ color: `${catColor}80` }}>
+                  {kpis.length}
+                </span>
+              </div>
+
+              {/* KPI rows */}
+              {kpis.map(k => {
+                const active = k.id === currentId;
+                return (
+                  <button
+                    key={k.id}
+                    onClick={() => onSelect(k.id)}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs transition-all"
+                    style={{
+                      background: active ? catColor : "transparent",
+                      color: active ? "#fff" : "#374151",
+                      fontWeight: active ? 700 : 500,
+                    }}
+                    onMouseEnter={e => { if (!active) e.currentTarget.style.background = `${catColor}12`; }}
+                    onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
+                  >
+                    {k.label}
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })}
+        {filtered.length === 0 && (
+          <p className="text-xs text-gray-400 text-center py-6">No KPIs match</p>
+        )}
+      </div>
+
+<style>{`
+        @keyframes dropdownIn {
+          from { opacity: 0; transform: translateY(-6px) scale(0.97); }
+          to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
    MAIN
 ═══════════════════════════════════════════════════════════════ */
-export default function HomePage({ token, initialData = {} }) {
-  const { colors } = useSettings();
+export default function HomePage({ token, initialData = {}, user = {} }) {
+const { colors } = useSettings();
   const headerStyle = useTypo("header1");
+  const t = useT();
+  const { userId, companyId: settingsCompanyId } = useSettingsControls();
+
+  // ── Company metadata from Supabase ──────────────────────────────
+const [companyMeta, setCompanyMeta] = useState(null);
+  const [userProfile, setUserProfile] = useState(null);
+  useEffect(() => {
+    if (!settingsCompanyId && !userId) return;
+    (async () => {
+      const [{ data: co }, { data: up }] = await Promise.all([
+        settingsCompanyId
+          ? supabase.schema("accounts").from("companies")
+              .select("name, tier, is_trial, trial_ends_at")
+              .eq("id", settingsCompanyId).single()
+          : Promise.resolve({ data: null }),
+        userId
+          ? supabase.schema("accounts").from("users")
+              .select("username, email")
+              .eq("id", userId).single()
+          : Promise.resolve({ data: null }),
+      ]);
+      if (co) setCompanyMeta(co);
+      if (up) setUserProfile(up);
+    })();
+  }, [settingsCompanyId, userId]);
+
+  // ── Time-based greeting ──────────────────────────────────────────
+  const greeting = useMemo(() => {
+    const h = new Date().getHours();
+    return h < 12 ? t("greeting_morning") : h < 18 ? t("greeting_afternoon") : t("greeting_evening");
+  }, [t]);
+
+  // ── Display name: extract first name from email or username ──────
+const displayName = useMemo(() => {
+    // Prefer the actual username from accounts.users (e.g. "Ignacio Vidal")
+    const raw = (userProfile?.username ?? user?.username ?? "").trim();
+    if (!raw) return "";
+    if (raw.includes("@")) {
+      const local = raw.split("@")[0];
+      const first = local.split(/[._\-+]/)[0] ?? local;
+      return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+    }
+    if (raw.includes(" ")) return raw;
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
+  }, [userProfile, user]);
+
+  // ── Trial days remaining ─────────────────────────────────────────
+  const trialDaysLeft = useMemo(() => {
+    if (!companyMeta?.is_trial || !companyMeta?.trial_ends_at) return null;
+    const days = Math.ceil((new Date(companyMeta.trial_ends_at) - new Date()) / 86400000);
+    return days > 0 ? days : 0;
+  }, [companyMeta]);
+  const MONTHS_ABBR = [
+    t("month_1"), t("month_2"), t("month_3"), t("month_4"),
+    t("month_5"), t("month_6"), t("month_7"), t("month_8"),
+    t("month_9"), t("month_10"), t("month_11"), t("month_12"),
+  ].map(m => m.slice(0, 3));
 
   const sources    = initialData.sources ?? [];
   const structures = initialData.structures ?? [];
@@ -599,10 +927,89 @@ export default function HomePage({ token, initialData = {} }) {
   }, [groupAccounts]);
 
   // Resolver — same hook as KpiIndividualesPage
-  const {
+const {
     kpiList, ccTagToCodes, sectionCodes, standard: detectedStandard,
     ready: resolverReady,
-  } = useResolvedKpiList(groupAccounts);
+  } = useResolvedKpiList(groupAccounts, settingsCompanyId);
+
+const { setDetectedLocale } = useSettingsControls();
+
+  // ── KPI slot configuration ───────────────────────────────────────
+  const DEFAULT_SLOTS = ["revenue", "ebitda", "ebit", "net_result"];
+  const [kpiSlots, setKpiSlots]     = useState(DEFAULT_SLOTS);
+ const [editingSlot, setEditingSlot]     = useState(null);   // 0-3 | null
+  const [trendWindow, setTrendWindow]     = useState(24);      // 12 | 24 | 36 | 48 months
+  const [trendInterval, setTrendInterval] = useState("monthly"); // monthly | 6months | yearly
+  const [trendChipOpen, setTrendChipOpen] = useState(null);   // "interval" | "window" | null
+  const trendHeaderRef = useRef(null);
+
+  // Close chip dropdowns on outside click
+  useEffect(() => {
+    if (!trendChipOpen) return;
+    const handler = (e) => {
+      if (trendHeaderRef.current && !trendHeaderRef.current.contains(e.target))
+        setTrendChipOpen(null);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [trendChipOpen]);
+
+  // Load saved slots from user_settings.preferences
+  useEffect(() => {
+    if (!userId) return;
+    (async () => {
+      const { data } = await supabase
+        .from("user_settings")
+        .select("preferences")
+        .eq("user_id", userId)
+        .single();
+      if (data?.preferences?.home_kpi_slots?.length === 4) {
+        setKpiSlots(data.preferences.home_kpi_slots);
+      }
+    })();
+  }, [userId]);
+
+  const saveKpiSlots = useCallback(async (slots) => {
+    if (!userId) return;
+    const { data } = await supabase
+      .from("user_settings")
+      .select("preferences")
+      .eq("user_id", userId)
+      .single();
+    const current = data?.preferences ?? {};
+    await supabase.from("user_settings").upsert({
+      user_id: userId,
+      preferences: { ...current, home_kpi_slots: slots },
+      updated_at: new Date().toISOString(),
+    });
+  }, [userId]);
+
+  const updateSlot = useCallback((slotIdx, kpiId) => {
+    const next = [...kpiSlots];
+    next[slotIdx] = kpiId;
+    setKpiSlots(next);
+    saveKpiSlots(next);
+    setEditingSlot(null);
+  }, [kpiSlots, saveKpiSlots]);
+
+  // Visual config per slot (colours stay fixed, icons stay fixed)
+  const SLOT_COLORS = useMemo(() => [
+    { color: colors.primary ?? "#1a2f8a",    accent: `${colors.primary ?? "#1a2f8a"}cc`,    icon: DollarSign },
+    { color: colors.secondary ?? "#CF305D",  accent: `${colors.secondary ?? "#CF305D"}cc`,  icon: Activity   },
+    { color: colors.tertiary ?? "#57aa78",   accent: `${colors.tertiary ?? "#57aa78"}cc`,   icon: Target     },
+    { color: NI_COLOR,                        accent: NI_ACCENT,                              icon: TrendingUp },
+  ], [colors]);
+
+  // Drive interface language from the detected accounting standard.
+  // Only fires when standard is freshly detected and user hasn't set an
+  // explicit locale preference.
+  useEffect(() => {
+    if (!detectedStandard) return;
+    const locale =
+      detectedStandard === "DanishIFRS"    ? "da" :
+      detectedStandard === "PGC"           ? "es" : "en";
+    setDetectedLocale(locale);
+  }, [detectedStandard, setDetectedLocale]);
 
   // Cost breakdown rows from PL table — fetched independently to avoid
   // touching the resolver. Same standard detection.
@@ -636,20 +1043,43 @@ export default function HomePage({ token, initialData = {} }) {
     };
   }, [initialData]);
 
-  const [year, setYear]   = useState(prefetch?.year ? String(prefetch.year) : "");
-  const [month, setMonth] = useState(prefetch?.month ? String(prefetch.month) : "");
-  const source = useMemo(() => {
+const [year, setYear]     = useState(prefetch?.year  ? String(prefetch.year)  : "");
+  const [month, setMonth]   = useState(prefetch?.month ? String(prefetch.month) : "");
+  const [viewScope, setViewScope]           = useState("consolidated"); // "consolidated" | "individual"
+  const [pickerOpen, setPickerOpen]         = useState(false);
+  const [pickerYear, setPickerYear]         = useState(null); // year being browsed in picker
+  const pickerRef = useRef(null);
+
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const handler = (e) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target)) setPickerOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [pickerOpen]);
+
+  // Sync pickerYear to current year when opening
+  useEffect(() => {
+    if (pickerOpen && year) setPickerYear(Number(year));
+  }, [pickerOpen]);
+const source = useMemo(() => {
     const s = sources[0];
     return typeof s === "object" ? (s.source ?? s.Source ?? "") : (s ?? "");
   }, [sources]);
-  const structure = useMemo(() => {
+  const defaultStructure = useMemo(() => {
     const s = structures[0];
     return typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : (s ?? "");
   }, [structures]);
-  const company = useMemo(() => {
+  const defaultCompany = useMemo(() => {
     const c = companies[0];
     return typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : (c ?? "");
   }, [companies]);
+
+  const [structureOverride, setStructureOverride] = useState(null);
+  const [companyOverride, setCompanyOverride]     = useState(null);
+  const structure = structureOverride ?? defaultStructure;
+  const company   = companyOverride   ?? defaultCompany;
 
   const [currentRows, setCurrentRows]     = useState(prefetch?.current ?? []);
   const [prevRows, setPrevRows]           = useState(prefetch?.prev ?? []);
@@ -846,16 +1276,17 @@ const vndKeys = [...map.keys()].filter(k => k.endsWith("-VND")).slice(0, 5);
   // visible point. Each item is { year, month, rows }.
   useEffect(() => {
     if (!year || !month || !source || !structure || !company) return;
-    const cacheKey = `${source}|${structure}|${company}|${year}|${month}|jan-anchored`;
+    const cacheKey = `${source}|${structure}|${company}|${year}|${month}|${trendWindow}|jan-anchored`;
     const cached = trendCacheRef.current.get(cacheKey);
     if (cached) { setTrendRows(cached); return; }
 
     let cancelled = false;
     setTrendLoading(true);
     (async () => {
-      const anchorY = Number(year), anchorM = Number(month);
-      // Visible range: from January of (anchorY − 1) to anchor month inclusive.
-      const startY = anchorY - 1, startM = 1;
+const anchorY = Number(year), anchorM = Number(month);
+      // Visible range: from January of (anchorY − yearsBack) to anchor month inclusive.
+      const yearsBack = Math.ceil(trendWindow / 12);
+      const startY = anchorY - yearsBack, startM = 1;
       // Prior month for delta computation: December of (startY − 1).
       const priorY = startY - 1, priorM = 12;
 
@@ -882,7 +1313,7 @@ const vndKeys = [...map.keys()].filter(k => k.endsWith("-VND")).slice(0, 5);
       setTrendLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [year, month, source, structure, company, fetchPeriod]);
+}, [year, month, source, structure, company, fetchPeriod, trendWindow]);
 
   // Fetch all-companies YTD for ranking
   useEffect(() => {
@@ -901,17 +1332,17 @@ const vndKeys = [...map.keys()].filter(k => k.endsWith("-VND")).slice(0, 5);
     })();
   }, [year, month, source, structure, fetchPeriodAllCompanies]);
 
-  // Hero KPIs identification — by id from kpi_definitions
-  const heroKpis = useMemo(() => {
+// Resolve the 4 configured slot KPIs from the library
+  const slottedKpis = useMemo(() => {
     if (!resolverReady || kpiList.length === 0) return null;
-    const find = (id) => kpiList.find(k => k.id === id);
-    const revenue   = find("revenue");
-    const ebitda    = find("ebitda");
-    const ebit      = find("ebit");
-    const netResult = find("net_result") ?? find("net_income");
-    if (!revenue && !ebitda && !ebit && !netResult) return null;
-    return { revenue, ebitda, ebit, netResult };
-  }, [kpiList, resolverReady]);
+    return kpiSlots.map(id => kpiList.find(k => k.id === id) ?? null);
+  }, [kpiList, resolverReady, kpiSlots]);
+
+  // Keep heroKpis for backwards compat (trend needs the net_result id)
+  const heroKpis = useMemo(() => {
+    if (!slottedKpis) return null;
+    return { netResult: slottedKpis[3] };
+  }, [slottedKpis]);
 
 // Pivots — exact same buildPivot pattern as KpiIndividualesPage.
   // YTD pivots first (raw fetch results), then monthly = curr YTD − prev YTD per account.
@@ -959,24 +1390,15 @@ const vndKeys = [...map.keys()].filter(k => k.endsWith("-VND")).slice(0, 5);
     return out;
   }, [prevYtdPivot, month, year, trendRows, sumAccountCodes]);
 
-  // Hero KPIs use MONTHLY values (matches the "Monthly" column in
-  // KpiIndividualesPage). The "vs prevValue" badge uses the previous month's
-  // monthly value.
-  const kpiValues = useMemo(() => {
-    if (!heroKpis || kpiList.length === 0) return null;
+const kpiValues = useMemo(() => {
+    if (!slottedKpis || kpiList.length === 0) return null;
     const cacheCur = new Map();
     const cachePrev = new Map();
-    const get = (id) => ({
-      current: computeKpiById(id, currentMonthlyPivot, kpiList, ccTagToCodes, sectionCodes, cacheCur),
-      prev:    computeKpiById(id, prevMonthlyPivot,    kpiList, ccTagToCodes, sectionCodes, cachePrev),
-    });
-    return {
-      revenue:   get("revenue"),
-      ebitda:    get("ebitda"),
-      ebit:      get("ebit"),
-      netIncome: get(heroKpis.netResult?.id ?? "net_result"),
-    };
-  }, [heroKpis, currentMonthlyPivot, prevMonthlyPivot, kpiList, ccTagToCodes, sectionCodes]);
+    return slottedKpis.map(kpi => ({
+      current: kpi ? computeKpiById(kpi.id, currentMonthlyPivot, kpiList, ccTagToCodes, sectionCodes, cacheCur) : 0,
+      prev:    kpi ? computeKpiById(kpi.id, prevMonthlyPivot,    kpiList, ccTagToCodes, sectionCodes, cachePrev) : 0,
+    }));
+  }, [slottedKpis, currentMonthlyPivot, prevMonthlyPivot, kpiList, ccTagToCodes, sectionCodes]);
   // Trend series — MONTHLY values, derived from YTD diffs.
   // For each month, monthly = YTD(month) - YTD(month-1) per account.
   // January: monthly = YTD (since previous month YTD belongs to a different fiscal year).
@@ -1014,29 +1436,44 @@ const vndKeys = [...map.keys()].filter(k => k.endsWith("-VND")).slice(0, 5);
       }
 
 const cache = new Map();
-      out.push({
+const entry = {
+        _year: y,
+        _month: m,
         idx: out.length,
         label: `${MONTHS_ABBR[m - 1]} ${String(y).slice(-2)}`,
         fullLabel: `${MONTHS_ABBR[m - 1]} ${y}`,
-        Revenue:   computeKpiById("revenue",    monthlyPivot, kpiList, ccTagToCodes, sectionCodes, cache),
-        EBITDA:    computeKpiById("ebitda",     monthlyPivot, kpiList, ccTagToCodes, sectionCodes, cache),
-        EBIT:      computeKpiById("ebit",       monthlyPivot, kpiList, ccTagToCodes, sectionCodes, cache),
-        NetIncome: computeKpiById(heroKpis.netResult?.id ?? "net_result", monthlyPivot, kpiList, ccTagToCodes, sectionCodes, cache),
+      };
+      kpiSlots.forEach((id, si) => {
+        entry[`slot${si}`] = computeKpiById(id, monthlyPivot, kpiList, ccTagToCodes, sectionCodes, cache);
       });
+      out.push(entry);
     }
     return out;
-  }, [trendRows, heroKpis, kpiList, ccTagToCodes, sectionCodes, sumAccountCodes]);
+ }, [trendRows, kpiSlots, kpiList, ccTagToCodes, sectionCodes, sumAccountCodes]);
 
-  // Sparklines — last 12 monthly points
+const trendFromYear = useMemo(() => {
+    if (!year) return null;
+    return Number(year) - Math.ceil(trendWindow / 12) + 1;
+  }, [year, trendWindow]);
+
+  const trendSeriesDisplay = useMemo(() => {
+    if (!trendSeries.length) return [];
+    const windowed = trendSeries.slice(-trendWindow);
+    if (trendInterval === "6months")
+      return windowed.filter((t, i) =>
+        t._month === 1 || t._month === 7 || i === windowed.length - 1
+      );
+    if (trendInterval === "yearly")
+      return windowed.filter((t, i) =>
+        t._month === 12 || i === windowed.length - 1
+      );
+    return windowed; // monthly — all points
+  }, [trendSeries, trendWindow, trendInterval]);
+
   const sparklines = useMemo(() => {
     const last12 = trendSeries.slice(-12);
-    return {
-      revenue:   last12.map(t => t.Revenue),
-      ebitda:    last12.map(t => t.EBITDA),
-      ebit:      last12.map(t => t.EBIT),
-      netIncome: last12.map(t => t.NetIncome),
-    };
-  }, [trendSeries]);
+    return kpiSlots.map((_, si) => last12.map(t => t[`slot${si}`] ?? 0));
+  }, [trendSeries, kpiSlots]);
 
   // Top by revenue (multi-company): group rows by company, build pivot per company,
   // evaluate revenue KPI on each. Same approach as KpiIndividualesPage.
@@ -1046,8 +1483,8 @@ const cache = new Map();
     [allCoCurrentRows]
   );
 
-  const topByRevenue = useMemo(() => {
-    if (!heroKpis?.revenue || !allCoCurrentRows.length || kpiList.length === 0) return [];
+const topByRevenue = useMemo(() => {
+    if (!slottedKpis || !allCoCurrentRows.length || kpiList.length === 0) return [];
 
     // Group rows by company, but ALSO track each company's currency.
     const byCompany = new Map();
@@ -1127,61 +1564,114 @@ console.log(`[FX-CHECK] ${name}: currency=${currency} reportingCurrency=${report
 
   const anyLoading = loading || trendLoading || probing || allCoLoading || !resolverReady;
 
-// Cost breakdown — driven by cc_tags. Uses the cc_tag mapping the resolver
-  // already built. We pick all expense-side cc_tags, label them with
-  // human-readable names, and rank them by absolute monthly value. Comparison
-  // is monthly vs previous-month monthly (option C).
-  const COST_CC_TAGS = useMemo(() => ([
-    { tag: "CC_02-Cost Of Sales",                            label: "Cost of Sales" },
-    { tag: "CC_05-Lease Expense",                            label: "Lease Expense" },
-    { tag: "CC_06-General and administrative",               label: "General & Administrative" },
-    { tag: "CC_07-Employee Expense",                         label: "Employee Expense" },
-    { tag: "CC_08-R&D",                                      label: "R&D" },
-    { tag: "CC_09-Impairment Gain (Loss) on Fixed Assets",   label: "Impairment (Fixed Assets)" },
-    { tag: "CC_10-Depreciation and Amotization",             label: "Depreciation & Amortization" },
-    { tag: "CC_11-Other Operating Expenses",                 label: "Other Operating Expenses" },
-    { tag: "CC_15-Interest expense",                         label: "Interest Expense" },
-    { tag: "CC_16-Other financial expense",                  label: "Other Financial Expense" },
-    { tag: "CC_18-Income Tax",                               label: "Income Tax" },
-  ]), []);
+// ── Breakdown views ─────────────────────────────────────────────
+  const BREAKDOWN_VIEWS = [
+    {
+      id: "cost_structure",
+      label: "Cost Structure",
+      icon: "💰",
+      description: "All expense categories",
+      tags: ["CC_02-Cost Of Sales","CC_05-Lease Expense","CC_06-General and administrative","CC_07-Employee Expense","CC_08-R&D","CC_09-Impairment Gain (Loss) on Fixed Assets","CC_10-Depreciation and Amotization","CC_11-Other Operating Expenses","CC_15-Interest expense","CC_16-Other financial expense","CC_18-Income Tax"],
+    },
+    {
+      id: "revenue_mix",
+      label: "Revenue Mix",
+      icon: "📈",
+      description: "Revenue & other income sources",
+      tags: ["CC_01-Revenue","CC_03-Other Operating Income","CC_13-Interest Income","CC_14-Other financial income"],
+    },
+    {
+      id: "opex_detail",
+      label: "Opex Detail",
+      icon: "🔧",
+      description: "Operating expenses only",
+      tags: ["CC_05-Lease Expense","CC_06-General and administrative","CC_07-Employee Expense","CC_08-R&D","CC_09-Impairment Gain (Loss) on Fixed Assets","CC_10-Depreciation and Amotization","CC_11-Other Operating Expenses"],
+    },
+    {
+      id: "financial_pl",
+      label: "Financial P&L",
+      icon: "🏦",
+      description: "Below EBIT — financial items",
+      tags: ["CC_13-Interest Income","CC_14-Other financial income","CC_15-Interest expense","CC_16-Other financial expense","CC_17-Foreign Exchange","CC_18-Income Tax"],
+    },
+    {
+      id: "pl_bridge",
+      label: "P&L Bridge",
+      icon: "🌉",
+      description: "Full P&L from revenue to tax",
+      tags: ["CC_01-Revenue","CC_03-Other Operating Income","CC_02-Cost Of Sales","CC_05-Lease Expense","CC_06-General and administrative","CC_07-Employee Expense","CC_08-R&D","CC_10-Depreciation and Amotization","CC_11-Other Operating Expenses","CC_13-Interest Income","CC_14-Other financial income","CC_15-Interest expense","CC_16-Other financial expense","CC_17-Foreign Exchange","CC_18-Income Tax"],
+    },
+  ];
 
-  const ccValue = useCallback((pivot, tag) => {
-    const codes = ccTagToCodes.get(tag);
-    if (!codes || codes.length === 0) return 0;
-    return -pivotSum(pivot, codes);
-  }, [ccTagToCodes]);
+  const INCOME_TAGS = new Set(["CC_01-Revenue","CC_03-Other Operating Income","CC_13-Interest Income","CC_14-Other financial income"]);
+
+  const [activeBreakdownView, setActiveBreakdownView] = useState("cost_structure");
+const [breakdownSettingsOpen, setBreakdownSettingsOpen] = useState(false);
+  const breakdownSettingsRef = useRef(null);
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
+
+  useEffect(() => {
+    if (!breakdownSettingsOpen) return;
+    const handler = (e) => {
+      if (breakdownSettingsRef.current && !breakdownSettingsRef.current.contains(e.target))
+        setBreakdownSettingsOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [breakdownSettingsOpen]);
+
+  const activeView = BREAKDOWN_VIEWS.find(v => v.id === activeBreakdownView) ?? BREAKDOWN_VIEWS[0];
+
+  const TAG_LABELS = useMemo(() => ({
+    "CC_01-Revenue":                                t("cost_of_sales") === "Coste de ventas" ? "Ingresos" : "Revenue",
+    "CC_02-Cost Of Sales":                          t("cost_of_sales"),
+    "CC_03-Other Operating Income":                 "Other Op. Income",
+    "CC_05-Lease Expense":                          t("lease_expense"),
+    "CC_06-General and administrative":             t("general_admin"),
+    "CC_07-Employee Expense":                       t("employee_expense"),
+    "CC_08-R&D":                                    t("rd"),
+    "CC_09-Impairment Gain (Loss) on Fixed Assets": t("impairment"),
+    "CC_10-Depreciation and Amotization":           t("depreciation"),
+    "CC_11-Other Operating Expenses":               t("other_opex"),
+    "CC_13-Interest Income":                        "Interest Income",
+    "CC_14-Other financial income":                 "Other Fin. Income",
+    "CC_15-Interest expense":                       t("interest_expense"),
+    "CC_16-Other financial expense":                t("other_fin_expense"),
+    "CC_17-Foreign Exchange":                       "FX",
+    "CC_18-Income Tax":                             t("income_tax"),
+  }), [t]);
 
   const costBreakdown = useMemo(() => {
     if (!ccTagToCodes || ccTagToCodes.size === 0) return [];
     if (!currentMonthlyPivot || currentMonthlyPivot.size === 0) return [];
-
-    const rows = COST_CC_TAGS.map(({ tag, label }) => {
-      const curr = ccValue(currentMonthlyPivot, tag);
-      const prev = ccValue(prevMonthlyPivot,    tag);
-      const currAbs = Math.abs(curr);
-      const prevAbs = Math.abs(prev);
-      let change = null;
-      if (prevAbs > 0.005) change = ((currAbs - prevAbs) / prevAbs) * 100;
-      return { tag, name: label, value: currAbs, prevValue: prevAbs, change };
-    })
-      .filter(r => r.value > 0.005)
-      .sort((a, b) => b.value - a.value)
+    const isIncome = (tag) => INCOME_TAGS.has(tag);
+    return activeView.tags
+      .map(tag => {
+        const rawCurr = pivotSum(currentMonthlyPivot, ccTagToCodes.get(tag) ?? []);
+        const rawPrev = pivotSum(prevMonthlyPivot,    ccTagToCodes.get(tag) ?? []);
+        const curr = isIncome(tag) ? -rawCurr : Math.abs(rawCurr);
+        const prev = isIncome(tag) ? -rawPrev : Math.abs(rawPrev);
+        let change = null;
+        if (Math.abs(prev) > 0.005) change = ((curr - prev) / Math.abs(prev)) * 100;
+        return { tag, name: TAG_LABELS[tag] ?? tag, value: curr, prevValue: prev, change, isIncome: isIncome(tag) };
+      })
+      .filter(r => Math.abs(r.value) > 0.005)
+      .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
       .slice(0, 8);
-
-    return rows;
-  }, [COST_CC_TAGS, ccTagToCodes, currentMonthlyPivot, prevMonthlyPivot, ccValue]);
+  }, [activeView, ccTagToCodes, currentMonthlyPivot, prevMonthlyPivot, TAG_LABELS]);
 
   const totalCosts = useMemo(
-    () => costBreakdown.reduce((s, c) => s + c.value, 0),
+    () => costBreakdown.reduce((s, c) => s + Math.abs(c.value), 0),
     [costBreakdown]
   );
 
-  const costColors = useMemo(() => {
+const costColors = useMemo(() => {
     return [colors.primary ?? "#1a2f8a", "#3b54b8", "#7c5fcc", "#b370cc", "#cf6595", "#cf5070", "#cf3940"];
   }, [colors]);
 
-  return (
-    <div className="relative h-full w-full overflow-hidden flex flex-col">
+return (
+    <>
+    <div className="relative h-full flex flex-col">
       <ConsolidationBackground primary={colors.primary ?? "#1a2f8a"} />
 
       <style>{`
@@ -1200,79 +1690,287 @@ console.log(`[FX-CHECK] ${name}: currency=${currency} reportingCurrency=${report
           0% { opacity: 0; transform: translateY(10px); }
           100% { opacity: 1; transform: translateY(0); }
         }
+        @keyframes kAvatarPop {
+          0%   { opacity: 0; transform: scale(0.4) rotate(-12deg); }
+          60%  { transform: scale(1.08) rotate(2deg); }
+          100% { opacity: 1; transform: scale(1) rotate(0deg); }
+        }
+        @keyframes kAvatarRing {
+          0%   { transform: scale(1); opacity: 0.5; }
+          100% { transform: scale(2.2); opacity: 0; }
+        }
+        @keyframes kGreetingSlide {
+          0%   { opacity: 0; transform: translateX(-16px); }
+          100% { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes kNameReveal {
+          0%   { opacity: 0; transform: translateY(14px) skewY(1deg); }
+          100% { opacity: 1; transform: translateY(0) skewY(0deg); }
+        }
+        @keyframes kBadgesPop {
+          0%   { opacity: 0; transform: translateY(8px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes kPeriodSlide {
+          0%   { opacity: 0; transform: translateX(20px); }
+          100% { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes kOnlinePing {
+          0%   { transform: scale(1); opacity: 0.8; }
+          100% { transform: scale(2.4); opacity: 0; }
+        }
         .hide-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
         .hide-scrollbar::-webkit-scrollbar { display: none; }
       `}</style>
-      <div className="relative z-10 flex flex-col flex-1 min-h-0 px-5 py-3 gap-3 w-full">
-        {/* HEADER */}
-        <div className="flex items-center justify-between flex-wrap gap-3 flex-shrink-0"
-          style={{ animation: "kFadeInUp 0.5s ease-out both" }}>
-          <div className="flex items-center gap-3">
-            <div className="w-1.5 h-10 rounded-full" style={{ background: colors.primary }} />
-            <div>
-              <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 leading-none mb-0.5 flex items-center gap-2">
-                Dashboard
-                {detectedStandard && (
-                  <span className="ml-1 px-2 py-0.5 rounded-full text-[8px] font-black tracking-wider"
-                    style={{ background: `${colors.primary}15`, color: colors.primary, border: `1px solid ${colors.primary}30` }}>
-                    {detectedStandard}
-                  </span>
-                )}
-              </p>
-              <h1 style={{ ...headerStyle, lineHeight: 1, fontSize: "1.5rem" }}>Summary</h1>
+<div className="relative z-10 flex flex-col flex-1 min-h-0 px-5 gap-3">
+  {/* HEADER — same height/style as PageHeader so it aligns with sidebar logo card */}
+<div
+          className="relative flex-shrink-0 bg-white rounded-2xl border border-gray-100 flex items-center justify-between px-5"
+          style={{
+            height: "7vh",
+            boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
+            overflow: "visible",
+            zIndex: 40,
+          }}>
+
+
+
+{/* LEFT — greeting + name + divider + company + badges */}
+          <div className="flex items-center gap-4 pl-2">
+            {/* Initials avatar */}
+            <div
+              className="w-9 h-9 rounded-xl flex items-center justify-center text-white text-[11px] font-black flex-shrink-0 select-none"
+              style={{
+                background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.secondary ?? "#CF305D"} 100%)`,
+                boxShadow: `0 4px 12px -4px ${colors.primary}60`,
+                animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0s both",
+              }}>
+              {(displayName || "?").split(" ").slice(0, 2).map(w => w[0] ?? "").join("").toUpperCase()}
+            </div>
+<div className="flex items-baseline gap-2">
+              <span style={{
+                ...headerStyle,
+                lineHeight: 1,
+                letterSpacing: "-0.018em",
+                fontSize: "1.4rem",
+                display: "inline-block",
+                animation: "kGreetWord 0.55s cubic-bezier(0.34,1.56,0.64,1) 0.05s both",
+                color: "inherit",
+              }}>
+                {greeting},
+              </span>
+              <span style={{
+                ...headerStyle,
+                lineHeight: 1,
+                letterSpacing: "-0.018em",
+                fontSize: "1.4rem",
+                display: "inline-block",
+                animation: "kNamePop 0.6s cubic-bezier(0.34,1.56,0.64,1) 0.22s both",
+                color: "inherit",
+              }}>
+                {displayName || "—"}
+              </span>
+            </div>
+
+            {/* Soft divider */}
+            <div style={{
+              width: 1, height: "40%", flexShrink: 0,
+              background: "linear-gradient(180deg, transparent 0%, rgba(26,47,138,0.12) 30%, rgba(26,47,138,0.12) 70%, transparent 100%)",
+            }} />
+
+            {/* Company + badges */}
+            <div className="flex items-center gap-2" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.4,0,0.2,1) 0.18s both" }}>
+              {companyMeta?.name && (
+                <span className="text-[12px] font-semibold text-gray-500">{companyMeta.name}</span>
+              )}
+              {companyMeta?.tier && (
+                <span className="px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-wider"
+                  style={{ background: `${colors.primary}12`, color: colors.primary }}>
+                  {companyMeta.tier}
+                </span>
+              )}
+              {trialDaysLeft !== null && (
+                <span className="px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-wider"
+                  style={{ background: "#fffbeb", color: "#d97706" }}>
+                  {trialDaysLeft}d {t("home_trial")}
+                </span>
+              )}
             </div>
           </div>
 
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/95 backdrop-blur-sm border border-gray-100 shadow-sm">
-              <div className="w-2 h-2 rounded-full" style={{ background: colors.primary, boxShadow: `0 0 8px ${colors.primary}` }} />
-              <span className="text-[11px] font-black text-gray-700 uppercase tracking-wider">{periodLabel}</span>
-              {company && (<><ChevronRight size={11} className="text-gray-300" />
-                <span className="text-[11px] font-medium text-gray-500">{company}</span></>)}
-            </div>
+{/* RIGHT — period + standard + loading */}
+          <div className="flex items-center gap-2" style={{ animation: "kPeriodSlide 0.4s cubic-bezier(0.4,0,0.2,1) 0.12s both" }}>
             {anyLoading && (
-              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-amber-50 border border-amber-200">
-                <Loader2 size={11} className="animate-spin text-amber-500" />
-                <span className="text-[10px] font-black text-amber-600 uppercase">
-                  {probing ? "Probing" : !resolverReady ? "Mapping" : trendLoading ? "Trend" : allCoLoading ? "Multi-co" : "Loading"}
+              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl"
+                style={{ background: "#fffbeb", border: "1px solid #fde68a" }}>
+                <Loader2 size={10} className="animate-spin" style={{ color: "#d97706" }} />
+                <span className="text-[9px] font-black uppercase tracking-wider" style={{ color: "#d97706" }}>
+                  {probing ? t("home_probing_short") : !resolverReady ? t("home_mapping") : trendLoading ? t("home_trend") : allCoLoading ? t("home_multico") : t("loading_data")}
                 </span>
               </div>
             )}
+
+{/* Clickable period chip */}
+            <div className="relative" ref={pickerRef}>
+              <button
+                onClick={() => setPickerOpen(o => !o)}
+                className="flex items-center gap-2 px-3.5 py-2 rounded-xl border transition-all duration-200"
+                style={{
+                  background: pickerOpen ? colors.primary : "#f9fafb",
+                  borderColor: pickerOpen ? colors.primary : "#f3f4f6",
+                }}
+              >
+                <div className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                  style={{ background: pickerOpen ? "rgba(255,255,255,0.8)" : colors.primary }} />
+                <span className="text-[11px] font-black uppercase tracking-wider"
+                  style={{ color: pickerOpen ? "#fff" : "#374151" }}>
+                  {periodLabel}
+                </span>
+                {company && (
+                  <>
+                    <div style={{ width: 1, height: 14, background: pickerOpen ? "rgba(255,255,255,0.3)" : "rgba(26,47,138,0.1)", flexShrink: 0 }} />
+                    <span className="text-[11px] font-semibold" style={{ color: pickerOpen ? "rgba(255,255,255,0.85)" : "#9ca3af" }}>
+                      {company}
+                    </span>
+                  </>
+                )}
+                {detectedStandard && (
+                  <>
+                    <div style={{ width: 1, height: 14, background: pickerOpen ? "rgba(255,255,255,0.3)" : "rgba(26,47,138,0.1)", flexShrink: 0 }} />
+                    <span className="text-[10px] font-black" style={{ color: pickerOpen ? "rgba(255,255,255,0.7)" : "#9ca3af" }}>
+                      {detectedStandard}
+                    </span>
+                  </>
+                )}
+                <ChevronDown size={10} style={{ color: pickerOpen ? "rgba(255,255,255,0.7)" : "#9ca3af", marginLeft: 2 }} />
+              </button>
+
+              {pickerOpen && (
+                <PeriodPicker
+                  year={year} month={month}
+                  onSelectPeriod={(y, m) => { setYear(y); setMonth(m); }}
+                  viewScope={viewScope} onScopeChange={setViewScope}
+                  structures={structures} companies={companies}
+                  selectedStructure={structure} onStructureChange={v => { setStructureOverride(v); }}
+                  selectedCompany={company}   onCompanyChange={v => { setCompanyOverride(v); }}
+                  colors={colors}
+                  onClose={() => setPickerOpen(false)}
+                />
+              )}
+</div>
+
+            {/* AI Assistant button */}
+            <button
+              onClick={() => setAiPanelOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.02]"
+              style={{
+                background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.secondary ?? "#CF305D"} 100%)`,
+                boxShadow: `0 4px 14px -4px ${colors.primary}80`,
+              }}
+            >
+              <Sparkles size={11} className="text-white" />
+              <span className="text-[11px] font-black text-white uppercase tracking-wider">AI</span>
+            </button>
           </div>
+
+          <style>{`
+            @keyframes titleMorph {
+              0%   { opacity: 0; transform: translateY(4px); }
+              100% { opacity: 1; transform: translateY(0); }
+            }
+            @keyframes kGreetingSlide {
+              0%   { opacity: 0; transform: translateX(-12px); }
+              100% { opacity: 1; transform: translateX(0); }
+            }
+            @keyframes kBadgesPop {
+              0%   { opacity: 0; transform: translateY(6px); }
+              100% { opacity: 1; transform: translateY(0); }
+            }
+@keyframes kPeriodSlide {
+              0%   { opacity: 0; transform: translateX(12px); }
+              100% { opacity: 1; transform: translateX(0); }
+            }
+            @keyframes kGreetWord {
+              0%   { opacity: 0; transform: translateX(-18px); filter: blur(4px); }
+              60%  { filter: blur(0px); }
+              100% { opacity: 1; transform: translateX(0); filter: blur(0px); }
+            }
+            @keyframes kNamePop {
+              0%   { opacity: 0; transform: translateY(10px) scale(0.92); }
+              60%  { transform: translateY(-2px) scale(1.02); }
+              100% { opacity: 1; transform: translateY(0) scale(1); }
+            }
+          `}</style>
         </div>
 
-        {/* HERO KPIS */}
+{/* HERO KPIS */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 flex-shrink-0" style={{ minHeight: 140 }}>
-          {heroKpis && kpiValues ? (
-            <>
-              <HeroKPI label="Revenue" code={heroKpis.revenue?.id}
-                value={kpiValues.revenue.current} prevValue={kpiValues.revenue.prev}
-                trend={sparklines.revenue} color={colors.primary ?? "#1a2f8a"}
-                accent={`${colors.primary}cc`} icon={DollarSign} loading={loading} delay={0} />
-              <HeroKPI label="EBITDA" code={heroKpis.ebitda?.id}
-                value={kpiValues.ebitda.current} prevValue={kpiValues.ebitda.prev}
-                trend={sparklines.ebitda} color={colors.secondary ?? "#CF305D"}
-                accent={`${colors.secondary ?? "#CF305D"}cc`} icon={Activity} loading={loading} delay={0.06} />
-              <HeroKPI label="EBIT" code={heroKpis.ebit?.id}
-                value={kpiValues.ebit.current} prevValue={kpiValues.ebit.prev}
-                trend={sparklines.ebit} color={colors.tertiary ?? "#57aa78"}
-                accent={`${colors.tertiary ?? "#57aa78"}cc`} icon={Target} loading={loading} delay={0.12} />
-              <HeroKPI label="Net Income" code={heroKpis.netResult?.id}
-                value={kpiValues.netIncome.current} prevValue={kpiValues.netIncome.prev}
-                trend={sparklines.netIncome} color={NI_COLOR} accent={NI_ACCENT}
-                icon={TrendingUp} loading={loading} delay={0.18} />
-            </>
+          {slottedKpis && kpiValues ? (
+            kpiSlots.map((slotId, idx) => {
+              const kpi  = slottedKpis[idx];
+              const vals = kpiValues[idx];
+              const sc   = SLOT_COLORS[idx];
+              return (
+                <div key={`slot-${idx}`} className="relative group/kpislot h-full">
+                  <HeroKPI
+                    label={kpi?.label ?? slotId}
+                    code={kpi?.id}
+                    value={vals?.current ?? 0}
+                    prevValue={vals?.prev ?? 0}
+                    trend={sparklines[idx] ?? []}
+                    color={sc.color}
+                    accent={sc.accent}
+                    icon={sc.icon}
+                    loading={loading}
+                    delay={idx * 0.06}
+                  />
+
+                  {/* Settings gear — appears on hover */}
+<button
+                    onClick={e => { e.stopPropagation(); setEditingSlot(editingSlot === idx ? null : idx); }}
+                    className="absolute top-2.5 right-2.5 z-20 w-6 h-6 rounded-lg flex items-center justify-center transition-all duration-200 opacity-0 group-hover/kpislot:opacity-100 hover:!opacity-100"
+                    style={{
+                      background: "rgba(255,255,255,0.18)",
+                      backdropFilter: "blur(8px)",
+                      border: "1px solid rgba(255,255,255,0.25)",
+                      opacity: editingSlot === idx ? "1" : undefined,
+                    }}
+                    title="Change KPI"
+                    onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.32)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.18)"; }}
+                  >
+                    <Settings size={11} className="text-white" />
+                  </button>
+
+                  {/* The group hover trick — make gear visible when card is hovered */}
+                  <style>{`
+                    .group\\/kpislot:hover .kpi-gear-${idx} { opacity: 1 !important; }
+                  `}</style>
+
+                  {/* KPI selector popover */}
+                  {editingSlot === idx && (
+                    <KpiSelectorPopover
+                      kpiList={kpiList}
+                      currentId={slotId}
+                      slotColor={sc.color}
+                      onSelect={id => updateSlot(idx, id)}
+                      onClose={() => setEditingSlot(null)}
+                    />
+                  )}
+                </div>
+              );
+            })
           ) : (
             <div className="col-span-full bg-white/90 backdrop-blur-sm rounded-2xl border border-gray-100 p-6 text-center">
               {!resolverReady || probing ? (
                 <><Loader2 size={24} className="animate-spin mx-auto mb-2" style={{ color: colors.primary }} />
                 <p className="text-gray-500 font-semibold text-xs">
-                  {probing ? "Buscando último periodo con datos…" : "Detectando estándar contable…"}
+                  {probing ? t("home_probing") : t("home_detecting")}
                 </p></>
               ) : (
                 <><Sparkles size={24} className="mx-auto mb-2 text-gray-300" />
                 <p className="text-gray-500 font-semibold text-xs">
-                  {!groupAccounts.length ? "Esperando group-accounts…" : "Estándar contable no reconocido"}
+                  {!groupAccounts.length ? t("home_waiting_accounts") : t("home_unknown_standard")}
                 </p></>
               )}
             </div>
@@ -1281,48 +1979,99 @@ console.log(`[FX-CHECK] ${name}: currency=${currency} reportingCurrency=${report
 
         {/* MIDDLE */}
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-3 flex-1 min-h-0">
-          <div className="lg:col-span-3 relative overflow-hidden rounded-2xl bg-white/95 backdrop-blur-sm border border-gray-100 shadow-sm p-4 flex flex-col"
-            style={{ animation: "kCardEntry 0.6s ease-out 0.25s both" }}>
-            <div className="flex items-center justify-between mb-2 flex-shrink-0">
-              <div>
-              <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Monthly · From January {Number(year) - 1}</p>
-                <h3 className="text-sm font-black text-gray-800 mt-0.5">KPI Evolution</h3>
+<div className="lg:col-span-3 relative overflow-hidden rounded-2xl bg-white/95 backdrop-blur-sm border border-gray-100 p-4 flex flex-col"
+            style={{ boxShadow: "0 8px 32px -8px rgba(26,47,138,0.18), 0 2px 8px -2px rgba(0,0,0,0.08)", animation: "kCardEntry 0.6s ease-out 0.25s both" }}>
+<div ref={trendHeaderRef} className="flex items-center justify-between mb-2 flex-shrink-0 gap-4">
+              {/* LEFT — title + interactive chips */}
+              <div className="flex items-center gap-3 min-w-0">
+                <h3 className="text-sm font-black text-gray-800 flex-shrink-0">{t("home_kpi_evolution")}</h3>
+
+                <div className="flex items-center gap-1.5">
+                  {/* Interval chip */}
+                  <div className="relative">
+                    <button
+                      onClick={() => setTrendChipOpen(trendChipOpen === "interval" ? null : "interval")}
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg transition-colors"
+                      style={{ background: `${colors.primary}12`, color: colors.primary }}
+                    >
+                      <span className="text-[9px] font-black uppercase tracking-wider">
+                        {{ monthly: "Monthly", "6months": "Every 6M", yearly: "Yearly" }[trendInterval]}
+                      </span>
+                      <ChevronDown size={8} />
+                    </button>
+                    {trendChipOpen === "interval" && (
+                      <div className="absolute top-full left-0 mt-1.5 z-50 bg-white rounded-xl border border-gray-100 py-1 min-w-[140px]"
+                        style={{ boxShadow: "0 12px 32px -8px rgba(26,47,138,0.2)" }}>
+                        {[
+                          { value: "monthly",  label: "Monthly" },
+                          { value: "6months",  label: "Every 6 months" },
+                          { value: "yearly",   label: "Yearly" },
+                        ].map(opt => (
+                          <button key={opt.value}
+                            onClick={() => { setTrendInterval(opt.value); setTrendChipOpen(null); }}
+                            className="w-full text-left px-3 py-1.5 text-xs font-bold transition-colors hover:bg-gray-50"
+                            style={{ color: trendInterval === opt.value ? colors.primary : "#6b7280" }}>
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <span className="text-gray-300 text-[10px]">·</span>
+
+                  {/* Window chip */}
+                  <div className="relative">
+                    <button
+                      onClick={() => setTrendChipOpen(trendChipOpen === "window" ? null : "window")}
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg transition-colors"
+                      style={{ background: "rgba(26,47,138,0.05)", color: "#9ca3af" }}
+                    >
+                      <span className="text-[9px] font-black uppercase tracking-wider">
+                        From Jan {trendFromYear ?? "…"}
+                      </span>
+                      <ChevronDown size={8} />
+                    </button>
+                    {trendChipOpen === "window" && (
+                      <div className="absolute top-full left-0 mt-1.5 z-50 bg-white rounded-xl border border-gray-100 py-1 min-w-[130px]"
+                        style={{ boxShadow: "0 12px 32px -8px rgba(26,47,138,0.2)" }}>
+                        {[12, 24, 36, 48].map(w => (
+                          <button key={w}
+                            onClick={() => { setTrendWindow(w); setTrendChipOpen(null); }}
+                            className="w-full text-left px-3 py-1.5 text-xs font-bold transition-colors hover:bg-gray-50"
+                            style={{ color: trendWindow === w ? colors.primary : "#6b7280" }}>
+                            {w} months
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
-              <div className="flex items-center gap-2.5 flex-wrap">
-                {[
-                  { label: "Revenue",  color: colors.primary },
-                  { label: "EBITDA",   color: colors.secondary ?? "#CF305D" },
-                  { label: "EBIT",     color: colors.tertiary ?? "#57aa78" },
-                  { label: "Net Inc.", color: NI_COLOR },
-                ].map(s => (
-                  <div key={s.label} className="flex items-center gap-1">
-                    <div className="w-1.5 h-1.5 rounded-full" style={{ background: s.color }} />
-                    <span className="text-[9px] font-bold text-gray-500">{s.label}</span>
+
+              {/* RIGHT — legend */}
+              <div className="flex items-center gap-2.5 flex-wrap flex-shrink-0">
+                {SLOT_COLORS.map((sc, i) => (
+                  <div key={i} className="flex items-center gap-1">
+                    <div className="w-1.5 h-1.5 rounded-full" style={{ background: sc.color }} />
+                    <span className="text-[9px] font-bold text-gray-500">
+                      {slottedKpis?.[i]?.label ?? kpiSlots[i]}
+                    </span>
                   </div>
                 ))}
               </div>
             </div>
             <div className="flex-1 min-h-0">
-              {trendSeries.length > 1 ? (
+{trendSeriesDisplay.length > 1 ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={trendSeries} margin={{ top: 5, right: 10, bottom: 0, left: -15 }}>
-                    <defs>
-                      <linearGradient id="areaRev" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor={colors.primary} stopOpacity={0.35} />
-                        <stop offset="100%" stopColor={colors.primary} stopOpacity={0.02} />
-                      </linearGradient>
-                      <linearGradient id="areaEbitda" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor={colors.secondary ?? "#CF305D"} stopOpacity={0.3} />
-                        <stop offset="100%" stopColor={colors.secondary ?? "#CF305D"} stopOpacity={0.02} />
-                      </linearGradient>
-                      <linearGradient id="areaEbit" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor={colors.tertiary ?? "#57aa78"} stopOpacity={0.25} />
-                        <stop offset="100%" stopColor={colors.tertiary ?? "#57aa78"} stopOpacity={0.02} />
-                      </linearGradient>
-                      <linearGradient id="areaNi" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor={NI_COLOR} stopOpacity={0.25} />
-                        <stop offset="100%" stopColor={NI_COLOR} stopOpacity={0.02} />
-                      </linearGradient>
+                  <AreaChart data={trendSeriesDisplay}margin={{ top: 5, right: 10, bottom: 0, left: -15 }}>
+<defs>
+                      {SLOT_COLORS.map((sc, i) => (
+                        <linearGradient key={i} id={`areaSlot${i}`} x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor={sc.color} stopOpacity={i === 0 ? 0.35 : 0.25} />
+                          <stop offset="100%" stopColor={sc.color} stopOpacity={0.02} />
+                        </linearGradient>
+                      ))}
                     </defs>
                     <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb" vertical={false} />
                     <XAxis dataKey="label"
@@ -1346,47 +2095,110 @@ console.log(`[FX-CHECK] ${name}: currency=${currency} reportingCurrency=${report
                         </div>
                       );
                     }} />
-                  <Area type="monotone" dataKey="Revenue"   stroke={colors.primary}                strokeWidth={2}   fill="url(#areaRev)"    isAnimationActive dot={false} />
-                    <Area type="monotone" dataKey="EBITDA"    stroke={colors.secondary ?? "#CF305D"} strokeWidth={1.6} fill="url(#areaEbitda)" isAnimationActive dot={false} />
-                    <Area type="monotone" dataKey="EBIT"      stroke={colors.tertiary ?? "#57aa78"}  strokeWidth={1.6} fill="url(#areaEbit)"   isAnimationActive dot={false} />
-                    <Area type="monotone" dataKey="NetIncome" stroke={NI_COLOR}                      strokeWidth={1.6} fill="url(#areaNi)"     isAnimationActive dot={false} />
+{SLOT_COLORS.map((sc, i) => (
+                    <Area
+                      key={i}
+                      type="monotone"
+                      dataKey={`slot${i}`}
+                      name={slottedKpis?.[i]?.label ?? kpiSlots[i]}
+                      stroke={sc.color}
+                      strokeWidth={i === 0 ? 2 : 1.6}
+                      fill={`url(#areaSlot${i})`}
+                      isAnimationActive
+                      dot={false}
+                    />
+                  ))}
                   </AreaChart>
                 </ResponsiveContainer>
               ) : (
                 <div className="flex items-center justify-center h-full text-gray-300 text-xs">
-                  {trendLoading ? <Loader2 size={20} className="animate-spin" /> : "Sin datos suficientes"}
+                  {trendLoading ? <Loader2 size={20} className="animate-spin" /> : t("home_no_trend")}
                 </div>
               )}
             </div>
           </div>
 
-          <div className="relative overflow-hidden rounded-2xl bg-white/95 backdrop-blur-sm border border-gray-100 shadow-sm p-4 flex flex-col"
-            style={{ animation: "kCardEntry 0.6s ease-out 0.35s both" }}>
-<div className="mb-3 flex-shrink-0">
-              <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Cost Structure</p>
+<div className="relative rounded-2xl bg-white/95 backdrop-blur-sm border border-gray-100 p-4 flex flex-col group/breakdown overflow-hidden"
+            style={{ animation: "kCardEntry 0.6s ease-out 0.35s both", boxShadow: "0 8px 32px -8px rgba(26,47,138,0.12), 0 2px 8px -2px rgba(0,0,0,0.06)" }}>
 
+            {/* Header */}
+            <div className="mb-3 flex-shrink-0 flex items-start justify-between gap-2">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">{activeView.label}</p>
+                <p className="text-[9px] text-gray-300 mt-0.5">{activeView.description}</p>
+              </div>
+           <div className="relative flex-shrink-0" ref={breakdownSettingsRef} style={{ overflow: "visible", zIndex: 10 }}>
+<button
+                  onClick={() => setBreakdownSettingsOpen(o => !o)}
+                  className="w-7 h-7 rounded-xl flex items-center justify-center transition-all duration-200 opacity-0 group-hover/breakdown:opacity-100"
+                  style={{
+                    background: breakdownSettingsOpen ? colors.primary : `${colors.primary}12`,
+                    color: breakdownSettingsOpen ? "#fff" : colors.primary,
+                    opacity: breakdownSettingsOpen ? 1 : undefined,
+                  }}
+                >
+                  <Settings size={12} />
+                </button>
+{breakdownSettingsOpen && (
+                  <div
+className="absolute right-0 top-full mt-2 z-[500] rounded-2xl p-2 flex flex-col gap-1"
+                    style={{
+                      width: 220,
+                      background: "rgba(255,255,255,0.99)",
+                      backdropFilter: "blur(24px)",
+                      border: "1px solid rgba(26,47,138,0.08)",
+                      boxShadow: "0 20px 50px -12px rgba(26,47,138,0.22)",
+                      animation: "dropdownIn 220ms cubic-bezier(0.34,1.56,0.64,1)",
+                    }}
+
+                    onClick={e => e.stopPropagation()}
+                  >
+                    <p className="text-[8px] font-black uppercase tracking-[0.2em] text-gray-400 px-2 pt-1 pb-0.5">View</p>
+                    {BREAKDOWN_VIEWS.map((v, vi) => {
+                      const active = v.id === activeBreakdownView;
+                      return (
+                        <button key={v.id}
+                          onClick={() => { setActiveBreakdownView(v.id); setBreakdownSettingsOpen(false); }}
+                          className="flex items-center gap-3 px-2.5 py-2 rounded-xl text-left transition-all duration-150 w-full"
+                          style={{
+                            background: active ? colors.primary : "transparent",
+                            animation: `kCardEntry 0.3s ease-out ${vi * 0.05}s both`,
+                          }}
+                        >
+                          <span className="text-base leading-none">{v.icon}</span>
+                          <div className="min-w-0">
+                            <p className="text-xs font-black truncate" style={{ color: active ? "#fff" : "#374151" }}>{v.label}</p>
+                            <p className="text-[9px] truncate mt-0.5" style={{ color: active ? "rgba(255,255,255,0.65)" : "#9ca3af" }}>{v.description}</p>
+                          </div>
+                          {active && <div className="w-1.5 h-1.5 rounded-full bg-white/70 flex-shrink-0 ml-auto" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
 
-{costBreakdown.length > 0 ? (
+            {/* Rows */}
+            {costBreakdown.length > 0 ? (
               <div className="flex-1 min-h-0 overflow-y-auto space-y-2.5 pr-1 hide-scrollbar">
                 {costBreakdown.map((c, i) => {
-                  const pct = totalCosts > 0 ? (c.value / totalCosts) * 100 : 0;
-                  const barColor = costColors[i % costColors.length];
-                  const changeColor =
-                    c.change == null ? "text-gray-300"
-                      : c.change > 0  ? "text-red-500"
-                                       : "text-emerald-500";
+                  const pct = totalCosts > 0 ? (Math.abs(c.value) / totalCosts) * 100 : 0;
+                  const barColor = c.isIncome ? (colors.tertiary ?? "#57aa78") : costColors[i % costColors.length];
+                  const changeIsGood = c.isIncome ? c.change > 0 : c.change < 0;
+                  const changeColor = c.change == null ? "text-gray-300" : changeIsGood ? "text-emerald-500" : "text-red-500";
                   return (
-                    <div key={c.tag} className="flex flex-col gap-1"
-                      style={{ animation: `kCardEntry 0.5s ease-out ${0.4 + i * 0.05}s both` }}>
+                    <div key={`${activeBreakdownView}-${c.tag}`} className="flex flex-col gap-1"
+                      style={{ animation: `kCardEntry 0.4s ease-out ${i * 0.04}s both` }}>
                       <div className="flex items-center justify-between gap-2 text-[10px]">
-                        <span className="font-bold text-gray-700 truncate min-w-0" title={c.name}>{c.name}</span>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          {c.isIncome && <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: colors.tertiary ?? "#57aa78" }} />}
+                          <span className="font-bold text-gray-700 truncate" title={c.name}>{c.name}</span>
+                        </div>
                         <div className="flex items-center gap-2 flex-shrink-0">
-                          <span className="font-mono font-black text-gray-700">{fmtBig(c.value)}</span>
+                          <span className="font-mono font-black text-gray-700">{fmtBig(Math.abs(c.value))}</span>
                           {c.change != null && (
-                            <span className={`flex items-center gap-0.5 font-black tabular-nums ${changeColor}`}
-                              style={{ fontSize: 9 }}
-                              title={`vs prev month: ${fmtBig(c.prevValue)}`}>
+                            <span className={`flex items-center gap-0.5 font-black tabular-nums ${changeColor}`} style={{ fontSize: 9 }}>
                               {c.change > 0 ? <ArrowUp size={9} /> : <ArrowDown size={9} />}
                               {Math.abs(c.change).toFixed(1)}%
                             </span>
@@ -1397,30 +2209,30 @@ console.log(`[FX-CHECK] ${name}: currency=${currency} reportingCurrency=${report
                         <div className="h-full rounded-full transition-all duration-700"
                           style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${barColor} 0%, ${barColor}cc 100%)` }} />
                       </div>
-                      <div className="text-[9px] text-gray-400 font-mono text-right">{pct.toFixed(1)}% of total</div>
+                      <div className="text-[9px] text-gray-400 font-mono text-right">{pct.toFixed(1)}%</div>
                     </div>
                   );
                 })}
                 <div className="pt-2 mt-2 border-t border-gray-100 flex items-center justify-between text-[10px]">
-                  <span className="font-black uppercase tracking-widest text-gray-500">Total Opex</span>
+                  <span className="font-black uppercase tracking-widest text-gray-500">Total</span>
                   <span className="font-mono font-black text-gray-800">{fmtBig(totalCosts)}</span>
                 </div>
               </div>
             ) : (
               <div className="flex items-center justify-center flex-1 text-gray-300 text-xs">
-                {loading ? <Loader2 size={20} className="animate-spin" /> : "Sin costes que mostrar"}
+                {loading ? <Loader2 size={20} className="animate-spin" /> : t("home_no_costs")}
               </div>
             )}
           </div>
         </div>
 
-        {/* BOTTOM */}
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-3 flex-shrink-0" style={{ minHeight: 130 }}>
-          <div className="lg:col-span-3 relative overflow-hidden rounded-2xl bg-white/95 backdrop-blur-sm border border-gray-100 shadow-sm p-4 flex flex-col"
-            style={{ animation: "kCardEntry 0.6s ease-out 0.45s both" }}>
+{/* BOTTOM */}
+     <div className="grid grid-cols-1 lg:grid-cols-4 gap-3 flex-shrink-0" style={{ minHeight: 140, maxHeight: 140 }}>
+<div className="lg:col-span-3 relative overflow-hidden rounded-2xl bg-white/95 backdrop-blur-sm border border-gray-100 p-4 flex flex-col"
+            style={{ boxShadow: "0 8px 32px -8px rgba(26,47,138,0.18), 0 2px 8px -2px rgba(0,0,0,0.08)", animation: "kCardEntry 0.6s ease-out 0.45s both" }}>
 <div className="mb-2 flex-shrink-0 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Ranking · Multi-Company</p>
+               <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">{t("home_ranking")}</p>
                 {reportingCurrency && (
                   <span className="px-1.5 py-0.5 rounded-md text-[8px] font-black tracking-wider"
                     style={{ background: `${colors.primary}15`, color: colors.primary }}>
@@ -1449,20 +2261,39 @@ console.log(`[FX-CHECK] ${name}: currency=${currency} reportingCurrency=${report
                 </ResponsiveContainer>
               ) : (
                 <div className="flex items-center justify-center h-full text-gray-300 text-xs">
-                  {allCoLoading ? <Loader2 size={20} className="animate-spin" /> : "Sin datos"}
+                  {allCoLoading ? <Loader2 size={20} className="animate-spin" /> : t("no_data")}
                 </div>
               )}
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-2">
-            <MiniTile label="Companies"   value={companies.length}  icon={Building2} color={colors.primary}                delay={0.55} />
-            <MiniTile label="Perímetres"  value={structures.length} icon={Layers}    color={colors.secondary  ?? "#CF305D"} delay={0.6}  />
-            <MiniTile label="Dimensions"  value={dimensions.length} icon={Network}   color={colors.tertiary   ?? "#57aa78"} delay={0.65} />
-            <MiniTile label="Sources"     value={sources.length}    icon={Database}  color={NI_COLOR}                       delay={0.7}  />
+            <MiniTile label={t("mini_companies")}  value={companies.length}  icon={Building2} color={colors.primary}                delay={0.55} />
+            <MiniTile label={t("mini_perimeters")} value={structures.length} icon={Layers}    color={colors.secondary  ?? "#CF305D"} delay={0.6}  />
+            <MiniTile label={t("mini_dimensions")} value={dimensions.length} icon={Network}   color={colors.tertiary   ?? "#57aa78"} delay={0.65} />
+            <MiniTile label={t("mini_sources")}    value={sources.length}    icon={Database}  color={NI_COLOR}                       delay={0.7}  />
           </div>
         </div>
-      </div>
-    </div>
+</div>
+</div>
+
+      <AiPanel
+        open={aiPanelOpen}
+        onClose={() => setAiPanelOpen(false)}
+        colors={colors}
+        periodLabel={periodLabel}
+        companyName={companyMeta?.name}
+        detectedStandard={detectedStandard}
+        reportingCurrency={reportingCurrency}
+        viewScope={viewScope}
+        company={company}
+        slottedKpis={slottedKpis}
+        kpiValues={kpiValues}
+        costBreakdown={costBreakdown}
+        activeViewLabel={activeView?.label}
+        topByRevenue={topByRevenue}
+        trendSeries={trendSeries}
+      />
+    </>
   );
 }
