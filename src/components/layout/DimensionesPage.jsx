@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Search, Database, GitMerge, Maximize2, Minimize2, Library, CheckCircle2, AlertTriangle, TrendingUp, Scale, Download } from "lucide-react";import { useTypo, useSettings } from "./SettingsContext";
 import PageHeader from "./PageHeader.jsx";
-import MappingsModal from "./Mappings.jsx";
 import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
 import jsPDF from "jspdf";
@@ -2066,12 +2065,6 @@ fabActions={[
         ]}
       />
 
-      <MappingsModal
-        open={viewsModalOpen}
-        onClose={() => setViewsModalOpen(false)}
-        groupAccounts={groupAccountsLocal}
-        onApply={handleApplyMapping}
-      />
 
       {activeMapping && (
         <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm flex-shrink-0">

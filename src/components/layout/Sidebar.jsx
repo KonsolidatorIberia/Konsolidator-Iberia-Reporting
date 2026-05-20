@@ -1,10 +1,13 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   Home, Network, FileText, Layers, SlidersHorizontal,
-  PieChart, Table, Table2, BookOpen, TrendingUp, BarChart3,
-  ChevronRight, Eye, RefreshCw, Filter, Settings, Database,
+  PieChart, Table, BookOpen, TrendingUp, BarChart3,
+ Eye, Filter, Settings, Database, Library,
 } from "lucide-react";
 import { useTypo, useSettings, useT } from "./SettingsContext";
+import { supabase } from "../../lib/supabaseClient";
+import { listPermissions } from "../../lib/permissionsApi";
+import { getActiveCompanyId } from "../../lib/mappingsApi";
 
 const NAV_KEYS = [
   { key: "home",      labelKey: "nav_home",         icon: Home },
@@ -24,7 +27,7 @@ const NAV_KEYS = [
       { key: "individual-contributive",  labelKey: "nav_contributive",  icon: PieChart   },
       { key: "consolidated-sheet",       labelKey: "nav_sheet",         icon: Table      },
       { key: "consolidated-kpis",        labelKey: "nav_kpis",          icon: BarChart3  },
-      { key: "consolidated-dimensiones",  labelKey: "nav_dimensions",    icon: Filter     },
+      { key: "consolidated-dimensiones", labelKey: "nav_dimensions",    icon: Filter     },
       { key: "consolidated-cashflow",    labelKey: "nav_cashflow",      icon: TrendingUp },
       { key: "consolidated-notes",       labelKey: "nav_memory_notes",  icon: BookOpen   },
     ],
@@ -37,7 +40,12 @@ const NAV_KEYS = [
       { key: "controlling-kpis",        labelKey: "nav_kpis",         icon: BarChart3         },
     ],
   },
-  { key: "views",        labelKey: "nav_views",        icon: Eye      },
+{
+    key: "views", labelKey: "nav_views", icon: Eye,
+    children: [
+      { key: "mappings", labelKey: "nav_mappings", icon: Library },
+    ],
+  },
   {
     key: "data-explorer", labelKey: "nav_data_explorer", icon: Database,
     children: [
@@ -46,44 +54,109 @@ const NAV_KEYS = [
   },
 ];
 
+export function useCurrentUserPermissions() {
+  const [role, setRole] = useState(null);
+  const [perms, setPerms] = useState(new Map()); // page_key → allowed
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) { if (!cancelled) setLoaded(true); return; }
+        const cid = await getActiveCompanyId(uid);
+        if (!cid) { if (!cancelled) setLoaded(true); return; }
+        const { data: ucRow } = await supabase.schema("accounts").from("user_companies")
+          .select("role").eq("user_id", uid).eq("company_id", cid).eq("is_active", true).maybeSingle();
+        if (cancelled) return;
+        setRole(ucRow?.role ?? null);
+        const rows = await listPermissions({ companyId: cid });
+        if (cancelled) return;
+        const m = new Map();
+        rows.forEach(r => { if (r.role === ucRow?.role) m.set(r.page_key, r.allowed); });
+        setPerms(m);
+      } catch (e) {
+        console.warn("[Sidebar] permissions load failed:", e?.message);
+      } finally { if (!cancelled) setLoaded(true); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+const can = (pageKey) => {
+    if (perms.has(pageKey)) return perms.get(pageKey);
+    // Admin always allowed by default. Base/low: only what's explicitly allowed.
+    if (role === "admin") return true;
+    return false;
+  };
+  return { role, can, loaded };
+}
+
 const W_OPEN     = "10vw";
 const W_CLOSED   = "4.5vw";
-const TRANSITION = "400ms cubic-bezier(0.25,0.1,0.25,1)";
+const TRANSITION = "350ms cubic-bezier(0.25,0.1,0.25,1)";
 
-export default function Sidebar({ activePage, onNavigate, user, collapsed, onToggleCollapse, height = "100vh", onRefresh }) {
+export default function Sidebar({ activePage, onNavigate, user, height = "100vh" }) {
   const { colors } = useSettings();
   const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
   const t = useT();
+  const { can, loaded: permsLoaded } = useCurrentUserPermissions();
 
-  // Resolve translated labels at render time
-  const NAV = NAV_KEYS.map(item => ({
-    ...item,
-    label: t(item.labelKey, item.labelKey),
-    children: item.children?.map(c => ({
-      ...c,
-      label: t(c.labelKey, c.labelKey),
-    })),
-  }));
+  // Filter NAV based on permissions: drop children with allowed=false,
+  // drop parents whose all children are hidden (unless the parent itself is a leaf with its own key).
+  const NAV = NAV_KEYS
+    .map(item => {
+      const label = t(item.labelKey, item.labelKey);
+      if (!item.children?.length) {
+        return can(item.key) ? { ...item, label } : null;
+      }
+      const visibleChildren = item.children
+        .filter(c => can(c.key))
+        .map(c => ({ ...c, label: t(c.labelKey, c.labelKey) }));
+      if (visibleChildren.length === 0) return null;
+      return { ...item, label, children: visibleChildren };
+    })
+    .filter(Boolean);
 
+  const canSettings = can("settings-personalization") || can("settings-security");
+
+  const [hovered, setHovered]       = useState(false);
   const [hoveredKey, setHoveredKey] = useState(null);
-  const [flyoutTop,  setFlyoutTop]  = useState(0);
-  const rowRefs      = useRef({});
-  const closeTimer   = useRef(null);
-  const hoveredKeyRef = useRef(null);
+  const rowRefs    = useRef({});
+  const closeTimer = useRef(null);
+
+  const isOpen = hovered;
 
   const activeParent = NAV.find(n =>
     n.key === activePage || n.children?.some(c => c.key === activePage)
   )?.key;
 
-  const hoveredItem = NAV.find(n => n.key === hoveredKey);
-
-  const handleMouseEnter = (key, hasChildren) => {
+  const handleNavMouseEnter = (key, hasChildren) => {
     if (!hasChildren) { setHoveredKey(null); return; }
-    const el = rowRefs.current[key];
-    if (el) setFlyoutTop(el.getBoundingClientRect().top);
-    hoveredKeyRef.current = key;
     setHoveredKey(key);
+  };
+
+const handleNavigate = (key) => {
+    // Block disallowed pages. "user" is the avatar-click target, always allowed.
+    if (key !== "user") {
+      if (key === "settings") {
+        if (!canSettings) return;
+      } else if (!can(key)) {
+        return;
+      }
+    }
+    const go = () => {
+      onNavigate?.(key);
+      setHoveredKey(null);
+      setHovered(false);
+    };
+    if (typeof window.__navGuard === "function") {
+      window.__navGuard(go);
+    } else {
+      go();
+    }
   };
 
   return (
@@ -97,19 +170,28 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
 
       <aside
         className="flex-shrink-0 z-40 flex flex-col gap-3 p-3"
-        style={{ width: collapsed ? W_CLOSED : W_OPEN, height, transition: `width ${TRANSITION}` }}
+        style={{ width: isOpen ? W_OPEN : W_CLOSED, height, transition: `width ${TRANSITION}` }}
+        onMouseEnter={() => { clearTimeout(closeTimer.current); setHovered(true); }}
+        onMouseLeave={() => {
+          closeTimer.current = setTimeout(() => {
+            setHovered(false);
+            setHoveredKey(null);
+          }, 120);
+        }}
       >
 
         {/* ── Logo ── */}
-        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 flex items-center justify-center overflow-hidden relative"
-          style={{ height: "7vh" }}>
+        <div
+          className="bg-white rounded-2xl shadow-xl border border-gray-100 flex items-center justify-center overflow-hidden relative"
+          style={{ height: "7vh" }}
+        >
           <img src="/logo-full.png" alt="Konsolidator" className="absolute object-contain h-6"
-            style={{ opacity: collapsed ? 0 : 1, transition: `opacity ${TRANSITION}`, pointerEvents: "none" }} />
+            style={{ opacity: isOpen ? 1 : 0, transition: `opacity ${TRANSITION}`, pointerEvents: "none" }} />
           <img src="/logo-icon.png" alt="K" className="absolute object-contain h-8 w-8"
-            style={{ opacity: collapsed ? 1 : 0, transition: `opacity ${TRANSITION}`, pointerEvents: "none" }} />
+            style={{ opacity: isOpen ? 0 : 1, transition: `opacity ${TRANSITION}`, pointerEvents: "none" }} />
         </div>
 
-{/* ── Nav ── */}
+        {/* ── Nav ── */}
         <div className="bg-white rounded-2xl shadow-xl border border-gray-100 flex-1 flex flex-col py-3 overflow-visible">
           {NAV.map((item) => {
             const isActiveParent = activeParent === item.key;
@@ -119,13 +201,13 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
             return (
               <div
                 key={item.key}
-                ref={el => rowRefs.current[item.key] = el}
+                ref={el => { rowRefs.current[item.key] = el; }}
                 className="relative"
-                onMouseEnter={() => { clearTimeout(closeTimer.current); handleMouseEnter(item.key, hasChildren); }}
-                onMouseLeave={() => { closeTimer.current = setTimeout(() => setHoveredKey(null), 300); }}
+                onMouseEnter={() => { clearTimeout(closeTimer.current); handleNavMouseEnter(item.key, hasChildren); }}
+                onMouseLeave={() => { closeTimer.current = setTimeout(() => setHoveredKey(null), 150); }}
               >
-<button
-                  onClick={() => !hasChildren && onNavigate?.(item.key)}
+                <button
+                  onClick={() => !hasChildren ? handleNavigate(item.key) : undefined}
                   onMouseEnter={(e) => { if (!isActiveParent) { e.currentTarget.style.backgroundColor = `${colors.primary}10`; e.currentTarget.style.color = colors.primary; } }}
                   onMouseLeave={(e) => { if (!isActiveParent) { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = body1Style?.color ?? "#2f3138"; } }}
                   className="w-full flex items-center py-2.5 transition-all duration-200"
@@ -143,15 +225,15 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
                     style={{
                       ...body1Style,
                       color: isActiveParent ? colors.primary : body1Style?.color,
-                      maxWidth:   collapsed ? 0 : 140,
-                      opacity:    collapsed ? 0 : 1,
+                      maxWidth:   isOpen ? 140 : 0,
+                      opacity:    isOpen ? 1 : 0,
                       marginLeft: "0.75rem",
                       transition: `max-width ${TRANSITION}, opacity ${TRANSITION}`,
                     }}
                   >
                     {item.label}
                   </span>
-                  {isActiveParent && !collapsed && (
+                  {isActiveParent && isOpen && (
                     <span className="ml-2 w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: colors.primary }} />
                   )}
                 </button>
@@ -159,22 +241,22 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
                 {/* Inline submenu */}
                 {hasChildren && (
                   <div className="overflow-hidden" style={{
-                    maxHeight:  (!collapsed && isHovered) ? `${item.children.length * 36}px` : 0,
-                    opacity:    (!collapsed && isHovered) ? 1 : 0,
+                    maxHeight:  (isOpen && isHovered) ? `${item.children.length * 36}px` : 0,
+                    opacity:    (isOpen && isHovered) ? 1 : 0,
                     transition: `max-height 300ms cubic-bezier(0.4,0,0.2,1), opacity 200ms ease`,
                   }}>
                     {item.children.map((child, ci) => {
                       const isActive = activePage === child.key;
                       return (
-<button
+                        <button
                           key={child.key}
-                          onClick={() => { onNavigate?.(child.key); setHoveredKey(null); }}
+                          onClick={() => handleNavigate(child.key)}
                           onMouseEnter={(e) => { if (!isActive) { e.currentTarget.style.backgroundColor = `${colors.primary}10`; e.currentTarget.style.color = colors.primary; } }}
                           onMouseLeave={(e) => { if (!isActive) { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = body2Style?.color ?? "#9ca3af"; } }}
-                          className="w-full flex items-center gap-2 pl-10 pr-4 py-2 text-left relative transition-all duration-200"
+                          className="w-full flex items-center gap-2 pl-10 pr-4 py-2 text-left transition-all duration-200"
                           style={{
                             color: isActive ? colors.primary : (body2Style?.color ?? "#9ca3af"),
-                            animation: (!collapsed && isHovered) ? `navSlideIn 200ms ease ${ci * 45}ms both` : "none",
+                            animation: (isOpen && isHovered) ? `navSlideIn 200ms ease ${ci * 45}ms both` : "none",
                           }}
                         >
                           <span className="whitespace-nowrap" style={{ ...body2Style, fontSize: 12, color: isActive ? colors.primary : body2Style?.color }}>
@@ -192,13 +274,14 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
             );
           })}
 
-          {/* Settings — pinned to bottom */}
+{/* Settings — pinned to bottom */}
+          {canSettings && (
           <div className="mt-auto pt-2 border-t border-gray-100">
             {(() => {
               const isActive = activePage === "settings";
               return (
-<button
-                  onClick={() => onNavigate?.("settings")}
+                <button
+                  onClick={() => handleNavigate("settings")}
                   onMouseEnter={(e) => { if (!isActive) { e.currentTarget.style.backgroundColor = `${colors.primary}10`; e.currentTarget.style.color = colors.primary; } }}
                   onMouseLeave={(e) => { if (!isActive) { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = body1Style?.color ?? "#2f3138"; } }}
                   className="w-full flex items-center py-2.5 transition-all duration-200"
@@ -216,82 +299,51 @@ export default function Sidebar({ activePage, onNavigate, user, collapsed, onTog
                     style={{
                       ...body1Style,
                       color: isActive ? colors.primary : body1Style?.color,
-                      maxWidth:   collapsed ? 0 : 140,
-                      opacity:    collapsed ? 0 : 1,
+                      maxWidth:   isOpen ? 140 : 0,
+                      opacity:    isOpen ? 1 : 0,
                       marginLeft: "0.75rem",
                       transition: `max-width ${TRANSITION}, opacity ${TRANSITION}`,
                     }}
->
+                  >
                     {t("nav_settings")}
                   </span>
-                  {isActive && !collapsed && (
+                  {isActive && isOpen && (
                     <span className="ml-2 w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: colors.primary }} />
                   )}
-                </button>
+</button>
               );
             })()}
           </div>
+          )}
         </div>
 
         {/* ── User ── */}
-        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 p-3 flex flex-col gap-2 overflow-hidden" style={{ minHeight: "6vh" }}>
-          <div style={{
-            maxHeight:  collapsed ? 0 : 48,
-            opacity:    collapsed ? 0 : 1,
-            overflow:   "hidden",
-            transition: `max-height ${TRANSITION}, opacity ${TRANSITION}`,
-          }}>
-            <div className="flex items-center gap-2 px-2 pb-1 cursor-pointer" onClick={() => onNavigate?.("user")}>
-<div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-black flex-shrink-0" style={{ backgroundColor: colors.primary }}>
-                {user?.username?.[0]?.toUpperCase() || "U"}
-              </div>
-              <p className="text-xs font-semibold text-gray-700 truncate">{user?.username}</p>
-            </div>
-          </div>
-<div className="flex">
-  <button
-    onClick={onToggleCollapse}
-    className="flex-1 flex items-center justify-center py-1.5 text-gray-400 hover:text-[#1a2f8a] hover:bg-gray-50 rounded-xl transition-colors"
-  >
-    <ChevronRight size={14} style={{ transition: `transform ${TRANSITION}`, transform: collapsed ? "rotate(0deg)" : "rotate(180deg)" }} />
-  </button>
-</div>
-</div>
-      </aside>
-
-      {/* ── Collapsed flyout ── */}
-      {collapsed && hoveredItem?.children && (
-        <div
-          className="fixed z-50 bg-white rounded-xl shadow-xl border border-gray-100 py-2 px-1"
-          style={{ left: "calc(4.5vw + 4px)", top: flyoutTop }}
-          onMouseEnter={() => { clearTimeout(closeTimer.current); setHoveredKey(hoveredKeyRef.current); }}
-          onMouseLeave={() => { closeTimer.current = setTimeout(() => setHoveredKey(null), 300); }}
+<div
+          className="bg-white rounded-2xl shadow-xl border border-gray-100 p-3 overflow-hidden flex items-center"
+          style={{ minHeight: "6vh", justifyContent: isOpen ? "flex-start" : "center", transition: `justify-content ${TRANSITION}` }}
+          onClick={() => handleNavigate("user")}
         >
-          
-          {hoveredItem.children.map((child, ci) => {
-            const isActive = activePage === child.key;
-            return (
-<button
-                key={child.key}
-                onClick={() => { onNavigate?.(child.key); setHoveredKey(null); }}
-                onMouseEnter={(e) => { if (!isActive) { e.currentTarget.style.backgroundColor = `${colors.primary}10`; e.currentTarget.style.color = colors.primary; } }}
-                onMouseLeave={(e) => { if (!isActive) { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = body2Style?.color ?? "#6b7280"; } }}
-                className="flex items-center gap-2 px-3 py-2 w-full text-left whitespace-nowrap rounded-lg transition-all duration-200"
-                style={{
-                  color: isActive ? colors.primary : (body2Style?.color ?? "#6b7280"),
-                  animation: `navSlideIn 180ms ease ${ci * 40}ms both`,
-                }}
-              >
-                <span className="whitespace-nowrap" style={{ ...body2Style, fontSize: 12, color: isActive ? colors.primary : body2Style?.color }}>{child.label}</span>
-                {isActive && (
-                  <span className="ml-auto w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: colors.primary }} />
-                )}
-              </button>
-              
-            );
-          })}
+          <div className="flex items-center cursor-pointer">
+            <div
+              className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-black flex-shrink-0"
+              style={{ backgroundColor: colors.primary }}
+            >
+              {user?.username?.[0]?.toUpperCase() || "U"}
+            </div>
+            <p
+              className="text-xs font-semibold text-gray-700 truncate overflow-hidden whitespace-nowrap"
+              style={{
+                maxWidth:   isOpen ? 140 : 0,
+                opacity:    isOpen ? 1 : 0,
+                marginLeft: isOpen ? 8 : 0,
+                transition: `max-width ${TRANSITION}, opacity ${TRANSITION}, margin-left ${TRANSITION}`,
+              }}
+            >
+              {user?.username}
+            </p>
+          </div>
         </div>
-      )}
+      </aside>
     </>
   );
 }

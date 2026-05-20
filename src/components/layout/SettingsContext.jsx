@@ -52,7 +52,7 @@ const [settings, setSettings]           = useState(DEFAULT_SETTINGS);
   const [detectedLocale, setDetectedLocale] = useState(null); // set by EpicLoader
   const lastFetchedUserRef = useRef(null);
 
-  // Track auth — initial session + auth-state changes (login / logout / refresh)
+// Track auth — initial session + auth-state changes (login / logout / refresh)
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -68,6 +68,41 @@ const [settings, setSettings]           = useState(DEFAULT_SETTINGS);
       subscription?.unsubscribe();
     };
   }, []);
+
+  // Periodic active-status recheck — boots user if they've been deactivated
+  // while their session is live.
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+
+    const check = async () => {
+      try {
+        // 1. Global user-level active flag
+        const { data: u } = await supabase.schema("accounts").from("users")
+          .select("is_active").eq("id", userId).maybeSingle();
+        if (cancelled) return;
+        if (u && u.is_active === false) {
+          alert("Your account has been deactivated. You'll be signed out.");
+          await supabase.auth.signOut();
+          return;
+        }
+        // 2. Any active company memberships?
+        const { data: links } = await supabase.schema("accounts").from("user_companies")
+          .select("user_id").eq("user_id", userId).eq("is_active", true).limit(1);
+        if (cancelled) return;
+        if (!links || links.length === 0) {
+          alert("Your access to all companies has been revoked. You'll be signed out.");
+          await supabase.auth.signOut();
+        }
+      } catch {
+        // Network blip — ignore, try again next tick
+      }
+    };
+
+    check(); // run immediately
+    const interval = setInterval(check, 60_000); // every 60s
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [userId]);
 
   // Fetch the user's settings from Supabase whenever the user changes
 useEffect(() => {

@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { ChevronDown, Loader2, Download, Library } from "lucide-react";
 import { useTypo, useSettings } from "./SettingsContext";
 import PageHeader, { MultiFilterPill } from "./PageHeader.jsx";
-import MappingsModal from "./Mappings.jsx";
+
 import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
 import jsPDF from "jspdf";
@@ -841,12 +841,7 @@ fabActions={[
         ]}
       />
 
-<MappingsModal
-        open={viewsModalOpen}
-        onClose={() => setViewsModalOpen(false)}
-        groupAccounts={[]}
-        onApply={() => {}}
-      />
+
 
       {compareMode && (
         <div className="flex items-center gap-2 flex-wrap px-4 py-2.5 bg-white rounded-2xl border border-gray-100 shadow-sm flex-shrink-0">

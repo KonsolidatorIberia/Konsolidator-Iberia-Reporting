@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { Loader2, BookOpen, FileText, Sparkles, Settings2, Download, Save, RefreshCw, Upload, Library, Scale } from "lucide-react";import { useTypo, useSettings } from "./SettingsContext";
 import PageHeader from "./PageHeader.jsx";
-import MappingsModal from "./Mappings.jsx";
 
 const BASE_URL = "";
 
@@ -903,12 +902,7 @@ sbGet("memory", `template_columns?select=*&note_id=like.${templateId}%3A*&order=
         ]}
       />
 
-      <MappingsModal
-        open={viewsModalOpen}
-        onClose={() => setViewsModalOpen(false)}
-        groupAccounts={[]}
-        onApply={() => {}}
-      />
+
 
       <div className="flex-1 min-h-0 flex gap-4">
 

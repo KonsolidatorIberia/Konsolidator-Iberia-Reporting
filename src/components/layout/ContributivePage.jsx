@@ -7,7 +7,6 @@ import {
   Download, Scale, Layers, Library,
 } from "lucide-react";
 import PageHeader from "./PageHeader.jsx";
-import MappingsModal from "./Mappings.jsx";
 
 const BASE_URL = "";
 
@@ -2037,12 +2036,7 @@ fabActions={[
         ]}
       />
 
-<MappingsModal
-        open={viewsModalOpen}
-        onClose={() => setViewsModalOpen(false)}
-        groupAccounts={[...accountMap.keys()].map(code => ({ AccountCode: code, ...accountMap.get(code) }))}
-        onApply={() => {}}
-      />
+
 
       {compareMode && (
         <div className="flex items-center gap-2 flex-wrap px-4 py-2.5 bg-white rounded-2xl border border-gray-100 shadow-sm flex-shrink-0">

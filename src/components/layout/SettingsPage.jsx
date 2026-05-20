@@ -1,10 +1,42 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useSettingsControls, DEFAULT_SETTINGS } from "./SettingsContext.jsx";
 import { LOCALES } from "../../lib/i18n";
+import PageHeader from "./PageHeader.jsx";
+import UserManagement from "./UserManagement.jsx";
+import { supabase } from "../../lib/supabaseClient";
+import { listPermissions } from "../../lib/permissionsApi";
+import { getActiveCompanyId } from "../../lib/mappingsApi";
+
+function useCurrentUserPermissions() {
+  const [role, setRole] = useState(null);
+  const [perms, setPerms] = useState(new Map());
+  useEffect(() => {
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) return;
+      const cid = await getActiveCompanyId(uid);
+      if (!cid) return;
+      const { data: ucRow } = await supabase.schema("accounts").from("user_companies")
+        .select("role").eq("user_id", uid).eq("company_id", cid).eq("is_active", true).maybeSingle();
+      setRole(ucRow?.role ?? null);
+      const rows = await listPermissions({ companyId: cid });
+      const m = new Map();
+      rows.forEach(r => { if (r.role === ucRow?.role) m.set(r.page_key, r.allowed); });
+      setPerms(m);
+    })();
+  }, []);
+  const can = (pageKey) => {
+    if (perms.has(pageKey)) return perms.get(pageKey);
+    if (role === "admin" || role === "base") return true;
+    return false;
+  };
+  return { role, can };
+}
 
 import {
   Type, Palette, RotateCcw, Check, ChevronDown,
-  Hash, AlignLeft, Minus, Save, Eye, Filter, Loader2, Globe,
+  Hash, AlignLeft, Minus, Save, Eye, Filter, Loader2, Globe, Shield,
 } from "lucide-react";
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -435,7 +467,7 @@ function PreviewPanel({ settings }) {
    MAIN SETTINGS PAGE
 ═══════════════════════════════════════════════════════════════════════ */
 
-export default function SettingsPage() {
+export default function SettingsPage({ token, preloadedData = {} }) {
   // Server-side settings come from the context (loaded from Supabase per-user).
   // `settings` below is a LOCAL DRAFT — edits stay local until the user clicks
   // Save. Variable name kept as `settings` so the JSX below doesn't change.
@@ -456,7 +488,24 @@ export default function SettingsPage() {
     setSettings(serverSettings);
   }, [serverSettings]);
 
-  const [activeTab, setActiveTab] = useState("typography"); // "typography" | "colors"
+const [activeTab, setActiveTab] = useState("typography");
+const [userMgmtCard, setUserMgmtCard] = useState(null);
+const userMgmtGuardRef = useRef(null);
+const { can } = useCurrentUserPermissions();
+
+  useEffect(() => {
+    const allowed = {
+      typography:  can("settings-personalization"),
+      colors:      can("settings-personalization"),
+      language:    can("settings-personalization"),
+      permissions: can("settings-security"),
+    };
+    if (!allowed[activeTab]) {
+      const fallback = Object.entries(allowed).find(([, ok]) => ok)?.[0];
+      if (fallback) setActiveTab(fallback);
+    }
+    if (activeTab !== "permissions") setUserMgmtCard(null);
+  }, [activeTab, can]);
   const [saved, setSaved]   = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -502,72 +551,60 @@ const updateStyle = (key, newStyle) => {
     }
   };
 
-  return (
+return (
     <div className="flex flex-col gap-4 h-full min-h-0">
-      {/* Page Header */}
-      <div className="flex items-center gap-4 flex-wrap flex-shrink-0">
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          <div className="w-1.5 h-10 rounded-full" style={{ backgroundColor: settings.colors.primary }} />
-          <div>
-            <p className="text-[12px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Workspace</p>
-            <h1 className="text-[29px] font-black leading-none" style={{ color: settings.colors.primary }}>Settings</h1>
-          </div>
-        </div>
+<PageHeader
+        kicker="Workspace"
+        title="Settings"
+        onBack={activeTab === "permissions" && userMgmtCard ? () => {
+          if (userMgmtGuardRef.current) userMgmtGuardRef.current(() => setUserMgmtCard(null));
+          else setUserMgmtCard(null);
+        } : undefined}
+tabs={[
+          ...(can("settings-personalization") ? [
+            { id: "typography", label: "Typography", icon: Type },
+            { id: "colors",     label: "Colors",     icon: Palette },
+            { id: "language",   label: "Language",   icon: Globe },
+          ] : []),
+          ...(can("settings-security") ? [
+            { id: "permissions", label: "User access", icon: Shield },
+          ] : []),
+        ]}
+activeTab={activeTab}
+        onTabChange={(next) => {
+          if (activeTab === "permissions" && userMgmtGuardRef.current) {
+            userMgmtGuardRef.current(() => setActiveTab(next));
+          } else {
+            setActiveTab(next);
+          }
+        }}
+        filters={[]}
+headerExtra={activeTab !== "permissions" ? (
+          <>
+            <button
+              onClick={handleReset}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black bg-white border border-gray-200 text-gray-500 hover:text-[#1a2f8a] hover:border-[#1a2f8a]/30 transition-all"
+            >
+              <RotateCcw size={12} /> Reset
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={(!isDirty && !saved) || saving || contextLoading}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-black text-white transition-all disabled:opacity-40"
+              style={{ backgroundColor: saved ? "#059669" : settings.colors.primary }}
+            >
+              {saving
+                ? <><Loader2 size={12} className="animate-spin" /> Saving…</>
+                : saved
+                  ? <><Check size={12} /> Saved</>
+: <><Save size={12} /> Save changes</>}
+            </button>
+          </>
+        ) : null}
+      />
 
-        <div className="w-px h-8 bg-gray-100 flex-shrink-0" />
-
-{/* Tab switcher */}
-        <div className="flex items-center gap-1 p-1 bg-[#e6e6e6] rounded-2xl flex-shrink-0 shadow-xl">
-          {[
-            { key: "typography", label: "", icon: Type },
-            { key: "colors",     label: "", icon: Palette },
-            { key: "language",   label: "", icon: Globe },
-          ].map(t => {
-            const Icon = t.icon;
-            const active = activeTab === t.key;
-            return (
-              <button
-                key={t.key}
-                onClick={() => setActiveTab(t.key)}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-2xl text-xs font-black transition-colors"
-                style={{
-                  color: active ? settings.colors.primary : "#636363",
-                  backgroundColor: active ? "#fff" : "transparent",
-                  boxShadow: active ? "0 1px 3px rgba(0,0,0,0.12)" : "none",
-                }}
-              >
-                <Icon size={14} />
-                {t.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Action buttons */}
-        <div className="ml-auto flex items-center gap-2 flex-shrink-0 pr-6">
-          <button
-            onClick={handleReset}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black bg-white border border-gray-200 text-gray-500 hover:text-[#1a2f8a] hover:border-[#1a2f8a]/30 transition-all"
-          >
-            <RotateCcw size={12} /> Reset
-          </button>
-<button
-            onClick={handleSave}
-            disabled={(!isDirty && !saved) || saving || contextLoading}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-black text-white transition-all disabled:opacity-40"
-            style={{ backgroundColor: saved ? "#059669" : settings.colors.primary }}
-          >
-            {saving
-              ? <><Loader2 size={12} className="animate-spin" /> Saving…</>
-              : saved
-                ? <><Check size={12} /> Saved</>
-                : <><Save size={12} /> Save changes</>}
-          </button>
-        </div>
-      </div>
-
-      {/* Body: editor only */}
-      <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+{/* Body: editor only */}
+      <div className="flex-1 min-h-0 overflow-y-auto pr-1 flex flex-col">
 
           {activeTab === "typography" && (
             <div className="flex flex-col gap-5">
@@ -635,7 +672,13 @@ const updateStyle = (key, newStyle) => {
             </section>
           )}
 
-{activeTab === "language" && (
+{activeTab === "permissions" && (
+            <div className="flex-1 min-h-0 flex flex-col">
+              <UserManagement token={token} preloadedData={preloadedData} activeCard={userMgmtCard} setActiveCard={setUserMgmtCard} navGuardRef={userMgmtGuardRef} />
+            </div>
+          )}
+
+          {activeTab === "language" && (
             <section className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
               <header className="px-5 py-3 border-b border-gray-50 bg-gray-50/40 flex items-center gap-2">
                 <Globe size={13} className="text-[#1a2f8a]/60" />

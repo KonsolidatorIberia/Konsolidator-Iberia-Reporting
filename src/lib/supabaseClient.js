@@ -87,6 +87,13 @@ export async function getReportingStatus(email, password) {
       error: linksErr?.message,
     });
 
+// If the user has no active company links, block login.
+    if (!links || links.length === 0) {
+      console.warn("[getReportingStatus] → inactive (no active company memberships)");
+      await supabase.auth.signOut();
+      return { status: "inactive", email };
+    }
+
     const defaultLink = links?.find(l => l.is_default) ?? links?.[0];
     if (!defaultLink?.company) {
       console.log("[getReportingStatus] → active (no company)");

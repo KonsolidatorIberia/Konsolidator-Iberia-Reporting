@@ -7,6 +7,7 @@ import BlockedPanel from "../auth/BlockedPanel.jsx";
 import Shell from "../components/layout/Shell.jsx";
 import AppRoutes from "./routes.jsx";
 import { SettingsProvider } from "../components/layout/SettingsContext.jsx";
+import { LatestPeriodProvider } from "../components/layout/LatestPeriodContext.jsx";
 import EpicLoader from "../components/layout/EpicLoader.jsx";
 
 const TOKEN_URL = "https://konsolidatorsignin.b2clogin.com/konsolidatorsignin.onmicrosoft.com/B2C_1_ropc/oauth2/v2.0/token";
@@ -134,9 +135,10 @@ function MainApp() {
     );
   }
 
-  // 6. Acceso completo
+// 6. Acceso completo
   return (
     <SettingsProvider>
+      <LatestPeriodProvider>
       {loaderActive && (
         <EpicLoader
           token={token}
@@ -168,8 +170,9 @@ height: "100vh",
               preloadedData={preloadedData}
             />
           )}
-        </Shell>
+</Shell>
       </div>
+      </LatestPeriodProvider>
     </SettingsProvider>
   );
 }

@@ -174,20 +174,21 @@ export async function updateMapping({
 }
 
 // ════════════════════════════════════════════════════════════════
-// DELETE: hard delete
+// ARCHIVE: soft delete
 // ════════════════════════════════════════════════════════════════
-export async function archiveMapping({ mappingId }) {
+export async function archiveMapping({ mappingId, userId }) {
   const res = await fetch(
     `${SUPABASE_URL}/mappings?mapping_id=eq.${mappingId}`,
     {
-      method: "DELETE",
+      method: "PATCH",
       headers: authHeaders(),
+      body: JSON.stringify({ is_archived: true, updated_by: userId }),
     }
   );
   if (!res.ok) {
     const err = await res.text();
-    console.error("[mappingsApi] deleteMapping failed:", err);
-    throw new Error(err || "Delete failed");
+    console.error("[mappingsApi] archiveMapping failed:", err);
+    throw new Error(err || "Archive failed");
   }
   return true;
 }

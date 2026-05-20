@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { ChevronDown, ChevronRight, Loader2, RefreshCw, Maximize2, Minimize2, GitMerge, Download, Library } from "lucide-react";import PageHeader from "./PageHeader.jsx";
 import { useTypo, useSettings } from "./SettingsContext";
-import MappingsModal from "./Mappings.jsx";
 const BASE = "https://api.konsolidator.com/v2";
 
 
@@ -762,12 +761,7 @@ fabActions={[
         ]}
       />
 
-<MappingsModal
-        open={viewsModalOpen}
-        onClose={() => setViewsModalOpen(false)}
-        groupAccounts={[...accountMap.values()]}
-        onApply={() => {}}
-      />
+
 
       {compareMode && (
         <div className="flex items-center gap-2 flex-wrap px-4 py-2.5 bg-white rounded-2xl border border-gray-100 shadow-sm flex-shrink-0">

@@ -8,7 +8,7 @@ import {
   TrendingUp, Building2,
 } from "lucide-react";
 import PageHeader from "./PageHeader.jsx";
-import MappingsModal from "./Mappings.jsx";
+
 import {
   listCompanyKpis, createCompanyKpi, updateCompanyKpi,
   getUserDashboard, saveUserDashboard, importKpiToScope,
@@ -1181,7 +1181,7 @@ const pivots    = useMemo(() => buildPivots(rawData, rawDataPrev, month), [rawDa
         ]}
       />
 
-      <MappingsModal open={viewsModalOpen} onClose={() => setViewsModalOpen(false)} groupAccounts={groupAccounts} onApply={handleApplyMapping} />
+
 
       {activeMapping && (
         <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 flex-shrink-0">

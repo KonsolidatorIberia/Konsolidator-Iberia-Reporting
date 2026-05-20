@@ -1,6 +1,40 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useTypo, useSettings } from "./SettingsContext";
+import { useLatestPeriod } from "./LatestPeriodContext.jsx";
 import { createRoot } from "react-dom/client";
+
+function useAnimatedNumber(target, duration = 800) {
+  const [display, setDisplay] = useState(target);
+  const fromRef = useRef(target);
+  const startRef = useRef(null);
+  const rafRef = useRef(null);
+  useEffect(() => {
+    cancelAnimationFrame(rafRef.current);
+    fromRef.current = display;
+    startRef.current = null;
+    const from = Number(fromRef.current) || 0;
+    const to = Number(target) || 0;
+    if (from === to) { setDisplay(to); return; }
+    const tick = (ts) => {
+      if (startRef.current === null) startRef.current = ts;
+      const elapsed = ts - startRef.current;
+      const t = Math.min(1, elapsed / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(from + (to - from) * eased);
+      if (t < 1) rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [target, duration]); // eslint-disable-line react-hooks/exhaustive-deps
+  return display;
+}
+
+function AnimatedCell({ value, format, baseStyle }) {
+  const isNum = value !== null && value !== undefined && !isNaN(value);
+  const animated = useAnimatedNumber(isNum ? value : 0);
+  if (!isNum) return <span style={{ ...baseStyle, color: "#D1D5DB" }}>—</span>;
+  return <span style={{ ...baseStyle, color: value < 0 ? "#EF4444" : "#000000" }}>{fmtValue(animated, format)}</span>;
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // KPI RESOLVER (inline) — was previously KpiResolver.js
@@ -342,10 +376,10 @@ import {
   GripVertical, Hash, Percent, DollarSign,
   Check, Sigma, BarChart3, Building2, Layers,
   GitCompareArrows, Library, Download,
-  CheckCircle2, AlertTriangle,
+  CheckCircle2, AlertTriangle, Search,
 } from "lucide-react";
 import PageHeader from "./PageHeader.jsx";
-import MappingsModal from "./Mappings.jsx";
+
 import {
   listCompanyKpis, createCompanyKpi, updateCompanyKpi, archiveCompanyKpi,
   getUserDashboard, saveUserDashboard,
@@ -477,6 +511,35 @@ function fmtValue(val, format) {
   if (format === "percent") return val.toFixed(1) + "%";
   if (format === "currency") return val.toLocaleString("de-DE", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
   return val.toFixed(2);
+}
+
+function getBenchmarkColor(value, benchmark) {
+  if (!benchmark || value === null || value === undefined || isNaN(value)) return null;
+  const check = (range) => {
+    if (!range) return false;
+    const min = range.min !== "" && range.min !== undefined ? parseFloat(range.min) : null;
+    const max = range.max !== "" && range.max !== undefined ? parseFloat(range.max) : null;
+    if (min !== null && max !== null) return value > min && value < max;
+    if (min !== null) return value > min;
+    if (max !== null) return value < max;
+    return false;
+  };
+  if (check(benchmark.vhealthy)) return {
+    bg: "linear-gradient(90deg, rgba(26,47,138,0.08) 0%, rgba(26,47,138,0.03) 60%, transparent 100%)",
+    border: "rgba(26,47,138,0.25)",
+    text: "#1a2f8a",
+  };
+  if (check(benchmark.healthy)) return {
+    bg: "linear-gradient(90deg, rgba(22,163,74,0.10) 0%, rgba(22,163,74,0.04) 60%, transparent 100%)",
+    border: "rgba(22,163,74,0.35)",
+    text: "#16a34a",
+  };
+  if (check(benchmark.unhealthy)) return {
+    bg: "linear-gradient(90deg, rgba(220,38,38,0.08) 0%, rgba(220,38,38,0.03) 60%, transparent 100%)",
+    border: "rgba(220,38,38,0.25)",
+    text: "#dc2626",
+  };
+  return null;
 }
 
 // Parses the API's Dimensions field which is a string like "Group:Code" or
@@ -1751,42 +1814,256 @@ function TextFormulaBuilder({ formula, onChange, kpiList, accountCodes }) {
   );
 }
 
-function KpiEditorModal({ kpi, onSave, onClose, kpiList, allLocalKpis = [], accountCodes, builtInIds = new Set() }) {
-  const [mode, setMode] = useState(kpi ? "custom" : "library"); // "library" | "custom" | "customList"
+function LibCategoryPill({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const { colors } = useSettings();
+  const SPRING = "cubic-bezier(0.34, 1.56, 0.64, 1)";
+  const SMOOTH = "cubic-bezier(0.4, 0, 0.2, 1)";
+  const options = [
+    { value: null, label: "All categories" },
+    ...["Liquidez","Solvencia","Rentabilidad","Eficiencia","Mercado","P&L","Custom"].map(c => ({ value: c, label: c }))
+  ];
+  const display = options.find(o => o.value === value)?.label ?? "All categories";
+
+  useEffect(() => {
+    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative flex-shrink-0">
+      <button onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-bold transition-all"
+        style={{
+          background: value ? colors.primary : "#f8f9ff",
+          color: value ? "#fff" : "#6b7280",
+          border: `1.5px solid ${value ? colors.primary : "#e8eaf0"}`,
+        }}>
+        <span>{display}</span>
+        <ChevronDown size={10} style={{
+          opacity: 0.6,
+          transform: open ? "rotate(180deg)" : "rotate(0deg)",
+          transition: `transform 280ms ${SPRING}`,
+        }} />
+      </button>
+      {open && (
+        <div className="absolute top-full right-0 mt-2 z-50 min-w-[160px] rounded-2xl overflow-hidden"
+          style={{
+            background: "rgba(255,255,255,0.98)",
+            backdropFilter: "blur(20px)",
+            WebkitBackdropFilter: "blur(20px)",
+            border: "1px solid rgba(26,47,138,0.08)",
+            boxShadow: "0 20px 50px -12px rgba(26,47,138,0.18)",
+            animation: "dropdownIn 240ms cubic-bezier(0.34,1.56,0.64,1)",
+          }}>
+            <div className="p-1.5 overflow-y-auto" style={{ maxHeight: "calc(5 * 36px)", msOverflowStyle: "none", scrollbarWidth: "none" }}>
+            <style>{`.libcat-scroll::-webkit-scrollbar { display: none; }`}</style>
+            <div className="libcat-scroll">
+            {options.map(o => {
+              const selected = value === o.value;
+              return (
+                <button key={String(o.value)}
+                  onClick={() => { onChange(o.value); setOpen(false); }}
+                  className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between gap-3"
+                  style={{
+                    background: selected ? colors.primary : "transparent",
+                    color: selected ? "#fff" : "#475569",
+                    transition: `background 180ms ${SMOOTH}`,
+                  }}
+                  onMouseEnter={e => { if (!selected) e.currentTarget.style.background = "rgba(26,47,138,0.08)"; }}
+                  onMouseLeave={e => { if (!selected) e.currentTarget.style.background = "transparent"; }}>
+                  {o.label}
+                  {selected && <span className="w-1.5 h-1.5 rounded-full bg-white/70 flex-shrink-0" />}
+                </button>
+              );
+            })}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const CATEGORY_OPTIONS = [
+  { value: "Liquidez",      label: "Liquidez" },
+  { value: "Solvencia",     label: "Solvencia" },
+  { value: "Rentabilidad",  label: "Rentabilidad" },
+  { value: "Eficiencia",    label: "Eficiencia" },
+  { value: "Mercado",       label: "Mercado" },
+  { value: "__custom__",    label: "Custom…" },
+];
+
+function CategoryPill({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [hover, setHover] = useState(false);
+  const ref = useRef(null);
+  const { colors } = useSettings();
+  const SPRING = "cubic-bezier(0.34, 1.56, 0.64, 1)";
+  const SMOOTH = "cubic-bezier(0.4, 0, 0.2, 1)";
+
+  useEffect(() => {
+    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  const display = CATEGORY_OPTIONS.find(o => o.value === value)?.label ?? value ?? "—";
+  const showLabel = hover || open;
+
+  return (
+    <div ref={ref} className="relative w-full"
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}>
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-800 outline-none transition-all"
+        style={{ background: "#f8f9ff", border: `1.5px solid ${open ? `${colors.primary}40` : "#e8eaf0"}` }}>
+        <span style={{ color: value ? "#1f2937" : "#9ca3af" }}>{display}</span>
+        <ChevronDown size={11} style={{
+          color: colors.primary,
+          opacity: 0.4,
+          transform: open ? "rotate(180deg)" : "rotate(0deg)",
+          transition: `transform 280ms ${SPRING}`,
+        }} />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 right-0 mt-2 z-50 rounded-2xl overflow-hidden"
+          style={{
+            background: "rgba(255,255,255,0.98)",
+            backdropFilter: "blur(20px)",
+            WebkitBackdropFilter: "blur(20px)",
+            border: "1px solid rgba(26,47,138,0.08)",
+            boxShadow: "0 20px 50px -12px rgba(26,47,138,0.18)",
+            animation: `dropdownIn 240ms cubic-bezier(0.34,1.56,0.64,1)`,
+          }}>
+          <div className="p-1.5">
+            {CATEGORY_OPTIONS.map(o => {
+              const selected = value === o.value;
+              return (
+                <button key={o.value}
+                  onClick={() => { onChange(o.value); setOpen(false); }}
+                  className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between gap-3"
+                  style={{
+                    background: selected ? colors.primary : "transparent",
+                    color: selected ? "#fff" : "#475569",
+                    transition: `background 180ms ${SMOOTH}, color 180ms ${SMOOTH}`,
+                  }}
+                  onMouseEnter={e => { if (!selected) e.currentTarget.style.background = "rgba(26,47,138,0.08)"; }}
+                  onMouseLeave={e => { if (!selected) e.currentTarget.style.background = "transparent"; }}>
+                  {o.label}
+                  {selected && <span className="w-1.5 h-1.5 rounded-full bg-white/70 flex-shrink-0" />}
+                </button>
+              );
+            })}
+          </div>
+          <style>{`@keyframes dropdownIn { from { opacity:0; transform:translateY(-6px) scale(0.96); } to { opacity:1; transform:translateY(0) scale(1); } }`}</style>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KpiEditorModal({ kpi, onSave, onClose, onReset, onEditLibraryKpi, onDeleteLibraryKpi, kpiList, allLocalKpis = [], accountCodes, builtInIds = new Set(), currentUserId }) {
+  const [mode, setMode] = useState(kpi ? "custom" : "library");
 
   const [label, setLabel] = useState(kpi?.label ?? "");
   const [description, setDescription] = useState(kpi?.description ?? "");
 const [format] = useState(kpi?.format ?? "currency");
-  const [category, setCategory] = useState(kpi?.category ?? "P&L");
-  const [formula, setFormula] = useState(kpi?.formula ?? null);
-const [tab, setTab] = useState(kpi?.formula ? "builder" : "presets");
+  const [category, setCategory] = useState(kpi?.category ?? "");
+const [formula, setFormula] = useState(() => {
+    if (!kpi?.formula) return null;
+    // If already text type, use as-is
+    if (kpi.formula.type === "text") return kpi.formula;
+    // Convert AST to text type so TextFormulaBuilder can render it
+    const astToText = (node) => {
+      if (!node) return { expr: "0", vars: {} };
+      if (node.type === "cc") return { expr: "A", vars: { A: { type: "cc", tag: node.tag } } };
+      if (node.type === "ref") return { expr: "A", vars: { A: { type: "ref", kpiId: node.kpiId } } };
+      if (node.type === "manual") return { expr: String(node.value ?? 0), vars: {} };
+      if (node.type === "account") return { expr: "A", vars: { A: { type: "account", accountCode: node.accountCode } } };
+      if (node.type === "accountGroup") return { expr: "A", vars: { A: { type: "accountGroup", prefix: node.prefix } } };
+if (node.type === "op") {
+        const allLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+        const l = astToText(node.left);
+        const r = astToText(node.right);
+        const sym = { "+": "+", "-": "-", "*": "*", "/": "/" }[node.op] ?? node.op;
+        const usedLetters = new Set(Object.keys(l.vars));
+        const remapR = {};
+        const rVarMap = {};
+        Object.entries(r.vars).forEach(([letter, val]) => {
+          let newLetter = letter;
+          if (usedLetters.has(letter)) {
+            newLetter = allLetters.find(ll => !usedLetters.has(ll) && !Object.values(rVarMap).includes(ll)) ?? letter;
+          }
+          usedLetters.add(newLetter);
+          rVarMap[letter] = newLetter;
+          remapR[newLetter] = val;
+        });
+        const rExpr = r.expr.replace(/[A-Z]/g, m => rVarMap[m] ?? m);
+        return { expr: `(${l.expr} ${sym} ${rExpr})`, vars: { ...l.vars, ...remapR } };
+      }
+      if (node.type === "fn") {
+        const inner = astToText(node.arg);
+        if (node.fn === "neg") return { expr: `-(${inner.expr})`, vars: inner.vars };
+        if (node.fn === "abs") return { expr: `Math.abs(${inner.expr})`, vars: inner.vars };
+        if (node.fn === "pct") return { expr: `(${inner.expr}) * 100`, vars: inner.vars };
+        return inner;
+      }
+      return { expr: "0", vars: {} };
+    };
+    const { expr, vars } = astToText(kpi.formula);
+    return { type: "text", expression: expr, variables: vars };
+  });
+const [tab, setTab] = useState(kpi ? "builder" : "presets");
 const [customCategoryLabel, setCustomCategoryLabel] = useState("");
 const [benchmark, setBenchmark] = useState(kpi?.benchmark ?? {
     unhealthy: { min: "", max: "" },
     healthy:   { min: "", max: "" },
     vhealthy:  { min: "", max: "" },
   });
-  const [tag, setTag] = useState(kpi?.tag ?? "");
+const [tag, setTag] = useState(kpi?.tag ?? "");
+  const [libSearch, setLibSearch] = useState("");
+  const [libCatFilter, setLibCatFilter] = useState(null);
 
   const otherKpis = kpiList.filter(k => k.id !== kpi?.id);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
-      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+<div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-hidden flex flex-col"
+        style={{ boxShadow: "0 32px 80px -16px rgba(26,47,138,0.25), 0 8px 24px -8px rgba(0,0,0,0.08)" }}
+        onClick={e => e.stopPropagation()}>
 
 {/* Header */}
-        <div className="bg-[#1a2f8a] px-5 py-4 flex items-center justify-between flex-shrink-0">
-          <div className="flex items-center gap-2">
-            <Sigma size={14} className="text-white/70" />
-            <p className="text-white font-black text-sm">{kpi ? `Edit: ${kpi.label}` : mode === "library" ? "KPI SELECTOR" : "Create Custom KPI"}</p>
+<div className="px-6 pt-6 pb-5 flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-3">
+
+            <div className="w-10 h-10 rounded-2xl flex items-center justify-center flex-shrink-0 relative"
+              style={{ background: "linear-gradient(135deg, #1a2f8a 0%, #3b54b8 100%)", boxShadow: "0 6px 16px -4px rgba(26,47,138,0.5)" }}>
+              <Sigma size={16} className="text-white" />
+              {kpi?._isOverridden && (
+                <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-violet-500 border-2 border-white" />
+              )}
+            </div>
+            <div>
+              <p className="font-black text-[15px] text-gray-900 leading-tight">
+                {kpi ? kpi.label : mode === "library" ? "KPI Selector" : "New KPI"}
+              </p>
+              <p className="text-[10px] font-bold uppercase tracking-[0.15em] mt-0.5"
+                style={{ color: kpi ? (builtInIds.has(kpi.id) ? "#6d28d9" : "#16a34a") : "#9ca3af" }}>
+                {kpi ? (builtInIds.has(kpi.id) ? "⚙ System KPI" : "✦ Custom KPI") : "Library or custom formula"}
+              </p>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button onClick={onClose} className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center">
-              <X size={13} className="text-white/70" />
-            </button>
-          </div>
+          <button onClick={onClose}
+            className="w-8 h-8 rounded-xl flex items-center justify-center transition-all hover:scale-110"
+            style={{ background: "#f3f4f6", color: "#6b7280" }}>
+            <X size={13} />
+          </button>
         </div>
+        <div className="h-px mx-6 mb-1" style={{ background: "linear-gradient(90deg, transparent, rgba(26,47,138,0.08), transparent)" }} />
 
 {/* Library mode */}
 {mode === "library" && (
@@ -1799,18 +2076,36 @@ const [benchmark, setBenchmark] = useState(kpi?.benchmark ?? {
   }} />
 )}
 {/* Custom KPI list mode */}
-        {mode === "customList" && (
+{mode === "customList" && (
           <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-            <div className="px-5 pt-4 pb-2 flex items-center gap-2 flex-shrink-0">
-              <button onClick={() => setMode("library")}
-                className="flex items-center gap-1.5 text-[10px] font-black text-gray-400 hover:text-[#1a2f8a] transition-colors">
-                <ChevronDown size={11} className="rotate-90" /> Volver
-              </button>
-              <span className="text-[10px] text-gray-300">·</span>
-              <span className="text-[10px] font-black px-2 py-0.5 rounded-md text-white bg-[#1a2f8a]">KPI personalizado</span>
+            {/* Search + category filter */}
+            <div className="px-5 pb-3 flex items-center gap-2 flex-shrink-0">
+              <div className="flex items-center gap-1.5 flex-1 rounded-xl px-3 py-2"
+                style={{ background: "#f8f9ff", border: "1.5px solid #e8eaf0" }}>
+                <Search size={11} style={{ color: "#9ca3af", flexShrink: 0 }} />
+                <input
+                  type="text"
+                  value={libSearch}
+                  onChange={e => setLibSearch(e.target.value)}
+                  placeholder="Search KPIs…"
+                  className="flex-1 text-xs font-semibold text-gray-700 outline-none bg-transparent"
+                />
+                {libSearch && (
+                  <button onClick={() => setLibSearch("")}>
+                    <X size={10} style={{ color: "#9ca3af" }} />
+                  </button>
+                )}
+              </div>
+<LibCategoryPill value={libCatFilter} onChange={setLibCatFilter} />
             </div>
             <div className="overflow-y-auto flex-1 px-5 pb-5">
-             {allLocalKpis.length === 0 ? (
+             {(() => {
+                const filtered = allLocalKpis.filter(k => {
+                  const matchSearch = !libSearch.trim() || k.label.toLowerCase().includes(libSearch.toLowerCase()) || (k.description ?? "").toLowerCase().includes(libSearch.toLowerCase());
+                  const matchCat = !libCatFilter || k.category === libCatFilter;
+                  return matchSearch && matchCat;
+                });
+                return filtered.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-12 text-center">
                   <div className="w-12 h-12 rounded-2xl bg-[#eef1fb] flex items-center justify-center mb-3">
                     <Sigma size={20} className="text-[#1a2f8a]/40" />
@@ -1818,39 +2113,57 @@ const [benchmark, setBenchmark] = useState(kpi?.benchmark ?? {
                   <p className="text-xs font-black text-gray-400">Aún no hay KPIs personalizados</p>
                   <p className="text-[10px] text-gray-300 mt-1">Crea tu primero con el botón de abajo</p>
                 </div>
-              ) : (
+) : (
 <div className="grid grid-cols-2 gap-2 mb-4 pt-2">
-                  {allLocalKpis.map(k => (
-                    <button key={k.id} onClick={() => onSave(k)}
-                      className="text-left p-4 rounded-xl border border-gray-100 hover:border-[#1a2f8a]/30 hover:bg-[#eef1fb] transition-all group">
-                      <div className="flex items-start justify-between gap-3">
+                  {filtered.map(k => (
+<div key={k.id} onClick={() => onSave(k)} className="flex flex-col p-4 rounded-xl border border-gray-100 hover:border-[#1a2f8a]/30 hover:bg-[#eef1fb]/50 transition-all group cursor-pointer">
+                      <div className="flex items-start justify-between gap-3 mb-3">
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-1.5 flex-wrap">
+                          <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
                             <p className="text-sm font-black text-[#1a2f8a] leading-snug">{k.label}</p>
-                            {k._contextMappingId !== undefined && (
-                              <span className="px-1.5 py-0.5 rounded-md flex-shrink-0 text-[8px] font-black uppercase tracking-widest"
-                                style={{
-                                  backgroundColor: k._contextMappingId ? "#fef3c7" : "#dcfce7",
-                                  color:           k._contextMappingId ? "#92400e" : "#15803d",
-                                }}
-                                title={k._contextMappingId ? "Bajo un mapping personalizado" : "Vista estándar"}>
-                                {k._contextMappingId ? "MAPPED" : "STD"}
-                              </span>
-                            )}
+                            <span className={`flex-shrink-0 text-[9px] font-black px-1.5 py-0.5 rounded-md ${k.format === "percent" ? "bg-emerald-50 text-emerald-700" : k.format === "currency" ? "bg-[#eef1fb] text-[#1a2f8a]" : "bg-gray-50 text-gray-500"}`}>
+                              {k.format === "percent" ? "%" : k.format === "currency" ? "€" : "#"}
+                            </span>
                           </div>
-                          <p className="text-xs text-gray-400 mt-1 leading-snug">{k.description}</p>
+                          {k.description && <p className="text-[12px] text-gray-400 leading-snug">{k.description}</p>}
+                          {k.category && <p className="text-[11px] text-gray-300 mt-0.5 uppercase tracking-wider font-bold">{k.category}</p>}
                         </div>
-                        <span className={`flex-shrink-0 text-[10px] font-black px-2 py-1 rounded-md ${k.format === "percent" ? "bg-emerald-50 text-emerald-700" : k.format === "currency" ? "bg-[#eef1fb] text-[#1a2f8a]" : "bg-gray-50 text-gray-500"}`}>
-                          {k.format === "percent" ? "%" : k.format === "currency" ? "€" : "#"}
-                        </span>
                       </div>
-                      {k.category && (
-                        <p className="text-[10px] text-gray-300 mt-2">{k.category}</p>
-                      )}
-                    </button>
+                      <div className="flex items-center gap-1.5 mb-2">
+{k._createdBy && (
+                          <div className="flex items-center gap-1">
+                            <div className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 text-[8px] font-black text-white"
+                              style={{ background: "linear-gradient(135deg, #1a2f8a 0%, #3b54b8 100%)" }}>
+{k._createdBy === currentUserId ? "Y" : "U"}
+                            </div>
+                            <span className="text-[11px] text-gray-300 font-bold">
+                              {k._createdBy === currentUserId ? "Created by you" : "Created by teammate"}
+                            </span>
+                          </div>
+                        )}
+                        {k._updatedAt && (
+                          <span className="text-[11px] text-gray-300 font-bold ml-auto">
+                            {new Date(k._updatedAt).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}
+                          </span>
+                        )}
+                      </div>
+<div className="flex items-center justify-end gap-1.5 mt-auto pt-2 border-t border-gray-50 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+                        <button onClick={(e) => { e.stopPropagation(); onEditLibraryKpi?.(k); }}
+                          className="w-7 h-7 rounded-lg flex items-center justify-center transition-all hover:scale-110 flex-shrink-0"
+                          style={{ background: "#eef1fb", color: "#1a2f8a" }}>
+                          <Edit3 size={10} />
+                        </button>
+                        <button onClick={(e) => { e.stopPropagation(); onDeleteLibraryKpi?.(k.id); }}
+                          className="w-7 h-7 rounded-lg flex items-center justify-center transition-all hover:scale-110 flex-shrink-0"
+                          style={{ background: "#fee2e2", color: "#dc2626" }}>
+                          <Trash2 size={10} />
+                        </button>
+                      </div>
+                    </div>
                   ))}
-                </div>
-              )}
+</div>
+              );
+              })()}
             </div>
             <div className="flex-shrink-0 px-5 py-4 border-t border-gray-100">
               <button onClick={() => setMode("custom")}
@@ -1866,40 +2179,46 @@ const [benchmark, setBenchmark] = useState(kpi?.benchmark ?? {
         <div className="overflow-y-auto flex-1 p-5 flex flex-col gap-4">
 
 {/* Label + Category side by side */}
-          <div className="grid grid-cols-2 gap-3">
+<div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5 block">Label *</label>
+              <label className="text-[9px] font-black uppercase tracking-[0.18em] mb-1.5 block" style={{ color: "#9ca3af" }}>Label *</label>
               <input value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. EBITDA Margin"
-                className="w-full border border-gray-100 rounded-xl px-3 py-2 text-xs text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-[#f8f9ff]" />
+                className="w-full rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-800 outline-none transition-all"
+                style={{ background: "#f8f9ff", border: "1.5px solid #e8eaf0" }}
+                onFocus={e => e.target.style.borderColor = "#1a2f8a40"}
+                onBlur={e => e.target.style.borderColor = "#e8eaf0"} />
             </div>
             <div>
-              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5 block">Category</label>
-              <select value={category} onChange={e => { setCategory(e.target.value); if (e.target.value !== "__custom__") setCustomCategoryLabel(""); }}
-                className="w-full border border-gray-100 rounded-xl px-3 py-2 text-xs text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-[#f8f9ff]">
-                {["Liquidez", "Solvencia", "Rentabilidad", "Eficiencia", "Mercado", "Custom"].map(opt => (
-                  <option key={opt} value={opt === "Custom" ? "__custom__" : opt}>{opt}</option>
-                ))}
-              </select>
+              <label className="text-[9px] font-black uppercase tracking-[0.18em] mb-1.5 block" style={{ color: "#9ca3af" }}>Category</label>
+<CategoryPill
+                value={category}
+                onChange={v => { setCategory(v); if (v !== "__custom__") setCustomCategoryLabel(""); }}
+              />
               {category === "__custom__" && (
                 <input value={customCategoryLabel} onChange={e => setCustomCategoryLabel(e.target.value)}
-                  placeholder="Nombre de categoría personalizada"
-                  className="w-full border border-gray-100 rounded-xl px-3 py-2 text-xs text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-[#f8f9ff] mt-2" />
+                  placeholder="Category name"
+                  className="w-full rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-800 outline-none mt-2"
+                  style={{ background: "#f8f9ff", border: "1.5px solid #e8eaf0" }} />
               )}
             </div>
           </div>
-{/* Description + Tag side by side */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5 block">Description</label>
-              <input value={description} onChange={e => setDescription(e.target.value)} placeholder="Short description of what this KPI measures"
-                className="w-full border border-gray-100 rounded-xl px-3 py-2 text-xs text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-[#f8f9ff]" />
+              <label className="text-[9px] font-black uppercase tracking-[0.18em] mb-1.5 block" style={{ color: "#9ca3af" }}>Description</label>
+              <input value={description} onChange={e => setDescription(e.target.value)} placeholder="What does this KPI measure?"
+                className="w-full rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-800 outline-none transition-all"
+                style={{ background: "#f8f9ff", border: "1.5px solid #e8eaf0" }}
+                onFocus={e => e.target.style.borderColor = "#1a2f8a40"}
+                onBlur={e => e.target.style.borderColor = "#e8eaf0"} />
             </div>
             <div>
-              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5 block">Tag</label>
+              <label className="text-[9px] font-black uppercase tracking-[0.18em] mb-1.5 block" style={{ color: "#9ca3af" }}>Tag</label>
               <input value={tag} onChange={e => setTag(e.target.value)}
-                placeholder="e.g. Rentabilidad, Core, Deuda…"
-                className="w-full border border-gray-100 rounded-xl px-3 py-2 text-xs text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-[#f8f9ff]" />
-              <p className="text-[10px] text-gray-300 mt-1">Etiqueta para filtrar KPIs</p>
+                placeholder="e.g. Core, Deuda…"
+                className="w-full rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-800 outline-none transition-all"
+                style={{ background: "#f8f9ff", border: "1.5px solid #e8eaf0" }}
+                onFocus={e => e.target.style.borderColor = "#1a2f8a40"}
+                onBlur={e => e.target.style.borderColor = "#e8eaf0"} />
             </div>
           </div>
 
@@ -1907,12 +2226,14 @@ const [benchmark, setBenchmark] = useState(kpi?.benchmark ?? {
 
 {/* Formula */}
           <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Formula / Equation</label>
-              <div className="flex gap-1 bg-[#f0f0f0] rounded-lg p-0.5">
-                <button onClick={() => setTab("presets")} className={`px-2.5 py-1 rounded-md text-[10px] font-black transition-all ${tab === "presets" ? "bg-white text-[#1a2f8a] shadow-sm" : "text-gray-500"}`}>Presets</button>
-                <button onClick={() => setTab("builder")} className={`px-2.5 py-1 rounded-md text-[10px] font-black transition-all ${tab === "builder" ? "bg-white text-[#1a2f8a] shadow-sm" : "text-gray-500"}`}>Builder</button>
-              </div>
+<div className="flex items-center justify-between mb-3">
+              <label className="text-[10px] font-black uppercase tracking-[0.18em] text-gray-400">Formula</label>
+              {!kpi && (
+                <div className="flex gap-0.5 p-0.5 rounded-lg" style={{ background: "#f0f0f0" }}>
+                  <button onClick={() => setTab("presets")} className={`px-3 py-1 rounded-md text-[10px] font-black transition-all ${tab === "presets" ? "bg-white text-[#1a2f8a] shadow-sm" : "text-gray-400"}`}>Presets</button>
+                  <button onClick={() => setTab("builder")} className={`px-3 py-1 rounded-md text-[10px] font-black transition-all ${tab === "builder" ? "bg-white text-[#1a2f8a] shadow-sm" : "text-gray-400"}`}>Builder</button>
+                </div>
+              )}
             </div>
 
 {tab === "presets" ? (
@@ -1939,56 +2260,63 @@ const [benchmark, setBenchmark] = useState(kpi?.benchmark ?? {
 
 
 {/* Benchmark ranges */}
-          <div>
-            <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2 block">Benchmark</label>
-            <div className="grid grid-cols-3 gap-2">
+<div>
+            <label className="text-[9px] font-black uppercase tracking-[0.18em] mb-3 block" style={{ color: "#9ca3af" }}>Benchmark Ranges</label>
+            <div className="flex flex-col gap-2">
               {[
-                { key: "unhealthy", label: "Poco saludable", color: "border-red-200 bg-red-50", dot: "bg-red-400", textColor: "text-red-700", inputBorder: "focus:border-red-300" },
-                { key: "healthy",   label: "Saludable",      color: "border-emerald-200 bg-emerald-50", dot: "bg-emerald-400", textColor: "text-emerald-700", inputBorder: "focus:border-emerald-300" },
-                { key: "vhealthy",  label: "Muy saludable",  color: "border-blue-200 bg-[#eef1fb]", dot: "bg-[#1a2f8a]", textColor: "text-[#1a2f8a]", inputBorder: "focus:border-[#1a2f8a]/40" },
-              ].map(({ key, label, color, dot, textColor, inputBorder }) => (
-                <div key={key} className={`flex flex-col gap-2 px-3 py-3 rounded-xl border ${color}`}>
-                  <div className="flex items-center gap-1.5">
-                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${dot}`} />
-                    <span className={`text-[10px] font-black ${textColor}`}>{label}</span>
-                  </div>
-<div className="flex items-center gap-1.5">
-                    <div className="flex items-center gap-1 flex-1">
-                      <span className="text-[10px] font-black text-gray-400 flex-shrink-0">&gt;</span>
-                      <input
-                        value={benchmark[key].min}
-                        onChange={e => setBenchmark(prev => ({ ...prev, [key]: { ...prev[key], min: e.target.value } }))}
-                        placeholder="nd"
-                        className={`w-full border border-white/60 rounded-lg px-1.5 py-1.5 text-xs font-mono text-gray-700 outline-none bg-white/70 text-center ${inputBorder}`}
-                      />
-                    </div>
-                    <div className="flex items-center gap-1 flex-1">
-                      <span className="text-[10px] font-black text-gray-400 flex-shrink-0">&lt;</span>
-                      <input
-                        value={benchmark[key].max}
-                        onChange={e => setBenchmark(prev => ({ ...prev, [key]: { ...prev[key], max: e.target.value } }))}
-                        placeholder="nd"
-                        className={`w-full border border-white/60 rounded-lg px-1.5 py-1.5 text-xs font-mono text-gray-700 outline-none bg-white/70 text-center ${inputBorder}`}
-                      />
-                    </div>
+                { key: "unhealthy", label: "Unhealthy", dot: "#dc2626", bg: "#fff5f5", border: "#fecaca", text: "#dc2626" },
+                { key: "healthy",   label: "Healthy",   dot: "#16a34a", bg: "#f0fdf4", border: "#86efac", text: "#16a34a" },
+                { key: "vhealthy",  label: "Excellent", dot: "#1a2f8a", bg: "#eef1fb", border: "#a5b4fc", text: "#1a2f8a" },
+              ].map(({ key, label, dot, bg, border, text }) => (
+                <div key={key} className="flex items-center gap-3 px-3 py-2 rounded-xl"
+style={{ background: bg, border: `1.5px solid ${border}` }}>
+                  <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: dot }} />
+                  <span className="text-[10px] font-black uppercase tracking-wider w-20 flex-shrink-0" style={{ color: text }}>{label}</span>
+                  <div className="flex items-center gap-2 flex-1">
+                    <span className="text-[9px] font-black flex-shrink-0" style={{ color: text }}>{">"}</span>
+                    <input
+                      value={benchmark[key].min}
+                      onChange={e => setBenchmark(prev => ({ ...prev, [key]: { ...prev[key], min: e.target.value } }))}
+                      placeholder="no limit"
+                      className="flex-1 rounded-lg px-2 py-1 text-[11px] font-mono font-bold outline-none border"
+                      style={{ background: "#fff", borderColor: border, color: text }}
+                    />
+                    <span className="text-[9px] font-black flex-shrink-0" style={{ color: text }}>{"<"}</span>
+                    <input
+                      value={benchmark[key].max}
+                      onChange={e => setBenchmark(prev => ({ ...prev, [key]: { ...prev[key], max: e.target.value } }))}
+                      placeholder="no limit"
+                      className="flex-1 rounded-lg px-2 py-1 text-[11px] font-mono font-bold outline-none border"
+                      style={{ background: "#fff", borderColor: border, color: text }}
+                    />
                   </div>
                 </div>
               ))}
             </div>
-            <p className="text-[10px] text-gray-300 mt-1.5">Deja en blanco (nd) si no hay límite por ese lado</p>
+            <p className="text-[10px] mt-2" style={{ color: "#d1d5db" }}>Leave blank for no limit on that side</p>
           </div>
 
         </div>
         )}
 
+
         {/* Footer — only for custom mode */}
-        {mode === "custom" && (
-        <div className="flex-shrink-0 px-5 py-4 border-t border-gray-100">
-<button onClick={() => onSave({ label, description, format, tag, benchmark, category: category === "__custom__" ? customCategoryLabel || "Custom" : category, formula })}
-            disabled={!label || !formula}
-            className="w-full py-2.5 rounded-xl bg-[#1a2f8a] text-white text-xs font-black hover:bg-[#1a2f8a]/90 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
+{mode === "custom" && (
+        <div className="flex-shrink-0 px-6 py-4 border-t border-gray-100 flex flex-col gap-2"
+          style={{ background: "rgba(248,249,255,0.8)" }}>
+          <button onClick={() => onSave({ label, description, format, tag, benchmark, category: category === "__custom__" ? customCategoryLabel || "Custom" : category, formula })}
+            disabled={!label}
+            className="w-full py-3 rounded-xl text-xs font-black transition-all disabled:opacity-40 flex items-center justify-center gap-2"
+            style={{ background: "linear-gradient(135deg, #1a2f8a 0%, #3b54b8 100%)", color: "white", boxShadow: "0 4px 14px -4px rgba(26,47,138,0.5)" }}>
             <Check size={12} /> {kpi ? "Save Changes" : "Create KPI"}
           </button>
+          {kpi?._isOverridden && onReset && (
+            <button onClick={() => { onReset(kpi.id); onClose(); }}
+              className="w-full py-2 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 hover:opacity-80"
+              style={{ background: "#fee2e2", color: "#dc2626" }}>
+              ↺ Reset to factory defaults
+            </button>
+          )}
         </div>
         )}
       </div>
@@ -2536,7 +2864,8 @@ const groupAccounts = groupAccountsProp.length > 0 ? groupAccountsProp : groupAc
   const underscore2Style = useTypo("underscore2");
   const underscore3Style = useTypo("underscore3");
   const filterStyle = useTypo("filter");
-  const { colors } = useSettings();
+const { colors } = useSettings();
+  const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();
   const [year, setYear] = useState("");
   const [month, setMonth] = useState("");
   const [source, setSource] = useState("");
@@ -2678,18 +3007,85 @@ useEffect(() => {
 
 // Adapt Supabase rows to the renderer's KPI shape. _contextMappingId is UI
 // metadata for badges + context filtering.
-const localKpis = useMemo(() => companyKpis.map(k => ({
-  id:                k.kpi_id,
-  label:             k.label,
-  description:       k.description ?? "",
-  category:          k.category    ?? "",
-  tag:               k.tag         ?? "",
-  format:            k.format,
-  formula:           k.formula,
-  benchmark:         k.benchmark,
-  _contextMappingId: k.context_mapping_id ?? null,
-  _createdBy:        k.created_by,
-})), [companyKpis]);
+// ── System KPI override helpers ───────────────────────────────────────────
+const OVERRIDE_TAG_PREFIX = "__override__:";
+
+const systemOverrides = useMemo(() => {
+  const map = new Map();
+  companyKpis.forEach(k => {
+    if (k.tag?.startsWith(OVERRIDE_TAG_PREFIX)) {
+      const originalId = k.tag.slice(OVERRIDE_TAG_PREFIX.length);
+      map.set(originalId, k);
+    }
+  });
+  return map;
+}, [companyKpis]);
+
+const saveSystemOverride = useCallback(async (originalKpiId, overrideData) => {
+  if (!companyId || !authUserId) return;
+  const existing = systemOverrides.get(originalKpiId);
+  try {
+    if (existing) {
+      const updated = await updateCompanyKpi({
+        kpiId: existing.kpi_id,
+        userId: authUserId,
+        label:       overrideData.label,
+        description: overrideData.description ?? null,
+        category:    overrideData.category ?? null,
+        tag:         `${OVERRIDE_TAG_PREFIX}${originalKpiId}`,
+        format:      overrideData.format ?? "currency",
+        formula:     overrideData.formula,
+        benchmark:   overrideData.benchmark ?? null,
+      });
+      setCompanyKpis(prev => prev.map(k => k.kpi_id === updated.kpi_id ? updated : k));
+    } else {
+      const created = await createCompanyKpi({
+        companyId, userId: authUserId,
+        label:       overrideData.label,
+        description: overrideData.description ?? null,
+        category:    overrideData.category ?? null,
+        tag:         `${OVERRIDE_TAG_PREFIX}${originalKpiId}`,
+        format:      overrideData.format ?? "currency",
+        formula:     overrideData.formula,
+        benchmark:   overrideData.benchmark ?? null,
+        contextMappingId: null,
+        scope: "individual",
+      });
+      setCompanyKpis(prev => [...prev, created]);
+    }
+  } catch (e) {
+    alert(`Could not save override: ${e.message}`);
+  }
+}, [companyId, authUserId, systemOverrides]);
+
+const resetSystemOverride = useCallback(async (originalKpiId) => {
+  const existing = systemOverrides.get(originalKpiId);
+  if (!existing) return;
+  try {
+    await archiveCompanyKpi({ kpiId: existing.kpi_id, userId: authUserId });
+    setCompanyKpis(prev => prev.filter(k => k.kpi_id !== existing.kpi_id));
+  } catch (e) {
+    alert(`Could not reset: ${e.message}`);
+  }
+}, [systemOverrides, authUserId]);
+
+const localKpis = useMemo(() => companyKpis
+  .filter(k => !k.tag?.startsWith(OVERRIDE_TAG_PREFIX))
+  .map(k => ({
+    id:                k.kpi_id,
+    label:             k.label,
+    description:       k.description ?? "",
+    category:          k.category    ?? "",
+    tag:               k.tag         ?? "",
+    format:            k.format,
+    formula:           k.formula,
+    benchmark:         k.benchmark,
+    _contextMappingId: k.context_mapping_id ?? null,
+    _createdBy:        k.created_by,
+    _updatedBy:        k.updated_by,
+    _updatedAt:        k.updated_at,
+    _createdAt:        k.created_at,
+  })), [companyKpis]);
 
 // Persist dashboard changes to Supabase (optimistic — UI updates first)
 const persistDashboard = useCallback(async (ids) => {
@@ -2732,8 +3128,21 @@ const kpiList = useMemo(() => {
   const byId = new Map();
   resolvedKpiList.forEach(k => byId.set(k.id, k));
   localKpis.forEach(k => byId.set(k.id, k));
-  return dashboardKpiIds.map(id => byId.get(id)).filter(Boolean);
-}, [dashboardKpiIds, resolvedKpiList, localKpis]);
+  return dashboardKpiIds.map(id => {
+    const base = byId.get(id);
+    if (!base) return null;
+    const override = systemOverrides.get(id);
+    if (override) {
+      return {
+        ...base,
+        benchmark: override.benchmark ?? base.benchmark,
+        _isOverridden: true,
+        _overrideKpiId: override.kpi_id,
+      };
+    }
+    return base;
+  }).filter(Boolean);
+}, [dashboardKpiIds, resolvedKpiList, localKpis, systemOverrides]);
   const [editingKpi, setEditingKpi] = useState(null);
 const [viewMode, setViewMode] = useState("company"); // "company" | "dimension"
 const [viewPeriod, setViewPeriod] = useState("ytd"); // "monthly" | "ytd"
@@ -2801,22 +3210,65 @@ const companyCodes = useMemo(() =>
     [companies]
   );
 
+const kpiDashProgress = useMemo(() => {
+  let pct = 0;
+  if (year && month)                                           pct += 15;
+  if (sources.length > 0 && structures.length > 0 && companies.length > 0) pct += 15;
+  if (groupAccounts.length > 0)                                pct += 25;
+  if (companyData.size > 0)                                    pct += 25;
+  if (metaReady && !loading)                                   pct += 20;
+  return Math.min(100, pct);
+}, [year, month, sources.length, structures.length, companies.length, groupAccounts.length, companyData, metaReady, loading]);
+
+const animatedKpiDashProgress = useAnimatedNumber(kpiDashProgress, 700);
+const kpiDashReady = kpiDashProgress >= 100;
+
   const companyLegalName = useCallback((shortName) => {
     const co = companies.find(c => (c.companyShortName ?? c.CompanyShortName ?? "") === shortName);
     return co?.CompanyLegalName ?? co?.companyLegalName ?? shortName;
   }, [companies]);
 
-  // Auto-find the latest period with data once source/structure/company are known
+// Auto-find the latest period with data once source/structure/company are known.
+  // Fast path: LatestPeriodContext (populated by EpicLoader). Slow path: 24-month probe.
   useEffect(() => {
     if (autoPeriodDone.current) return;
     if (!token || !source || !structure || companyCodes.length === 0) return;
     autoPeriodDone.current = true;
+    const co = companyCodes[0];
+
+    // FAST PATH 1: React context cache
+    const cached = getLatestPeriod(source, structure, co);
+    if (cached) {
+      console.log("[KpiPage] CONTEXT CACHE HIT ✓", cached);
+      setYear(String(cached.year));
+      setMonth(String(cached.month));
+      setMetaReady(true);
+      return;
+    }
+
+    // FAST PATH 2: sessionStorage (EpicLoader's prefetchHomeData)
+    try {
+      const ssKey = `home_latest_period_${source}_${structure}_${co}`;
+      const ssRaw = sessionStorage.getItem(ssKey);
+      if (ssRaw) {
+        const parsed = JSON.parse(ssRaw);
+        if (parsed.year && parsed.month) {
+          console.log("[KpiPage] SESSION STORAGE HIT ✓", parsed);
+          setYear(String(parsed.year));
+          setMonth(String(parsed.month));
+          setLatestPeriod(source, structure, co, parsed.year, parsed.month);
+          setMetaReady(true);
+          return;
+        }
+      }
+    } catch { /* ignore */ }
+
+    console.log("[KpiPage] CACHE MISS - probing");
 
     (async () => {
       const now = new Date();
       let y = now.getFullYear();
       let m = now.getMonth() + 1;
-      const co = companyCodes[0];
       for (let i = 0; i < 24; i++) {
         try {
           const filter = `Year eq ${y} and Month eq ${m} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${co}'`;
@@ -2830,6 +3282,7 @@ const companyCodes = useMemo(() =>
             if (rows.length > 0) {
               setYear(String(y));
               setMonth(String(m));
+              setLatestPeriod(source, structure, co, y, m);
               setMetaReady(true);
               return;
             }
@@ -2840,7 +3293,7 @@ const companyCodes = useMemo(() =>
       }
       setMetaReady(true);
     })();
-  }, [token, source, structure, companyCodes]);
+  }, [token, source, structure, companyCodes, getLatestPeriod, setLatestPeriod]);
 
 // Derive dim groups and codes from the journal's `Dimensions` field — more
 // reliable than /v2/dimensions because we know the data is there if we see it
@@ -3254,11 +3707,67 @@ const companyResults = useMemo(() => {
       return;
     }
 
-    // Path 1: editing existing custom KPI from the table pencil icon
+// Path 1: editing existing KPI from the table pencil icon
     if (editingKpi !== "new" && editingKpi && typeof editingKpi === "object" && editingKpi.id) {
-      const inLibrary = companyKpis.some(k => k.kpi_id === editingKpi.id);
+      const inLibrary = companyKpis.some(k => k.kpi_id === editingKpi.id && !k.tag?.startsWith(OVERRIDE_TAG_PREFIX));
+      const isBuiltIn = new Set(resolvedKpiList.map(k => k.id)).has(editingKpi.id);
+
+      // If label/description changed on a built-in → promote to full custom KPI
+      const labelChanged = data.label !== editingKpi.label;
+      const descChanged  = data.description !== editingKpi.description;
+
+      if (isBuiltIn && !labelChanged && !descChanged) {
+        // Benchmark-only edit on built-in → save as system override
+        await saveSystemOverride(editingKpi.id, {
+          label:       editingKpi.label,
+          description: editingKpi.description,
+          category:    editingKpi.category,
+          format:      editingKpi.format,
+          formula:     editingKpi.formula,
+          benchmark:   data.benchmark,
+        });
+        setEditingKpi(null);
+        return;
+      }
+
+      if (!inLibrary && isBuiltIn && (labelChanged || descChanged)) {
+        // Promote built-in to full custom KPI
+        try {
+          const created = await createCompanyKpi({
+            companyId, userId: authUserId,
+            label:       data.label,
+            description: data.description ?? null,
+            category:    data.category ?? null,
+            tag:         data.tag ?? null,
+            format:      data.format ?? "currency",
+            formula:     data.formula ?? editingKpi.formula,
+            benchmark:   data.benchmark ?? null,
+            contextMappingId: null,
+            scope: "individual",
+          });
+setCompanyKpis(prev => [...prev, created]);
+          // Replace in dashboard
+setDashboardKpiIds(prev => {
+            if (!prev) return prev;
+            const next = prev.map(id => id === editingKpi.id ? created.kpi_id : id);
+            console.log("[KpiPage] promoting built-in to custom:", { oldId: editingKpi.id, newId: created.kpi_id, prev, next });
+            // Persist immediately and log result
+            (async () => {
+              try {
+                await saveUserDashboard({ userId: authUserId, companyId, kpiIds: next, scope: "individual" });
+                console.log("[KpiPage] dashboard persisted after promote ✓", next);
+              } catch (e) {
+                console.error("[KpiPage] dashboard persist FAILED after promote:", e);
+              }
+            })();
+            return next;
+          });
+          setEditingKpi(null);
+        } catch (e) { alert(`Could not promote KPI: ${e.message}`); }
+        return;
+      }
+
       if (!inLibrary) {
-        alert("Esto es un KPI built-in y no se puede editar.\nDuplícalo como personalizado para crear una variante.");
         setEditingKpi(null);
         return;
       }
@@ -3518,8 +4027,18 @@ const orderedCols = colOrder && colOrder.length === activeCols.length ? colOrder
   const sourceOpts = [...new Set(sources.map(s => typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
   const structureOpts = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
 
-  return (
+return (
     <div className="flex flex-col gap-4 h-full min-h-0">
+      <style>{`
+        @keyframes plRowSlideIn {
+          0%   { opacity: 0; transform: translateY(8px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes kBadgesPop {
+          0%   { opacity: 0; transform: translateY(8px) scale(0.96); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+      `}</style>
 
 {/* Header — built from shared <PageHeader> */}
       <PageHeader
@@ -3543,12 +4062,12 @@ const orderedCols = colOrder && colOrder.length === activeCols.length ? colOrder
           ...(structureOpts.length > 0
             ? [{ label: "Structure", value: structure, onChange: setStructure, options: structureOpts }]
             : []),
-          ...(dimGroups.length > 0
+...(dimGroups.length > 0
             ? [{
                 label: "Dim Group",
                 value: selGroup,
                 onChange: v => { setSelGroup(v); setSelDim(""); },
-                options: [{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))],
+                options: [{ value: "", label: "All", displayLabel: "Dim Group" }, ...dimGroups.map(g => ({ value: g, label: g }))],
               }]
             : []),
           ...(selGroup && groupDimOptions.length > 0
@@ -3602,12 +4121,6 @@ periodToggle={{
         ]}
       />
 
-<MappingsModal
-        open={viewsModalOpen}
-        onClose={() => setViewsModalOpen(false)}
-        groupAccounts={groupAccounts}
-        onApply={handleApplyMapping}
-      />
 
       {activeMapping && (
         <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm flex-shrink-0">
@@ -3650,14 +4163,67 @@ periodToggle={{
       )}
 
 
-{!metaReady || (loading && companyData.size === 0) ? (
-        <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center flex-1 flex items-center justify-center">
-          <div>
-            <Loader2 size={28} className="text-[#1a2f8a] animate-spin mx-auto mb-3" />
-            <p className="text-gray-400 text-sm">
-              {!metaReady ? "Finding latest period with data…" : `Loading KPIs for ${companyCodes.length} ${companyCodes.length === 1 ? "company" : "companies"}…`}
+{!kpiDashReady ? (
+        <div className="relative flex-1 min-h-0 flex items-center justify-center rounded-2xl"
+          style={{
+            background: "rgba(255,255,255,0.78)",
+            backdropFilter: "blur(8px)",
+            WebkitBackdropFilter: "blur(8px)",
+            animation: "indOverlayFadeIn 200ms ease-out",
+          }}>
+          <div className="relative rounded-3xl bg-white border border-gray-100 p-10 flex flex-col items-center"
+            style={{
+              width: 380,
+              boxShadow: "0 24px 80px -12px rgba(26,47,138,0.25), 0 8px 24px -8px rgba(0,0,0,0.08)",
+              animation: "indPopIn 320ms cubic-bezier(0.34,1.56,0.64,1)",
+            }}>
+            <div className="relative" style={{ width: 140, height: 140 }}>
+              <svg width="140" height="140" viewBox="0 0 140 140">
+                <circle cx="70" cy="70" r="60" fill="none" stroke="#f3f4f6" strokeWidth="10" />
+                <circle
+                  cx="70" cy="70" r="60" fill="none"
+                  stroke="url(#kpiProgGrad)"
+                  strokeWidth="10"
+                  strokeLinecap="round"
+                  strokeDasharray={2 * Math.PI * 60}
+                  strokeDashoffset={2 * Math.PI * 60 * (1 - animatedKpiDashProgress / 100)}
+                  style={{ transform: "rotate(-90deg)", transformOrigin: "70px 70px" }}
+                />
+                <defs>
+                  <linearGradient id="kpiProgGrad" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0%" stopColor={colors.primary ?? "#1a2f8a"} />
+                    <stop offset="100%" stopColor={colors.secondary ?? "#CF305D"} />
+                  </linearGradient>
+                </defs>
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-3xl font-black tabular-nums" style={{ color: colors.primary }}>
+                  {Math.round(animatedKpiDashProgress)}<span className="text-base text-gray-300">%</span>
+                </span>
+              </div>
+            </div>
+            <p className="text-sm font-black text-gray-800 mt-6 tracking-wide">
+              {!metaReady
+                ? "Finding latest period with data…"
+                : sources.length === 0 || structures.length === 0 || companies.length === 0
+                  ? "Loading filter options…"
+                  : groupAccounts.length === 0
+                    ? "Loading group accounts…"
+                    : companyData.size === 0
+                      ? `Loading KPIs for ${companyCodes.length} ${companyCodes.length === 1 ? "company" : "companies"}…`
+                      : "Finalizing…"}
+            </p>
+            <p className="text-[10px] text-gray-300 mt-1.5 uppercase tracking-widest font-bold">
+              Setting up your dashboard
             </p>
           </div>
+          <style>{`
+            @keyframes indOverlayFadeIn { from { opacity: 0; } to { opacity: 1; } }
+            @keyframes indPopIn {
+              0%   { opacity: 0; transform: scale(0.92) translateY(8px); }
+              100% { opacity: 1; transform: scale(1) translateY(0); }
+            }
+          `}</style>
         </div>
       ) : viewMode === "graphs" ? (
         <div className="flex flex-col gap-3 flex-1 min-h-0 overflow-auto pr-1">
@@ -3710,42 +4276,58 @@ kpiList={kpiList}
           <div className="overflow-auto flex-1">
             <table className="w-full text-xs border-collapse">
 <thead className="sticky top-0 z-40">
-<tr style={{ backgroundColor: colors.primary }}>
-<th className="sticky left-0 top-0 z-50 text-center px-5 py-3 border-r border-white/20 min-w-[250px]" style={{ backgroundColor: colors.primary }}>
-    <span style={header2Style}>KPI</span>
-  </th>
+<tr style={{
+  background: "rgba(255,255,255,0.95)",
+  backdropFilter: "blur(24px)",
+  WebkitBackdropFilter: "blur(24px)",
+  boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
+}}>
+<th className="sticky left-0 top-0 z-50 text-left px-6 py-3 border-r border-gray-100 min-w-[250px]"
+  style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", height: "64px" }}>
+  <div className="flex items-baseline gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
+    <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>KPI</span>
+    <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>Dashboard</span>
+  </div>
+</th>
 {orderedCols.flatMap((col, ci) => {
                     const label = viewMode === "dimension" ? (dimensionPivots.get(col)?.name ?? col) : companyLegalName(col);
                     const cells = [
-                      <th key={col}
+<th key={col}
                         draggable
                         onDragStart={() => setColDragIdx(ci)}
                         onDragOver={e => { e.preventDefault(); setColDragOverIdx(ci); }}
                         onDragEnd={handleColDragEnd}
                         className={`text-center px-4 py-3 whitespace-nowrap min-w-[140px] cursor-grab select-none transition-all ${colDragOverIdx === ci ? "opacity-50" : ""}`}
-                        style={{ backgroundColor: colors.primary }}>
-                        <span style={header2Style}>{label}</span>
+                        style={{ background: "transparent" }}>
+                        <span className="font-black tracking-tight inline-block"
+                          style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em", animation: `kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) ${0.10 + ci * 0.03}s both` }}>
+                          {label}
+                        </span>
                       </th>
                     ];
                     if (compareMode) {
                       cells.push(
-                        <th key={`${col}__cmp`}
+<th key={`${col}__cmp`}
                           className="text-center px-4 py-3 whitespace-nowrap min-w-[140px]"
-                          style={{ backgroundColor: colors.primary, opacity: 0.85 }}>
-                          <span style={header2Style}>{label} (cmp)</span>
+                          style={{ background: "transparent" }}>
+                          <span className="font-black tracking-tight inline-block" style={{ color: `${colors.primary}80`, fontSize: 13, letterSpacing: "-0.02em" }}>{label} (cmp)</span>
                         </th>,
                         <th key={`${col}__delta`}
                           className="text-center px-4 py-3 whitespace-nowrap min-w-[140px]"
-                          style={{ backgroundColor: colors.primary, opacity: 0.7 }}>
-                          <span style={header2Style}>Δ</span>
+                          style={{ background: "transparent" }}>
+                          <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>Δ</span>
                         </th>
                       );
                     }
                     return cells;
                   })}
-<th className="sticky right-0 top-0 z-50 px-4 py-3 whitespace-nowrap border-l border-white/20 min-w-[160px] text-center" style={{ backgroundColor: colors.primary }}>
-                    <span style={header2Style}>Total / Avg</span>
-                  </th>
+<th className="sticky right-0 top-0 z-50 px-4 py-3 whitespace-nowrap border-l border-gray-100 min-w-[160px] text-center"
+  style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}>
+  <span className="font-black tracking-tight inline-block"
+    style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em", animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
+    Total / Avg
+  </span>
+</th>
                 </tr>
               </thead>
               <tbody>
@@ -3763,65 +4345,79 @@ kpiList={kpiList}
                       ? validVals.reduce((a, b) => a + b, 0) / validVals.length
                       : validVals.reduce((a, b) => a + b, 0);
 
-                  return (
+return (
                     <tr key={kpi.id}
                       draggable
                       onDragStart={() => setDragIdx(globalIdx)}
                       onDragOver={e => { e.preventDefault(); setDragOverIdx(globalIdx); }}
                       onDragEnd={handleDragEnd}
-                      className={`border-b border-gray-50 hover:bg-[#f8f9ff] transition-colors group ${dragOverIdx === globalIdx ? "bg-[#eef1fb]" : ""}`}>
+                      className={`border-b border-gray-100 bg-white hover:bg-[#eef1fb]/60 transition-colors group ${dragOverIdx === globalIdx ? "bg-[#eef1fb]" : ""}`}
+                      style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(globalIdx, 25) * 40}ms both` }}>
 
-              <td className="sticky left-0 z-20 px-4 py-3 bg-white border-r border-gray-100 group-hover:bg-[#f8f9ff]">
-                        <div className="flex items-center gap-2">
-                          <div className="opacity-0 group-hover:opacity-40 transition-opacity cursor-grab text-gray-400 flex-shrink-0">
-                            <GripVertical size={11} />
-                          </div>
-<div className="flex flex-col gap-0.5 flex-1 min-w-0">
-  <div className="flex items-center gap-1.5">
-    <span className="truncate" style={body1Style}>{kpi.label}</span>
+<td className="sticky left-0 z-20 bg-white border-r border-gray-100 group-hover:bg-[#eef1fb]/40 transition-colors"
+  style={{ padding: "14px 20px" }}>
+  <div className="flex items-center gap-2.5">
+    <div className="opacity-0 group-hover:opacity-30 transition-opacity cursor-grab text-gray-400 flex-shrink-0">
+      <GripVertical size={11} />
+    </div>
+    <div className="flex-1 min-w-0">
+      <div className="flex items-center gap-2 mb-1">
+<span className="truncate" style={{ ...body1Style, fontSize: (parseFloat(body1Style.fontSize) + 2) + "px" }}>
+          {kpi.label}
+        </span>
 {kpi.category && (
-      <span className="px-1.5 py-0.5 rounded-md flex-shrink-0"
-        style={{ backgroundColor: colors.primary, ...underscore2Style }}>
-        {kpi.category}
-      </span>
-    )}
-    {kpi._contextMappingId !== undefined && (
-      <span className="px-1.5 py-0.5 rounded-md flex-shrink-0 text-[8px] font-black uppercase tracking-widest"
-        style={{
-          backgroundColor: kpi._contextMappingId ? "#fef3c7" : "#dcfce7",
-          color:           kpi._contextMappingId ? "#92400e" : "#15803d",
-        }}
-        title={kpi._contextMappingId
-          ? "Custom KPI · under a custom mapping"
-          : "Custom KPI · standard view"}>
-        {kpi._contextMappingId ? "MAPPED" : "CUSTOM"}
-      </span>
-    )}
+          <span className="px-2 py-0.5 rounded-full flex-shrink-0"
+            style={{ background: `${colors.primary}12`, color: colors.primary, ...body1Style, fontWeight: 900 }}>
+            {kpi.category}
+          </span>
+        )}
+{kpi._isOverridden && (
+          <span className="px-2 py-0.5 rounded-full flex-shrink-0 text-[8px] font-black uppercase tracking-wider"
+            style={{ background: "#ede9fe", color: "#6d28d9" }}>
+            edited
+          </span>
+        )}
+        {kpi._contextMappingId !== undefined && (
+          <span className="px-2 py-0.5 rounded-full flex-shrink-0 text-[8px] font-black uppercase tracking-wider"
+            style={{
+              background: kpi._contextMappingId ? "#fef3c7" : "#dcfce7",
+              color:      kpi._contextMappingId ? "#92400e" : "#15803d",
+            }}>
+            {kpi._contextMappingId ? "mapped" : "custom"}
+          </span>
+        )}
+      </div>
+{kpi.description && (
+        <span className="truncate block" style={body2Style}>
+          {kpi.description}
+        </span>
+      )}
+    </div>
+    <div className="opacity-0 group-hover:opacity-100 transition-all flex items-center gap-1 flex-shrink-0">
+      <button onClick={() => setEditingKpi(kpi)}
+        className="w-6 h-6 rounded-lg flex items-center justify-center transition-all hover:scale-110"
+        style={{ background: `${colors.primary}12`, color: colors.primary }}>
+        <Edit3 size={9} />
+      </button>
+      <button onClick={() => deleteKpi(kpi.id)}
+        className="w-6 h-6 rounded-lg flex items-center justify-center transition-all hover:scale-110"
+        style={{ background: "#fee2e2", color: "#dc2626" }}>
+        <Trash2 size={9} />
+      </button>
+    </div>
   </div>
-  {kpi.description && <span className="truncate" style={underscore3Style}>{kpi.description}</span>}
-</div>
-                          <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 flex-shrink-0">
-                            <button onClick={() => setEditingKpi(kpi)}
-                              className="w-6 h-6 rounded-lg bg-[#eef1fb] hover:bg-[#1a2f8a] hover:text-white text-[#1a2f8a] flex items-center justify-center transition-all">
-                              <Edit3 size={10} />
-                            </button>
-                            <button onClick={() => deleteKpi(kpi.id)}
-                              className="w-6 h-6 rounded-lg bg-red-50 hover:bg-red-500 hover:text-white text-red-400 flex items-center justify-center transition-all">
-                              <Trash2 size={10} />
-                            </button>
-                          </div>
-                        </div>
-                      </td>
+</td>
 {values.flatMap((val, ci) => {
                         const col = orderedCols[ci];
-                        const cellStyle = val === null
-                          ? { ...body1Style, color: "#D1D5DB" }
-                          : { ...body1Style, color: val < 0 ? "#EF4444" : "#000000" };
+const bColor = getBenchmarkColor(val, kpi.benchmark);
                         const out = [
                           <td key={col}
-                            className="px-4 py-3 text-center whitespace-nowrap"
-                            style={cellStyle}>
-                            {val === null ? "—" : fmtValue(val, kpi.format)}
+                            className="px-4 py-3 text-center whitespace-nowrap transition-all"
+                            style={bColor ? {
+                              background: bColor.bg,
+                              borderLeft: `2px solid ${bColor.border}`,
+                            } : undefined}>
+                            <AnimatedCell value={val} format={kpi.format} baseStyle={{ ...body1Style, color: bColor ? bColor.text : undefined }} />
                           </td>
                         ];
 if (compareMode) {
@@ -3852,20 +4448,19 @@ if (compareMode) {
                             ? { ...body1Style, color: "#D1D5DB" }
                             : { ...body1Style, color: delta < 0 ? "#EF4444" : "#059669" };
 
-                          out.push(
-                            <td key={`${col}__cmp`}
-                              className="px-4 py-3 text-center whitespace-nowrap bg-[#fafbff]"
-                              style={cmpStyle}>
-                              {cmpValid ? fmtValue(cmpVal, kpi.format) : "—"}
+out.push(
+<td key={`${col}__cmp`}
+                              className="px-4 py-3 text-center whitespace-nowrap bg-[#fafbff]">
+                              <AnimatedCell value={cmpValid ? cmpVal : null} format={kpi.format} baseStyle={body1Style} />
                             </td>,
                             <td key={`${col}__delta`}
                               className="px-4 py-3 text-center whitespace-nowrap bg-[#f5f7ff]"
                               style={deltaStyle}>
                               {delta === null ? "—" : (
-                                <div className="flex flex-col gap-0.5 leading-tight">
-                                  <span>{fmtValue(delta, kpi.format)}</span>
+                                <div className="flex flex-col gap-0.5 leading-tight items-center">
+                                  <AnimatedCell value={delta} format={kpi.format} baseStyle={body1Style} />
                                   {deltaPct !== null && (
-                                    <span className="text-[9px] opacity-70">{deltaPct >= 0 ? "+" : ""}{deltaPct.toFixed(1)}%</span>
+                                    <span className="text-[9px] opacity-70" style={{ color: delta < 0 ? "#EF4444" : "#059669" }}>{deltaPct >= 0 ? "+" : ""}{deltaPct.toFixed(1)}%</span>
                                   )}
                                 </div>
                               )}
@@ -3875,29 +4470,43 @@ if (compareMode) {
                         return out;
                       })}
 
-<td className="sticky right-0 px-4 py-3 text-center whitespace-nowrap border-l border-gray-100 bg-[#eef1fb] group-hover:bg-[#e4e8f8]"
-                        style={{
-                          ...body1Style,
-                          color: aggregate === null ? "#D1D5DB" : aggregate < 0 ? "#EF4444" : "#000000",
-                        }}>
-                        {aggregate === null ? "—" : (
-                          <>
-                            {fmtValue(aggregate, kpi.format)}
-                            <span className="text-[9px] font-normal text-gray-400 ml-1">{kpi.format === "percent" ? "avg" : "Σ"}</span>
-                          </>
-                        )}
-                      </td>
+{(() => {
+                          const aggColor = getBenchmarkColor(aggregate, kpi.benchmark);
+                          return (
+<td className="sticky right-0 px-4 py-3 text-center whitespace-nowrap transition-all"
+                              style={{
+                                background: aggColor ? aggColor.bg : "linear-gradient(90deg, rgba(26,47,138,0.05) 0%, rgba(26,47,138,0.02) 100%)",
+                                borderLeft: aggColor ? `2px solid ${aggColor.border}` : "1px solid #e5e7eb",
+                              }}>
+                              {aggregate === null ? (
+                                <span style={{ ...body1Style, color: "#D1D5DB" }}>—</span>
+                              ) : (
+                                <>
+                                  <AnimatedCell value={aggregate} format={kpi.format} baseStyle={{ ...body1Style, color: aggColor ? aggColor.text : undefined }} />
+                                  <span className="text-[9px] font-normal text-gray-400 ml-1">{kpi.format === "percent" ? "avg" : "Σ"}</span>
+                                </>
+                              )}
+                            </td>
+                          );
+                        })()}
                     </tr>
                   );
                 })}
 
-                {/* Add row prompt */}
-<tr>
-  <td className="sticky left-0 bg-white px-5 py-3">
-    <button onClick={() => setEditingKpi("new")}
-      className="flex items-center gap-1.5 text-[11px] font-bold text-gray-300 hover:text-[#1a2f8a] transition-colors">
-      <Plus size={11} /> Add KPI row
-    </button>
+{/* Add row prompt */}
+<tr className="group cursor-pointer" onClick={() => setEditingKpi("new")}>
+  <td colSpan={1 + orderedCols.length * (compareMode ? 3 : 1) + 1} className="px-5 py-2">
+    <div className="flex items-center justify-center gap-2.5 py-2.5 rounded-xl transition-all duration-200 group-hover:bg-[#eef1fb]"
+      style={{ border: `1.5px dashed ${colors.primary}25` }}>
+      <div className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 transition-all duration-200 group-hover:scale-110"
+        style={{ background: colors.primary, color: "white", boxShadow: `0 4px 10px -2px ${colors.primary}50` }}>
+        <Plus size={12} strokeWidth={3} />
+      </div>
+      <span className="text-[11px] font-black uppercase tracking-[0.18em] transition-colors duration-200"
+        style={{ color: colors.primary, opacity: 0.6 }}>
+        Add KPI
+      </span>
+    </div>
   </td>
 </tr>
               </tbody>
@@ -3915,10 +4524,20 @@ if (compareMode) {
           kpi={editingKpi === "new" ? null : editingKpi}
           onSave={saveKpi}
           onClose={() => setEditingKpi(null)}
+          onReset={resetSystemOverride}
+          onEditLibraryKpi={(k) => { setEditingKpi(k); }}
+          onDeleteLibraryKpi={async (id) => {
+            try {
+              await archiveCompanyKpi({ kpiId: id, userId: authUserId });
+              setCompanyKpis(prev => prev.filter(k => k.kpi_id !== id));
+              removeFromDashboard(id);
+            } catch (e) { alert(`Could not delete: ${e.message}`); }
+          }}
           kpiList={kpiList}
           allLocalKpis={localKpis}
           accountCodes={allAccountCodes}
           builtInIds={new Set(resolvedKpiList.map(k => k.id))}
+          currentUserId={authUserId}
         />
       )}
     </div>

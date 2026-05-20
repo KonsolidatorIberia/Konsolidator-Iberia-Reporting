@@ -1,4 +1,4 @@
-// src/lib/mappingsApi.js
+// src/lib/report_mappingsApi.js
 // All Supabase CRUD for the public.mappings table.
 // Uses the publishable key + the user's session token for RLS.
 
@@ -54,7 +54,7 @@ export async function getActiveCompanyId(userId) {
 // ════════════════════════════════════════════════════════════════
 export async function listMappings({ companyId, standard = null }) {
   if (!companyId) return [];
-  let url = `${SUPABASE_URL}/mappings?select=*&company_id=eq.${companyId}&is_archived=eq.false&order=updated_at.desc`;
+  let url = `${SUPABASE_URL}/report_mappings?select=*&company_id=eq.${companyId}&is_archived=eq.false&order=updated_at.desc`;
   if (standard) url += `&standard=eq.${standard}`;
   const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) {
@@ -99,7 +99,7 @@ export async function listMappings({ companyId, standard = null }) {
 // ════════════════════════════════════════════════════════════════
 export async function getMapping(mappingId) {
   const res = await fetch(
-    `${SUPABASE_URL}/mappings?select=*&mapping_id=eq.${mappingId}`,
+    `${SUPABASE_URL}/report_mappings?select=*&mapping_id=eq.${mappingId}`,
     { headers: authHeaders() }
   );
   if (!res.ok) {
@@ -128,7 +128,7 @@ export async function createMapping({
     created_by: userId,
     updated_by: userId,
   };
-  const res = await fetch(`${SUPABASE_URL}/mappings`, {
+  const res = await fetch(`${SUPABASE_URL}/report_mappings`, {
     method: "POST",
     headers: authHeaders({ Prefer: "return=representation" }),
     body: JSON.stringify(payload),
@@ -157,7 +157,7 @@ export async function updateMapping({
   if (highlightedIds !== undefined) payload.highlighted_ids = highlightedIds;
 
   const res = await fetch(
-    `${SUPABASE_URL}/mappings?mapping_id=eq.${mappingId}`,
+    `${SUPABASE_URL}/report_mappings?mapping_id=eq.${mappingId}`,
     {
       method: "PATCH",
       headers: authHeaders({ Prefer: "return=representation" }),
@@ -178,7 +178,7 @@ export async function updateMapping({
 // ════════════════════════════════════════════════════════════════
 export async function archiveMapping({ mappingId }) {
   const res = await fetch(
-    `${SUPABASE_URL}/mappings?mapping_id=eq.${mappingId}`,
+    `${SUPABASE_URL}/report_mappings?mapping_id=eq.${mappingId}`,
     {
       method: "DELETE",
       headers: authHeaders(),
@@ -186,7 +186,7 @@ export async function archiveMapping({ mappingId }) {
   );
   if (!res.ok) {
     const err = await res.text();
-    console.error("[mappingsApi] deleteMapping failed:", err);
+    console.error("[reportMappingsApi] deleteMapping failed:", err);
     throw new Error(err || "Delete failed");
   }
   return true;

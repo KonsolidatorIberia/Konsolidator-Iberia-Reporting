@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useLayoutEffect } from "react";
-import { ChevronDown, MoreHorizontal, GitCompareArrows, Calendar, CalendarRange } from "lucide-react";
+import { ChevronDown, MoreHorizontal, GitCompareArrows, Calendar, CalendarRange, Search, X } from "lucide-react";
 import { useSettings, useTypo, useT } from "./SettingsContext.jsx";
 
 const SPRING = "cubic-bezier(0.34, 1.56, 0.64, 1)";
@@ -13,10 +13,43 @@ export function FilterPill({ label, value, onChange, options = [] }) {
 
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
+  const [search, setSearch] = useState("");
   const ref = useRef(null);
   const filterTypo = useTypo("filter");
   const { colors } = useSettings();
-  const display = options.find(o => String(o.value) === String(value))?.label ?? "—";
+
+const showSearch = options.length >= 6;
+const filteredOptions = search.trim()
+  ? options.filter(o => String(o.label ?? "").toLowerCase().includes(search.toLowerCase()))
+  : options;
+
+const [highlightIdx, setHighlightIdx] = useState(0);
+
+useEffect(() => {
+  if (!open) { setSearch(""); setHighlightIdx(0); }
+}, [open]);
+
+// Reset highlight to top whenever the filtered list changes
+useEffect(() => { setHighlightIdx(0); }, [search]);
+
+const handleKeyDown = (e) => {
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    setHighlightIdx(i => Math.min(i + 1, filteredOptions.length - 1));
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    setHighlightIdx(i => Math.max(i - 1, 0));
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    const picked = filteredOptions[highlightIdx];
+    if (picked) { onChange(picked.value); setOpen(false); }
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    setOpen(false);
+  }
+};
+const matchedOption = options.find(o => String(o.value) === String(value));
+const display = matchedOption?.displayLabel ?? matchedOption?.label ?? "—";
 
   useEffect(() => {
     function handler(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
@@ -70,7 +103,7 @@ export function FilterPill({ label, value, onChange, options = [] }) {
           }} />
       </button>
 
-      {open && (
+{open && (
         <div className="absolute top-full left-0 mt-2 z-50 min-w-[180px] rounded-2xl overflow-hidden"
           style={{
             background: "rgba(255,255,255,0.95)",
@@ -80,20 +113,49 @@ export function FilterPill({ label, value, onChange, options = [] }) {
             boxShadow: "0 20px 50px -12px rgba(26,47,138,0.18), 0 0 0 1px rgba(255,255,255,0.5) inset",
             animation: "dropdownIn 240ms cubic-bezier(0.34,1.56,0.64,1)",
           }}>
+          {showSearch && (
+            <div className="px-2 pt-2 pb-1.5 border-b border-gray-50">
+              <div className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg"
+                style={{ background: "rgba(26,47,138,0.04)" }}>
+                <Search size={11} style={{ color: colors.primary, opacity: 0.5 }} />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  autoFocus
+                  placeholder="Search…"
+                  className="text-xs outline-none bg-transparent flex-1 min-w-0"
+                  style={{ color: colors.primary }}
+                />
+                {search && (
+                  <button onClick={() => setSearch("")}>
+                    <X size={10} style={{ color: colors.primary, opacity: 0.4 }} />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
           <div className="p-1.5 max-h-72 overflow-y-auto">
-            {options.map(o => {
+            {filteredOptions.length === 0 ? (
+              <div className="px-3 py-4 text-center text-[10px] text-gray-300 italic">
+                No matches
+              </div>
+            ) : filteredOptions.map((o, idx) => {
               const selected = String(value) === String(o.value);
+              const highlighted = idx === highlightIdx;
               return (
                 <button key={o.value}
                   onClick={() => { onChange(o.value); setOpen(false); }}
+                  onMouseEnter={() => setHighlightIdx(idx)}
                   className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between gap-3"
                   style={{
-                    background: selected ? colors.primary : "transparent",
+                    background: selected
+                      ? colors.primary
+                      : highlighted ? "rgba(26,47,138,0.10)" : "transparent",
                     color: selected ? "#fff" : "#475569",
-                    transition: `background 180ms ${SMOOTH}, color 180ms ${SMOOTH}, transform 220ms ${SPRING}`,
-                  }}
-                  onMouseEnter={e => { if (!selected) e.currentTarget.style.background = "rgba(26,47,138,0.06)"; }}
-                  onMouseLeave={e => { if (!selected) e.currentTarget.style.background = "transparent"; }}>
+                    transition: `background 180ms ${SMOOTH}, color 180ms ${SMOOTH}`,
+                  }}>
                   {o.label}
                   {selected && <span className="w-1.5 h-1.5 rounded-full bg-white/70 flex-shrink-0" />}
                 </button>
@@ -119,9 +181,40 @@ export function FilterPill({ label, value, onChange, options = [] }) {
 export function MultiFilterPill({ label, values, onChange, options }) {
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
+  const [search, setSearch] = useState("");
   const ref = useRef(null);
   const filterTypo = useTypo("filter");
   const { colors } = useSettings();
+
+const showSearch = options.length >= 6;
+const filteredOptions = search.trim()
+  ? options.filter(o => String(o.label ?? "").toLowerCase().includes(search.toLowerCase()))
+  : options;
+
+const [highlightIdx, setHighlightIdx] = useState(0);
+
+useEffect(() => {
+  if (!open) { setSearch(""); setHighlightIdx(0); }
+}, [open]);
+
+useEffect(() => { setHighlightIdx(0); }, [search]);
+
+const handleKeyDown = (e) => {
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    setHighlightIdx(i => Math.min(i + 1, filteredOptions.length - 1));
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    setHighlightIdx(i => Math.max(i - 1, 0));
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    const picked = filteredOptions[highlightIdx];
+    if (picked) toggle(picked.value);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    setOpen(false);
+  }
+};
 
   useEffect(() => {
     function handler(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
@@ -129,11 +222,12 @@ export function MultiFilterPill({ label, values, onChange, options }) {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  const allSelected = !values || values.length === options.length;
-  const display = allSelected
-    ? `All (${options.length})`
-    : values.length === 0 ? "None"
-    : values.length === 1 ? (options.find(o => o.value === values[0])?.label ?? "1") : `${values.length} selected`;
+const allSelected = !values || values.length === options.length;
+const noneSelected = Array.isArray(values) && values.length === 0;
+const isDefault = allSelected || noneSelected;
+const display = isDefault
+  ? label
+  : values.length === 1 ? (options.find(o => o.value === values[0])?.label ?? "1") : `${values.length} selected`;
 
   const toggle = (v) => {
     const current = values ?? options.map(o => o.value);
@@ -154,21 +248,46 @@ export function MultiFilterPill({ label, values, onChange, options }) {
           background: open || hover ? "rgba(26,47,138,0.06)" : "transparent",
           transition: `background 220ms ${SMOOTH}`,
         }}>
-        <span className="inline-flex items-center overflow-hidden whitespace-nowrap"
-          style={{
-            maxWidth: showLabel ? 100 : 0, opacity: showLabel ? 1 : 0, marginRight: showLabel ? 6 : 0,
-            transition: `max-width 320ms ${SPRING}, opacity 220ms ${SMOOTH}, margin-right 320ms ${SPRING}`,
-          }}>
-          <span className="text-[9px] font-black uppercase tracking-[0.18em] leading-none"
-            style={{ color: colors.primary, opacity: 0.55 }}>{label}</span>
-        </span>
+{!isDefault && (
+          <span className="inline-flex items-center overflow-hidden whitespace-nowrap"
+            style={{
+              maxWidth: showLabel ? 100 : 0, opacity: showLabel ? 1 : 0, marginRight: showLabel ? 6 : 0,
+              transition: `max-width 320ms ${SPRING}, opacity 220ms ${SMOOTH}, margin-right 320ms ${SPRING}`,
+            }}>
+            <span className="text-[9px] font-black uppercase tracking-[0.18em] leading-none"
+              style={{ color: colors.primary, opacity: 0.55 }}>{label}</span>
+          </span>
+        )}
         <span style={{ ...filterTypo, letterSpacing: "-0.005em", lineHeight: 1 }}>{display}</span>
         <ChevronDown size={11} style={{ color: colors.primary, opacity: 0.4, transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: `transform 280ms ${SPRING}` }} />
       </button>
 
-      {open && (
+{open && (
         <div className="absolute top-full left-0 mt-2 z-50 min-w-[220px] rounded-2xl overflow-hidden"
           style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: "1px solid rgba(26,47,138,0.08)", boxShadow: "0 20px 50px -12px rgba(26,47,138,0.18)", animation: "dropdownIn 240ms cubic-bezier(0.34,1.56,0.64,1)" }}>
+          {showSearch && (
+            <div className="px-2 pt-2 pb-1.5 border-b border-gray-50">
+              <div className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg"
+                style={{ background: "rgba(26,47,138,0.04)" }}>
+                <Search size={11} style={{ color: colors.primary, opacity: 0.5 }} />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  autoFocus
+                  placeholder="Search…"
+                  className="text-xs outline-none bg-transparent flex-1 min-w-0"
+                  style={{ color: colors.primary }}
+                />
+                {search && (
+                  <button onClick={() => setSearch("")}>
+                    <X size={10} style={{ color: colors.primary, opacity: 0.4 }} />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
           <div className="p-1.5 max-h-72 overflow-y-auto">
             <button onClick={() => onChange(allSelected ? [] : null)}
               className="w-full text-left px-3 py-2 rounded-xl text-xs font-black uppercase tracking-widest flex items-center gap-3 border-b border-gray-100 mb-1"
@@ -181,14 +300,23 @@ export function MultiFilterPill({ label, values, onChange, options }) {
               </span>
               {allSelected ? "Deselect all" : "Select all"}
             </button>
-            {options.map(o => {
+            {filteredOptions.length === 0 ? (
+              <div className="px-3 py-4 text-center text-[10px] text-gray-300 italic">
+                No matches
+              </div>
+            ) : filteredOptions.map((o, idx) => {
               const selected = (values ?? options.map(x => x.value)).includes(o.value);
+              const highlighted = idx === highlightIdx;
               return (
-                <button key={o.value} onClick={() => toggle(o.value)}
+                <button key={o.value}
+                  onClick={() => toggle(o.value)}
+                  onMouseEnter={() => setHighlightIdx(idx)}
                   className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-3"
-                  style={{ color: "#475569" }}
-                  onMouseEnter={e => { e.currentTarget.style.background = "rgba(26,47,138,0.06)"; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>
+                  style={{
+                    color: "#475569",
+                    background: highlighted ? "rgba(26,47,138,0.10)" : "transparent",
+                    transition: `background 180ms ${SMOOTH}`,
+                  }}>
                   <span className="w-4 h-4 rounded-md border flex items-center justify-center flex-shrink-0"
                     style={{ backgroundColor: selected ? colors.primary : "#fff", borderColor: selected ? colors.primary : "#d4d4d8" }}>
                     {selected && <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2 6L5 9L10 3" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
@@ -333,21 +461,20 @@ export function TabSwitcher({ tabs, activeTab, onChange, onHoverChange }) {
               transform: hovered && !active ? "translateY(-0.5px)" : "translateY(0)",
             }}>
 <Icon size={15} strokeWidth={active ? 2.5 : 2} />
-            <span className="overflow-hidden whitespace-nowrap text-[12px] font-bold tracking-tight"
-              style={{
-                maxWidth: expanded && t.label ? 140 : 0,
-                opacity:  expanded && t.label ? 1 : 0,
-                marginLeft: expanded && t.label ? 2 : 0,
-                // Expand fires immediately; collapse waits 60ms and runs slightly
-                // longer, so when the cursor moves to a new tab the new label
-                // starts opening before the old one starts closing — smooths the
-                // residual layout shimmer from labels having different widths.
-                transition: expanded
-                  ? `max-width 320ms ${SPRING}, opacity 220ms ${SMOOTH}, margin-left 320ms ${SPRING}`
-                  : `max-width 380ms ${SPRING} 60ms, opacity 260ms ${SMOOTH} 60ms, margin-left 380ms ${SPRING} 60ms`,
-              }}>
-              {t.label}
-            </span>
+{t.label && (
+              <span className="overflow-hidden whitespace-nowrap text-[12px] font-bold tracking-tight"
+                style={{
+                  maxWidth: 140,
+                  opacity: 1,
+                  marginLeft: 2,
+                  color: active ? colors.primary : hovered ? colors.primary : "#7d8aa3",
+                  transform: hovered && !active ? "scale(1.06)" : "scale(1)",
+                  transition: `color 240ms ${SMOOTH}, transform 280ms ${SPRING}`,
+                  display: "inline-block",
+                }}>
+                {t.label}
+              </span>
+            )}
           </button>
         );
       })}
@@ -595,6 +722,7 @@ style={{
 ═══════════════════════════════════════════════════════════════ */
 export default function PageHeader({
   kicker,
+  titleSuffix,
   title,
   tabs,
   activeTab,
@@ -602,8 +730,12 @@ export default function PageHeader({
   filters = [],
   periodToggle,
   compareToggle,
-  aiToggle,       // { onClick: () => void }
-  fabActions,
+  aiToggle,
+fabActions,
+  onBack,
+headerSearch,
+  headerActions,
+  headerExtra,
 }) {
 const { colors } = useSettings();
   const headerStyle = useTypo("header1");
@@ -614,33 +746,46 @@ const { colors } = useSettings();
   const displayTitle = activeTabObj?.label ?? title;
 
 return (
-    <div className="relative sticky top-0 z-50 bg-[#f8f9ff]">
+<div className="relative sticky top-0 z-50 bg-[#f8f9ff] overflow-visible">
       {/* Match sidebar's logo card height (7vh) and rounded card vibe */}
 <div className="flex items-stretch gap-0 relative overflow-visible bg-white rounded-2xl shadow-xl border border-gray-100"
-        style={{
+style={{
           height: "7vh",
           padding: "0 18px",
         }}>
 
         {/* Brand block — title morphs based on hovered tab */}
-        <div className="flex items-center gap-2.5 flex-shrink-0 pr-4">
+<div className="flex items-center gap-2.5 min-w-0 pr-4">
+          {onBack && (
+            <button
+              onClick={onBack}
+              className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-gray-100 transition-colors flex-shrink-0"
+              title="Back"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: colors.primary }}>
+                <path d="M15 18l-6-6 6-6"/>
+              </svg>
+            </button>
+          )}
           <div className="w-1 h-9 rounded-full"
             style={{
               background: `linear-gradient(180deg, ${colors.primary} 0%, ${colors.primary}88 100%)`,
             }} />
-          <div className="overflow-hidden">
+<div className="overflow-visible min-w-0">
             {kicker && (
               <p className="uppercase tracking-[0.22em] leading-none mb-1 text-[10px] font-black"
                 style={{ color: colors.primary, opacity: 0.5 }}>
                 {kicker}
               </p>
             )}
-            <h1 key={displayTitle}
+<h1 key={displayTitle}
               style={{
                 ...headerStyle,
                 lineHeight: 1,
                 letterSpacing: "-0.018em",
                 animation: `titleMorph 380ms ${SPRING}`,
+                whiteSpace: "nowrap",
+                overflow: "visible",
               }}>
               {displayTitle}
             </h1>
@@ -648,6 +793,7 @@ return (
         </div>
 
         {/* Divider */}
+        {titleSuffix && (<><SoftDivider /><div className="px-3 flex items-center"><span className="text-sm font-bold" style={{ color: colors.primary, opacity: 0.65 }}>{titleSuffix}</span></div></>)}
         {(tabs || filters.length > 0) && <SoftDivider />}
 
         {/* Tabs */}
@@ -699,11 +845,11 @@ return (
                   <span className="text-[10px] font-black text-white uppercase tracking-wider">AI</span>
                 </button>
               )}
-              {periodToggle && (
+{periodToggle && (
                 <button
                   onClick={() => periodToggle.onChange(periodToggle.value === "monthly" ? "ytd" : "monthly")}
-                 title={periodToggle.value === "ytd" ? `${t("mode_ytd")} — click for ${t("mode_monthly")}` : `${t("mode_monthly")} — click for ${t("mode_ytd")}`}
-                  className="flex items-center justify-center w-9 h-9 rounded-full flex-shrink-0"
+                  title={periodToggle.value === "ytd" ? `${t("mode_ytd")} — click for ${t("mode_monthly")}` : `${t("mode_monthly")} — click for ${t("mode_ytd")}`}
+                  className="flex items-center gap-1.5 px-3 h-9 rounded-full flex-shrink-0"
                   style={{
                     background: "rgba(26,47,138,0.06)",
                     color: colors.primary,
@@ -711,36 +857,82 @@ return (
                     boxShadow: "0 1px 3px -1px rgba(26,47,138,0.1)",
                     transition: `all 240ms ${SMOOTH}`,
                   }}
-                  onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.05)"; }}
-                  onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; }}>
+                  onMouseEnter={e => { e.currentTarget.style.background = `${colors.primary}12`; e.currentTarget.style.transform = "scale(1.03)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "rgba(26,47,138,0.06)"; e.currentTarget.style.transform = "scale(1)"; }}>
                   {periodToggle.value === "ytd"
-                    ? <CalendarRange size={15} strokeWidth={2.4} />
-                    : <Calendar size={15} strokeWidth={2.4} />}
+                    ? <CalendarRange size={13} strokeWidth={2.4} />
+                    : <Calendar size={13} strokeWidth={2.4} />}
+                  <span className="text-[10px] font-black uppercase tracking-wider">
+                    {periodToggle.value === "ytd" ? t("mode_ytd") : t("mode_monthly")}
+                  </span>
                 </button>
               )}
-              {compareToggle && (
+{compareToggle && (
                 <button
-                  onClick={() => compareToggle.onChange(!compareToggle.active)}
-                  title={compareToggle.active ? `${t("btn_compare")} ✕` : t("btn_compare_with")}
-                  className="flex items-center justify-center w-9 h-9 rounded-full flex-shrink-0"
+onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareToggle.active); }}
+                  title={compareToggle.disabled ? "Disable history view first" : compareToggle.active ? `${t("btn_compare")} ✕` : t("btn_compare_with")}
+                  className="flex items-center gap-1.5 px-3 h-9 rounded-full flex-shrink-0"
                   style={{
-                    background: compareToggle.active ? colors.primary : "rgba(26,47,138,0.06)",
-                    color: compareToggle.active ? "white" : colors.primary,
+                    background: compareToggle.disabled ? "rgba(26,47,138,0.03)" : compareToggle.active ? colors.primary : "rgba(26,47,138,0.06)",
+                    color: compareToggle.disabled ? "rgba(26,47,138,0.25)" : compareToggle.active ? "white" : colors.primary,
+                    cursor: compareToggle.disabled ? "not-allowed" : "pointer",
                     border: compareToggle.active ? `1px solid ${colors.primary}` : "1px solid rgba(26,47,138,0.1)",
                     boxShadow: compareToggle.active
                       ? "0 4px 12px -2px rgba(26,47,138,0.35)"
                       : "0 1px 3px -1px rgba(26,47,138,0.1)",
                     transition: `all 240ms ${SMOOTH}`,
                   }}
-                  onMouseEnter={e => { if (!compareToggle.active) e.currentTarget.style.transform = "scale(1.05)"; }}
-                  onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; }}>
-                  <GitCompareArrows size={15} strokeWidth={compareToggle.active ? 2.4 : 2} />
+                  onMouseEnter={e => { if (!compareToggle.active) { e.currentTarget.style.transform = "scale(1.03)"; e.currentTarget.style.background = `${colors.primary}12`; } }}
+                  onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; if (!compareToggle.active) e.currentTarget.style.background = "rgba(26,47,138,0.06)"; }}>
+                  <GitCompareArrows size={13} strokeWidth={compareToggle.active ? 2.4 : 2} />
+                  <span className="text-[10px] font-black uppercase tracking-wider">
+                    {t("btn_compare") ?? "CMP"}
+                  </span>
                 </button>
               )}
             </div>
           </>
         )}
 
+{/* Header search */}
+        {headerSearch && (
+          <>
+            <SoftDivider />
+            <div className="flex items-center gap-2 px-3">
+              <div className="flex items-center gap-2 rounded-xl px-3 py-1.5 border border-gray-100 bg-gray-50">
+                <Search size={12} className="text-gray-400 flex-shrink-0" />
+                <input type="text" value={headerSearch.value} onChange={e => headerSearch.onChange(e.target.value)} placeholder={headerSearch.placeholder ?? "Search…"} className="text-xs outline-none bg-transparent text-gray-700 placeholder:text-gray-300 w-40" />
+                {headerSearch.value && <button onClick={() => headerSearch.onChange("")}><X size={11} className="text-gray-400 hover:text-gray-600" /></button>}
+              </div>
+            </div>
+          </>
+        )}
+        {/* Header actions */}
+        {headerActions?.length > 0 && (
+          <>
+            <SoftDivider />
+            <div className="flex items-center gap-2 px-3">
+              {headerActions.map((action, i) => {
+                const Icon = action.icon;
+                return (
+                  <button key={i} onClick={action.onClick} title={action.label} className="flex items-center justify-center w-8 h-8 rounded-xl transition-all hover:scale-105" style={{ background: colors.primary, color: "white", boxShadow: `0 4px 12px -4px ${colors.primary}60` }}>
+                    <Icon size={14} />
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+{/* Header extra — raw JSX slot */}
+        {headerExtra && (
+          <>
+            <SoftDivider />
+            <div className="flex items-center gap-2 px-3">
+              {headerExtra}
+            </div>
+          </>
+        )}
+        
         {/* FAB embedded at the right edge */}
         {fabActions && (
           <>

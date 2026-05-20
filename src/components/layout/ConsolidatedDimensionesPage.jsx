@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Search, Database, GitMerge, Maximize2, Minimize2, Library, Download, TrendingUp, Scale } from "lucide-react";
 import PageHeader from "./PageHeader.jsx";
-import MappingsModal from "./Mappings.jsx";
 import { useTypo, useSettings } from "./SettingsContext";
 const BASE_URL = "";
 
@@ -1588,12 +1587,7 @@ kicker="Consolidated"
         ]}
       />
 
-      <MappingsModal
-        open={viewsModalOpen}
-        onClose={() => setViewsModalOpen(false)}
-        groupAccounts={groupAccountsLocal}
-        onApply={() => {}}
-      />
+
 
       {loading ? (
         <div className="flex items-center justify-center flex-1">

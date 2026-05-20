@@ -2,13 +2,14 @@ import React, { useState, useEffect, useMemo, useCallback, useRef, } from "react
 import {
   FileText, Search, Loader2, AlertCircle, Filter,
   ChevronDown, ChevronRight, Hash, Download, Calendar, Database, Network,
-  RefreshCw, X, GitMerge, BookOpen, Upload, BarChart2, TrendingUp, Library,
-  CheckCircle2,
+  RefreshCw, X, GitMerge, BookOpen, Upload, BarChart2, TrendingUp,
+  CheckCircle2, Eye, Library, Layers, Pencil,
 } from "lucide-react";
 import { useSettings, useTypo, useT, useLocale } from "./SettingsContext.jsx";
-import MappingsModal from "./Mappings.jsx";
-import PageHeader from "./PageHeader.jsx";
+import { useLatestPeriod } from "./LatestPeriodContext.jsx";
+import PageHeader, { FilterPill as HeaderFilterPill, MultiFilterPill as HeaderMultiFilterPill } from "./PageHeader.jsx";
 const BASE_URL = "";
+
 
 /* ═══════════════════════════════════════════════════════════════
    DIMENSION PARSING — Konsolidator API Dimensions field
@@ -21,6 +22,25 @@ function parseDimensionsField(str) {
     if (idx === -1) return null;
     return { group: pair.slice(0, idx).trim(), code: pair.slice(idx + 1).trim() };
   }).filter(Boolean);
+}
+
+function rowMatchesDimMulti(r, groups, codes) {
+  // groups: array of group names or null (all)
+  // codes: array of dimension codes or null (all)
+  // null/empty on both → row passes
+  const groupsActive = Array.isArray(groups) && groups.length > 0;
+  const codesActive  = Array.isArray(codes)  && codes.length  > 0;
+  if (!groupsActive && !codesActive) return true;
+
+  const raw = r.Dimensions ?? r.dimensions ?? "";
+  const dims = parseDimensionsField(raw);
+  if (!dims.length) return false;
+
+  return dims.some(d => {
+    const groupOk = !groupsActive || groups.includes(d.group);
+    const codeOk  = !codesActive  || codes.includes(String(d.code));
+    return groupOk && codeOk;
+  });
 }
 
 function rowMatchesDim(r, group, code) {
@@ -52,6 +72,17 @@ function formatColumnLabel(key) {
   return key.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase()).trim();
 }
 
+const useMonths = () => {
+  const t = useT();
+  return [
+    { value: 1, label: t("month_1") }, { value: 2, label: t("month_2") },
+    { value: 3, label: t("month_3") }, { value: 4, label: t("month_4") },
+    { value: 5, label: t("month_5") }, { value: 6, label: t("month_6") },
+    { value: 7, label: t("month_7") }, { value: 8, label: t("month_8") },
+    { value: 9, label: t("month_9") }, { value: 10, label: t("month_10") },
+    { value: 11, label: t("month_11") }, { value: 12, label: t("month_12") },
+  ];
+};
 const MONTHS = [
   { value: 1, label: "January" }, { value: 2, label: "February" },
   { value: 3, label: "March" }, { value: 4, label: "April" },
@@ -99,6 +130,7 @@ function DataTable({
   onRefresh,
   leftControls = null
 }) {
+   const t = useT();
   const cols = data.length > 0 ? Object.keys(data[0]).filter((c) => !hiddenCols.has(c)) : [];
   const filtered = search.trim()
     ? data.filter((row) => Object.values(row).some((v) => String(v ?? "").toLowerCase().includes(search.toLowerCase())))
@@ -108,12 +140,12 @@ function DataTable({
     <div className="space-y-4">
 <div className="flex items-center gap-3 flex-wrap">
   <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-[#eef1fb] text-[#1a2f8a]">
-    <Hash size={11} />{data.length} records
+   <Hash size={11} />{data.length} {t("table_records")}
   </div>
 
   {search && (
     <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-50 text-amber-600">
-      {filtered.length} matching
+      {filtered.length} {t("table_matching")}
     </div>
   )}
 
@@ -130,7 +162,7 @@ function DataTable({
         type="text"
         value={search}
         onChange={(e) => setSearch(e.target.value)}
-        placeholder="Search results…"
+        placeholder={t("table_search_placeholder")}
         className="text-xs outline-none text-gray-700 w-40 bg-transparent placeholder:text-gray-300"
       />
       {search && (
@@ -144,16 +176,16 @@ function DataTable({
       onClick={onRefresh}
       className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-gray-100 shadow-sm text-xs font-bold text-gray-400 hover:text-[#1a2f8a] hover:border-[#1a2f8a]/20 transition-all"
     >
-      <RefreshCw size={12} /> Refresh
+     <RefreshCw size={12} /> {t("btn_refresh")}
     </button>
   </div>
 </div>
       {filtered.length > 0 ? (
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-          <div className="overflow-auto" style={{ maxHeight: 'calc(114.7vh - 320px)' }}>
+         <div className="scrollbar-hide" style={{ height: 'calc(100vh - 160px)', overflowY: 'auto' }}>
             <table className="w-full">
-             <thead>
-                <tr className="border-b border-gray-100 bg-[#1a2f8a]/5">
+<thead className="sticky top-0 z-10">
+  <tr className="border-b border-gray-100 bg-[#1a2f8a]/5">
                   <th className="text-left px-4 py-3 text-xs font-black text-gray-400 uppercase tracking-widest w-10 bg-[#eef1fb]">#</th>
                   {cols.map((col) => (
 <th key={col} className="text-left px-4 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest whitespace-nowrap bg-[#eef1fb]">                      {formatColumnLabel(col)}
@@ -177,15 +209,17 @@ function DataTable({
       ) : (
         <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center">
           <FileText size={28} className="text-gray-200 mx-auto mb-3" />
-          <p className="text-gray-400 text-sm font-semibold">No records found</p>
-          <p className="text-gray-300 text-xs mt-1">{search ? "Try a different search term" : "No data for the selected filters"}</p>
+<p className="text-gray-400 text-sm font-semibold">{t("table_no_records")}</p>
+          <p className="text-gray-300 text-xs mt-1">{search ? t("table_try_different_search") : t("table_no_data_filters")}</p>
         </div>
       )}
     </div>
   );
 }
 
-function EmptyState({ message = "Loading…", sub = "" }) {
+function EmptyState({ message, sub = "" }) {
+  const t = useT();
+  message = message ?? t("loading_data");
   return (
     <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
       <div className="w-14 h-14 bg-[#eef1fb] rounded-2xl flex items-center justify-center mx-auto mb-4">
@@ -198,13 +232,14 @@ function EmptyState({ message = "Loading…", sub = "" }) {
 }
 
 function ErrorBox({ error, onRetry }) {
+  const t = useT();
   return (
     <div className="bg-red-50 border border-red-100 rounded-2xl p-5 flex items-start gap-3">
       <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
       <div>
-        <p className="text-sm font-bold text-red-600">Failed to load data</p>
+        <p className="text-sm font-bold text-red-600">{t("error_failed_load")}</p>
         <p className="text-xs text-red-400 mt-1 font-mono break-all">{error}</p>
-        {onRetry && <button onClick={onRetry} className="mt-2 text-xs font-bold text-red-500 underline underline-offset-2">Retry</button>}
+        {onRetry && <button onClick={onRetry} className="mt-2 text-xs font-bold text-red-500 underline underline-offset-2">{t("btn_retry")}</button>}
       </div>
     </div>
   );
@@ -500,7 +535,7 @@ function DimensionRow({ node, depth }) {
     <tr className="hover:bg-amber-50/40 transition-colors">
       <td className="py-1" style={{ paddingLeft: depth * INDENT + 8 }}>
         <div className="flex items-center gap-1.5">
-          <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded flex-shrink-0">dim</span>
+          <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded flex-shrink-0">{t("label_dim")}</span>
           <span className="text-xs text-gray-400 italic">{node.name || node.code}</span>
           {node.company && <span className="text-[10px] text-gray-300 ml-1">· {node.company}</span>}
         </div>
@@ -602,9 +637,40 @@ const total = sumNode(node);
   );
 }
 
+function useCountUp(target, duration = 2000) {
+  const [display, setDisplay] = useState(0);
+  const fromRef = useRef(0);
+  const startRef = useRef(null);
+  const rafRef = useRef(null);
+
+  useEffect(() => {
+    cancelAnimationFrame(rafRef.current);
+    fromRef.current = display;
+    startRef.current = null;
+    const from = Number(fromRef.current) || 0;
+    const to = Number(target) || 0;
+    if (from === to) { setDisplay(to); return; }
+
+    const tick = (ts) => {
+      if (startRef.current === null) startRef.current = ts;
+      const elapsed = ts - startRef.current;
+      const t = Math.min(1, elapsed / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(from + (to - from) * eased);
+      if (t < 1) rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, duration]);
+
+  return display;
+}
+
 function PLAmountCell({ value, divider, typoStyle }) {
+  const animated = useCountUp(value ?? 0, 1000);
   const isEmpty = value === 0;
-  const isNeg   = value < 0;
+  const isNeg   = animated < 0;
   const semanticColor = isEmpty ? "#D1D5DB" : isNeg ? "#EF4444" : null;
 
   const style = {
@@ -613,9 +679,9 @@ function PLAmountCell({ value, divider, typoStyle }) {
     ...(divider ? { borderLeft: "2px solid #e2e8f0" } : {}),
   };
 
-  return (
-    <td className="pr-6 py-3 text-right whitespace-nowrap min-w-[144px] flex-shrink-0" style={style}>
-      {isEmpty ? "—" : isNeg ? `(${fmtAmt(Math.abs(value))})` : fmtAmt(value)}
+return (
+<td className="pl-8 pr-6 py-3 text-right whitespace-nowrap tabular-nums" style={{ ...style, width: "140px" }}>
+      {isEmpty ? "—" : isNeg ? `(${fmtAmt(Math.abs(animated))})` : fmtAmt(animated)}
     </td>
   );
 }
@@ -636,11 +702,11 @@ function DeviationCells({ a, b, typoStyle }) {
   const style = { ...(typoStyle ?? {}), color };
 
   return (
-    <>
-      <td className="pr-6 py-3 text-right whitespace-nowrap min-w-[112px] flex-shrink-0" style={style}>
+<>
+      <td className="pl-4 pr-4 py-3 text-right whitespace-nowrap" style={{ ...style, width: "1px" }}>
         {diffStr}
       </td>
-      <td className="pr-6 py-3 text-right whitespace-nowrap min-w-[80px] flex-shrink-0" style={style}>
+      <td className="pl-2 pr-4 py-3 text-right whitespace-nowrap" style={{ ...style, width: "1px" }}>
         {pctStr}
       </td>
     </>
@@ -2778,7 +2844,11 @@ renderPage('Balance Sheet — Summary',isFirst,makeBSCols(),bsSumFl.map(r=>toBSR
 }
 
 function PLStatement({
-  groupAccounts, uploadedAccounts, prevUploadedAccounts = [],
+  externalExpandedMap, externalSetExpandedMap,
+  token,
+  upDimGroups, upDimensions,
+  onHistoryExpandedChange,
+  groupAccounts, uploadedAccounts, prevUploadedAccounts = [], dimensions = [],
   compareMode, onToggleCompare,
   cmpUploadedAccounts = [], cmpPrevUploadedAccounts = [],
   cmpFilters, onCmpFilterChange,
@@ -2791,8 +2861,12 @@ loading, error, month, year, source, structure,
 journalEntries = [], journalEntriesCmp = [], journalEntriesCmp2 = [], dimensionActive = false,
 breakers = { pl: {}, bs: {}, cf: {} },
   pgcMapping = null,
+savedPlLiteral = null,
+  savedHighlightedIds = null,
   ytdOnly = false,
 }) {
+    console.log("[PL-ENTRY]", { hasLiteral: !!savedPlLiteral, isArr: Array.isArray(savedPlLiteral), len: savedPlLiteral?.length });
+
 const { colors } = useSettings();
 const header3Style = useTypo("header3");
 const t = useT();
@@ -2800,15 +2874,65 @@ const t = useT();
 const localName = useCallback((node) => {
   return pgcMapping?.names?.get(String(node.code)) ?? node.name;
 }, [pgcMapping]);
-
+const MONTHS = useMonths();
 const body1Style = useTypo("body1");
 const body2Style = useTypo("body2");
 const subbody1Style = useTypo("subbody1");
 const subbody2Style = useTypo("subbody2");
 const header2Style = useTypo("header2");
-const [expandedMap, setExpandedMap] = useState({});
+const expandedMap = externalExpandedMap ?? {};
+const setExpandedMap = externalSetExpandedMap ?? (() => {});
+const [hoveredDimRow, setHoveredDimRow] = useState(null);
 const [summaryMode, setSummaryMode] = useState(true);
-  const [filtersOpen, setFiltersOpen] = useState(true);
+const [filtersOpen, setFiltersOpen] = useState(true);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [historyMonths, setHistoryMonths] = useState([]); // [{ year, month, data, prevData }]
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const fetchHistoryMonth = useCallback(async (y, mo) => {
+    if (!token || !source || !structure || !y || !mo) return { data: [], prevData: [] };
+    const h = { Authorization: `Bearer ${token}`, Accept: "application/json" };
+    const buildFilter = (yy, mm) => `Year eq ${yy} and Month eq ${mm} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+    try {
+      const resA = await fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(buildFilter(y, mo))}`, { headers: h });
+      const jsonA = resA.ok ? await resA.json() : { value: [] };
+      const data = jsonA.value ?? (Array.isArray(jsonA) ? jsonA : []);
+      let prev = [];
+      if (Number(mo) !== 1) {
+        const resB = await fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(buildFilter(y, Number(mo) - 1))}`, { headers: h });
+        const jsonB = resB.ok ? await resB.json() : { value: [] };
+        prev = jsonB.value ?? (Array.isArray(jsonB) ? jsonB : []);
+      }
+      return { data, prevData: prev };
+    } catch { return { data: [], prevData: [] }; }
+  }, [token, source, structure]);
+
+  const toggleHistory = useCallback(async () => {
+    if (compareMode) return; // disabled in compare mode
+if (historyExpanded) {
+      setHistoryExpanded(false);
+      setHistoryMonths([]);
+      onHistoryExpandedChange?.(false);
+      return;
+    }
+setHistoryExpanded(true);
+    onHistoryExpandedChange?.(true);
+    setHistoryLoading(true);
+    // Compute the 11 previous months from (year, month)
+const targets = [];
+    let y = Number(year), m = Number(month);
+    for (let i = 0; i < 5; i++) {
+      m -= 1;
+      if (m < 1) { m = 12; y -= 1; }
+      targets.push({ year: y, month: m });
+    }
+    // Fetch sequentially, push as each resolves
+    for (const t of targets) {
+      const { data, prevData } = await fetchHistoryMonth(t.year, t.month);
+      setHistoryMonths(prev => [...prev, { year: t.year, month: t.month, data, prevData }]);
+    }
+    setHistoryLoading(false);
+  }, [compareMode, historyExpanded, year, month, fetchHistoryMonth]);
   
 const [jrnPopup, setJrnPopup] = useState(null);
 const [dimPopup, setDimPopup] = useState(null);
@@ -2934,6 +3058,8 @@ const journalByCode = useMemo(() => {
   (journalEntries || []).forEach(row => {
     const code = String(row.accountCode ?? row.AccountCode ?? row.AccountCode ?? "");
     if (!code) return;
+    const jt = String(row.journalType ?? row.JournalType ?? "").toUpperCase();
+    if (jt !== "AJE" && jt !== "RJE") return;
     if (!idx.has(code)) idx.set(code, []);
     idx.get(code).push(row);
   });
@@ -2945,6 +3071,8 @@ const journalByCodeCmp = useMemo(() => {
   (journalEntriesCmp || []).forEach(row => {
     const code = String(row.accountCode ?? row.AccountCode ?? "");
     if (!code) return;
+    const jt = String(row.journalType ?? row.JournalType ?? "").toUpperCase();
+    if (jt !== "AJE" && jt !== "RJE") return;
     if (!idx.has(code)) idx.set(code, []);
     idx.get(code).push(row);
   });
@@ -2956,6 +3084,8 @@ const journalByCodeCmp2 = useMemo(() => {
   (journalEntriesCmp2 || []).forEach(row => {
     const code = String(row.accountCode ?? row.AccountCode ?? "");
     if (!code) return;
+    const jt = String(row.journalType ?? row.JournalType ?? "").toUpperCase();
+    if (jt !== "AJE" && jt !== "RJE") return;
     if (!idx.has(code)) idx.set(code, []);
     idx.get(code).push(row);
   });
@@ -3026,6 +3156,43 @@ const cmp2PrevNodeByCode = useMemo(() => {
   cmp2PrevTree.forEach(walk);
   return map;
 }, [cmp2PrevTree]);
+
+// History months: filter raw data by dims, build trees, build code lookups
+const historyMonthsProcessed = useMemo(() => {
+  return historyMonths.map(h => {
+    const filteredData = h.data.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions));
+    const filteredPrev = h.prevData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions));
+    const tree = buildTree(groupAccounts, filteredData, !((upDimGroups?.length > 0) || (upDimensions?.length > 0)));
+    const prevTree = buildTree(groupAccounts, filteredPrev, !((upDimGroups?.length > 0) || (upDimensions?.length > 0)));
+    const map = new Map();
+    const prevMap = new Map();
+    const walk = (m) => (n) => { m.set(n.code, n); n.children?.forEach(walk(m)); };
+    tree.forEach(walk(map));
+    prevTree.forEach(walk(prevMap));
+    // Leaf index: localAccountCode → YTD amount
+    const leafIdx = new Map();
+    const prevLeafIdx = new Map();
+    filteredData.forEach(row => {
+      const lac = String(getField(row, "localAccountCode") ?? "");
+      if (!lac) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      leafIdx.set(lac, (leafIdx.get(lac) ?? 0) + amt);
+    });
+    filteredPrev.forEach(row => {
+      const lac = String(getField(row, "localAccountCode") ?? "");
+      if (!lac) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      prevLeafIdx.set(lac, (prevLeafIdx.get(lac) ?? 0) + amt);
+    });
+    return { year: h.year, month: h.month, map, prevMap, leafIdx, prevLeafIdx };
+  });
+}, [historyMonths, upDimGroups, upDimensions, groupAccounts]);
+
+const getHistYtd = useCallback((h, code) => { const n = h.map.get(code); return n ? sumNode(n) : 0; }, []);
+const getHistPrev = useCallback((h, code) => {
+  if (Number(h.month) === 1) return 0;
+  const n = h.prevMap.get(code); return n ? sumNode(n) : 0;
+}, []);
 
 const getCmp2Ytd = useCallback((code) => { const n = cmp2NodeByCode.get(code); return n ? sumNode(n) : 0; }, [cmp2NodeByCode]);
 const getCmp2Prev = useCallback((code) => {
@@ -3211,9 +3378,873 @@ const handleExportXlsx = () => {
   if (loading) return (
     <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
       <Loader2 size={28} className="text-[#1a2f8a] animate-spin mx-auto mb-3" />
-      <p className="text-gray-400 text-sm">Loading P&L data…</p>
+     <p className="text-gray-400 text-sm">{t("loading_pl_data")}</p>
     </div>
   );
+
+// ────────────────────────────────────────────────────────────
+  //  SAVED-MAPPING LITERAL RENDER PATH
+  //  Activated only when a user-saved mapping is applied.
+  //  Renders the mapping tree literally: duplicates preserved,
+  //  dim filters applied, mapping hierarchy used (not groupAccounts).
+  //  Standard PGC / Danish / Spanish-IFRS paths below are bypassed.
+  // ────────────────────────────────────────────────────────────
+const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.value) === String(cmpFilters.month))?.label, cmpFilters.source, cmpFilters.dimension].filter(Boolean).join(" · ") || "Period B" : "";
+  const cmp2Label = compareMode ? [cmp2Filters?.year, MONTHS.find(m => String(m.value) === String(cmp2Filters?.month))?.label, cmp2Filters?.source, cmp2Filters?.dimension].filter(Boolean).join(" · ") || "Period C" : "";
+
+  if (savedPlLiteral && !loading) {
+// Build a lookup by code into the standard group-account tree.
+// Build a lookup by code into the standard group-account tree.
+    // This way every node total (no-dim case) uses the SAME computation
+    // as the standard renderer: rolled-up sumNode across uploadLeaves + children.
+    const treeByCode = new Map();
+    (function indexTree(nodes) {
+      nodes.forEach(n => { treeByCode.set(String(n.code), n); indexTree(n.children || []); });
+    })(tree);
+
+    // Dim indexes — built from the raw uploaded rows, scoped to each accountCode.
+    // dimFullIdx:  `${code}|${group}:${value}` → sum
+    // dimValIdx:   `${code}|${value}`          → sum
+    // We also walk down to descendant codes so a node mapped at a parent code
+    // picks up dims on its children (matches sumNode's roll-up behavior).
+const dimFullIdx = new Map();
+    const dimValIdx  = new Map();
+    // name→code lookup built per row (DimensionCode + DimensionName flat columns)
+    const dimNameToCode = new Map(); // key="group:name" → code
+    (uploadedAccounts || []).forEach(row => {
+      const code = String(getField(row, "accountCode") ?? "");
+      if (!code) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+
+      // Capture name→code mapping from flat row fields
+      const dCode = String(getField(row, "DimensionCode", "dimensionCode") ?? "").trim();
+      const dName = String(getField(row, "DimensionName", "dimensionName") ?? "").trim();
+
+      const dimsStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+      if (!dimsStr) return;
+      dimsStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+        const i = pair.indexOf(":");
+        if (i === -1) return;
+        const g = pair.slice(0, i).trim();
+        const v = pair.slice(i + 1).trim();
+        // numeric-keyed entries (as before)
+dimFullIdx.set(`${code}|${g}:${v}`, (dimFullIdx.get(`${code}|${g}:${v}`) ?? 0) + amt);
+        dimValIdx.set(`${code}|${v}`,       (dimValIdx.get(`${code}|${v}`)       ?? 0) + amt);
+        if (dName && v === dCode) {
+          dimFullIdx.set(`${code}|${g}:${dName}`, (dimFullIdx.get(`${code}|${g}:${dName}`) ?? 0) + amt);
+          dimValIdx.set(`${code}|${dName}`,       (dimValIdx.get(`${code}|${dName}`)       ?? 0) + amt);
+          dimNameToCode.set(`${g}:${dName}`, dCode);
+        }
+      });
+    });
+
+    // Build name→code lookup from dimensions metadata, then add name-keyed entries
+    if (Array.isArray(dimensions) && dimensions.length > 0) {
+      const nameToCode = new Map(); // "Centro de Coste:Estudio" → "1"
+      dimensions.forEach(d => {
+        const group = String(d.dimensionGroup ?? d.DimensionGroup ?? d.groupName ?? d.GroupName ?? "").trim();
+        const code  = String(d.dimensionCode  ?? d.DimensionCode  ?? d.code      ?? d.Code      ?? "").trim();
+        const name  = String(d.dimensionName  ?? d.DimensionName  ?? d.name      ?? d.Name      ?? "").trim();
+        if (group && code && name) nameToCode.set(`${group}:${name}`, code);
+      });
+      console.log("[NAME-MAP] dimensions metadata entries:", nameToCode.size, "sample:", [...nameToCode.entries()].slice(0, 5));
+      // Mirror every existing code-keyed entry under a name-keyed entry
+      [...dimFullIdx.entries()].forEach(([k, v]) => {
+        const pipe = k.indexOf("|");
+        const accCode = k.slice(0, pipe);
+        const rest = k.slice(pipe + 1);          // "Group:Code"
+        const colon = rest.indexOf(":");
+        if (colon === -1) return;
+        const group = rest.slice(0, colon);
+        const codeVal = rest.slice(colon + 1);
+        for (const [nameKey, mappedCode] of nameToCode.entries()) {
+          if (mappedCode === codeVal && nameKey.startsWith(`${group}:`)) {
+            const name = nameKey.slice(group.length + 1);
+            dimFullIdx.set(`${accCode}|${group}:${name}`, v);
+            dimValIdx.set(`${accCode}|${name}`, v);
+            break;
+          }
+        }
+      });
+    }
+
+    // PROBE: see if name-keying is actually happening
+    if (typeof window !== "undefined") {
+      let nameKeyCount = 0;
+      let probedRows = 0;
+      (uploadedAccounts || []).forEach(row => {
+        const code = String(getField(row, "accountCode") ?? "");
+        if (code !== "700000") return;
+        const dCode = String(getField(row, "DimensionCode", "dimensionCode") ?? "").trim();
+        const dName = String(getField(row, "DimensionName", "dimensionName") ?? "").trim();
+        const dimsStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+        if (probedRows < 3) {
+          console.log(`[NAME-PROBE] 700000 row: DimensionCode="${dCode}" DimensionName="${dName}" Dimensions="${dimsStr}"`);
+          probedRows++;
+        }
+        if (dName) nameKeyCount++;
+      });
+      console.log(`[NAME-PROBE] 700000 rows with non-empty DimensionName: ${nameKeyCount}`);
+      console.log(`[NAME-PROBE] dimValIdx keys for 700000:`, [...dimValIdx.keys()].filter(k => k.startsWith("700000|")));
+    }
+    // PROBE: see what dimension metadata is available in scope
+    if (typeof window !== "undefined") {
+      console.log("[DIM-META-PROBE] window.__dimensions:", typeof window.__dimensions);
+      try { console.log("[DIM-META-PROBE] effectiveDimensions:", typeof effectiveDimensions !== "undefined" ? effectiveDimensions : "undefined"); } catch (e) { console.log("[DIM-META-PROBE] effectiveDimensions: NOT IN SCOPE"); }
+      try { console.log("[DIM-META-PROBE] dimensions:", typeof dimensions !== "undefined" ? dimensions : "undefined"); } catch (e) { console.log("[DIM-META-PROBE] dimensions: NOT IN SCOPE"); }
+      try { console.log("[DIM-META-PROBE] dataRef:", typeof dataRef !== "undefined" ? dataRef : "undefined"); } catch (e) { console.log("[DIM-META-PROBE] dataRef: NOT IN SCOPE"); }
+      try { console.log("[DIM-META-PROBE] dimensionsData:", typeof dimensionsData !== "undefined" ? dimensionsData : "undefined"); } catch (e) { console.log("[DIM-META-PROBE] dimensionsData: NOT IN SCOPE"); }
+    }
+
+    // For dim-filtered nodes: walk the group-account subtree and sum any
+    // descendant whose dim matches, so a parent code with dim filter rolls up.
+    const sumDimRecursive = (gaNode, dimStr) => {
+      if (!gaNode) return 0;
+      let total = 0;
+      const code = String(gaNode.code);
+      if (dimStr.includes(":")) {
+        total += dimFullIdx.get(`${code}|${dimStr}`) ?? 0;
+      } else {
+        total += dimValIdx.get(`${code}|${dimStr}`) ?? 0;
+      }
+      (gaNode.children || []).forEach(c => { total += sumDimRecursive(c, dimStr); });
+      return total;
+    };
+
+if (typeof window !== "undefined") {
+      console.log("[SAVED-PL] treeByCode has 603000?", treeByCode.has("603000"), "700000?", treeByCode.has("700000"), "610000?", treeByCode.has("610000"));
+      // Are we using the same tree the standard renderer uses?
+      console.log("[SAVED-PL] tree length:", tree.length, "treeByCode size:", treeByCode.size);
+      console.log("[SAVED-PL] uploadedAccounts length:", (uploadedAccounts || []).length);
+      const sample700 = treeByCode.get("700000");
+      console.log("[SAVED-PL] 700000 node:", sample700);
+      console.log("[SAVED-PL] sumNode(700000):", sample700 ? sumNode(sample700) : "no-node");
+      // Sample raw row counts by company:
+      const byCo = {};
+      (uploadedAccounts || []).forEach(r => {
+        const c = String(r.CompanyShortName ?? r.companyShortName ?? "?");
+        byCo[c] = (byCo[c] ?? 0) + 1;
+      });
+      console.log("[SAVED-PL] uploadedAccounts company counts:", byCo);
+
+      const probe = (code) => {
+        const full = [...dimFullIdx.entries()].filter(([k]) => k.startsWith(code + "|"));
+        const val  = [...dimValIdx.entries()].filter(([k]) => k.startsWith(code + "|"));
+        const totalAcc = treeByCode.get(code) ? sumNode(treeByCode.get(code)) : "NO_TREE_NODE";
+        console.log(`[SAVED-PL] ${code}: sumNode=${totalAcc}, dimFull entries=${full.length}, dimVal entries=${val.length}`);
+        console.log(`  dimFull:`, full);
+        console.log(`  dimVal:`, val);
+      };
+      probe("603000");
+      probe("700000");
+      probe("700000i");
+      probe("600000");
+      probe("610000");
+
+      const rows610 = (uploadedAccounts || []).filter(r => String(getField(r, "accountCode") ?? "") === "610000");
+      console.log(`[SAVED-PL] raw uploaded rows for 610000 (count=${rows610.length}):`, rows610.map(r => ({
+        amt: getField(r, "AmountYTD", "amountYTD"),
+        dims: getField(r, "Dimensions", "dimensions")
+      })));
+    }
+    // Dump every saved node's dims vs what dimFullIdx/dimValIdx know for that code
+    if (typeof window !== "undefined") {
+      console.log("[SAVED-PL] === DIM MATCH DEBUG ===");
+      // Probe the actual fields on one row to find dim name field
+      const probe700 = (uploadedAccounts || []).find(r => String(getField(r, "accountCode") ?? "") === "700000" && getField(r, "Dimensions", "dimensions"));
+      if (probe700) {
+        console.log("[SAVED-PL] sample 700000 row keys:", Object.keys(probe700));
+        console.log("[SAVED-PL] sample 700000 row:", probe700);
+      }
+      const walkLit = (nodes) => {
+        nodes.forEach(n => {
+          if (n.dims && n.dims.length > 0) {
+            const gaNode = treeByCode.get(String(n.code));
+            const knownFull = [...dimFullIdx.keys()].filter(k => k.startsWith(n.code + "|")).map(k => k.split("|")[1]);
+            const knownVal  = [...dimValIdx.keys()].filter(k => k.startsWith(n.code + "|")).map(k => k.split("|")[1]);
+            console.log(`  code=${n.code} name="${n.name}" SAVED dims:`, n.dims, "→ KNOWN full keys:", knownFull, "KNOWN val keys:", knownVal);
+            // Test each saved dim
+            n.dims.forEach(d => {
+              const fullHit = dimFullIdx.get(`${n.code}|${d}`);
+              const valHit  = dimValIdx.get(`${n.code}|${d}`);
+              const recur   = sumDimRecursive(gaNode, String(d));
+              console.log(`    "${d}" → fullHit=${fullHit ?? "miss"}, valHit=${valHit ?? "miss"}, sumDimRecursive=${recur}`);
+            });
+          }
+          if (n.children) walkLit(n.children);
+        });
+      };
+      savedPlLiteral.forEach(s => walkLit(s.nodes));
+    }
+
+// Build a prev-month index for monthly mode (mirrors current dimFullIdx/dimValIdx logic)
+    const prevAccIdx = new Map();
+    const prevDimFullIdx = new Map();
+    const prevDimValIdx = new Map();
+    (prevUploadedAccounts || []).forEach(row => {
+      const code = String(getField(row, "accountCode") ?? "");
+      if (!code) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      prevAccIdx.set(code, (prevAccIdx.get(code) ?? 0) + amt);
+      const dimsStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+      if (!dimsStr) return;
+      dimsStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+        const i = pair.indexOf(":");
+        if (i === -1) return;
+        const g = pair.slice(0, i).trim();
+        const v = pair.slice(i + 1).trim();
+        prevDimFullIdx.set(`${code}|${g}:${v}`, (prevDimFullIdx.get(`${code}|${g}:${v}`) ?? 0) + amt);
+        prevDimValIdx.set(`${code}|${v}`, (prevDimValIdx.get(`${code}|${v}`) ?? 0) + amt);
+      });
+    });
+// Mirror prev-month dim indexes by dim NAME using metadata
+    if (Array.isArray(dimensions) && dimensions.length > 0) {
+      const nameToCode = new Map();
+      dimensions.forEach(d => {
+        const group = String(d.dimensionGroup ?? d.DimensionGroup ?? d.groupName ?? d.GroupName ?? "").trim();
+        const code  = String(d.dimensionCode  ?? d.DimensionCode  ?? d.code      ?? d.Code      ?? "").trim();
+        const name  = String(d.dimensionName  ?? d.DimensionName  ?? d.name      ?? d.Name      ?? "").trim();
+        if (group && code && name) nameToCode.set(`${group}:${name}`, code);
+      });
+      [...prevDimFullIdx.entries()].forEach(([k, v]) => {
+        const pipe = k.indexOf("|"); const accCode = k.slice(0, pipe);
+        const rest = k.slice(pipe + 1); const colon = rest.indexOf(":");
+        if (colon === -1) return;
+        const group = rest.slice(0, colon); const codeVal = rest.slice(colon + 1);
+        for (const [nameKey, mappedCode] of nameToCode.entries()) {
+          if (mappedCode === codeVal && nameKey.startsWith(`${group}:`)) {
+            const name = nameKey.slice(group.length + 1);
+            prevDimFullIdx.set(`${accCode}|${group}:${name}`, v);
+            prevDimValIdx.set(`${accCode}|${name}`, v);
+            break;
+          }
+        }
+      });
+    }
+
+    // ── Define sumDimRecursivePrev (uses prevDimFullIdx/prevDimValIdx) ──
+    const sumDimRecursivePrev = (gaNode, dimStr) => {
+      if (!gaNode) return 0;
+      let total = 0;
+      const code = String(gaNode.code);
+      if (dimStr.includes(":")) total += prevDimFullIdx.get(`${code}|${dimStr}`) ?? 0;
+      else total += prevDimValIdx.get(`${code}|${dimStr}`) ?? 0;
+      (gaNode.children || []).forEach(c => { total += sumDimRecursivePrev(c, dimStr); });
+      return total;
+    };
+
+    // ── Compare period B indexes ───────────────────────────────
+    const cmpAccIdx = new Map();
+    const cmpDimFullIdx = new Map();
+    const cmpDimValIdx = new Map();
+    (cmpUploadedAccounts || []).forEach(row => {
+      const code = String(getField(row, "accountCode") ?? "");
+      if (!code) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      cmpAccIdx.set(code, (cmpAccIdx.get(code) ?? 0) + amt);
+      const dimsStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+      if (!dimsStr) return;
+      dimsStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+        const i = pair.indexOf(":");
+        if (i === -1) return;
+        const g = pair.slice(0, i).trim();
+        const v = pair.slice(i + 1).trim();
+        cmpDimFullIdx.set(`${code}|${g}:${v}`, (cmpDimFullIdx.get(`${code}|${g}:${v}`) ?? 0) + amt);
+        cmpDimValIdx.set(`${code}|${v}`, (cmpDimValIdx.get(`${code}|${v}`) ?? 0) + amt);
+      });
+    });
+    const cmpPrevAccIdx = new Map();
+    const cmpPrevDimFullIdx = new Map();
+    const cmpPrevDimValIdx = new Map();
+    (cmpPrevUploadedAccounts || []).forEach(row => {
+      const code = String(getField(row, "accountCode") ?? "");
+      if (!code) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      cmpPrevAccIdx.set(code, (cmpPrevAccIdx.get(code) ?? 0) + amt);
+      const dimsStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+      if (!dimsStr) return;
+      dimsStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+        const i = pair.indexOf(":");
+        if (i === -1) return;
+        const g = pair.slice(0, i).trim();
+        const v = pair.slice(i + 1).trim();
+        cmpPrevDimFullIdx.set(`${code}|${g}:${v}`, (cmpPrevDimFullIdx.get(`${code}|${g}:${v}`) ?? 0) + amt);
+        cmpPrevDimValIdx.set(`${code}|${v}`, (cmpPrevDimValIdx.get(`${code}|${v}`) ?? 0) + amt);
+      });
+    });
+
+    // ── Compare period C indexes ───────────────────────────────
+    const cmp2AccIdx = new Map();
+    const cmp2DimFullIdx = new Map();
+    const cmp2DimValIdx = new Map();
+    (cmp2UploadedAccounts || []).forEach(row => {
+      const code = String(getField(row, "accountCode") ?? "");
+      if (!code) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      cmp2AccIdx.set(code, (cmp2AccIdx.get(code) ?? 0) + amt);
+      const dimsStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+      if (!dimsStr) return;
+      dimsStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+        const i = pair.indexOf(":");
+        if (i === -1) return;
+        const g = pair.slice(0, i).trim();
+        const v = pair.slice(i + 1).trim();
+        cmp2DimFullIdx.set(`${code}|${g}:${v}`, (cmp2DimFullIdx.get(`${code}|${g}:${v}`) ?? 0) + amt);
+        cmp2DimValIdx.set(`${code}|${v}`, (cmp2DimValIdx.get(`${code}|${v}`) ?? 0) + amt);
+      });
+    });
+const cmp2PrevAccIdx = new Map();
+    const cmp2PrevDimFullIdx = new Map();
+    const cmp2PrevDimValIdx = new Map();
+    (cmp2PrevUploadedAccounts || []).forEach(row => {
+      const code = String(getField(row, "accountCode") ?? "");
+      if (!code) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      cmp2PrevAccIdx.set(code, (cmp2PrevAccIdx.get(code) ?? 0) + amt);
+      const dimsStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+      if (!dimsStr) return;
+      dimsStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+        const i = pair.indexOf(":");
+        if (i === -1) return;
+        const g = pair.slice(0, i).trim();
+        const v = pair.slice(i + 1).trim();
+        cmp2PrevDimFullIdx.set(`${code}|${g}:${v}`, (cmp2PrevDimFullIdx.get(`${code}|${g}:${v}`) ?? 0) + amt);
+        cmp2PrevDimValIdx.set(`${code}|${v}`, (cmp2PrevDimValIdx.get(`${code}|${v}`) ?? 0) + amt);
+      });
+    });
+
+    // ── Mirror dim indexes by NAME for all compare periods (same as current-period mirroring) ──
+    if (Array.isArray(dimensions) && dimensions.length > 0) {
+      const nameToCode = new Map();
+      dimensions.forEach(d => {
+        const group = String(d.dimensionGroup ?? d.DimensionGroup ?? d.groupName ?? d.GroupName ?? "").trim();
+        const code  = String(d.dimensionCode  ?? d.DimensionCode  ?? d.code      ?? d.Code      ?? "").trim();
+        const name  = String(d.dimensionName  ?? d.DimensionName  ?? d.name      ?? d.Name      ?? "").trim();
+        if (group && code && name) nameToCode.set(`${group}:${name}`, code);
+      });
+      const mirrorIdx = (fullIdx, valIdx) => {
+        [...fullIdx.entries()].forEach(([k, v]) => {
+          const pipe = k.indexOf("|"); const accCode = k.slice(0, pipe);
+          const rest = k.slice(pipe + 1); const colon = rest.indexOf(":");
+          if (colon === -1) return;
+          const group = rest.slice(0, colon); const codeVal = rest.slice(colon + 1);
+          for (const [nameKey, mappedCode] of nameToCode.entries()) {
+            if (mappedCode === codeVal && nameKey.startsWith(`${group}:`)) {
+              const name = nameKey.slice(group.length + 1);
+              fullIdx.set(`${accCode}|${group}:${name}`, v);
+              valIdx.set(`${accCode}|${name}`, v);
+              break;
+            }
+          }
+        });
+      };
+      mirrorIdx(cmpDimFullIdx, cmpDimValIdx);
+      mirrorIdx(cmpPrevDimFullIdx, cmpPrevDimValIdx);
+      mirrorIdx(cmp2DimFullIdx, cmp2DimValIdx);
+      mirrorIdx(cmp2PrevDimFullIdx, cmp2PrevDimValIdx);
+    }
+
+    const cmpTreeLit = buildTree(groupAccounts, cmpUploadedAccounts);
+    const cmpPrevTreeLit = buildTree(groupAccounts, cmpPrevUploadedAccounts);
+    const cmp2TreeLit = buildTree(groupAccounts, cmp2UploadedAccounts);
+    const cmp2PrevTreeLit = buildTree(groupAccounts, cmp2PrevUploadedAccounts);
+    const cmpTreeByCode = new Map();
+    const cmpPrevTreeByCode = new Map();
+    const cmp2TreeByCode = new Map();
+    const cmp2PrevTreeByCode = new Map();
+    (function indexCmpTree(nodes) {
+      nodes.forEach(n => { cmpTreeByCode.set(String(n.code), n); indexCmpTree(n.children || []); });
+    })(cmpTreeLit);
+    (function indexCmpPrevTree(nodes) {
+      nodes.forEach(n => { cmpPrevTreeByCode.set(String(n.code), n); indexCmpPrevTree(n.children || []); });
+    })(cmpPrevTreeLit);
+    (function indexCmp2Tree(nodes) {
+      nodes.forEach(n => { cmp2TreeByCode.set(String(n.code), n); indexCmp2Tree(n.children || []); });
+    })(cmp2TreeLit);
+    (function indexCmp2PrevTree(nodes) {
+      nodes.forEach(n => { cmp2PrevTreeByCode.set(String(n.code), n); indexCmp2PrevTree(n.children || []); });
+    })(cmp2PrevTreeLit);
+
+    const sumDimRecursiveGeneric = (gaNode, dimStr, fullIdx, valIdx) => {
+      if (!gaNode) return 0;
+      let total = 0;
+      const code = String(gaNode.code);
+      if (dimStr.includes(":")) total += fullIdx.get(`${code}|${dimStr}`) ?? 0;
+      else total += valIdx.get(`${code}|${dimStr}`) ?? 0;
+      (gaNode.children || []).forEach(c => { total += sumDimRecursiveGeneric(c, dimStr, fullIdx, valIdx); });
+      return total;
+    };
+
+    const sumLiteralForPeriod = (node, treeByCodeMap, prevTreeByCodeMap, fullIdx, valIdx, prevFullIdx, prevValIdx, periodMonth) => {
+      const gaNode = treeByCodeMap.get(String(node.code));
+      if (!gaNode) return 0;
+      if (!node.dims || node.dims.length === 0) {
+        const ytd = -sumNode(gaNode);
+        if (ytdOnly) return ytd;
+        const prevGa = prevTreeByCodeMap.get(String(node.code));
+        const prevYtd = prevGa && Number(periodMonth) !== 1 ? -sumNode(prevGa) : 0;
+        return ytd - prevYtd;
+      }
+      let total = 0;
+      node.dims.forEach(d => { total += sumDimRecursiveGeneric(gaNode, String(d), fullIdx, valIdx); });
+      const ytd = -total;
+      if (ytdOnly) return ytd;
+      let prevTotal = 0;
+      if (Number(periodMonth) !== 1) {
+        node.dims.forEach(d => { prevTotal += sumDimRecursiveGeneric(gaNode, String(d), prevFullIdx, prevValIdx); });
+      }
+      const prevYtd = -prevTotal;
+      return ytd - prevYtd;
+    };
+
+    const sumLiteralB = (node) => sumLiteralForPeriod(
+      node, cmpTreeByCode, cmpPrevTreeByCode,
+      cmpDimFullIdx, cmpDimValIdx, cmpPrevDimFullIdx, cmpPrevDimValIdx,
+      cmpFilters?.month
+    );
+    const sumLiteralC = (node) => sumLiteralForPeriod(
+      node, cmp2TreeByCode, cmp2PrevTreeByCode,
+      cmp2DimFullIdx, cmp2DimValIdx, cmp2PrevDimFullIdx, cmp2PrevDimValIdx,
+      cmp2Filters?.month
+    );
+
+
+    // Sum a literal node (YTD or Monthly based on ytdOnly toggle):
+    const sumLiteral = (node) => {
+      const gaNode = treeByCode.get(String(node.code));
+      if (!gaNode) return 0;
+      if (!node.dims || node.dims.length === 0) {
+        const ytd = -sumNode(gaNode);
+        if (ytdOnly) return ytd;
+        // Monthly = YTD - prev-month YTD (rolled up)
+        const sumPrev = (n) => {
+          if (!n) return 0;
+          let t = prevAccIdx.get(String(n.code)) ?? 0;
+          (n.children || []).forEach(c => { t += sumPrev(c); });
+          return t;
+        };
+        const prevYtd = -sumPrev(gaNode);
+        return ytd - prevYtd;
+      }
+      let total = 0;
+      node.dims.forEach(d => { total += sumDimRecursive(gaNode, String(d)); });
+      const ytd = -total;
+      if (ytdOnly) return ytd;
+      let prevTotal = 0;
+      node.dims.forEach(d => { prevTotal += sumDimRecursivePrev(gaNode, String(d)); });
+      const prevYtd = -prevTotal;
+      return ytd - prevYtd;
+    };
+
+return (
+      <div className="space-y-3 flex flex-col" style={{ minHeight: 0, flex: 1, overflow: "visible" }}>
+        <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col"
+          style={{ maxHeight: "100%", minHeight: 0, boxShadow: "0 20px 40px -8px rgba(26, 47, 138, 0.15), 0 4px 12px -2px rgba(26, 47, 138, 0.08)" }}>
+          <div className="overflow-auto scrollbar-hide" style={{ flex: 1, minHeight: 0 }}>
+<table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "auto" }}>
+              <colgroup>
+                <col style={{ width: "1px" }} />
+                <col style={{ width: "1px" }} />
+                {compareMode && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+                {compareMode && cmp2Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+                {historyExpanded && historyMonthsProcessed.map((h) => (
+                  <col key={`hist-col-${h.year}-${h.month}`} style={{ width: "1px" }} />
+                ))}
+                <col />
+              </colgroup>
+              <thead className="sticky top-0 z-10">
+                <tr className="border-b border-gray-100" style={{
+                  background: "rgba(255,255,255,0.95)",
+                  backdropFilter: "blur(24px)",
+                  WebkitBackdropFilter: "blur(24px)",
+                  boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
+                }}>
+                  <th className="text-left px-6 whitespace-nowrap" style={{ height: "64px", background: "transparent" }}>
+                    <div className="flex items-baseline gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
+                      <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>
+                        {t("col_account")}
+                      </span>
+                      <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
+                        {t("page_pl_full")}
+                      </span>
+                    </div>
+                  </th>
+                  <th className="text-right pr-6 py-3 whitespace-nowrap" style={{ background: "transparent", cursor: "pointer" }}
+                    onClick={toggleHistory}
+                    title={historyExpanded ? "Hide history" : "Show last 6 months"}>
+                    <div className="flex items-center justify-end gap-3">
+                      <span key={ytdOnly ? "ytd" : "monthly"} className="font-black tracking-tight inline-block"
+                        style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em" }}>
+                        {(ytdOnly ? t("mode_ytd") : t("mode_monthly")).split("").map((ch, i) => (
+                          <span key={i} className="inline-block"
+                            style={{
+                              animation: `letterMorph 420ms cubic-bezier(0.34, 1.56, 0.64, 1) ${i * 35}ms both`,
+                            }}>
+                            {ch}
+                          </span>
+                        ))}
+                      </span>
+                      <button onClick={(e) => {
+                        e.stopPropagation();
+if (Object.values(expandedMap).some(Boolean)) { setExpandedMap({}); return; }
+                        const next = {};
+                        savedPlLiteral.forEach((section, secIdx) => {
+                          const walk = (node, parentPath) => {
+                            const rowKey = `saved-${secIdx}-${parentPath}-${node.id}`;
+                            next[rowKey] = true;
+                            const gaNode = treeByCode.get(String(node.code));
+                            const leaves = (gaNode?.uploadLeaves || []).filter(l => l.type !== "plain");
+                            leaves.forEach((leaf, i) => {
+                              next[`${rowKey}-leaf-${i}`] = true;
+                            });
+                            (node.children || []).forEach(c => walk(c, `${parentPath}-${node.id}`));
+                          };
+                          section.nodes.forEach(n => walk(n, "root"));
+                        });
+                        setExpandedMap(next);
+                      }}
+className="flex items-center justify-center rounded-lg transition-all duration-200 hover:scale-[1.05]"
+                        style={{ background: `${colors.primary}12`, color: colors.primary, width: 28, height: 28, overflow: "hidden" }}
+                        title={Object.values(expandedMap).some(Boolean) ? t("btn_collapse_all") : t("btn_expand_all")}>
+                        <span key={Object.values(expandedMap).some(Boolean) ? "collapse" : "expand"}
+                          className="inline-flex"
+                          style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
+                          {Object.values(expandedMap).some(Boolean)
+                            ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                            : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                          }
+                        </span>
+                      </button>
+                    </div>
+                  </th>
+                  {historyExpanded && historyMonthsProcessed.map((h) => (
+                    <th key={`hist-saved-${h.year}-${h.month}`} className="text-right pr-6 py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px" }}>
+                      <div className="flex flex-col items-end">
+                        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>
+                          {MONTHS.find(m => m.value === h.month)?.label.slice(0,3)}
+                        </span>
+                        <span className="text-[10px] font-bold" style={{ color: "#9ca3af" }}>{h.year}</span>
+                      </div>
+                    </th>
+                  ))}
+{compareMode && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap" style={{ background: "transparent" }}>
+                    <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.26s both" }}>
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#CF305D" }} />
+                        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>{t("period_b")}</span>
+                      </div>
+                      <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{cmpLabel}</span>
+                    </div>
+                  </th>}
+                  {compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap" style={{ background: "transparent" }}>
+                    <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.30s both" }}>
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#57aa78" }} />
+                        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>{t("period_c")}</span>
+                      </div>
+                      <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{cmp2Label}</span>
+                    </div>
+                  </th>}
+                  {historyExpanded && historyLoading && (
+                    <th className="text-center px-3 py-3" style={{ background: "transparent" }}>
+                      <Loader2 size={14} className="animate-spin" style={{ color: colors.primary }} />
+                    </th>
+                  )}
+                  <th style={{ background: "transparent" }} />
+                </tr>
+              </thead>
+<tbody>
+                {savedPlLiteral.map((section, secIdx) => {
+                  const sectionRows = [];
+
+// Section header (breaker)
+                  if (section.label) {
+                    sectionRows.push(
+                      <tr key={`sec-${secIdx}`} style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(sectionRows.length, 25) * 35}ms both` }}>
+                      <td colSpan={3 + (compareMode ? 3 : 0) + (compareMode && cmp2Enabled ? 3 : 0) + (historyExpanded ? historyMonthsProcessed.length : 0)} style={{ backgroundColor: section.color }} className="px-6 py-1.5">
+                          <span className="uppercase tracking-widest" style={header3Style}>{section.label}</span>
+                        </td>
+                      </tr>
+                    );
+                  }
+
+                  // Walk the literal nodes recursively, respecting mapping hierarchy.
+                  const renderNode = (node, depth, parentPath) => {
+                    const val = sumLiteral(node);
+                    let displayVal = val;
+                    if (node.isSum && node.children && node.children.length > 0) {
+                      displayVal = node.children.reduce((s, c) => s + sumLiteral(c), val);
+                    }
+
+                    // Unique key per literal node (preserves duplicates across sections)
+                    const rowKey = `saved-${secIdx}-${parentPath}-${node.id}`;
+                    const expanded = !!expandedMap[rowKey];
+
+// Find the matching standard group-account node to drill into
+                    const gaNode = treeByCode.get(String(node.code));
+                    let leaves = (gaNode?.uploadLeaves || []).filter(l => l.type !== "plain");
+                    // If this saved row has dim filters, restrict leaves to those matching the dims
+                    if (node.dims && node.dims.length > 0) {
+                      // Resolve each saved dim (potentially a name) to its numeric code via nameToCode if available
+                      const acceptedKeys = new Set(); // "g:codeOrName" forms accepted
+                      node.dims.forEach(d => acceptedKeys.add(String(d)));
+                      leaves = leaves.filter(leaf => {
+                        // Each leaf represents a local account; check its underlying rows' Dimensions field
+                        const leafRows = (uploadedAccounts || []).filter(r => {
+                          const lc = String(getField(r, "localAccountCode", "LocalAccountCode") ?? "");
+                          return lc === String(leaf.code ?? "");
+                        });
+                        return leafRows.some(r => {
+                          const dimsStr = String(getField(r, "Dimensions", "dimensions") ?? "");
+                          if (!dimsStr) return false;
+                          return dimsStr.split("||").map(s => s.trim()).filter(Boolean).some(pair => {
+                            const i = pair.indexOf(":");
+                            if (i === -1) return false;
+                            const g = pair.slice(0, i).trim();
+                            const v = pair.slice(i + 1).trim();
+// Match against numeric (g:v) or name form, since saved dims may be names
+                            if (acceptedKeys.has(`${g}:${v}`)) return true;
+                            // Try resolving saved key's name to code via dimensions metadata
+                            return [...acceptedKeys].some(savedKey => {
+                              const savedColon = savedKey.indexOf(":");
+                              if (savedColon === -1) return false;
+                              const savedG = savedKey.slice(0, savedColon);
+                              const savedV = savedKey.slice(savedColon + 1);
+                              if (savedG !== g) return false;
+                              if (savedV === v) return true;
+                              // savedV is a name → look up its code via dimensions metadata
+                              const dimMeta = (dimensions || []).find(d => {
+                                const dg = String(d.dimensionGroup ?? d.DimensionGroup ?? d.groupName ?? d.GroupName ?? "").trim();
+                                const dn = String(d.dimensionName ?? d.DimensionName ?? d.name ?? d.Name ?? "").trim();
+                                return dg === savedG && dn === savedV;
+                              });
+                              if (!dimMeta) return false;
+                              const mappedCode = String(dimMeta.dimensionCode ?? dimMeta.DimensionCode ?? dimMeta.code ?? dimMeta.Code ?? "").trim();
+                              return mappedCode === v;
+                            });
+});
+                        });
+                      });
+                      // Fallback: if dim filter yields no leaves, show all leaves so user can still drill
+                      if (leaves.length === 0) {
+                        leaves = (gaNode?.uploadLeaves || []).filter(l => l.type !== "plain");
+                      }
+                    }
+const hasDrill = leaves.length > 0 || (node.children && node.children.length > 0);
+                const isHighlighted = savedHighlightedIds && (savedHighlightedIds.has?.(node.id) || savedHighlightedIds.has?.(node.originalId));
+sectionRows.push(
+<tr key={rowKey}
+                        className={`border-b border-gray-100 transition-colors ${isHighlighted ? "bg-amber-50/60 hover:bg-amber-50" : "bg-white"} ${hasDrill ? `cursor-pointer ${isHighlighted ? "" : "hover:bg-[#eef1fb]/60"}` : ""}`}
+                        style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(sectionRows.length, 25) * 35 + 50}ms both` }}
+                        onClick={hasDrill ? (e) => { e.stopPropagation(); toggle(rowKey); } : undefined}
+>
+                        <td className="py-3 whitespace-nowrap" style={{ paddingLeft: `${24 + depth * 20}px` }}>
+                          <div className="flex items-center">
+                            {hasDrill
+                              ? <span className="text-[#1a2f8a]/50 mr-2">{expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
+                              : <span className="inline-block mr-2" style={{ width: 12 }} />}
+                            {node.code && <span className="mr-2 font-mono text-gray-400" style={subbody2Style}>{node.code}</span>}
+<span style={depth === 0 ? body1Style : body2Style}>
+                              {node.name ? (node.name.charAt(0).toUpperCase() + node.name.slice(1).toLowerCase()) : node.code}
+                            </span>
+                            {isHighlighted && (
+                              <svg width="11" height="11" viewBox="0 0 24 24" fill="#f59e0b" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="ml-1.5 flex-shrink-0"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                            )}
+{node.dims && node.dims.length > 0 && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setHoveredDimRow(hoveredDimRow === rowKey ? null : rowKey);
+                                }}
+                                className={`ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border transition-colors ${
+                                  hoveredDimRow === rowKey
+                                    ? "bg-amber-100 border-amber-300"
+                                    : "bg-amber-50 border-amber-200 hover:bg-amber-100"
+                                }`}>
+                                <span className="text-amber-500" style={{ fontSize: 8 }}>◆</span>
+                                <span className="text-[9px] font-bold text-amber-600 uppercase tracking-wider">
+                                  {node.dims.length}
+                                </span>
+                              </button>
+                            )}
+                          </div>
+                        </td>
+<PLAmountCell value={displayVal} typoStyle={depth === 0 ? body1Style : body2Style} />
+                        {compareMode && (() => {
+                          let cmpVal = sumLiteralB(node);
+                          if (node.isSum && node.children && node.children.length > 0) {
+                            cmpVal = node.children.reduce((s, c) => s + sumLiteralB(c), cmpVal);
+                          }
+                          return (
+                            <>
+                              <PLAmountCell value={cmpVal} typoStyle={depth === 0 ? body1Style : body2Style} divider />
+                              <DeviationCells a={displayVal} b={cmpVal} typoStyle={depth === 0 ? body1Style : body2Style} />
+                            </>
+                          );
+                        })()}
+                        {compareMode && cmp2Enabled && (() => {
+                          let cmp2Val = sumLiteralC(node);
+                          if (node.isSum && node.children && node.children.length > 0) {
+                            cmp2Val = node.children.reduce((s, c) => s + sumLiteralC(c), cmp2Val);
+                          }
+                          return (
+                            <>
+                              <PLAmountCell value={cmp2Val} typoStyle={depth === 0 ? body1Style : body2Style} divider />
+                              <DeviationCells a={displayVal} b={cmp2Val} typoStyle={depth === 0 ? body1Style : body2Style} />
+                            </>
+                          );
+                        })()}
+                        {historyExpanded && historyMonthsProcessed.map((h) => {
+                          const histGaNode = h.map.get(String(node.code));
+                          let histVal = 0;
+                          if (histGaNode) {
+                            const ytd = -sumNode(histGaNode);
+                            if (ytdOnly) {
+                              histVal = ytd;
+                            } else {
+                              const prevNode = h.prevMap.get(String(node.code));
+                              const prevYtd = prevNode ? -sumNode(prevNode) : 0;
+                              histVal = ytd - prevYtd;
+                            }
+                          }
+                          return <PLAmountCell key={`hist-saved-cell-${h.year}-${h.month}-${node.id}`} value={histVal} typoStyle={depth === 0 ? body1Style : body2Style} />;
+                        })}
+                        <td />
+                      </tr>
+                    );
+                    // Hover expansion: show each dim breakdown inline
+                   if (hoveredDimRow === rowKey && node.dims && node.dims.length > 0) {
+                      const gaForHover = treeByCode.get(String(node.code));
+                      node.dims.forEach((d, di) => {
+                        const dimVal = -sumDimRecursive(gaForHover, String(d));
+                        sectionRows.push(
+<tr key={`${rowKey}-hoverdim-${di}`}
+                            className="border-b border-amber-100 bg-amber-50/40 transition-colors">
+                            <td className="py-1.5" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
+                              <div className="flex items-center gap-1.5">
+                                <div className="w-2 h-px bg-amber-300 flex-shrink-0" />
+                               <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded flex-shrink-0">{t("label_dim")}</span>
+                                <span style={subbody2Style}>{String(d).split(":").pop()}</span>
+                              </div>
+                            </td>
+<PLAmountCell value={dimVal} typoStyle={subbody2Style} />
+                            {compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+                            {compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+                            {historyExpanded && historyMonthsProcessed.map((h) => (
+                              <td key={`hist-saved-dim-${h.year}-${h.month}-${di}`} />
+                            ))}
+                            <td />
+                          </tr>
+                        );
+                      });
+                    }
+
+                    // Drill-down: local accounts + dim breakdown for this group account
+                    if (expanded && hasDrill) {
+                      leaves.forEach((leaf, i) => {
+                        const leafKey = `${rowKey}-leaf-${i}`;
+                        const leafExpanded = !!expandedMap[leafKey];
+                        const hasDims = leaf.type === "localAccount" && leaf.children?.length > 0;
+                        const amt = leaf.amount ?? 0;
+
+                        sectionRows.push(
+                          <tr key={leafKey}
+                            className={`border-b border-[#1a2f8a]/5 bg-white transition-colors ${hasDims ? "cursor-pointer hover:bg-amber-50/30" : "hover:bg-[#f0f3ff]"}`}
+                            onClick={hasDims ? (e) => { e.stopPropagation(); toggle(leafKey); } : undefined}>
+<td className="py-1.5" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
+                              <div className="flex items-center gap-2">
+                                <div className="w-2 h-px bg-[#1a2f8a]/10 flex-shrink-0" />
+                                {hasDims
+                                  ? <span className="text-gray-300 flex-shrink-0">{leafExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>}</span>
+                                  : <span className="w-3 flex-shrink-0" />}
+                                {leaf.code && <span className="font-mono text-gray-400 mr-2" style={subbody2Style}>{leaf.code}</span>}
+                                <span style={subbody1Style}>{leaf.name || ""}</span>
+                              </div>
+                            </td>
+<PLAmountCell value={-amt} typoStyle={subbody1Style} />
+                            {compareMode && (() => {
+                              const cmpAmt = leaf.code ? -(cmpLeafIndex.get(String(leaf.code)) ?? 0) : 0;
+                              return (
+                                <>
+                                  <PLAmountCell value={cmpAmt} typoStyle={subbody1Style} divider />
+                                  <DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody1Style} />
+                                </>
+                              );
+                            })()}
+                            {compareMode && cmp2Enabled && (() => {
+                              const cmp2Amt = leaf.code ? -(cmp2LeafIndex.get(String(leaf.code)) ?? 0) : 0;
+                              return (
+                                <>
+                                  <PLAmountCell value={cmp2Amt} typoStyle={subbody1Style} divider />
+                                  <DeviationCells a={-amt} b={cmp2Amt} typoStyle={subbody1Style} />
+                                </>
+                              );
+                            })()}
+                            {historyExpanded && historyMonthsProcessed.map((h) => {
+                              const leafAmt = leaf.code ? (h.leafIdx.get(String(leaf.code)) ?? 0) : 0;
+                              const leafPrev = leaf.code ? (h.prevLeafIdx.get(String(leaf.code)) ?? 0) : 0;
+                              const leafVal = ytdOnly ? -leafAmt : -(leafAmt - leafPrev);
+                              return <PLAmountCell key={`hist-saved-leaf-${h.year}-${h.month}-${i}`} value={leafVal} typoStyle={subbody1Style} />;
+                            })}
+                          </tr>
+                        );
+
+// Dim breakdown under this leaf — filtered to matching dim only if saved node has dim filters
+                        if (leafExpanded && hasDims) {
+                          let dimChildren = leaf.children;
+                          if (node.dims && node.dims.length > 0) {
+                            const acceptedKeys = new Set(node.dims.map(d => String(d)));
+                            dimChildren = leaf.children.filter(dim => {
+                              const dimCode = String(dim.code ?? "");
+                              const dimName = String(dim.name ?? "");
+                              // Match if any saved dim key equals "*:code" or "*:name" (with or without group prefix)
+                              return [...acceptedKeys].some(savedKey => {
+                                const colon = savedKey.indexOf(":");
+                                const savedVal = colon === -1 ? savedKey : savedKey.slice(colon + 1);
+                                return savedVal === dimCode || savedVal === dimName;
+                              });
+                            });
+                          }
+                          dimChildren.forEach((dim, j) => {
+                            sectionRows.push(
+                              <tr key={`${leafKey}-dim-${j}`}
+                                className="border-b border-[#1a2f8a]/5 bg-white hover:bg-amber-50/40 transition-colors cursor-pointer"
+                                onClick={(e) => { e.stopPropagation(); setDimPopup(dim); }}>
+<td className="py-1" style={{ paddingLeft: `${24 + (depth + 2) * 20}px` }}>
+                                  <div className="flex items-center gap-1.5">
+                                    <div className="w-2 h-px bg-amber-200 flex-shrink-0" />
+                                   <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded flex-shrink-0">{t("label_dim")}</span>
+                                    <span style={subbody2Style}>{dim.name || dim.code}</span>
+                                  </div>
+                                </td>
+                                <PLAmountCell value={-dim.amount} typoStyle={subbody2Style} />
+                                {compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+                                {compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+                                {historyExpanded && historyMonthsProcessed.map((h) => (
+                                  <td key={`hist-saved-dim-leaf-${h.year}-${h.month}-${j}`} />
+                                ))}
+                                <td />
+                              </tr>
+                            );
+                          });
+                        }
+                      });
+                    }
+// Mapping children: only render if this row is expanded
+                    if (expanded && node.children && node.children.length > 0) {
+                      (node.children || []).forEach(c => renderNode(c, depth + 1, `${parentPath}-${node.id}`));
+                    }
+                  };
+                  section.nodes.forEach(n => renderNode(n, 0, "root"));
+                  return sectionRows;
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (loading) return (
     <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
@@ -3227,16 +4258,14 @@ const handleExportXlsx = () => {
       <div className="w-14 h-14 bg-[#eef1fb] rounded-2xl flex items-center justify-center mx-auto mb-4">
         <TrendingUp size={24} className="text-[#1a2f8a]" />
       </div>
-      <p className="text-gray-400 text-sm font-semibold">Waiting for data…</p>
+      <p className="text-gray-400 text-sm font-semibold">{t("waiting_for_data")}</p>
     </div>
   );
 
 
-const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.value) === String(cmpFilters.month))?.label, cmpFilters.source, cmpFilters.dimension].filter(Boolean).join(" · ") || "Period B" : "";
-  const cmp2Label = compareMode ? [cmp2Filters?.year, MONTHS.find(m => String(m.value) === String(cmp2Filters?.month))?.label, cmp2Filters?.source, cmp2Filters?.dimension].filter(Boolean).join(" · ") || "Period C" : "";
 
-  return (
-<div className="space-y-4">
+return (
+<div className="space-y-3 flex flex-col" style={{ minHeight: 0, flex: 1, overflow: "visible" }}>
 {JournalPopup}
       {dimPopup && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setDimPopup(null)}>
@@ -3272,7 +4301,92 @@ const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.valu
           </div>
         </div>
       )}
-<div className="bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col" style={{ maxHeight: "100%", minHeight: 0, boxShadow: "0 20px 40px -8px rgba(26, 47, 138, 0.25), 0 8px 16px -4px rgba(26, 47, 138, 0.15), 0 0 0 1px rgba(26, 47, 138, 0.04)" }}><button id="__plExportTrigger" onClick={handleExportPdf} className="hidden" />
+{compareMode && filtersOpen && (
+  <div className="bg-white rounded-2xl shadow-xl border border-gray-100"
+    style={{ overflow: "visible", position: "relative", zIndex: 100, marginBottom: 12, flex: "0 0 auto" }}>
+    {/* Period B row */}
+    <div className="px-5 py-3 flex items-center gap-2 flex-wrap">
+      <div className="flex items-center gap-2 mr-2">
+        <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+          style={{
+            background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)",
+            boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)",
+          }}>
+          <span className="text-white text-[11px] font-black">B</span>
+        </div>
+        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Period B</span>
+      </div>
+
+   <HeaderFilterPill label="Year" value={cmpFilters.year} onChange={v => onCmpFilterChange("year", v)}
+        options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+      <HeaderFilterPill label="Month" value={cmpFilters.month} onChange={v => onCmpFilterChange("month", v)}
+        options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+      <HeaderFilterPill label="Source" value={cmpFilters.source} onChange={v => onCmpFilterChange("source", v)}
+        options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+      <HeaderFilterPill label="Structure" value={cmpFilters.structure} onChange={v => onCmpFilterChange("structure", v)}
+        options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+<HeaderFilterPill label="Company" value={cmpFilters.company} onChange={v => onCmpFilterChange("company", v)}
+          options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+<HeaderMultiFilterPill label="DIM GRP" values={cmpFilters.dimGroups} onChange={vs => onCmpFilterChange("dimGroups", vs)}
+        options={dimGroups.map(g => ({ value: g, label: g }))} />
+      <HeaderMultiFilterPill label="DIMS" values={cmpFilters.dimensions} onChange={vs => onCmpFilterChange("dimensions", vs)}
+        options={cmpFilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+      {!cmp2Enabled && (
+        <button onClick={() => onCmp2EnabledChange(true)}
+          className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]"
+          style={{
+            background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)",
+            boxShadow: "0 4px 14px -4px rgba(87,170,120,0.5)",
+          }}>
+          <span className="text-white text-[10px] font-black">+ Add Period C</span>
+        </button>
+      )}
+    </div>
+
+    {/* Period C row */}
+    {cmp2Enabled && (
+      <div className="px-5 py-3 flex items-center gap-2 flex-wrap border-t border-gray-100"
+        style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.06s both" }}>
+        <div className="flex items-center gap-2 mr-2">
+          <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+            style={{
+              background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)",
+              boxShadow: "0 4px 12px -4px rgba(87,170,120,0.5)",
+            }}>
+            <span className="text-white text-[11px] font-black">C</span>
+          </div>
+          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>Period C</span>
+        </div>
+
+<HeaderFilterPill label="Year" value={cmp2Filters?.year} onChange={v => onCmp2FilterChange("year", v)}
+          options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+        <HeaderFilterPill label="Month" value={cmp2Filters?.month} onChange={v => onCmp2FilterChange("month", v)}
+          options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+        <HeaderFilterPill label="Source" value={cmp2Filters?.source} onChange={v => onCmp2FilterChange("source", v)}
+          options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+        <HeaderFilterPill label="Structure" value={cmp2Filters?.structure} onChange={v => onCmp2FilterChange("structure", v)}
+          options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+<HeaderFilterPill label="Company" value={cmp2Filters?.company} onChange={v => onCmp2FilterChange("company", v)}
+          options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+<HeaderMultiFilterPill label="DIM GRP" values={cmp2Filters?.dimGroups} onChange={vs => onCmp2FilterChange("dimGroups", vs)}
+          options={dimGroups.map(g => ({ value: g, label: g }))} />
+        <HeaderMultiFilterPill label="DIMS" values={cmp2Filters?.dimensions} onChange={vs => onCmp2FilterChange("dimensions", vs)}
+          options={cmp2FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+        <button onClick={() => onCmp2EnabledChange(false)}
+          className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all duration-200 hover:scale-[1.05]"
+          style={{
+            background: "#fee2e2",
+            color: "#dc2626",
+          }}
+          title="Remove Period C">
+          <X size={12} strokeWidth={2.5} />
+        </button>
+</div>
+    )}
+  </div>
+)}
+
+<div className="bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col" style={{ maxHeight: "100%", minHeight: 0, boxShadow: "0 20px 40px -8px rgba(26, 47, 138, 0.15), 0 4px 12px -2px rgba(26, 47, 138, 0.08)" }}><button id="__plExportTrigger" onClick={handleExportPdf} className="hidden" />
 <button id="__plXlsxTrigger" onClick={handleExportXlsx} className="hidden" />
 <div style={{ display: "none" }}>
   <div className="flex items-center gap-3">
@@ -3389,75 +4503,94 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
   </div>
 </div>
 
-{compareMode && filtersOpen && (
-  <div className="border-t border-white/10">
-    <div className="bg-[#ffffff] px-6 py-3 flex items-center gap-2 flex-wrap shadow-xl">
-<div className="w-3 h-3 rounded-full border-2 border-[#CF305D] flex-shrink-0" />
-      <span className="text-white/40 text-[9px] font-black uppercase tracking-widest flex-shrink-0 shadow-xl"></span>
-        
-
-      <FilterPill dark label="Yr" value={cmpFilters.year} onChange={v => onCmpFilterChange("year", v)}
-        options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-      <FilterPill dark label="Mnth" value={cmpFilters.month} onChange={v => onCmpFilterChange("month", v)}
-        options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-      <FilterPill dark label="Src" value={cmpFilters.source} onChange={v => onCmpFilterChange("source", v)}
-      options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
-      <FilterPill dark label="Struct" value={cmpFilters.structure} onChange={v => onCmpFilterChange("structure", v)}
-      options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-      <FilterPill dark label="Comp" value={cmpFilters.company} onChange={v => onCmpFilterChange("company", v)}
-       options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); return { value: v, label: v }; })} />
-      <FilterPill dark label="Dim Grp" value={cmpFilters.dimGroup} onChange={v => onCmpFilterChange("dimGroup", v)}
-        options={[{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))]} />
-<FilterPill dark label="Dim" value={cmpFilters.dimension} onChange={v => onCmpFilterChange("dimension", v)}
-        options={[{ value: "", label: "All" }, ...cmpFilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })]} />
-      {!cmp2Enabled && (
-      <button onClick={() => onCmp2EnabledChange(true)} className="ml-auto flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-[#eef1fb] text-gray-400 hover:text-[#1a2f8a] text-[10px] font-bold transition-all flex-shrink-0">+ C</button>
-      )}
-    </div>
-{cmp2Enabled && <div className="bg-[#ffffff] px-6 py-3 flex items-center gap-2 flex-wrap border-t border-[#ffffff]">
-      <div className="w-3 h-3 rounded-full border-2 border-[#57aa78] flex-shrink-0" />
-      <span className="text-white/40 text-[9px] font-black uppercase tracking-widest flex-shrink-0"></span>
-      
-      <FilterPill dark label="Yr" value={cmp2Filters?.year} onChange={v => onCmp2FilterChange("year", v)}
-        options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-      <FilterPill dark label="Mnth" value={cmp2Filters?.month} onChange={v => onCmp2FilterChange("month", v)}
-        options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-      <FilterPill dark label="Src" value={cmp2Filters?.source} onChange={v => onCmp2FilterChange("source", v)}
-            options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
-      <FilterPill dark label="Struct" value={cmp2Filters?.structure} onChange={v => onCmp2FilterChange("structure", v)}
-       options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-      <FilterPill dark label="Comp" value={cmp2Filters?.company} onChange={v => onCmp2FilterChange("company", v)}
-       options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); return { value: v, label: v }; })} />
-      <FilterPill dark label="Dim Grp" value={cmp2Filters?.dimGroup} onChange={v => onCmp2FilterChange("dimGroup", v)}
-        options={[{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))]} />
-      <FilterPill dark label="Dim" value={cmp2Filters?.dimension} onChange={v => onCmp2FilterChange("dimension", v)}
-options={[{ value: "", label: "All" }, ...cmp2FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })]} />
-    <button onClick={() => onCmp2EnabledChange(false)} className="ml-auto flex items-center justify-center w-6 h-6 rounded-lg bg-gray-100 hover:bg-red-50 hover:text-red-400 text-gray-400 transition-all flex-shrink-0"><X size={11} /></button>
-
-    </div>}
-
-  </div>
-)}
-
 
 
 
 <div className="overflow-auto scrollbar-hide" style={{ flex: 1, minHeight: 0 }}>
-<table className="w-full">
+<table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "auto" }}>
+  <colgroup>
+    <col style={{ width: "1px" }} />
+    <col style={{ width: "1px" }} />
+    {compareMode && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+    {compareMode && cmp2Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+    <col />
+  </colgroup>
 <thead className="sticky top-0 z-10">
-  {/* cmpLabel/cmp2Label defined as vars above thead */}
-
-<tr className="border-b border-gray-100" style={{ backgroundColor: colors.primary }}>
-<th className="text-left px-6" style={{ backgroundColor: colors.primary, height: "56px" }}>
-  <div className="flex items-center gap-3">
-    <span className="uppercase tracking-widest" style={header2Style}>Account</span>
-    <div className="ml-auto flex items-center gap-2">
+<tr className="border-b border-gray-100" style={{
+  background: "rgba(255,255,255,0.95)",
+  backdropFilter: "blur(24px)",
+  WebkitBackdropFilter: "blur(24px)",
+  boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
+}}>
+<th className="text-left px-6 w-px whitespace-nowrap" style={{ height: "64px", background: "transparent" }}>
+  <div className="flex items-baseline gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
+    <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>
+      Account
+    </span>
+    <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
+      Profit & Loss
+    </span>
+  </div>
+</th>
+<th className="text-right pr-6 py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px", cursor: compareMode ? "default" : "pointer" }}
+  onClick={toggleHistory}
+  title={compareMode ? "" : (historyExpanded ? "Hide history" : "Show last 12 months")}>
+  <span key={ytdOnly ? "ytd" : "monthly"} className="font-black tracking-tight inline-block"
+    style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em" }}>
+    {(ytdOnly ? t("mode_ytd") : t("mode_monthly")).split("").map((ch, i) => (
+      <span key={i} className="inline-block"
+        style={{
+          animation: `letterMorph 420ms cubic-bezier(0.34, 1.56, 0.64, 1) ${i * 35}ms both`,
+        }}>
+        {ch}
+      </span>
+    ))}
+  </span>
+  </th>
+  {historyExpanded && historyMonthsProcessed.map((h) => (
+    <th key={`hist-${h.year}-${h.month}`} className="text-right pr-6 py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px" }}>
+      <div className="flex flex-col items-end">
+        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>
+          {MONTHS.find(m => m.value === h.month)?.label.slice(0,3)}
+        </span>
+        <span className="text-[10px] font-bold" style={{ color: "#9ca3af" }}>{h.year}</span>
+      </div>
+    </th>
+  ))}
+  {historyExpanded && historyLoading && (
+    <th className="text-center px-3 py-3" style={{ background: "transparent" }}>
+      <Loader2 size={14} className="animate-spin" style={{ color: colors.primary }} />
+    </th>
+  )}
+  {compareMode && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap" style={{ background: "transparent" }}>
+    <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.26s both" }}>
+      <div className="flex items-center gap-1.5">
+        <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#CF305D" }} />
+        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Period B</span>
+      </div>
+      <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{cmpLabel}</span>
+    </div>
+  </th>}
+{compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap" style={{ background: "transparent" }}>
+    <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.30s both" }}>
+      <div className="flex items-center gap-1.5">
+        <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#57aa78" }} />
+        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>Period C</span>
+      </div>
+      <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{cmp2Label}</span>
+    </div>
+  </th>}
+<th className="text-right pr-6 py-3" style={{ background: "transparent" }}>
+    <div className="flex items-center justify-end gap-2" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
       {compareMode && (
         <button onClick={() => setFiltersOpen(o => !o)}
-          className="flex items-center gap-1.5 rounded-lg text-[11px] font-black transition-all"
-          style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, padding: "8px 12px", lineHeight: 1 }}>
-          <ChevronDown size={11} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
-          {filtersOpen ? "Hide filters" : "Show filters"}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all duration-200 hover:scale-[1.02]"
+          style={{
+            background: filtersOpen ? `${colors.primary}12` : "transparent",
+            color: filtersOpen ? colors.primary : "#9ca3af",
+          }}>
+          <ChevronDown size={10} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
+          <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? "Hide" : "Show"}</span>
         </button>
       )}
       <button onClick={() => {
@@ -3480,40 +4613,57 @@ options={[{ value: "", label: "All" }, ...cmp2FilteredDims.map(d => { const v = 
         });
         setExpandedMap(next);
       }}
-        className="flex items-center justify-center rounded-lg transition-all"
-        style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, width: 32, height: 32 }}
+        className="flex items-center justify-center rounded-lg transition-all duration-200 hover:scale-[1.05]"
+        style={{ background: `${colors.primary}12`, color: colors.primary, width: 28, height: 28, overflow: "hidden" }}
         title={Object.values(expandedMap).some(Boolean) ? "Collapse all" : "Expand all"}>
-        {Object.values(expandedMap).some(Boolean)
-          ? <svg width="13" height="13" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-          : <svg width="13" height="13" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-        }
+        <span key={Object.values(expandedMap).some(Boolean) ? "collapse" : "expand"}
+          className="inline-flex"
+          style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
+          {Object.values(expandedMap).some(Boolean)
+            ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          }
+        </span>
       </button>
-
-      <div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
-        <button onClick={() => setSummaryMode(false)}
-          className="rounded-md text-[11px] font-black transition-colors"
-          style={{ backgroundColor: !summaryMode ? (colors.quaternary ?? "#F59E0B") : "transparent",
-                   color: !summaryMode ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
-                   padding: "7px 12px", lineHeight: 1 }}>
-          Detailed
-        </button>
-        <button onClick={() => setSummaryMode(true)}
-          className="rounded-md text-[11px] font-black transition-colors"
-          style={{ backgroundColor: summaryMode ? (colors.quaternary ?? "#F59E0B") : "transparent",
-                   color: summaryMode ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
-                   padding: "7px 12px", lineHeight: 1 }}>
-          Summary
-        </button>
+      <div className="relative flex items-center p-1 rounded-xl" style={{ background: "#f3f4f6" }}
+        ref={el => {
+          if (!el) return;
+          const btns = el.querySelectorAll("[data-mode-pill]");
+          const active = btns[summaryMode ? 0 : 1];
+          const pill = el.querySelector(".sum-det-pill");
+          if (active && pill) {
+            pill.style.left = active.offsetLeft + "px";
+            pill.style.width = active.offsetWidth + "px";
+            pill.style.top = active.offsetTop + "px";
+            pill.style.height = active.offsetHeight + "px";
+          }
+        }}>
+        <span className="sum-det-pill" style={{
+          position: "absolute",
+          background: "#fff",
+          borderRadius: 8,
+          boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
+          transition: "left 320ms cubic-bezier(0.34, 1.56, 0.64, 1), width 320ms cubic-bezier(0.34, 1.56, 0.64, 1), top 320ms cubic-bezier(0.34, 1.56, 0.64, 1), height 320ms cubic-bezier(0.34, 1.56, 0.64, 1)",
+          pointerEvents: "none",
+          zIndex: 0,
+        }} />
+        {[["summary","Summary"],["detailed","Detailed"]].map(([v,l]) => {
+          const active = (v === "summary" && summaryMode) || (v === "detailed" && !summaryMode);
+          return (
+            <button key={v} data-mode-pill onClick={() => setSummaryMode(v === "summary")}
+              className="relative z-10 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider"
+              style={{
+                background: "transparent",
+                color: active ? colors.primary : "#9ca3af",
+                transition: "color 280ms cubic-bezier(0.4, 0, 0.2, 1)",
+              }}>
+              {l}
+            </button>
+          );
+        })}
       </div>
     </div>
-  </div>
-</th>
-  {!ytdOnly && <th className="text-right pr-6 py-3 uppercase tracking-widest w-36" style={{ ...header2Style, backgroundColor: colors.primary }}>{t("mode_monthly")}</th>}
-  {!ytdOnly && compareMode && <th colSpan={3} className="text-center pr-6 py-3 text-[11px] font-black text-[#CF305D] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{cmpLabel}</th>}
-  {!ytdOnly && compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 text-[11px] font-black text-[#57aa78] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{cmp2Label}</th>}
- {ytdOnly && <th className="text-right pr-6 py-3 uppercase tracking-widest w-36" style={{ ...header2Style, backgroundColor: colors.primary }}>{t("mode_ytd")}</th>}
-  {ytdOnly && compareMode && <th colSpan={3} className="text-center pr-6 py-3 text-[11px] font-black text-[#CF305D] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{cmpLabel}</th>}
-  {ytdOnly && compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 text-[11px] font-black text-[#57aa78] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{cmp2Label}</th>}
+  </th>
 </tr>
 </thead>
             <tbody>
@@ -3527,7 +4677,8 @@ const cmpYtd = compareMode ? -getCmpYtd(node.code) : 0;
 const cmpMon = compareMode ? -getCmpYtd(node.code) - (-getCmpPrev(node.code)) : 0;
 const mon      = ytd - prevYtd;
 const expanded = !!expandedMap[node.code];
-const hasKids  = !summaryMode && (node.children||[]).filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType)).length > 0;
+const hasKids  = (node.children||[]).filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType)).length > 0
+                || (node.uploadLeaves || []).some(l => l.type !== "plain");
 const isHighlighted = PL_HIGHLIGHTED_CODES.has(String(node.code)) || String(node.code).endsWith(".S") || String(node.code).endsWith(".PL");
 const SECTION_DIVIDERS_MAP = Object.keys(effectiveBreakersPl).length
   ? effectiveBreakersPl
@@ -3566,23 +4717,23 @@ const divider = !summaryMode
 
   return [
 divider ? (
-  <tr key={`divider-${node.code}`}>
-    <td colSpan={compareMode ? (cmp2Enabled ? 8 : 5) : 2} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
+  <tr key={`divider-${node.code}`} style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(nodeIdx, 25) * 35}ms both` }}>
+    <td colSpan={compareMode ? (cmp2Enabled ? 9 : 6) : (3 + (historyExpanded ? historyMonthsProcessed.length : 0))} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
       <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
     </td>
   </tr>
 ) : null,
 <tr key={node.code}
       className="border-b border-gray-100 bg-white cursor-pointer hover:bg-[#eef1fb]/60 transition-colors"
+      style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(nodeIdx, 25) * 35 + 50}ms both` }}
       onClick={(e) => { e.stopPropagation(); toggle(node.code); }}>
-<td className="py-3 px-6">
+<td className="py-3 px-6 whitespace-nowrap">
   <div className="flex items-center">
-    {hasKids && (
-      <span className="text-[#1a2f8a]/50 mr-2">
-        {expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
-      </span>
-    )}
-<span style={body1Style}>
+    {hasKids
+      ? <span className="text-[#1a2f8a]/50 mr-2">{expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
+      : <span className="inline-block mr-2" style={{ width: 12 }} />}
+    <span className="mr-2 font-mono text-gray-400" style={subbody2Style}>{node.code}</span>
+    <span style={body1Style}>
       {(() => { const n = localName(node); return n.charAt(0).toUpperCase() + n.slice(1).toLowerCase(); })()}
     </span>
   </div>
@@ -3598,7 +4749,7 @@ divider ? (
           <DeviationCells a={mon} b={cmp2Mon} typoStyle={body1Style} />
         </>;
       })()}
-      {ytdOnly && <PLAmountCell value={ytd} typoStyle={body1Style} />}
+{ytdOnly && <PLAmountCell value={ytd} typoStyle={body1Style} />}
       {ytdOnly && compareMode && <PLAmountCell value={cmpYtd} typoStyle={body1Style} divider />}
       {ytdOnly && compareMode && <DeviationCells a={ytd} b={cmpYtd} typoStyle={body1Style} />}
       {ytdOnly && compareMode && cmp2Enabled && (() => {
@@ -3608,6 +4759,12 @@ divider ? (
           <DeviationCells a={ytd} b={cmp2Ytd} typoStyle={body1Style} />
         </>;
       })()}
+      {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => {
+        const hYtd = -getHistYtd(h, node.code);
+        const hPrev = -getHistPrev(h, node.code);
+        const hMon = hYtd - hPrev;
+        return <PLAmountCell key={`hist-cell-${h.year}-${h.month}-${node.code}`} value={ytdOnly ? hYtd : hMon} typoStyle={body1Style} />;
+      })}
     </tr>,
 ...(expanded ? (function renderChildren(children, leaves, depth, parentCode) {
 
@@ -3630,25 +4787,31 @@ rows.push(
   <tr key={child.code}
     className={`border-b border-[#1a2f8a]/5 bg-white transition-colors ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : "hover:bg-[#eef1fb]/20"}`}
     onClick={hasMore ? (e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [`drill-${node.code}-${child.code}`]: !prev[`drill-${node.code}-${child.code}`] })); } : undefined}>
-    <td className="py-2" style={{ paddingLeft: `${24 + depth * 20}px` }}>
+<td className="py-2 whitespace-nowrap" style={{ paddingLeft: `${24 + depth * 20}px` }}>
       <div className="flex items-center gap-2">
-        
         {hasMore
           ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{childExpanded ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
           : <span className="w-3 flex-shrink-0" />}
+        <span className="font-mono text-gray-400" style={subbody2Style}>{child.code}</span>
         <span style={body2Style}>{localName(child)}</span>
       </div>
     </td>
     {!ytdOnly && <PLAmountCell value={cMon} typoStyle={body2Style} />}
     {!ytdOnly && compareMode && <PLAmountCell value={cCmpMon} typoStyle={body2Style} divider />}
     {!ytdOnly && compareMode && <DeviationCells a={cMon} b={cCmpMon} typoStyle={body2Style} />}
-    {!ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cCmp2Mon} typoStyle={body2Style} divider />}
+{!ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cCmp2Mon} typoStyle={body2Style} divider />}
     {!ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={cMon} b={cCmp2Mon} typoStyle={body2Style} />}
     {ytdOnly && <PLAmountCell value={cYtd} typoStyle={body2Style} />}
     {ytdOnly && compareMode && <PLAmountCell value={cCmpYtd} typoStyle={body2Style} divider />}
     {ytdOnly && compareMode && <DeviationCells a={cYtd} b={cCmpYtd} typoStyle={body2Style} />}
     {ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cCmp2Ytd} typoStyle={body2Style} divider />}
     {ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={cYtd} b={cCmp2Ytd} typoStyle={body2Style} />}
+    {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => {
+      const hYtd = -getHistYtd(h, child.code);
+      const hPrev = -getHistPrev(h, child.code);
+      const hMon = hYtd - hPrev;
+      return <PLAmountCell key={`hist-child-${h.year}-${h.month}-${child.code}`} value={ytdOnly ? hYtd : hMon} typoStyle={body2Style} />;
+    })}
   </tr>
 );
 
@@ -3672,13 +4835,16 @@ rows.push(
         <span className="text-[#1a2f8a]/40 flex-shrink-0">
           {jrnExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>}
         </span>
-        <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded flex-shrink-0">
-          journal
+<span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded flex-shrink-0">
+          {t("label_journal")}
         </span>
-        <span style={subbody2Style}>{jrnRows.length} entries</span>
+       <span style={subbody2Style}>{jrnRows.length} {jrnRows.length === 1 ? t("entry") : t("entries")}</span>
       </div>
     </td>
-    <td />{compareMode && <><td /><td /><td /></>}{compareMode && cmp2Enabled && <><td /><td /><td /></>}
+<td />{compareMode && <><td /><td /><td /></>}{compareMode && cmp2Enabled && <><td /><td /><td /></>}
+    {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => (
+      <td key={`hist-jrnhdr-${h.year}-${h.month}-${child.code}`} />
+    ))}
   </tr>
 );
 if (jrnExpanded) {
@@ -3713,8 +4879,11 @@ if (jrnExpanded) {
       {ytdOnly && <PLAmountCell value={-amt} typoStyle={subbody2Style} />}
       {ytdOnly && compareMode && <PLAmountCell value={cmpAmt} typoStyle={subbody2Style} divider />}
       {ytdOnly && compareMode && <DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody2Style} />}
-      {ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cmp2Amt} typoStyle={subbody2Style} divider />}
+{ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cmp2Amt} typoStyle={subbody2Style} divider />}
       {ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={-amt} b={cmp2Amt} typoStyle={subbody2Style} />}
+      {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => (
+        <td key={`hist-jrn-${h.year}-${h.month}-${k}`} />
+      ))}
     </>
   );
 })()}
@@ -3745,7 +4914,7 @@ rows.push(
         {hasDims
           ? <span className="text-gray-300 flex-shrink-0">{leafExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>}</span>
           : <span className="w-3 flex-shrink-0" />}
-        {leaf.code && <span style={subbody1Style}>{leaf.code}&nbsp;</span>}
+        {leaf.code && <span className="font-mono text-gray-400 mr-2" style={subbody2Style}>{leaf.code}</span>}
         <span style={subbody1Style}>{leaf.name || ""}</span>
       </div>
     </td>
@@ -3767,6 +4936,12 @@ rows.push(
       const cmp2Amt = leaf.code ? -getCmp2LeafAmt(leaf.code) : 0;
       return <><PLAmountCell value={cmp2Amt} typoStyle={subbody1Style} divider /><DeviationCells a={-amt} b={cmp2Amt} typoStyle={subbody1Style} /></>;
     })()}
+{historyExpanded && !compareMode && historyMonthsProcessed.map((h) => {
+      const leafYtd = -(h.leafIdx.get(String(leaf.code ?? "")) ?? 0);
+      const leafPrevYtd = -(h.prevLeafIdx.get(String(leaf.code ?? "")) ?? 0);
+      const leafMon = leafYtd - leafPrevYtd;
+      return <PLAmountCell key={`hist-leaf-${h.year}-${h.month}-${i}`} value={ytdOnly ? leafYtd : leafMon} typoStyle={subbody1Style} />;
+    })}
   </tr>
 );
 
@@ -3774,22 +4949,25 @@ if (leafExpanded && hasDims) {
   leaf.children.forEach((dim, j) => {
     rows.push(
     <tr key={`dim-${parentCode ?? node.code}-${depth}-${i}-${j}`}
-  className="border-b border-[#1a2f8a]/5 bg-white hover:bg-amber-50/40 transition-colors cursor-pointer"
-  onClick={(e) => { e.stopPropagation(); setDimPopup(dim); }}>
-  <td className="py-1" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
-    <div className="flex items-center gap-1.5">
-      <div className="w-2 h-px bg-amber-200 flex-shrink-0" />
-      <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded flex-shrink-0">dim</span>
-      <span style={subbody2Style}>{dim.name || dim.code}</span>
-    </div>
-  </td>
-  {!ytdOnly && <PLAmountCell value={-(dim.amount - getPrevDimAmt(leaf.code, dim.code))} typoStyle={subbody2Style} />}
-  {!ytdOnly && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-  {!ytdOnly && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-  {ytdOnly && <PLAmountCell value={-dim.amount} typoStyle={subbody2Style} />}
-  {ytdOnly && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-  {ytdOnly && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-</tr>
+      className="border-b border-[#1a2f8a]/5 bg-white hover:bg-amber-50/40 transition-colors cursor-pointer"
+      onClick={(e) => { e.stopPropagation(); setDimPopup(dim); }}>
+      <td className="py-1" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
+        <div className="flex items-center gap-1.5">
+          <div className="w-2 h-px bg-amber-200 flex-shrink-0" />
+          <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded flex-shrink-0">{t("label_dim")}</span>
+          <span style={subbody2Style}>{dim.name || dim.code}</span>
+        </div>
+      </td>
+      {!ytdOnly && <PLAmountCell value={-(dim.amount - getPrevDimAmt(leaf.code, dim.code))} typoStyle={subbody2Style} />}
+      {!ytdOnly && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+      {!ytdOnly && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+      {ytdOnly && <PLAmountCell value={-dim.amount} typoStyle={subbody2Style} />}
+      {ytdOnly && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+      {ytdOnly && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+      {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => (
+        <td key={`hist-dim-${h.year}-${h.month}-${j}`} />
+      ))}
+    </tr>
     );
   });
 }
@@ -3897,21 +5075,21 @@ function FinancialReport({ groupAccounts, uploadedAccounts, loading, error }) {
               className="text-xs outline-none text-gray-700 w-36 bg-transparent placeholder:text-gray-300" />
             {search && <button onClick={() => setSearch("")}><X size={12} className="text-gray-400" /></button>}
           </div>
-          <button onClick={expandAll}
+<button onClick={expandAll}
             className="px-3 py-2 rounded-xl bg-white border border-gray-100 shadow-sm text-xs font-bold text-gray-400 hover:text-[#1a2f8a] hover:border-[#1a2f8a]/20 transition-all">
-            Expand all
+            {t("btn_expand_all")}
           </button>
           <button onClick={() => setExpandedMap({})}
             className="px-3 py-2 rounded-xl bg-white border border-gray-100 shadow-sm text-xs font-bold text-gray-400 hover:text-[#1a2f8a] hover:border-[#1a2f8a]/20 transition-all">
-            Collapse all
+            {t("btn_collapse_all")}
           </button>
         </div>
       </div>
 
       {visibleRoots.length === 0 ? (
         <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center shadow-xl">
-          <p className="text-gray-400 text-sm font-semibold">No accounts match this filter</p>
-          <p className="text-gray-300 text-xs mt-1">Try a different type filter or clear the search</p>
+<p className="text-gray-400 text-sm font-semibold">{t("no_accounts_match_filter")}</p>
+          <p className="text-gray-300 text-xs mt-1">{t("try_different_filter_or_clear")}</p>
         </div>
       ) : (
         <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col" style={{ maxHeight: "100%", minHeight: 0, boxShadow: "0 8px 24px -4px rgba(26, 47, 138, 0.15), 0 4px 8px -2px rgba(26, 47, 138, 0.08)" }}>
@@ -3919,8 +5097,8 @@ function FinancialReport({ groupAccounts, uploadedAccounts, loading, error }) {
             <table className="w-full table-fixed">
               <thead>
                 <tr className="border-b border-gray-100 bg-[#1a2f8a]/5">
-                  <th className="text-left px-4 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest">Account</th>
-                  <th className="text-right px-4 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest whitespace-nowrap w-36">Amount Period</th>
+<th className="text-left px-4 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest">{t("col_account")}</th>
+                  <th className="text-right px-4 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest whitespace-nowrap w-36">{t("col_amount_period")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -3947,6 +5125,14 @@ function FinancialReport({ groupAccounts, uploadedAccounts, loading, error }) {
 const UPLOADED_HIDDEN = new Set(["dimensions", "journalType", "journalLayer", "origin",
   "counterpartyShortName", "branchShortName", "branchLegalName"]);
 
+const useTabs = () => {
+  const t = useT();
+  return [
+    { id: "pl",       label: t("tab_pl"),       icon: TrendingUp, accent: "#1a2f8a", desc: t("tab_pl_desc") },
+    { id: "bs",       label: t("tab_bs_short"), icon: BarChart2,  accent: "#71E09D" },
+    { id: "uploaded", label: "",                icon: Upload,     accent: "#e8394a", desc: t("tab_uploaded_desc") },
+  ];
+};
 const TABS = [
   { id: "pl",       label: "P&L",    icon: TrendingUp, accent: "#1a2f8a", desc: "Profit & Loss statement" },
   { id: "bs",      label: "B.SH.",  icon: BarChart2,  accent: "#71E09D" },
@@ -3999,12 +5185,15 @@ function normalizeBSSectionCode(label) {
   return null;
 }
 
+// Standard-mapping converter (code-keyed). Kept untouched for the
+// pgcMapping / pgcBsMapping prop shape the renderers expect.
 function convertSavedMappingTree(tree, opts = {}) {
   if (!Array.isArray(tree) || tree.length === 0) return null;
   const { normalizeBS = false } = opts;
 
-  const rows = new Map();
-  const sections = new Map();
+  const rows = new Map();      // code -> { section, sortOrder, isSum, showInSummary, level }
+  const sections = new Map();  // sectionCode -> { label, color }
+  const names = new Map();     // code -> first-seen display name
   let sortCounter = 0;
   let defaultSecCounter = 0;
 
@@ -4026,16 +5215,15 @@ function convertSavedMappingTree(tree, opts = {}) {
         const code = String(node.code ?? "");
         if (!code) continue;
         const sec = parentSection || "_default";
-        if (!sections.has(sec)) {
-          sections.set(sec, { label: "", color: "#1a2f8a" });
-        }
+        if (!sections.has(sec)) sections.set(sec, { label: "", color: "#1a2f8a" });
         rows.set(code, {
           section: sec,
           sortOrder: sortCounter++,
-          isSum: true,                       // every mapping row is renderable in detailed view
+          isSum: true,
           showInSummary: !!node.showInSummary,
           level: depth,
         });
+        if (!names.has(code) && node.name) names.set(code, String(node.name));
         walk(node.children || [], depth + 1, sec);
       }
     }
@@ -4043,12 +5231,57 @@ function convertSavedMappingTree(tree, opts = {}) {
 
   walk(tree, 0, null);
   if (rows.size === 0) return null;
-  return { rows, sections };
+  return { rows, sections, names };
+}
+
+// Saved-mapping LITERAL tree (preserves duplicates + dims + hierarchy).
+// Used only by the saved-mapping render path; standard mappings ignore this.
+function buildSavedMappingLiteral(tree) {
+  if (!Array.isArray(tree) || tree.length === 0) return null;
+  const sections = []; // [{ label, color, nodes: [literalNode, ...] }]
+  let current = { label: null, color: null, nodes: [] };
+  sections.push(current);
+
+  function literal(node, depth) {
+    return {
+      id: String(node.id ?? `${node.code}-${Math.random()}`),
+      originalId: node.id ? String(node.id) : null,
+      code: String(node.code ?? ""),
+      name: String(node.name ?? ""),
+      dims: Array.isArray(node.dims) && node.dims.length > 0 ? node.dims : null,
+      isSum: !!node.isSum || !!node.isSumAccount,
+      depth,
+      children: (node.children || [])
+        .filter(c => c && c.kind !== "breaker")
+        .map(c => literal(c, depth + 1)),
+    };
+  }
+
+  for (const node of tree) {
+    if (!node) continue;
+    if (node.kind === "breaker") {
+      current = {
+        label: String(node.name ?? "Section"),
+        color: node.color || "#1a2f8a",
+        nodes: [],
+      };
+      sections.push(current);
+      (node.children || [])
+        .filter(c => c && c.kind !== "breaker")
+        .forEach(c => current.nodes.push(literal(c, 0)));
+    } else {
+      current.nodes.push(literal(node, 0));
+    }
+  }
+  // Drop the initial blank section if no rows landed in it
+  const cleaned = sections.filter((s, i) => i > 0 || s.nodes.length > 0);
+  return cleaned.length === 0 ? null : cleaned;
 }
 
 function BSAmountCell({ value, divider, typoStyle }) {
+  const animated = useCountUp(value ?? 0, 1000);
   const isEmpty = value === 0;
-  const isNeg = value < 0;
+  const isNeg = animated < 0;
   const semanticColor = isEmpty ? "#D1D5DB" : isNeg ? "#EF4444" : null;
 
   const style = {
@@ -4058,8 +5291,8 @@ function BSAmountCell({ value, divider, typoStyle }) {
   };
 
   return (
-    <td className="pr-4 py-2.5 text-right whitespace-nowrap w-36" style={style}>
-      {isEmpty ? "—" : isNeg ? `(${fmtAmt(Math.abs(value))})` : fmtAmt(value)}
+    <td className="pl-8 pr-6 py-2.5 text-right whitespace-nowrap tabular-nums" style={{ ...style, width: "200px" }}>
+      {isEmpty ? "—" : isNeg ? `(${fmtAmt(Math.abs(animated))})` : fmtAmt(animated)}
     </td>
   );
 }
@@ -4074,25 +5307,70 @@ function BSDeviationCells({ a, b, typoStyle }) {
   const style = { ...(typoStyle ?? {}), color };
 
   return (
-    <>
-      <td className="pr-4 py-2.5 text-right whitespace-nowrap w-28" style={style}>{diffStr}</td>
-      <td className="pr-4 py-2.5 text-right whitespace-nowrap w-20" style={style}>{pctStr}</td>
+<>
+      <td className="pl-4 pr-6 py-2.5 text-right whitespace-nowrap tabular-nums" style={{ ...style, width: "140px" }}>{diffStr}</td>
+      <td className="pl-2 pr-6 py-2.5 text-right whitespace-nowrap tabular-nums" style={{ ...style, width: "100px" }}>{pctStr}</td>
     </>
   );
 }
 
 
 
-function BalanceSheet({ groupAccounts, uploadedAccounts, loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], onCompareChange, dimensionActive = false, upDimGroup = "", upDimension = "", filteredDims = [], externalCmp2Enabled, onBsCmp2EnabledChange, breakers = { pl: {}, bs: {}, cf: {} }, pgcBsMapping = null,
+function BalanceSheet({ externalBsDrillMap, externalSetBsDrillMap, onHistoryExpandedChange, groupAccounts, uploadedAccounts,dimensions = [], loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], onCompareChange, dimensionActive = false, upDimGroup = "", upDimension = "", filteredDims = [], externalCmp2Enabled, onBsCmp2EnabledChange, breakers = { pl: {}, bs: {}, cf: {} }, pgcBsMapping = null, savedBsLiteral = null,
   compareMode, setCompareMode,
   cmpYear, setCmpYear, cmpMonth, setCmpMonth, cmpSource, setCmpSource, cmpStructure, setCmpStructure, cmpCompany, setCmpCompany,
   cmpData, setCmpData,
   cmp2Year, setCmp2Year, cmp2Month, setCmp2Month, cmp2Source, setCmp2Source, cmp2Structure, setCmp2Structure, cmp2Company, setCmp2Company,
   cmp2Data, setCmp2Data,
+bsCmpDimGroups, setBsCmpDimGroups,
+  bsCmpDimensions, setBsCmpDimensions,
+  bsCmp2DimGroups, setBsCmp2DimGroups,
+  bsCmp2Dimensions, setBsCmp2Dimensions,
+  effectiveDimensions = [],
 }) {
 const { colors } = useSettings();
   const t = useT();
-  const [filtersOpen, setFiltersOpen] = useState(true);
+  const MONTHS = useMonths();
+const [filtersOpen, setFiltersOpen] = useState(true);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [historyMonths, setHistoryMonths] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const fetchBSHistoryMonth = useCallback(async (y, mo) => {
+    if (!token || !source || !structure || !y || !mo) return { data: [] };
+    const h = { Authorization: `Bearer ${token}`, Accept: "application/json" };
+    const filter = `Year eq ${y} and Month eq ${mo} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+    try {
+      const res = await fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h });
+      const json = res.ok ? await res.json() : { value: [] };
+      return { data: json.value ?? (Array.isArray(json) ? json : []) };
+    } catch { return { data: [] }; }
+  }, [token, source, structure]);
+
+  const toggleBSHistory = useCallback(async () => {
+    if (compareMode) return;
+    if (historyExpanded) {
+      setHistoryExpanded(false);
+      setHistoryMonths([]);
+      onHistoryExpandedChange?.(false);
+      return;
+    }
+    setHistoryExpanded(true);
+    onHistoryExpandedChange?.(true);
+    setHistoryLoading(true);
+    const targets = [];
+    let y = Number(year), m = Number(month);
+    for (let i = 0; i < 5; i++) {
+      m -= 1;
+      if (m < 1) { m = 12; y -= 1; }
+      targets.push({ year: y, month: m });
+    }
+    for (const target of targets) {
+      const { data } = await fetchBSHistoryMonth(target.year, target.month);
+      setHistoryMonths(prev => [...prev, { year: target.year, month: target.month, data }]);
+    }
+    setHistoryLoading(false);
+  }, [compareMode, historyExpanded, year, month, fetchBSHistoryMonth, onHistoryExpandedChange]);
 
   const localName = useCallback((node) => {
     return pgcBsMapping?.names?.get(String(node.code)) ?? node.name;
@@ -4107,14 +5385,36 @@ const { colors } = useSettings();
   const subbody2Style = useTypo("subbody2");
   const [cmp2Loading, setCmp2Loading] = useState(false);
 const [bsView, setBsView] = useState("summary");
+
+const bsCmpFilteredDims = useMemo(() => {
+  if (!bsCmpDimGroups || bsCmpDimGroups.length === 0) return effectiveDimensions;
+  return effectiveDimensions.filter(d => {
+    const g = typeof d === "object" ? (d.dimensionGroup ?? d.DimensionGroup ?? "") : "";
+    return bsCmpDimGroups.includes(g);
+  });
+}, [effectiveDimensions, bsCmpDimGroups]);
+
+const bsCmp2FilteredDims = useMemo(() => {
+  if (!bsCmp2DimGroups || bsCmp2DimGroups.length === 0) return effectiveDimensions;
+  return effectiveDimensions.filter(d => {
+    const g = typeof d === "object" ? (d.dimensionGroup ?? d.DimensionGroup ?? "") : "";
+    return bsCmp2DimGroups.includes(g);
+  });
+}, [effectiveDimensions, bsCmp2DimGroups]);
 const [cmp2EnabledInternal, setCmp2EnabledInternal] = useState(true);
   const cmp2Enabled = externalCmp2Enabled !== undefined ? externalCmp2Enabled : cmp2EnabledInternal;
   const setCmp2Enabled = (v) => { setCmp2EnabledInternal(v); onBsCmp2EnabledChange?.(v); };
-const [bsDrillMap, setBsDrillMap] = useState({});
-
+const bsDrillMap = externalBsDrillMap ?? {};
+const setBsDrillMap = externalSetBsDrillMap ?? (() => {});
 useEffect(() => {
-  setBsDrillMap({});
-}, [cmp2Enabled, compareMode]);
+  console.log("🔥 bsDrillMap CHANGED:", Object.keys(bsDrillMap).length, "keys");
+}, [bsDrillMap]);
+useEffect(() => {
+  console.log("🔥 compareMode CHANGED:", compareMode, "| bsDrillMap keys at this moment:", Object.keys(bsDrillMap).length);
+}, [compareMode]);
+
+// Intentionally do NOT reset bsDrillMap on compareMode/cmp2Enabled changes
+// so the user keeps their expanded rows when toggling compare or removing Period C.
   const [jrnPopup, setJrnPopup] = useState(null);
   const [dimPopup, setDimPopup] = useState(null);
 const bsDrill = useCallback((key) => {
@@ -4132,6 +5432,8 @@ const journalByCode = useMemo(() => {
   (journalEntries || []).forEach(row => {
     const code = String(row.accountCode ?? row.AccountCode ?? "");
     if (!code) return;
+    const jt = String(row.journalType ?? row.JournalType ?? "").toUpperCase();
+    if (jt !== "AJE" && jt !== "RJE") return;
     if (!idx.has(code)) idx.set(code, []);
     idx.get(code).push(row);
   });
@@ -4294,11 +5596,12 @@ rows.push(
   <tr key={childKey}
     className={`border-b border-[#1a2f8a]/5 transition-colors ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : "hover:bg-[#eef1fb]/30"}`}
     onClick={hasMore ? () => setBsDrillMap(prev => ({ ...prev, [childKey]: !prev[childKey] })) : undefined}>
-    <td className="py-2" style={{ paddingLeft: `${24 + depth * 20}px` }}>
+<td className="py-2 whitespace-nowrap" style={{ paddingLeft: `${24 + depth * 20}px` }}>
 <div className="flex items-center">
   {hasMore
     ? <span className="text-[#1a2f8a]/50 mr-2">{childExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
     : <span className="inline-block mr-2" style={{ width: 12 }} />}
+  <span className="mr-2 font-mono text-gray-400" style={subbody2Style}>{child.code}</span>
   <span style={body2Style}>{child.name}</span>
 </div>
     </td>
@@ -4330,6 +5633,9 @@ return <>
               })()}
             </>;
           })()}
+          {historyExpanded && !compareMode && bsHistoryProcessed.map(h => (
+            <BSAmountCell key={`bshist-drill-${h.year}-${h.month}-${child.code}`} value={getBSHistVal(h, child.code)} typoStyle={body2Style} />
+          ))}
         </tr>
       );
 
@@ -4359,7 +5665,7 @@ if (childExpanded && hasMore) {
                   <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded flex-shrink-0">
                     journal
                   </span>
-                  <span className="text-[10px] text-gray-400">{jrnRows.length} entries</span>
+                  <span className="text-[10px] text-gray-400">{jrnRows.length} {jrnRows.length === 1 ? t("entry") : t("entries")}</span>f
                 </div>
               </td>
 <td className="text-right pr-4 py-1 font-mono text-xs text-gray-300">—</td>
@@ -4406,12 +5712,12 @@ if (childExpanded && hasMore) {
 <tr key={leafKey}
           className={`border-b border-[#1a2f8a]/5 bg-[#fafbff] transition-colors ${hasDims ? "cursor-pointer hover:bg-amber-50/40" : "hover:bg-[#eef1fb]/20"}`}
           onClick={hasDims ? () => setBsDrillMap(prev => ({ ...prev, [leafKey]: !prev[leafKey] })) : undefined}>
-<td className="py-1.5" style={{ paddingLeft: `${24 + depth * 20}px` }}>
+<td className="py-1.5 whitespace-nowrap" style={{ paddingLeft: `${24 + depth * 20}px` }}>
   <div className="flex items-center">
     {hasDims
       ? <span className="text-[#1a2f8a]/50 mr-2">{leafExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
       : <span className="inline-block mr-2" style={{ width: 12 }} />}
-    {leaf.code && <span className="mr-2" style={subbody1Style}>{leaf.code}</span>}
+    {leaf.code && <span className="font-mono text-gray-400 mr-2" style={subbody2Style}>{leaf.code}</span>}
     <span style={subbody1Style}>{leaf.name || ""}</span>
   </div>
 </td>
@@ -4440,6 +5746,10 @@ if (childExpanded && hasMore) {
               })()}
             </>;
           })()}
+{historyExpanded && !compareMode && bsHistoryProcessed.map(h => {
+            const leafAmt = leaf.code ? (h.leafIdx.get(String(leaf.code)) ?? 0) : 0;
+            return <BSAmountCell key={`bshist-leaf-${h.year}-${h.month}-${i}`} value={leafAmt} typoStyle={subbody1Style} />;
+          })}
         </tr>
       );
 
@@ -4452,7 +5762,7 @@ if (childExpanded && hasMore) {
               <td className="py-1" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
                 <div className="flex items-center gap-1.5">
                   <div className="w-2 h-px bg-amber-200 flex-shrink-0" />
-                  <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded flex-shrink-0">dim</span>
+                  <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded flex-shrink-0">{t("label_dim")}</span>
                   <span className="text-xs text-gray-400 italic">{dim.name || dim.code}</span>
                 </div>
               </td>
@@ -4479,7 +5789,7 @@ if (childExpanded && hasMore) {
                 <div className="flex items-center gap-1.5">
                   <div className="w-2 h-px bg-indigo-200 flex-shrink-0" />
                   <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded flex-shrink-0">
-                    {jrnExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>} journal
+                   {jrnExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>} {t("label_journal")}
                   </span>
                   <span className="text-[10px] text-gray-400">{jrnRows.length} entries</span>
                 </div>
@@ -4563,14 +5873,15 @@ function renderNode(node, depth = 0) {
       <tr key={node.code}
         className={`border-b border-gray-100 ${isBold ? "bg-[#eef1fb]" : "bg-white"} ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
         onClick={hasMore ? () => bsDrill(drillKey) : undefined}>
-        <td className="px-6 py-2.5 sticky left-0 bg-inherit z-10 min-w-[220px]">
+<td className="px-6 py-2.5 sticky left-0 bg-inherit z-10 min-w-[220px]">
           <div className="flex items-center gap-2">
             {hasMore
               ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{expanded ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
               : <span className="w-3 flex-shrink-0" />}
-<span className={`text-xs ${isBold ? "font-bold text-[#1a2f8a] uppercase tracking-wider" : "text-gray-600"}`}>
-  {isBold ? (localName(node).toUpperCase()) : (() => { const n = localName(node); return n.charAt(0).toUpperCase() + n.slice(1).toLowerCase(); })()}
-</span>
+            <span className="font-mono text-gray-400 flex-shrink-0" style={subbody2Style}>{node.code}</span>
+            <span className={`text-xs ${isBold ? "font-bold text-[#1a2f8a] uppercase tracking-wider" : "text-gray-600"}`}>
+              {isBold ? (localName(node).toUpperCase()) : (() => { const n = localName(node); return n.charAt(0).toUpperCase() + n.slice(1).toLowerCase(); })()}
+            </span>
           </div>
         </td>
         {companyColumns.map(({ company }) => {
@@ -4684,11 +5995,11 @@ const flatNodes = bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes;
       const hasMore = flatChildren.length > 0 || hasNonFlatChildren || hasLeaves || hasJournal;
       const expanded = !!bsDrillMap[drillKey];
 
-      const divider = effectiveBreakersBs[String(node.code)];
+const divider = effectiveBreakersBs[String(node.code)];
       if (divider) {
-        rows.push(
-          <tr key={`bsdivider-${node.code}`}>
-            <td colSpan={2} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
+rows.push(
+<tr key={`bsdivider-${node.code}`} style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rows.length, 25) * 40}ms both` }}>
+<td colSpan={4 + (compareMode ? 3 : 0) + (compareMode && cmp2Enabled ? 3 : 0) + (historyExpanded ? bsHistoryProcessed.length : 0)} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
              <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
             </td>
           </tr>
@@ -4699,20 +6010,23 @@ const rowStyle = depth === 0 ? body1Style : body2Style;
 rows.push(
   <tr key={node.code}
     className={`border-b border-gray-100 bg-white ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
+    style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rows.length, 25) * 40}ms both` }}
     onClick={hasMore ? () => bsDrill(drillKey) : undefined}>
-    <td className="py-2.5" style={{ paddingLeft: `${24 + depth * 18}px` }}>
+<td className="py-2.5 whitespace-nowrap" style={{ paddingLeft: `${24 + depth * 18}px` }}>
       <div className="flex items-center">
-        {hasMore && (
-          <span className="text-[#1a2f8a]/50 mr-2">
-            {expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
-          </span>
-        )}
-<span style={rowStyle}>
+        {hasMore
+          ? <span className="text-[#1a2f8a]/50 mr-2">{expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
+          : <span className="inline-block mr-2" style={{ width: 12 }} />}
+        <span className="mr-2 font-mono text-gray-400" style={subbody2Style}>{node.code}</span>
+        <span style={rowStyle}>
           {(() => { const n = localName(node); return n.charAt(0).toUpperCase() + n.slice(1).toLowerCase(); })()}
         </span>
       </div>
     </td>
-    <BSAmountCell value={total} typoStyle={rowStyle} />
+<BSAmountCell value={total} typoStyle={rowStyle} />
+    {historyExpanded && !compareMode && bsHistoryProcessed.map(h => (
+      <BSAmountCell key={`bshist-${h.year}-${h.month}-${node.code}`} value={getBSHistVal(h, node.code)} typoStyle={rowStyle} />
+    ))}
   </tr>
 );
 
@@ -4745,23 +6059,24 @@ const BS_DIVIDERS = Object.keys(breakers.bs).length
   ? effectiveBreakersBs
   : { '399999': { label: "Activo", color: colors.primary }, '499999': { label: "Patrimonio Neto", color: colors.secondary }, '699999': { label: "Pasivo", color: colors.tertiary }, 'C.ACT': { label: "Activo", color: colors.primary }, 'D.S': { label: "Patrimonio Neto", color: colors.secondary }, 'E.S': { label: "Pasivo", color: colors.tertiary } };
     const bsDivider = BS_DIVIDERS[String(node.code)];
-    if (bsDivider) {
-      rows.push(
-        <tr key={`bsdivider-${node.code}`}>
-          <td colSpan={2} style={{ backgroundColor: bsDivider.color }} className="px-6 py-1.5">
-            <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
-          </td>
-        </tr>
-      );
-    }
+if (divider) {
+          rows.push(
+            <tr key={`bsdivider-${node.code}`}>
+              <td colSpan={cmp2Enabled ? 9 : 6} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
+               <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
+              </td>
+            </tr>
+          );
+        }
 
     if (kids.length > 0) rows.push(...renderBSRows(kids));
 
 rows.push(
   <tr key={node.code}
     className={`border-b border-gray-100 bg-white ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
+    style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rows.length, 25) * 40}ms both` }}
     onClick={hasMore ? () => bsDrill(drillKey) : undefined}>
-    <td className="px-6 py-2.5">
+<td className="px-6 py-2.5 whitespace-nowrap">
       <div className="flex items-center">
         {hasMore && (
           <span className="text-[#1a2f8a]/50 mr-2">
@@ -4825,6 +6140,23 @@ useEffect(() => {
   }, [compareMode, cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany, cmpData, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, cmp2Data]);
 
 const tree = useMemo(() => buildTree(groupAccounts, uploadedAccounts, !dimensionActive), [groupAccounts, uploadedAccounts, dimensionActive]);
+const rawSumByCode = useMemo(() => {
+  const idx = new Map();
+  (uploadedAccounts || []).forEach(row => {
+    const code = String(getField(row, "accountCode") ?? "");
+    if (!code) return;
+    const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+    idx.set(code, (idx.get(code) ?? 0) + amt);
+  });
+  return idx;
+}, [uploadedAccounts]);
+
+const sumNodeFixed = useCallback((node) => {
+  if (!node) return 0;
+  let total = rawSumByCode.get(String(node.code)) ?? 0;
+  (node.children || []).forEach(c => { total += sumNodeFixed(c); });
+  return total;
+}, [rawSumByCode]);
   const cmpTree = useMemo(() => compareMode ? buildTree(groupAccounts, cmpData, !dimensionActive) : [], [groupAccounts, cmpData, compareMode, dimensionActive]);
   const cmp2Tree = useMemo(() => compareMode ? buildTree(groupAccounts, cmp2Data, !dimensionActive) : [], [groupAccounts, cmp2Data, compareMode, dimensionActive]);
 
@@ -4842,8 +6174,31 @@ const allCmp2Tree = useMemo(
   [groupAccounts, allCompaniesCmp2Data, compareMode, dimensionActive]
 );
 
- const bsRoots = useMemo(() => tree.filter(n => hasData(n) && n.accountType === "B/S")
+const bsRoots = useMemo(() => tree.filter(n => hasData(n) && n.accountType === "B/S")
     .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true })), [tree]);
+
+const bsHistoryProcessed = useMemo(() => {
+  return historyMonths.map(h => {
+    const t = buildTree(groupAccounts, h.data, !dimensionActive);
+    const map = new Map();
+    const walk = (n) => { map.set(n.code, n); n.children?.forEach(walk); };
+    t.forEach(walk);
+    const leafIdx = new Map();
+    h.data.forEach(row => {
+      const lac = String(getField(row, "localAccountCode") ?? "");
+      if (!lac) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      leafIdx.set(lac, (leafIdx.get(lac) ?? 0) + amt);
+    });
+    return { year: h.year, month: h.month, map, leafIdx };
+  });
+}, [historyMonths, groupAccounts, dimensionActive]);
+
+const getBSHistVal = useCallback((h, code) => {
+  const n = h.map.get(code);
+  const raw = n ? sumNode(n) : 0;
+  return Number(code) >= 599999 ? -raw : raw;
+}, []);
 
 // PGC mapping: ordered list of nodes — filtered by active tab (summary/assets/equity)
   const sectionFilterForView = useCallback((info) => {
@@ -5029,7 +6384,7 @@ function renderBSCompareRows(nodes, cmpTree, cmp2Tree) {
         const devC = actual - cmp2;
         const devCPct = cmp2 !== 0 ? (devC / Math.abs(cmp2)) * 100 : null;
 
-        const drillKeyCmp = `bscmp-${node.code}`;
+ const drillKeyCmp = `bsrow-${node.code}`;
         const flatChildrenCmp = childrenInFlat.get(String(node.code)) || [];
         const treeChildrenCmp = (node.children || []).filter(hasData);
         const hasNonFlatCmp = treeChildrenCmp.some(c => !flatByCode.has(String(c.code)));
@@ -5039,10 +6394,10 @@ function renderBSCompareRows(nodes, cmpTree, cmp2Tree) {
         const expandedCmp = !!bsDrillMap[drillKeyCmp];
         const rowStyle = depth === 0 ? body1Style : body2Style;
         const divider = effectiveBreakersBs[String(node.code)];
-        if (divider) {
+if (divider) {
           rows.push(
             <tr key={`bsdivider-${node.code}`}>
-              <td colSpan={cmp2Enabled ? 8 : 5} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
+              <td colSpan={3 + (compareMode ? 3 : 0) + (compareMode && cmp2Enabled ? 3 : 0) + (historyExpanded ? bsHistoryProcessed.length : 0)} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
                <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
               </td>
             </tr>
@@ -5054,13 +6409,12 @@ rows.push(
   <tr key={node.code}
     className={`border-b border-gray-100 bg-white ${hasMoreCmp ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
     onClick={hasMoreCmp ? () => bsDrill(drillKeyCmp) : undefined}>
-    <td className="py-2.5" style={{ paddingLeft: `${24 + depth * 18}px` }}>
+<td className="py-2.5 whitespace-nowrap" style={{ paddingLeft: `${24 + depth * 18}px` }}>
       <div className="flex items-center">
-        {hasMoreCmp && (
-          <span className="text-[#1a2f8a]/50 mr-2">
-            {expandedCmp ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
-          </span>
-        )}
+        {hasMoreCmp
+          ? <span className="text-[#1a2f8a]/50 mr-2">{expandedCmp ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
+          : <span className="inline-block mr-2" style={{ width: 12 }} />}
+        <span className="mr-2 font-mono text-gray-400" style={subbody2Style}>{node.code}</span>
         <span style={rowStyleCmp}>
           {(node.name ?? "").charAt(0).toUpperCase() + (node.name ?? "").slice(1).toLowerCase()}
         </span>
@@ -5099,10 +6453,10 @@ const BS_DIVIDERS = Object.keys(breakers.bs).length
   ? effectiveBreakersBs
   : { '399999': { label: "Activo", color: colors.primary }, '499999': { label: "Patrimonio Neto", color: colors.secondary }, '699999': { label: "Pasivo", color: colors.tertiary }, 'C.ACT': { label: "Activo", color: colors.primary }, 'D.S': { label: "Patrimonio Neto", color: colors.secondary }, 'E.S': { label: "Pasivo", color: colors.tertiary } };
       const bsDivider = BS_DIVIDERS[String(node.code)];
-      if (bsDivider) {
+if (bsDivider) {
         rows.push(
           <tr key={`bsdivider-${node.code}`}>
-            <td colSpan={cmp2Enabled ? 8 : 5} style={{ backgroundColor: bsDivider.color }} className="px-6 py-1.5">
+            <td colSpan={cmp2Enabled ? 9 : 6} style={{ backgroundColor: bsDivider.color }} className="px-6 py-1.5">
               <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
             </td>
           </tr>
@@ -5123,7 +6477,7 @@ const BS_DIVIDERS = Object.keys(breakers.bs).length
       const devCPct = cmp2 !== 0 ? (devC / Math.abs(cmp2)) * 100 : null;
       const devColor = (v) => v === 0 ? "text-gray-300" : v > 0 ? "text-emerald-600" : "text-red-500";
 
-      const drillKeyCmp = `bscmp-${node.code}`;
+  const drillKeyCmp = `bsrow-${node.code}`;
       const hasMoreCmp = node.uploadLeaves?.filter(l => l.type !== "plain").length > 0;
       const expandedCmp = !!bsDrillMap[drillKeyCmp];
 
@@ -5131,13 +6485,12 @@ rows.push(
   <tr key={node.code}
     className={`border-b border-gray-100 bg-white ${hasMoreCmp ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
     onClick={hasMoreCmp ? () => bsDrill(drillKeyCmp) : undefined}>
-    <td className="px-6 py-2.5">
+<td className="px-6 py-2.5 whitespace-nowrap">
       <div className="flex items-center">
-        {hasMoreCmp && (
-          <span className="text-[#1a2f8a]/50 mr-2">
-            {expandedCmp ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
-          </span>
-        )}
+        {hasMoreCmp
+          ? <span className="text-[#1a2f8a]/50 mr-2">{expandedCmp ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
+          : <span className="inline-block mr-2" style={{ width: 12 }} />}
+        <span className="mr-2 font-mono text-gray-400" style={subbody2Style}>{node.code}</span>
         <span style={body1Style}>
           {(node.name ?? "").charAt(0).toUpperCase() + (node.name ?? "").slice(1).toLowerCase()}
         </span>
@@ -5161,10 +6514,313 @@ if (expandedCmp && hasMoreCmp) {
     return rows;
   }
 
-  if (loading) return (
+// ────────────────────────────────────────────────────────────
+  //  SAVED-MAPPING LITERAL RENDER PATH (Balance Sheet)
+  // ────────────────────────────────────────────────────────────
+  if (savedBsLiteral && !loading) {
+    const dimIdx = new Map();
+    const accIdx = new Map();
+    (uploadedAccounts || []).forEach(row => {
+      const code = String(getField(row, "accountCode") ?? "");
+      if (!code) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      accIdx.set(code, (accIdx.get(code) ?? 0) + amt);
+      const dimsStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+      if (!dimsStr) return;
+      dimsStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+        const i = pair.indexOf(":");
+        if (i === -1) return;
+        const g = pair.slice(0, i).trim();
+        const n = pair.slice(i + 1).trim();
+        dimIdx.set(`${code}|${g}:${n}`, (dimIdx.get(`${code}|${g}:${n}`) ?? 0) + amt);
+      });
+    });
+
+const sumLiteral = (node) => {
+      let total = 0;
+      if (node.dims && node.dims.length > 0) {
+        node.dims.forEach(d => { total += dimIdx.get(`${node.code}|${d}`) ?? 0; });
+      } else {
+        total = accIdx.get(node.code) ?? 0;
+      }
+      return total;
+    };
+
+    // ── Compare period indexes for BS ───────────────────────────────
+    const cmpAccIdxBs = new Map();
+    const cmpDimIdxBs = new Map();
+    (cmpData || []).forEach(row => {
+      const code = String(getField(row, "accountCode") ?? "");
+      if (!code) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      cmpAccIdxBs.set(code, (cmpAccIdxBs.get(code) ?? 0) + amt);
+      const dimsStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+      if (!dimsStr) return;
+      dimsStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+        const i = pair.indexOf(":");
+        if (i === -1) return;
+        const g = pair.slice(0, i).trim();
+        const v = pair.slice(i + 1).trim();
+        cmpDimIdxBs.set(`${code}|${g}:${v}`, (cmpDimIdxBs.get(`${code}|${g}:${v}`) ?? 0) + amt);
+      });
+    });
+    const cmp2AccIdxBs = new Map();
+    const cmp2DimIdxBs = new Map();
+    (cmp2Data || []).forEach(row => {
+      const code = String(getField(row, "accountCode") ?? "");
+      if (!code) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      cmp2AccIdxBs.set(code, (cmp2AccIdxBs.get(code) ?? 0) + amt);
+      const dimsStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+      if (!dimsStr) return;
+      dimsStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+        const i = pair.indexOf(":");
+        if (i === -1) return;
+        const g = pair.slice(0, i).trim();
+        const v = pair.slice(i + 1).trim();
+        cmp2DimIdxBs.set(`${code}|${g}:${v}`, (cmp2DimIdxBs.get(`${code}|${g}:${v}`) ?? 0) + amt);
+      });
+    });
+    const sumLiteralBSGeneric = (node, accIdxLoc, dimIdxLoc) => {
+      let total = 0;
+      if (node.dims && node.dims.length > 0) {
+        node.dims.forEach(d => { total += dimIdxLoc.get(`${node.code}|${d}`) ?? 0; });
+      } else {
+        total = accIdxLoc.get(node.code) ?? 0;
+      }
+      return total;
+    };
+    const sumLiteralB = (node) => sumLiteralBSGeneric(node, cmpAccIdxBs, cmpDimIdxBs);
+    const sumLiteralC = (node) => sumLiteralBSGeneric(node, cmp2AccIdxBs, cmp2DimIdxBs);
+
+const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource, cmpStructure].filter(Boolean).join(" · ") || "Period B";
+    const bsCmp2Label = [cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source, cmp2Structure].filter(Boolean).join(" · ") || "Period C";
+
+    return (
+      <div className="space-y-3 flex flex-col" style={{ minHeight: 0, flex: 1, overflow: "visible" }}>
+        {compareMode && filtersOpen && (
+          <div className="bg-white rounded-2xl shadow-xl border border-gray-100"
+            style={{ overflow: "visible", position: "relative", zIndex: 100, marginBottom: 12, flex: "0 0 auto" }}>
+            <div className="px-5 py-3 flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-2 mr-2">
+                <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+                  style={{ background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)", boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)" }}>
+                  <span className="text-white text-[11px] font-black">B</span>
+                </div>
+                <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Period B</span>
+              </div>
+              <HeaderFilterPill label="Year" value={cmpYear} onChange={setCmpYear}
+                options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+              <HeaderFilterPill label="Month" value={cmpMonth} onChange={setCmpMonth}
+                options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+              <HeaderFilterPill label="Source" value={cmpSource} onChange={setCmpSource}
+                options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+              <HeaderFilterPill label="Structure" value={cmpStructure} onChange={setCmpStructure}
+                options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+              <HeaderFilterPill label="Company" value={cmpCompany} onChange={setCmpCompany}
+                options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+              {!cmp2Enabled && (
+                <button onClick={() => setCmp2Enabled(true)}
+                  className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]"
+                  style={{ background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)", boxShadow: "0 4px 14px -4px rgba(87,170,120,0.5)" }}>
+                  <span className="text-white text-[10px] font-black">+ Add Period C</span>
+                </button>
+              )}
+            </div>
+            {cmp2Enabled && (
+              <div className="px-5 py-3 flex items-center gap-2 flex-wrap border-t border-gray-100"
+                style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.06s both" }}>
+                <div className="flex items-center gap-2 mr-2">
+                  <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+                    style={{ background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)", boxShadow: "0 4px 12px -4px rgba(87,170,120,0.5)" }}>
+                    <span className="text-white text-[11px] font-black">C</span>
+                  </div>
+                  <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>Period C</span>
+                </div>
+                <HeaderFilterPill label="Year" value={cmp2Year} onChange={setCmp2Year}
+                  options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+                <HeaderFilterPill label="Month" value={cmp2Month} onChange={setCmp2Month}
+                  options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+                <HeaderFilterPill label="Source" value={cmp2Source} onChange={setCmp2Source}
+                  options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+                <HeaderFilterPill label="Structure" value={cmp2Structure} onChange={setCmp2Structure}
+                  options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+                <HeaderFilterPill label="Company" value={cmp2Company} onChange={setCmp2Company}
+                  options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+                <button onClick={() => setCmp2Enabled(false)}
+                  className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all duration-200 hover:scale-[1.05]"
+                  style={{ background: "#fee2e2", color: "#dc2626" }}
+                  title="Remove Period C">
+                  <X size={12} strokeWidth={2.5} />
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col"
+          style={{ maxHeight: "100%", minHeight: 0, boxShadow: "0 20px 40px -8px rgba(26, 47, 138, 0.15), 0 4px 12px -2px rgba(26, 47, 138, 0.08)" }}>
+          <div className="scrollbar-hide" style={{ overflowX: "auto", overflowY: "auto", flex: 1, minHeight: 0 }}>
+<table className="w-full">
+<colgroup>
+                <col style={{ width: "1px" }} />
+                <col style={{ width: "1px" }} />
+                {compareMode && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+                {compareMode && cmp2Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+                {historyExpanded && bsHistoryProcessed.map(h => (
+                  <col key={`bshist-col-${h.year}-${h.month}`} style={{ width: "1px" }} />
+                ))}
+                <col />
+              </colgroup>
+              <thead className="sticky top-0 z-10">
+                <tr className="border-b border-gray-100" style={{
+                  background: "rgba(255,255,255,0.95)",
+                  backdropFilter: "blur(24px)",
+                  WebkitBackdropFilter: "blur(24px)",
+                  boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
+                }}>
+                  <th className="text-left px-6 whitespace-nowrap" style={{ height: "64px", background: "transparent" }}>
+                    <div className="flex items-baseline gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
+                      <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>
+                        {t("col_account")}
+                      </span>
+                      <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
+                        {t("page_bs_full")}
+                      </span>
+                    </div>
+                  </th>
+                  <th className="text-right pr-6 py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px", cursor: compareMode ? "default" : "pointer" }}
+                    onClick={compareMode ? undefined : toggleBSHistory}
+                    title={compareMode ? "" : historyExpanded ? "Hide history" : "Show last 6 months"}>
+                    <span className="font-black tracking-tight inline-block"
+                      style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em", animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
+                      {t("col_actual")}
+                    </span>
+                  </th>
+{compareMode && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap" style={{ background: "transparent" }}>
+                    <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.26s both" }}>
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#CF305D" }} />
+                        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Period B</span>
+                      </div>
+                      <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{bsCmpLabel}</span>
+                    </div>
+                  </th>}
+                  {compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap" style={{ background: "transparent" }}>
+                    <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.30s both" }}>
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#57aa78" }} />
+                        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>Period C</span>
+                      </div>
+<span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{bsCmp2Label}</span>
+                    </div>
+                  </th>}
+                  {historyExpanded && bsHistoryProcessed.map(h => (
+                    <th key={`bshist-saved-${h.year}-${h.month}`} className="text-right pr-6 py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px" }}>
+                      <div className="flex flex-col items-end">
+                        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>
+                          {MONTHS.find(m => m.value === h.month)?.label.slice(0,3)}
+                        </span>
+                        <span className="text-[10px] font-bold" style={{ color: "#9ca3af" }}>{h.year}</span>
+                      </div>
+                    </th>
+                  ))}
+<th className="text-right pr-6 py-3" style={{ background: "transparent" }}>
+                    <div className="flex items-center justify-end gap-2" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
+                      {compareMode && (
+                        <button onClick={() => setFiltersOpen(o => !o)}
+                          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all duration-200 hover:scale-[1.02]"
+                          style={{ background: filtersOpen ? `${colors.primary}12` : "transparent", color: filtersOpen ? colors.primary : "#9ca3af" }}>
+                          <ChevronDown size={10} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
+                          <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? "Hide" : "Show"}</span>
+                        </button>
+                      )}
+                    </div>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+              {savedBsLiteral.map((section, secIdx) => {
+                const rows = [];
+if (section.label) {
+                  rows.push(
+                    <tr key={`bssec-${secIdx}`} style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rows.length, 25) * 40}ms both` }}>
+                 <td colSpan={3 + (compareMode ? 3 : 0) + (compareMode && cmp2Enabled ? 3 : 0) + (historyExpanded ? bsHistoryProcessed.length : 0)} style={{ backgroundColor: section.color }} className="px-6 py-1.5">
+                        <span className="uppercase tracking-widest" style={header3Style}>{section.label}</span>
+                      </td>
+                    </tr>
+                  );
+                }
+                const renderNode = (node, depth) => {
+                  const val = sumLiteral(node);
+                  let displayVal = val;
+                  if (node.isSum && node.children && node.children.length > 0) {
+                    displayVal = node.children.reduce((s, c) => s + sumLiteral(c), val);
+                  }
+                  const rowStyle = depth === 0 ? body1Style : body2Style;
+                  rows.push(
+                    <tr key={node.id}
+                      className="border-b border-gray-100 bg-white hover:bg-[#eef1fb]/60 transition-colors"
+                      style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rows.length, 25) * 40}ms both` }}>
+                      <td className="py-2.5 whitespace-nowrap" style={{ paddingLeft: `${24 + depth * 18}px` }}>
+                        <div className="flex items-center">
+                          <span className="inline-block mr-2" style={{ width: 12 }} />
+                          {node.code && <span className="mr-2 font-mono text-gray-400" style={subbody2Style}>{node.code}</span>}
+                          <span style={rowStyle}>
+                            {node.name ? (node.name.charAt(0).toUpperCase() + node.name.slice(1).toLowerCase()) : node.code}
+                          </span>
+                        </div>
+                      </td>
+<BSAmountCell value={displayVal} typoStyle={rowStyle} />
+                      {compareMode && (() => {
+                        let cmpVal = sumLiteralB(node);
+                        if (node.isSum && node.children && node.children.length > 0) {
+                          cmpVal = node.children.reduce((s, c) => s + sumLiteralB(c), cmpVal);
+                        }
+                        return (
+                          <>
+                            <BSAmountCell value={cmpVal} typoStyle={rowStyle} divider />
+                            <BSDeviationCells a={displayVal} b={cmpVal} typoStyle={rowStyle} />
+                          </>
+                        );
+                      })()}
+                      {compareMode && cmp2Enabled && (() => {
+                        let cmp2Val = sumLiteralC(node);
+                        if (node.isSum && node.children && node.children.length > 0) {
+                          cmp2Val = node.children.reduce((s, c) => s + sumLiteralC(c), cmp2Val);
+                        }
+                        return (
+                          <>
+                            <BSAmountCell value={cmp2Val} typoStyle={rowStyle} divider />
+                            <BSDeviationCells a={displayVal} b={cmp2Val} typoStyle={rowStyle} />
+                          </>
+                        );
+                      })()}
+{historyExpanded && bsHistoryProcessed.map(h => {
+                        const histNode = h.map.get(String(node.code));
+                        const histVal = histNode
+                          ? (Number(node.code) >= 599999 ? -sumNode(histNode) : sumNode(histNode))
+                          : 0;
+                        return <BSAmountCell key={`bshist-saved-${h.year}-${h.month}-${node.id}`} value={histVal} typoStyle={rowStyle} />;
+                      })}
+                    </tr>
+                  );
+                  (node.children || []).forEach(c => renderNode(c, depth + 1));
+                };
+                section.nodes.forEach(n => renderNode(n, 0));
+                return rows;
+              })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+if (loading) return (
     <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
       <Loader2 size={28} className="text-[#1a2f8a] animate-spin mx-auto mb-3" />
-      <p className="text-gray-400 text-sm">Loading Balance Sheet…</p>
+     <p className="text-gray-400 text-sm">{t("loading_bs_data")}</p>
     </div>
   );
   if (error) return <ErrorBox error={error} />;
@@ -5177,11 +6833,11 @@ if (expandedCmp && hasMoreCmp) {
     </div>
   );
 
-  const cmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource, cmpStructure].filter(Boolean).join(" · ") || "Period B";
-  const cmp2Label = [cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source, cmp2Structure].filter(Boolean).join(" · ") || "Period C";
+const cmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource, cmpStructure].filter(Boolean).join(" · ") || t("period_b");
+  const cmp2Label = [cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source, cmp2Structure].filter(Boolean).join(" · ") || t("period_c");
 
-  return (
-    <div className="bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden">
+return (
+    <div className="space-y-3 flex flex-col" style={{ minHeight: 0, flex: 1, overflow: "visible" }}>
       
 {jrnPopup && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setJrnPopup(null)}>
@@ -5327,108 +6983,351 @@ const tabs = ["summary","assets","equity"];
       </div>
 
 {/* Compare filters */}
-      {compareMode && filtersOpen && (
-        <div className="border-t border-white/10" style={{ flex: "none" }}>
-          <div className="bg-[#ffffff] px-6 py-3 flex items-center gap-2 flex-wrap shadow-sm">
-            <div className="w-3 h-3 rounded-full border-2 border-[#CF305D] flex-shrink-0" />
-            {[
-              { label: "Yr", value: cmpYear, set: setCmpYear, opts: YEARS.map(y => ({ value: String(y), label: String(y) })) },
-              { label: "Mnth", value: cmpMonth, set: setCmpMonth, opts: MONTHS.map(m => ({ value: String(m.value), label: m.label })) },
-              { label: "Src", value: cmpSource, set: setCmpSource, opts: sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; }) },
-              { label: "Struct", value: cmpStructure, set: setCmpStructure, opts: structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; }) },
-              { label: "Comp", value: cmpCompany, set: setCmpCompany, opts: companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); return { value: v, label: v }; }) },
-].map(({ label, value, set, opts }) => (
-              <FilterPill key={label} dark label={label} value={value} onChange={set} options={opts} />
-            ))}
-            {!cmp2Enabled && (
-              <button onClick={() => setCmp2Enabled(true)} className="ml-auto flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-[#eef1fb] text-gray-400 hover:text-[#1a2f8a] text-[10px] font-bold transition-all flex-shrink-0">+ C</button>
-            )}
-          </div>
-          {cmp2Enabled && <div className="bg-[#ffffff] px-6 py-3 flex items-center gap-2 flex-wrap border-t border-gray-100">
-            <div className="w-3 h-3 rounded-full border-2 border-[#57aa78] flex-shrink-0" />
-            {[
-              { label: "Yr", value: cmp2Year, set: setCmp2Year,opts: YEARS.map(y => ({ value: String(y), label: String(y) })) },
-              { label: "Mnth", value: cmp2Month, set: setCmp2Month, opts: MONTHS.map(m => ({ value: String(m.value), label: m.label })) },
-              { label: "Src", value: cmp2Source, set: setCmp2Source, opts: sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; }) },
-              { label: "Struct", value: cmp2Structure, set: setCmp2Structure, opts: structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; }) },
-              { label: "Comp", value: cmp2Company, set: setCmp2Company, opts: companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); return { value: v, label: v }; }) },
-].map(({ label, value, set, opts }) => (
-              <FilterPill key={label} dark label={label} value={value} onChange={set} options={opts} />
-            ))}
-            <button onClick={() => setCmp2Enabled(false)} className="ml-auto flex items-center justify-center w-6 h-6 rounded-lg bg-gray-100 hover:bg-red-50 hover:text-red-400 text-gray-400 transition-all flex-shrink-0"><X size={11} /></button>
-          </div>}
+{compareMode && filtersOpen && (
+  <div className="bg-white rounded-2xl shadow-xl border border-gray-100"
+    style={{ overflow: "visible", position: "relative", zIndex: 100, marginBottom: 12, flex: "0 0 auto" }}>
+    {/* Period B row */}
+    <div className="px-5 py-3 flex items-center gap-2 flex-wrap">
+      <div className="flex items-center gap-2 mr-2">
+        <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+          style={{
+            background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)",
+            boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)",
+          }}>
+          <span className="text-white text-[11px] font-black">B</span>
         </div>
-      )}
+        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Period B</span>
+      </div>
 
-      {/* Table */}
+<HeaderFilterPill label={t("filter_year")} value={cmpYear} onChange={setCmpYear}
+        options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+      <HeaderFilterPill label={t("filter_month")} value={cmpMonth} onChange={setCmpMonth}
+        options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+      <HeaderFilterPill label={t("filter_source")} value={cmpSource} onChange={setCmpSource}
+        options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+      <HeaderFilterPill label={t("filter_structure")} value={cmpStructure} onChange={setCmpStructure}
+        options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+<HeaderFilterPill label={t("filter_company")} value={cmpCompany} onChange={setCmpCompany}
+        options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+      <HeaderMultiFilterPill label={t("filter_dim_group")} values={bsCmpDimGroups} onChange={vs => { setBsCmpDimGroups(vs); setBsCmpDimensions(null); }}
+        options={dimGroups.map(g => ({ value: g, label: g }))} />
+      <HeaderMultiFilterPill label={t("filter_dims")} values={bsCmpDimensions} onChange={vs => setBsCmpDimensions(vs)}
+        options={bsCmpFilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+      {!cmp2Enabled && (
+        <button onClick={() => setCmp2Enabled(true)}
+          className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]"
+          style={{
+            background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)",
+            boxShadow: "0 4px 14px -4px rgba(87,170,120,0.5)",
+          }}>
+          <span className="text-white text-[10px] font-black">+ Add Period C</span>
+        </button>
+      )}
+    </div>
+
+    {/* Period C row */}
+    {cmp2Enabled && (
+      <div className="px-5 py-3 flex items-center gap-2 flex-wrap border-t border-gray-100"
+        style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.06s both" }}>
+        <div className="flex items-center gap-2 mr-2">
+          <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+            style={{
+              background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)",
+              boxShadow: "0 4px 12px -4px rgba(87,170,120,0.5)",
+            }}>
+            <span className="text-white text-[11px] font-black">C</span>
+          </div>
+          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>Period C</span>
+        </div>
+
+<HeaderFilterPill label={t("filter_year")} value={cmp2Year} onChange={setCmp2Year}
+          options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+        <HeaderFilterPill label={t("filter_month")} value={cmp2Month} onChange={setCmp2Month}
+          options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+        <HeaderFilterPill label={t("filter_source")} value={cmp2Source} onChange={setCmp2Source}
+          options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+        <HeaderFilterPill label={t("filter_structure")} value={cmp2Structure} onChange={setCmp2Structure}
+          options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+<HeaderFilterPill label={t("filter_company")} value={cmp2Company} onChange={setCmp2Company}
+          options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+        <HeaderMultiFilterPill label={t("filter_dim_group")} values={bsCmp2DimGroups} onChange={vs => { setBsCmp2DimGroups(vs); setBsCmp2Dimensions(null); }}
+          options={dimGroups.map(g => ({ value: g, label: g }))} />
+        <HeaderMultiFilterPill label={t("filter_dims")} values={bsCmp2Dimensions} onChange={vs => setBsCmp2Dimensions(vs)}
+          options={bsCmp2FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+        <button onClick={() => setCmp2Enabled(false)}
+          className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all duration-200 hover:scale-[1.05]"
+          style={{
+            background: "#fee2e2",
+            color: "#dc2626",
+          }}
+          title="Remove Period C">
+          <X size={12} strokeWidth={2.5} />
+        </button>
+      </div>
+    )}
+  </div>
+)}
+
+{/* Table */}
+
+
+<div className="bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col" style={{ maxHeight: "100%", minHeight: 0, boxShadow: "0 20px 40px -8px rgba(26, 47, 138, 0.15), 0 4px 12px -2px rgba(26, 47, 138, 0.08)" }}>
 <div className="scrollbar-hide" style={{ overflowX: "auto", overflowY: "auto", maxHeight: !compareMode ? "calc(86vh)" : filtersOpen ? cmp2Enabled ? "calc(72.5vh)" : "calc(79.5vh)" : "calc(85.5vh)" }}>
 <table className="w-full">
-          <colgroup>
-            <col style={{ width: "auto" }} />
-            <col style={{ width: "144px" }} />
-            {compareMode && <><col style={{ width: "144px" }} /><col style={{ width: "112px" }} /><col style={{ width: "80px" }} /></>}
-            {compareMode && cmp2Enabled && <><col style={{ width: "144px" }} /><col style={{ width: "112px" }} /><col style={{ width: "80px" }} /></>}
+<colgroup>
+            <col style={{ width: "1px" }} />
+            <col style={{ width: "1px" }} />
+            {compareMode && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+            {compareMode && cmp2Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+            <col />
           </colgroup>
 <thead>
 {(pgcBsMapping || bsView === "summary") ? (
-<tr className="border-b border-gray-100" style={{ position: "sticky", top: 0, zIndex: 10, backgroundColor: colors.primary }}>
-  <th className="text-left px-6" style={{ backgroundColor: colors.primary, height: "56px" }}>
+<tr className="border-b border-gray-100" style={{
+  position: "sticky", top: 0, zIndex: 10,
+  background: "rgba(255,255,255,0.95)",
+  backdropFilter: "blur(24px)",
+  WebkitBackdropFilter: "blur(24px)",
+  boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
+}}>
+<th className="text-left px-6 whitespace-nowrap" style={{ height: "64px", background: "transparent" }}>
     <div className="flex items-center gap-3">
-      <span className="uppercase tracking-widest" style={header2Style}>Account</span>
-      <div className="ml-auto flex items-center gap-2">
-        {compareMode && (
-          <button onClick={() => setFiltersOpen(o => !o)}
-            className="flex items-center gap-1.5 rounded-lg text-[11px] font-black transition-all"
-            style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, padding: "8px 12px", lineHeight: 1 }}>
-            <ChevronDown size={11} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
-            {filtersOpen ? "Hide filters" : "Show filters"}
-          </button>
-        )}
-<div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
-          {[["summary","Summary"],["assets","Assets"],["equity","Equity & Liab."]].map(([v, label]) => (
-            <button key={v} onClick={() => setBsView(v)}
-              className="rounded-md text-[11px] font-black transition-colors"
-              style={{
-                backgroundColor: bsView === v ? (colors.quaternary ?? "#F59E0B") : "transparent",
-                color: bsView === v ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
-                padding: "7px 12px",
-                lineHeight: 1
-              }}>
-              {label}
-            </button>
-          ))}
-        </div>
+      <div className="flex items-baseline gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
+<span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>
+          {t("col_account")}
+        </span>
+        <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
+          {t("page_bs_full")}
+        </span>
       </div>
     </div>
   </th>
-  <th className="text-right pr-4 py-3 uppercase tracking-widest w-36" style={{ ...header2Style, backgroundColor: colors.primary }}>{t("col_account") === "Cuenta" ? "Real" : t("col_account") === "Konto" ? "Faktisk" : "Actual"}</th>
-  {compareMode && <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black text-[#CF305D] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{[cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource].filter(Boolean).join(" · ")}</th>}
-  {compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black text-[#57aa78] uppercase tracking-widest whitespace-nowrap" style={{ backgroundColor: colors.primary }}>{[cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source].filter(Boolean).join(" · ")}</th>}
+<th className="text-right pr-6 py-3 whitespace-nowrap"
+  style={{ background: "transparent", width: "200px", cursor: compareMode ? "default" : "pointer" }}
+  onClick={toggleBSHistory}
+  title={compareMode ? "" : historyExpanded ? "Hide history" : "Show last 6 months"}>
+    <span className="font-black tracking-tight inline-block"
+      style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em", animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
+      {t("col_actual")}
+    </span>
+  </th>
+  {historyExpanded && bsHistoryProcessed.map(h => (
+    <th key={`bshist-${h.year}-${h.month}`} className="text-right pr-6 py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px" }}>
+      <div className="flex flex-col items-end">
+        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>
+          {MONTHS.find(m => m.value === h.month)?.label.slice(0,3)}
+        </span>
+        <span className="text-[10px] font-bold" style={{ color: "#9ca3af" }}>{h.year}</span>
+      </div>
+    </th>
+  ))}
+  {historyExpanded && historyLoading && (
+    <th className="text-center px-3 py-3" style={{ background: "transparent" }}>
+      <Loader2 size={14} className="animate-spin" style={{ color: colors.primary }} />
+    </th>
+  )}
+  {compareMode && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap" style={{ background: "transparent" }}>
+    <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.26s both" }}>
+      <div className="flex items-center gap-1.5">
+        <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#CF305D" }} />
+<span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>{t("period_b")}</span>
+      </div>
+      <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{[cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource].filter(Boolean).join(" · ")}</span>
+    </div>
+  </th>}
+{compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap" style={{ background: "transparent" }}>
+    <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.30s both" }}>
+      <div className="flex items-center gap-1.5">
+        <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#57aa78" }} />
+<span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>{t("period_c")}</span>
+      </div>
+      <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{[cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source].filter(Boolean).join(" · ")}</span>
+    </div>
+  </th>}
+<th className="text-right pr-6 py-3" style={{ background: "transparent" }}>
+    <div className="flex items-center justify-end gap-2" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
+      {compareMode && (
+        <button onClick={() => setFiltersOpen(o => !o)}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all duration-200 hover:scale-[1.02]"
+          style={{
+            background: filtersOpen ? `${colors.primary}12` : "transparent",
+            color: filtersOpen ? colors.primary : "#9ca3af",
+          }}>
+          <ChevronDown size={10} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
+          <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? "Hide" : "Show"}</span>
+        </button>
+      )}
+      <button onClick={() => {
+        if (Object.values(bsDrillMap).some(Boolean)) { setBsDrillMap({}); return; }
+        const next = {};
+        const expandDrillChildren = (children, leaves, depth, contextKey) => {
+          (children || []).filter(hasData).forEach(child => {
+            const childKey = `bsdrill-${contextKey}-${child.code}`;
+            next[childKey] = true;
+            const grandkids = (child.children || []).filter(hasData);
+            const grandLeaves = (child.uploadLeaves || []).filter(l => l.type !== "plain");
+            expandDrillChildren(grandkids, grandLeaves, depth + 1, childKey);
+          });
+          (leaves || []).forEach((leaf, i) => {
+            const leafKey = `bsdrill-leaf-${contextKey}-${depth}-${i}`;
+            next[leafKey] = true;
+          });
+        };
+        const expandTopLevel = (node) => {
+          if (!hasData(node) || node.accountType !== "B/S") return;
+          next[`bsrow-${node.code}`] = true;
+          next[`bsmulti-${node.code}`] = true;
+          const kids = (node.children || []).filter(hasData);
+          const leaves = (node.uploadLeaves || []).filter(l => l.type !== "plain");
+          expandDrillChildren(kids, leaves, 0, `bsrow-${node.code}`);
+          expandDrillChildren(kids, leaves, 0, `bsmulti-${node.code}`);
+        };
+        const flatNodes = pgcBsMapping ? (bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes) : null;
+        if (flatNodes && flatNodes.length > 0) flatNodes.forEach(expandTopLevel);
+        else { const walkBS = (node) => { if (!hasData(node) || node.accountType !== "B/S") return; expandTopLevel(node); (node.children || []).forEach(walkBS); }; bsRoots.forEach(walkBS); }
+        setBsDrillMap(next);
+      }}
+        className="flex items-center justify-center rounded-lg transition-all duration-200 hover:scale-[1.05]"
+        style={{ background: `${colors.primary}12`, color: colors.primary, width: 28, height: 28, overflow: "hidden" }}
+        title={Object.values(bsDrillMap).some(Boolean) ? "Collapse all" : "Expand all"}>
+        <span key={Object.values(bsDrillMap).some(Boolean) ? "collapse" : "expand"}
+          className="inline-flex"
+          style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
+          {Object.values(bsDrillMap).some(Boolean)
+            ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          }
+        </span>
+      </button>
+      <div className="relative flex items-center p-1 rounded-xl" style={{ background: "#f3f4f6" }}
+        ref={el => {
+          if (!el) return;
+          const btns = el.querySelectorAll("[data-bs-pill]");
+          const idx = ["summary","assets","equity"].indexOf(bsView);
+          const active = btns[idx >= 0 ? idx : 0];
+          const pill = el.querySelector(".bs-view-pill");
+          if (active && pill) {
+            pill.style.left = active.offsetLeft + "px";
+            pill.style.width = active.offsetWidth + "px";
+            pill.style.top = active.offsetTop + "px";
+            pill.style.height = active.offsetHeight + "px";
+          }
+        }}>
+        <span className="bs-view-pill" style={{
+          position: "absolute", background: "#fff", borderRadius: 8,
+          boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
+          transition: "left 320ms cubic-bezier(0.34, 1.56, 0.64, 1), width 320ms cubic-bezier(0.34, 1.56, 0.64, 1), top 320ms cubic-bezier(0.34, 1.56, 0.64, 1), height 320ms cubic-bezier(0.34, 1.56, 0.64, 1)",
+          pointerEvents: "none", zIndex: 0,
+        }} />
+{[["summary","Summary","S"],["assets","Assets","A"],["equity","Equity & Liab.","EQ"]].map(([v, label, short]) => {
+          const active = bsView === v;
+          return (
+            <button key={v} data-bs-pill onClick={() => setBsView(v)}
+              className="relative z-10 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-wider overflow-hidden"
+              style={{
+                background: "transparent",
+                color: active ? colors.primary : "#9ca3af",
+                padding: "6px 8px",
+                transition: "color 280ms cubic-bezier(0.4, 0, 0.2, 1)",
+              }}>
+<span style={{
+                display: "inline-block",
+                overflow: "hidden",
+                whiteSpace: "nowrap",
+                maxWidth: historyExpanded ? 20 : 150,
+                verticalAlign: "middle",
+                transition: "max-width 320ms cubic-bezier(0.34, 1.56, 0.64, 1)",
+              }}>
+                {historyExpanded ? short : label}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  </th>
 </tr>
 ) : (
   <>
-<tr className="border-b border-gray-100" style={{ backgroundColor: colors.primary }}>
-  <th className="text-left px-6" style={{ position: "sticky", top: 0, left: 0, zIndex: 20, backgroundColor: colors.primary, height: "56px" }}>
+<tr className="border-b border-gray-100" style={{
+  background: "rgba(255,255,255,0.95)",
+  backdropFilter: "blur(24px)",
+  WebkitBackdropFilter: "blur(24px)",
+  boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
+}}>
+  <th className="text-left px-6" style={{ position: "sticky", top: 0, left: 0, zIndex: 20, background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", height: "64px" }}>
     <div className="flex items-center gap-3">
-      <span className="uppercase tracking-widest" style={header2Style}>Account</span>
-      <div className="ml-auto flex items-center gap-2">
+      <div className="flex items-baseline gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
+        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>
+          Account
+        </span>
+        <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
+          Balance Sheet
+        </span>
+      </div>
+      <div className="ml-auto flex items-center gap-2" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
         {compareMode && (
           <button onClick={() => setFiltersOpen(o => !o)}
-            className="flex items-center gap-1.5 rounded-lg text-[11px] font-black transition-all"
-            style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, padding: "8px 12px", lineHeight: 1 }}>
-            <ChevronDown size={11} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
-            {filtersOpen ? "Hide filters" : "Show filters"}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all duration-200 hover:scale-[1.02]"
+            style={{
+              background: filtersOpen ? `${colors.primary}12` : "transparent",
+              color: filtersOpen ? colors.primary : "#9ca3af",
+            }}>
+            <ChevronDown size={10} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
+            <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? "Hide" : "Show"}</span>
           </button>
         )}
-<div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
+        <button onClick={() => {
+          if (Object.values(bsDrillMap).some(Boolean)) { setBsDrillMap({}); return; }
+          const next = {};
+          const walkBS = (node) => {
+            if (!hasData(node) || node.accountType !== "B/S") return;
+            next[`bsrow-${node.code}`] = true;
+            next[`bsmulti-${node.code}`] = true;
+            (node.children || []).forEach(walkBS);
+          };
+          bsRoots.forEach(walkBS);
+          setBsDrillMap(next);
+        }}
+          className="flex items-center justify-center rounded-lg transition-all duration-200 hover:scale-[1.05]"
+          style={{ background: `${colors.primary}12`, color: colors.primary, width: 28, height: 28, overflow: "hidden" }}
+          title={Object.values(bsDrillMap).some(Boolean) ? "Collapse all" : "Expand all"}>
+          <span key={Object.values(bsDrillMap).some(Boolean) ? "collapse" : "expand"}
+            className="inline-flex"
+            style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
+            {Object.values(bsDrillMap).some(Boolean)
+              ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            }
+          </span>
+        </button>
+        <div className="relative flex items-center p-1 rounded-xl" style={{ background: "#f3f4f6", alignItems: "center" }}
+          ref={el => {
+            if (!el) return;
+            const btns = el.querySelectorAll("[data-bs-pill]");
+            const idx = ["summary","assets","equity"].indexOf(bsView);
+            const active = btns[idx >= 0 ? idx : 0];
+            const pill = el.querySelector(".bs-view-pill");
+            if (active && pill) {
+              pill.style.left = active.offsetLeft + "px";
+              pill.style.width = active.offsetWidth + "px";
+              pill.style.top = active.offsetTop + "px";
+              pill.style.height = active.offsetHeight + "px";
+            }
+          }}>
+          <span className="bs-view-pill" style={{
+            position: "absolute", background: "#fff", borderRadius: 8,
+            boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
+            transition: "left 320ms cubic-bezier(0.34, 1.56, 0.64, 1), width 320ms cubic-bezier(0.34, 1.56, 0.64, 1), top 320ms cubic-bezier(0.34, 1.56, 0.64, 1), height 320ms cubic-bezier(0.34, 1.56, 0.64, 1)",
+            pointerEvents: "none", zIndex: 0,
+          }} />
           {[["summary","Summary"],["assets","Assets"],["equity","Equity & Liab."]].map(([v, label]) => (
-            <button key={v} onClick={() => setBsView(v)}
-              className="rounded-md text-[11px] font-black transition-colors"
+            <button key={v} data-bs-pill onClick={() => setBsView(v)}
+              className="relative z-10 px-3 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-wider"
               style={{
-                backgroundColor: bsView === v ? (colors.quaternary ?? "#F59E0B") : "transparent",
-                color: bsView === v ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
-                padding: "7px 12px",
-                lineHeight: 1
+                background: "transparent",
+                color: bsView === v ? colors.primary : "#9ca3af",
+                transition: "color 280ms cubic-bezier(0.4, 0, 0.2, 1)",
               }}>
               {label}
             </button>
@@ -5439,10 +7338,12 @@ const tabs = ["summary","assets","equity"];
   </th>
   {companyColumns.map(({ source, currency }) => (
     <React.Fragment key={source}>
-      <th className="text-right pr-4 py-3 uppercase tracking-widest whitespace-nowrap min-w-[120px]" style={{ ...header2Style, position: "sticky", top: 0, backgroundColor: colors.primary }}>Actual</th>
+      <th className="text-right pr-4 py-3 whitespace-nowrap min-w-[120px]" style={{ position: "sticky", top: 0, background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}>
+        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{t("col_actual")}</span>
+      </th>
       {compareMode && <>
-        <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black text-[#CF305D] uppercase tracking-widest whitespace-nowrap min-w-[120px]" style={{ position: "sticky", top: 0, backgroundColor: colors.primary }}>{[cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource].filter(Boolean).join(" · ")}</th>
-        {cmp2Enabled && <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black text-[#57aa78] uppercase tracking-widest whitespace-nowrap min-w-[120px]" style={{ position: "sticky", top: 0, backgroundColor: colors.primary }}>{[cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source].filter(Boolean).join(" · ")}</th>}
+        <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black uppercase tracking-widest whitespace-nowrap min-w-[120px]" style={{ position: "sticky", top: 0, background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", color: "#CF305D" }}>{[cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource].filter(Boolean).join(" · ")}</th>
+        {cmp2Enabled && <th colSpan={3} className="text-center pr-4 py-3 text-[9px] font-black uppercase tracking-widest whitespace-nowrap min-w-[120px]" style={{ position: "sticky", top: 0, background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", color: "#57aa78" }}>{[cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source].filter(Boolean).join(" · ")}</th>}
       </>}
     </React.Fragment>
   ))}
@@ -5450,7 +7351,7 @@ const tabs = ["summary","assets","equity"];
   </>
 )}
 </thead>
-<tbody>
+<tbody key={`bs-body-${bsView}-${compareMode}`}>
             {pgcBsMapping ? (
               bsRoots.length === 0
                 ? <tr><td colSpan={8} className="py-12 text-center text-gray-400 text-sm">No Balance Sheet data found</td></tr>
@@ -5458,7 +7359,7 @@ const tabs = ["summary","assets","equity"];
             ) : (
               bsView === "summary" ? (
                 bsRoots.length === 0
-                  ? <tr><td colSpan={8} className="py-12 text-center text-gray-400 text-sm">No Balance Sheet data found</td></tr>
+                  ? <tr><td colSpan={8} className="py-12 text-center text-gray-400 text-sm">{t("no_bs_data")}</td></tr>
                   : (compareMode ? renderBSCompareRows(bsRoots, cmpTree, cmp2Tree) : renderBSRows(bsRoots))
               ) : allCompaniesLoading ? (
                 <tr><td colSpan={companyColumns.length + 1} className="py-12 text-center">
@@ -5467,21 +7368,57 @@ const tabs = ["summary","assets","equity"];
               ) : (
                 renderMultiCompanyRows(companyTree, bsView)
               )
-            )}
+)}
           </tbody>
         </table>
       </div>
     </div>
+    </div>
   );
 }
 
-export default function AccountsDashboard({ token, sources = [], structures = [], companies = [], dimensions = [] }) {
+function useAnimatedNumber(target, duration = 800) {
+  const [display, setDisplay] = useState(target);
+  const fromRef = useRef(target);
+  const startRef = useRef(null);
+  const rafRef = useRef(null);
+
+  useEffect(() => {
+    cancelAnimationFrame(rafRef.current);
+    fromRef.current = display;
+    startRef.current = null;
+    const from = Number(fromRef.current) || 0;
+    const to = Number(target) || 0;
+    if (from === to) { setDisplay(to); return; }
+
+    const tick = (ts) => {
+      if (startRef.current === null) startRef.current = ts;
+      const elapsed = ts - startRef.current;
+      const t = Math.min(1, elapsed / duration);
+      // Ease out cubic — slow at the end, smooth
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(from + (to - from) * eased);
+      if (t < 1) rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, duration]);
+
+  return display;
+}
+
+const AccountsDashboard = React.memo(function AccountsDashboard({ token, sources = [], structures = [], companies = [], dimensions = [] }) {
 const { colors } = useSettings();
+const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();
+const dashLoadStartRef = useRef(Date.now());
+const TABS = useTabs();
 const headerStyle = useTypo("header1");
 const header3Style = useTypo("header3");
 const underscoreStyle = useTypo("underscore1");
 const filterStyle = useTypo("filter");
 const t = useT();
+const MONTHS = useMonths();
 const locale = useLocale();
 
 const [activeTab, setActiveTab]   = useState("pl");
@@ -5493,6 +7430,14 @@ const [plCmpLoading, setPlCmpLoading] = useState(false);
 const [plCmp2Loading, setPlCmp2Loading] = useState(false);
 const [plCmp2Enabled, setPlCmp2Enabled] = useState(true);
 const [bsCmp2Enabled, setBsCmp2Enabled] = useState(true);
+const [plExpandedMap, setPlExpandedMap] = useState({});
+const [bsDrillMap, setBsDrillMap] = useState({});
+const [plHistoryExpanded, setPlHistoryExpanded] = useState(false);
+const [bsHistoryExpanded, setBsHistoryExpanded] = useState(false);
+const [bsCmpDimGroups, setBsCmpDimGroups] = useState(null);
+const [bsCmpDimensions, setBsCmpDimensions] = useState(null);
+const [bsCmp2DimGroups, setBsCmp2DimGroups] = useState(null);
+const [bsCmp2Dimensions, setBsCmp2Dimensions] = useState(null);
 
 // STEP 1 — Add this block inside AccountsDashboard
 // right after: const [bsCmp2Enabled, setBsCmp2Enabled] = useState(true);
@@ -5584,8 +7529,8 @@ const handleTabChange = (newTab) => {
   const [upSource, setUpSource] = useState("");
   const [upStructure, setUpStructure] = useState("");
   const [upCompany, setUpCompany] = useState("");
-const [upDimGroup, setUpDimGroup] = useState("");
-const [upDimension, setUpDimension] = useState("");
+const [upDimGroups, setUpDimGroups] = useState(null);   // null = all, [] = none, [...] = selected
+const [upDimensions, setUpDimensions] = useState(null);
 
   // ── Data state ─────────────────────────────────────────────
   const [upData, setUpData] = useState([]);
@@ -5642,7 +7587,7 @@ useEffect(() => {
   // Everything else     → no custom breakers needed (fallback defaults apply)
 
 const isPGC         = grpData.some(n => /[a-zA-Z]/.test(String(n.accountCode ?? n.AccountCode ?? "")) && String(n.accountCode ?? n.AccountCode ?? "").endsWith(".S"));
-  const isSpanishIfrsEs = !isPGC && grpData.some(n => /\.PL$/.test(String(n.accountCode ?? n.AccountCode ?? "")));
+const isSpanishIfrsEs = !isPGC && grpData.some(n => /\.PL$/i.test(String(n.accountCode ?? n.AccountCode ?? "").trim()));
   const isSpanishIFRS = !isPGC && !isSpanishIfrsEs && grpData.some(n => /^[A-Z]\.\d/.test(String(n.accountCode ?? n.AccountCode ?? "")));
 const isDanish      = !isPGC && !isSpanishIFRS && !isSpanishIfrsEs && grpData.some(n => /^\d{5,6}$/.test(String(n.accountCode ?? n.AccountCode ?? "")));
 
@@ -5770,7 +7715,7 @@ useEffect(() => {
     const c = String(n.accountCode ?? n.AccountCode ?? "");
     return /[a-zA-Z]/.test(c) && c.endsWith(".S");
   });
-const isSpanishIfrsEs = !isPGC && grpData.some(n => /\.PL$/.test(String(n.accountCode ?? n.AccountCode ?? "")));
+const isSpanishIfrsEs = !isPGC && grpData.some(n => /\.PL$/i.test(String(n.accountCode ?? n.AccountCode ?? "").trim()));
   const isSpanishIFRS = !isPGC && !isSpanishIfrsEs && grpData.some(n => /^[A-Z]\.\d/.test(String(n.accountCode ?? n.AccountCode ?? "")));
   const isDanish = !isPGC && !isSpanishIFRS && !isSpanishIfrsEs && grpData.some(n => /^\d{5,6}$/.test(String(n.accountCode ?? n.AccountCode ?? "")));
 
@@ -5956,7 +7901,36 @@ const localizedName = r[`account_name_${locale}`] || r.account_name;
 }, [grpData, locale]);
 
 const [exportModal, setExportModal] = useState(false);
-const [viewsModalOpen, setViewsModalOpen] = useState(false);
+const [viewsMode, setViewsMode] = useState(null); // null | "landing" | "structure" | "report"
+const [savedMappings, setSavedMappings] = useState([]);
+const [mappingsLoading, setMappingsLoading] = useState(false);
+const [mappingsError, setMappingsError] = useState(null);
+
+const fetchSavedMappings = useCallback(async () => {
+  setMappingsLoading(true);
+  setMappingsError(null);
+  try {
+    const { supabase } = await import("../../lib/supabaseClient");
+    const { listMappings, getActiveCompanyId } = await import("../../lib/mappingsApi");
+    const { data: { session } } = await supabase.auth.getSession();
+    const uid = session?.user?.id;
+    if (!uid) throw new Error("Not authenticated");
+    const cid = await getActiveCompanyId(uid);
+    if (!cid) throw new Error("No active company");
+    const rows = await listMappings({ companyId: cid });
+    setSavedMappings(Array.isArray(rows) ? rows : []);
+  } catch (e) {
+    setMappingsError(e.message);
+    setSavedMappings([]);
+  } finally {
+    setMappingsLoading(false);
+  }
+}, []);
+
+useEffect(() => {
+  if (viewsMode === "structure") fetchSavedMappings();
+}, [viewsMode, fetchSavedMappings]);
+
 
 const [activeMapping, setActiveMapping] = useState(null);
 // activeMapping shape: { mapping_id, name, standard, plConverted, bsConverted } | null
@@ -5968,6 +7942,9 @@ const handleApplyMapping = useCallback((m) => {
     standard: m.standard,
     plConverted: convertSavedMappingTree(m.pl_tree),
     bsConverted: convertSavedMappingTree(m.bs_tree, { normalizeBS: true }),
+    plLiteral: buildSavedMappingLiteral(m.pl_tree),
+    bsLiteral: buildSavedMappingLiteral(m.bs_tree),
+    highlightedIds: Array.isArray(m.highlighted_ids) ? new Set(m.highlighted_ids) : new Set(),
   });
 }, []);
 
@@ -6014,7 +7991,9 @@ if (effectiveSources.length > 0 && !upSource) {
   }, [effectiveCompanies, upCompany]);
 
 
-  // Auto-find the latest period with data once source/structure/company are known
+// Auto-find the latest period with data once source/structure/company are known.
+  // Fast path: read from LatestPeriodContext cache (populated on login by EpicLoader).
+  // Slow path: 24-month network probe (fallback if cache is empty/expired).
 const autoPeriodDone = useRef(false);
 const breakersFetchedRef = useRef(false);
   const [probingPeriod, setProbingPeriod] = useState(false);
@@ -6022,8 +8001,38 @@ const breakersFetchedRef = useRef(false);
     if (autoPeriodDone.current) return;
     if (!upSource || !upStructure || !upCompany) return;
     autoPeriodDone.current = true;
-    setProbingPeriod(true);
 
+// ── FAST PATH 1: React context cache ──────────────────
+    const cached = getLatestPeriod(upSource, upStructure, upCompany);
+    if (cached) {
+      console.log("[IndividualesPage] CONTEXT CACHE HIT ✓", cached);
+      setUpYear(String(cached.year));
+      setUpMonth(String(cached.month));
+      setProbingPeriod(false);
+      return;
+    }
+
+    // ── FAST PATH 2: sessionStorage (written by EpicLoader's prefetchHomeData) ──
+    try {
+      const ssKey = `home_latest_period_${upSource}_${upStructure}_${upCompany}`;
+      const ssRaw = sessionStorage.getItem(ssKey);
+      if (ssRaw) {
+        const parsed = JSON.parse(ssRaw);
+        if (parsed.year && parsed.month) {
+          console.log("[IndividualesPage] SESSION STORAGE HIT ✓", parsed);
+          setUpYear(String(parsed.year));
+          setUpMonth(String(parsed.month));
+          setLatestPeriod(upSource, upStructure, upCompany, parsed.year, parsed.month);
+          setProbingPeriod(false);
+          return;
+        }
+      }
+    } catch (e) { /* ignore */ }
+
+    console.log("[IndividualesPage] CACHE MISS - falling back to probe");
+
+    // ── SLOW PATH: network probe (fallback) ───────────────
+    setProbingPeriod(true);
     (async () => {
       const now = new Date();
       let y = now.getFullYear();
@@ -6042,6 +8051,7 @@ const breakersFetchedRef = useRef(false);
             if (rows.length > 0) {
               setUpYear(String(y));
               setUpMonth(String(m));
+              setLatestPeriod(upSource, upStructure, upCompany, y, m);
               setProbingPeriod(false);
               return;
             }
@@ -6053,7 +8063,7 @@ const breakersFetchedRef = useRef(false);
       }
       setProbingPeriod(false);
     })();
-  }, [upSource, upStructure, upCompany, headers]);
+  }, [upSource, upStructure, upCompany, headers, getLatestPeriod, setLatestPeriod]);
 
   // ── Fetch functions ────────────────────────────────────────
 const fetchUploaded = useCallback(async (year, month, source, structure, company) => {
@@ -6120,6 +8130,45 @@ setPlCmpLoading(true);
   finally { setCmpLoading(false); }
 }, [headers]);
   
+
+// ── DEBUG: raw fetch to inspect what API actually returns ───
+  useEffect(() => {
+    if (!token) return;
+    (async () => {
+      const h = { Authorization: `Bearer ${token}`, Accept: "application/json" };
+      try {
+        const r1 = await fetch(`${BASE_URL}/v2/mapped-accounts`, { headers: h });
+        const j1 = await r1.json();
+        const rows1 = j1.value ?? (Array.isArray(j1) ? j1 : []);
+        console.log("🔍🔍🔍 RAW /v2/mapped-accounts 🔍🔍🔍");
+        console.log("Total rows:", rows1.length);
+        console.log("First row keys:", rows1[0] ? Object.keys(rows1[0]) : "NO ROWS");
+        console.log("First row:", rows1[0]);
+        const m70810 = rows1.filter(r => String(r.LocalAccountCode ?? r.localAccountCode ?? "") === "70810000");
+        const m70500 = rows1.filter(r => String(r.LocalAccountCode ?? r.localAccountCode ?? "") === "70500000");
+        console.log("MAPPED 70810000 raw:", JSON.stringify(m70810, null, 2));
+        console.log("MAPPED 70500000 raw:", JSON.stringify(m70500, null, 2));
+      } catch (e) { console.error("Mapped fetch error:", e); }
+
+      try {
+        // Use a sensible filter to limit volume — current period
+        const filter = `Year eq 2025 and Month eq 12 and CompanyShortName eq 'SON'`;
+        const r2 = await fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h });
+        const j2 = await r2.json();
+        const rows2 = j2.value ?? (Array.isArray(j2) ? j2 : []);
+        console.log("🔍🔍🔍 RAW /v2/reports/uploaded-accounts (SON 2025-12) 🔍🔍🔍");
+        console.log("Total rows:", rows2.length);
+        console.log("First row keys:", rows2[0] ? Object.keys(rows2[0]) : "NO ROWS");
+        console.log("First row:", rows2[0]);
+        const u70810 = rows2.filter(r => String(r.LocalAccountCode ?? r.localAccountCode ?? "") === "70810000");
+        const u70500 = rows2.filter(r => String(r.LocalAccountCode ?? r.localAccountCode ?? "") === "70500000");
+        const u70000 = rows2.filter(r => String(r.LocalAccountCode ?? r.localAccountCode ?? "") === "70000000");
+        console.log("UPLOADED 70810000 raw:", JSON.stringify(u70810, null, 2));
+        console.log("UPLOADED 70500000 raw:", JSON.stringify(u70500, null, 2));
+        console.log("UPLOADED 70000000 raw (first 2):", JSON.stringify(u70000.slice(0, 2), null, 2));
+      } catch (e) { console.error("Uploaded fetch error:", e); }
+    })();
+  }, [token]);
 
   const fetchMapped = useCallback(async () => {
     setMapLoading(true); setMapError(null); setMapFetched(false);
@@ -6267,8 +8316,8 @@ const [cmpMonth,     setCmpMonth]     = useState("");
 const [cmpSource,    setCmpSource]    = useState("");
 const [cmpStructure, setCmpStructure] = useState("");
 const [cmpCompany,   setCmpCompany]   = useState("");
-const [cmpDimGroup, setCmpDimGroup] = useState("");
-const [cmpDimension, setCmpDimension] = useState("");
+const [cmpDimGroups, setCmpDimGroups] = useState(null);
+  const [cmpDimensions, setCmpDimensions] = useState(null);
 const [cmpData,     setCmpData]       = useState([]);
 const [cmpPrevData, setCmpPrevData]   = useState([]);
 const [cmpLoading,  setCmpLoading]    = useState(false);
@@ -6279,8 +8328,8 @@ const [cmp2Month,     setCmp2Month]     = useState("");
 const [cmp2Source,    setCmp2Source]    = useState("");
 const [cmp2Structure, setCmp2Structure] = useState("");
 const [cmp2Company,   setCmp2Company]   = useState("");
-const [cmp2DimGroup,  setCmp2DimGroup]  = useState("");
-const [cmp2Dimension, setCmp2Dimension] = useState("");
+const [cmp2DimGroups, setCmp2DimGroups] = useState(null);
+  const [cmp2Dimensions, setCmp2Dimensions] = useState(null);
 const [cmp2Data,      setCmp2Data]      = useState([]);
 const [cmp2PrevData,  setCmp2PrevData]  = useState([]);
 const [cmp2Loading,   setCmp2Loading]   = useState(false);
@@ -6313,8 +8362,24 @@ useEffect(() => {
 }, [compareMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company]);
 
 console.log("🔴 RENDER AccountsDashboard | grpData:", grpData.length, "| pgcMapping:", pgcMapping ? "SET" : "null", "| danishIfrsPlMapping:", danishIfrsPlMapping ? "SET" : "null", "| pgcBsMapping:", pgcBsMapping ? "SET" : "null", "| danishIfrsBsMapping:", danishIfrsBsMapping ? "SET" : "null");
-  const tab        = TABS.find(t => t.id === activeTab);
+const tab        = TABS.find(t => t.id === activeTab);
    const anyLoading = probingPeriod || upLoading || prevLoading || plCmpLoading || plCmp2Loading || mapLoading || grpLoading || jrnLoading;
+
+// Progress meter for the loading overlay covering the tab area
+  const dashProgress = useMemo(() => {
+    let pct = 0;
+    if (upYear && upMonth)                                     pct += 15;
+    if (effectiveSources.length > 0 && effectiveStructures.length > 0 && effectiveCompanies.length > 0) pct += 15;
+    if (grpData.length > 0)                                    pct += 25;
+    if (upData.length > 0)                                     pct += 25;
+    if (!probingPeriod && !upLoading && !grpLoading)           pct += 20;
+    return Math.min(100, pct);
+  }, [upYear, upMonth, effectiveSources.length, effectiveStructures.length, effectiveCompanies.length, grpData.length, upData.length, probingPeriod, upLoading, grpLoading]);
+
+  // Smoothly animate the displayed value between progress changes
+  const animatedDashProgress = useAnimatedNumber(dashProgress, 700);
+
+  const dashReady = dashProgress >= 100;
 
   console.log("jrnData:", jrnData.length, jrnData[0]);
 console.log("jrnFetched:", jrnFetched, "jrnLoading:", jrnLoading, "jrnError:", jrnError);
@@ -6327,30 +8392,36 @@ console.log("jrnFetched:", jrnFetched, "jrnLoading:", jrnLoading, "jrnError:", j
 }, [effectiveDimensions]);
 
 const filteredDims = useMemo(() => {
-  return effectiveDimensions
-.filter(d => {
-    if (!upDimGroup) return true;
+  if (!upDimGroups || upDimGroups.length === 0) return effectiveDimensions;
+  return effectiveDimensions.filter(d => {
     const g = typeof d === "object" ? (d.dimensionGroup ?? d.DimensionGroup ?? "") : "";
-    return g === upDimGroup;
+    return upDimGroups.includes(g);
   });
-}, [effectiveDimensions, upDimGroup]);
+}, [effectiveDimensions, upDimGroups]);
+
+useEffect(() => {
+  window.__upDataDebug = upData;
+  window.__upDimGroupsDebug = upDimGroups;
+  window.__upDimensionsDebug = upDimensions;
+  window.__effectiveDimensionsDebug = effectiveDimensions;
+  console.log("[DEBUG EXPOSE] upData:", upData.length, "groups:", upDimGroups, "dims:", upDimensions);
+}, [upData, upDimGroups, upDimensions, effectiveDimensions]);
 
 const cmpFilteredDims = useMemo(() => {
+  if (!cmpDimGroups || cmpDimGroups.length === 0) return effectiveDimensions;
   return effectiveDimensions.filter(d => {
-    if (!cmpDimGroup) return true;
     const g = typeof d === "object" ? (d.dimensionGroup ?? d.DimensionGroup ?? "") : "";
-    return g === cmpDimGroup;
+    return cmpDimGroups.includes(g);
   });
-}, [effectiveDimensions, cmpDimGroup]);
+}, [effectiveDimensions, cmpDimGroups]);
 
 const cmp2FilteredDims = useMemo(() => {
+  if (!cmp2DimGroups || cmp2DimGroups.length === 0) return effectiveDimensions;
   return effectiveDimensions.filter(d => {
-    if (!cmp2DimGroup) return true;
     const g = typeof d === "object" ? (d.dimensionGroup ?? d.DimensionGroup ?? "") : "";
-    return g === cmp2DimGroup;
+    return cmp2DimGroups.includes(g);
   });
-}, [effectiveDimensions,cmp2DimGroup]);
-
+}, [effectiveDimensions, cmp2DimGroups]);
 const dataSubTabSelector = (
   <div className="flex items-center gap-1 p-1 bg-gray-100/70 rounded-xl">
     {["uploaded", "mapped", "group", "journal", "report"].map(t => (
@@ -6498,7 +8569,6 @@ const ExportModal = exportModal ? (
                 cmp2UploadedAccounts: cmp2Dimension ? cmp2Data.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === cmp2Dimension) : cmp2Data,
                 cmp2PrevUploadedAccounts: cmp2Dimension ? cmp2PrevData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === cmp2Dimension) : cmp2PrevData,
                 cmp2Filters: { year: cmp2Year, month: cmp2Month, source: cmp2Source, structure: cmp2Structure, company: cmp2Company },
-                    compareMode,
                 bsCompareMode,
                 bsCmpUploadedAccounts: bsCmpData,
                 bsCmpFilters: { year: bsCmpYear, month: bsCmpMonth, source: bsCmpSource, structure: bsCmpStructure, company: bsCmpCompany },
@@ -6542,11 +8612,34 @@ const ExportModal = exportModal ? (
 return (
     <div className="flex flex-col" style={{ height: "100%", minHeight: 0, overflow: "visible" }}>
 <style>{`
+@keyframes plRowSlideIn {
+          0%   { opacity: 0; transform: translateY(8px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+@keyframes modeMorph {
+          0%   { opacity: 0; transform: translateY(-6px) scale(0.92); filter: blur(3px); }
+          60%  { opacity: 1; filter: blur(0px); }
+          100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0px); }
+        }
+@keyframes letterMorph {
+          0%   { opacity: 0; transform: translateY(-8px) scale(0.7); filter: blur(4px); }
+          50%  { opacity: 1; filter: blur(0px); }
+          100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0px); }
+        }
+        @keyframes iconMorph {
+          0%   { opacity: 0; transform: scale(0.4) rotate(-90deg); }
+          60%  { opacity: 1; }
+          100% { opacity: 1; transform: scale(1) rotate(0deg); }
+        }
+        @keyframes kBadgesPop {
+          0%   { opacity: 0; transform: translateY(8px) scale(0.96); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
         .tab-content { display: flex; flex-direction: column; flex: 1; min-height: 0; }
         .tab-content > div { display: flex; flex-direction: column; flex: 1; min-height: 0; }
         .tab-content > div > div { display: flex; flex-direction: column; flex: 1; min-height: 0; }
    .tab-content .overflow-auto { flex: 1; min-height: 0; max-height: none !important; padding-bottom: 4px; }
-        .tab-content > div > div > div { margin-bottom: 6px; }
+     .tab-content > div > div > div { margin-bottom: 6px; }
         .text-\\[\\#1a2f8a\\] { color: ${colors.primary} !important; }
         .bg-\\[\\#1a2f8a\\] { background-color: ${colors.primary} !important; }
         .border-\\[\\#1a2f8a\\] { border-color: ${colors.primary} !important; }
@@ -6560,64 +8653,79 @@ return (
         .scrollbar-hide::-webkit-scrollbar { display: none; }
 .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
       `}</style>
-      {ExportModal}
+{ExportModal}
+
+
       
 {/* Page header — built from shared <PageHeader> */}
 <PageHeader
-  kicker="Accounts"
-  title={tab.label}
-  tabs={TABS}
-  activeTab={activeTab}
+kicker={viewsMode ? t("kicker_accounts_views") : t("kicker_accounts")}
+  title={
+    viewsMode === "landing" ? t("views_mappings")
+    : viewsMode === "structure" ? t("views_structure_mappings")
+    : viewsMode === "report" ? t("views_report_mappings")
+    : tab.label
+  }
+  tabs={viewsMode ? [] : TABS}
+  activeTab={viewsMode ? null : activeTab}
   onTabChange={handleTabChange}
-  filters={[
-    { label: "Year",     value: upYear,     onChange: setUpYear,
+  onBack={viewsMode ? () => { if (viewsMode === "landing") setViewsMode(null); else setViewsMode("landing"); } : undefined}
+filters={viewsMode ? [] : [
+    { label: t("filter_year"),     value: upYear,     onChange: setUpYear,
       options: YEARS.map(y => ({ value: String(y), label: String(y) })) },
-    { label: "Month",    value: upMonth,    onChange: setUpMonth,
+    { label: t("filter_month"),    value: upMonth,    onChange: setUpMonth,
       options: MONTHS.map(m => ({ value: String(m.value), label: m.label })) },
-    { label: "Source",   value: upSource,   onChange: setUpSource,
+    { label: t("filter_source"),   value: upSource,   onChange: setUpSource,
       options: effectiveSources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; }) },
-    { label: "Structure",value: upStructure,onChange: setUpStructure,
+    { label: t("filter_structure"),value: upStructure,onChange: setUpStructure,
       options: effectiveStructures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; }) },
-    { label: "Company",  value: upCompany,  onChange: setUpCompany,
+{ label: t("filter_company"),  value: upCompany,  onChange: setUpCompany,
       options: effectiveCompanies.map(c => {
         const v = typeof c === "object"
           ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "")
           : String(c);
-        return { value: v, label: v };
+        const l = typeof c === "object"
+          ? (c.companyLegalName ?? c.CompanyLegalName ?? v)
+          : String(c);
+        return { value: v, label: l };
       }) },
-    { label: "Dim Group",value: upDimGroup, onChange: v => { setUpDimGroup(v); setUpDimension(""); },
-      options: [{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))] },
-    { label: "Dimension",value: upDimension,onChange: setUpDimension,
-      options: [
-        { value: "", label: "All" },
-        ...filteredDims.map(d => {
-          const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d);
-          const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d);
-          return { value: v, label: l };
-        })
-] },
+{ label: t("filter_dim_group"), multiselect: true, values: upDimGroups,
+  onChange: vs => { setUpDimGroups(vs); setUpDimensions(null); },
+  options: dimGroups.map(g => ({ value: g, label: g })) },
+{ label: t("filter_dims"), multiselect: true, values: upDimensions,
+  onChange: setUpDimensions,
+  options: filteredDims.map(d => {
+    const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d);
+    const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d);
+    return { value: v, label: l };
+  }) },
   ]}
-  periodToggle={activeTab === "pl" ? {
+periodToggle={!viewsMode && activeTab === "pl" ? {
     value: ytdOnly ? "ytd" : "monthly",
     onChange: (next) => setYtdOnly(next === "ytd"),
   } : null}
-  compareToggle={
-    activeTab === "pl" ? {
+compareToggle={
+    viewsMode ? null :
+activeTab === "pl" ? {
       active: compareMode,
+      disabled: plHistoryExpanded,
       onChange: () => {
+        if (plHistoryExpanded) return;
         if (!compareMode) {
           setCmpYear(upYear); setCmpMonth(upMonth); setCmpSource(upSource);
           setCmpStructure(upStructure); setCmpCompany(upCompany);
-          setCmpDimGroup(upDimGroup); setCmpDimension(upDimension);
+          setCmpDimGroups(upDimGroups); setCmpDimensions(upDimensions);
           setCmp2Year(upYear); setCmp2Month(upMonth); setCmp2Source(upSource);
           setCmp2Structure(upStructure); setCmp2Company(upCompany);
-          setCmp2DimGroup(upDimGroup); setCmp2Dimension(upDimension);
+          setCmp2DimGroups(upDimGroups); setCmp2Dimensions(upDimensions);
         }
         setCompareMode(c => !c);
       },
     } : activeTab === "bs" ? {
       active: bsCompareMode,
+      disabled: bsHistoryExpanded,
       onChange: () => {
+        if (bsHistoryExpanded) return;
         if (!bsCompareMode) {
           setBsCmpYear(String(upYear)); setBsCmpMonth(String(upMonth));
           setBsCmpSource(upSource); setBsCmpStructure(upStructure); setBsCmpCompany(upCompany);
@@ -6628,28 +8736,28 @@ return (
       },
     } : null
   }
-  fabActions={[
-    {
+fabActions={viewsMode ? undefined : [
+{
       id: "views",
-      icon: Library,
-      label: "Views",
-      onClick: () => setViewsModalOpen(true),
+      icon: Eye,
+      label: t("btn_views"),
+      onClick: () => setViewsMode("landing"),
     },
     ...((activeTab === "pl" || activeTab === "bs") ? [{
       id: "export",
       icon: Download,
-      label: "Export",
+      label: t("btn_export"),
       subActions: [
         {
           id: "excel",
-          label: "Excel",
+          label: t("export_excel"),
           src: "https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png",
           alt: "Excel",
           onClick: () => { setExportOpts(o => ({ ...o, format: "xlsx" })); setExportModal(true); },
         },
-        {
+{
           id: "pdf",
-          label: "PDF",
+          label: t("export_pdf"),
           src: "https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png",
           alt: "PDF",
           onClick: () => { setExportOpts(o => ({ ...o, format: "pdf" })); setExportModal(true); },
@@ -6659,50 +8767,344 @@ return (
   ]}
 />
 
-<MappingsModal
-  open={viewsModalOpen}
-  onClose={() => setViewsModalOpen(false)}
-  groupAccounts={grpData}
-  onApply={handleApplyMapping}
-/>
+
 {activeMapping && (
   <div className="flex items-center gap-2 mt-3 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm">
     <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
-    <span className="text-xs text-emerald-700 font-medium">
-      Custom mapping active: <strong className="font-black">{activeMapping.name}</strong>
+<span className="text-xs text-emerald-700 font-medium">
+      {t("mapping_active_label")}: <strong className="font-black">{activeMapping.name}</strong>
       <span className="text-emerald-500/70 ml-2">· {activeMapping.standard}</span>
     </span>
     <button
       onClick={() => setActiveMapping(null)}
       className="ml-auto flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
-      title="Clear mapping and use default"
+      title={t("clear_mapping_title")}
     >
       <X size={11} />
-      Clear
+      {t("btn_clear")}
     </button>
   </div>
 )}
-<div className="flex-1 scrollbar-hide" style={{ marginTop: 12, minHeight: 0, display: "flex", flexDirection: "column", overflow: "visible" }}>
-{activeTab === "pl" && (
+<div className="flex-1 scrollbar-hide" style={{ marginTop: 12, minHeight: 0, display: "flex", flexDirection: "column", overflow: "visible", position: "relative" }}>
+
+{!dashReady && !viewsMode && (
+  <div
+    className="absolute inset-0 z-[100] flex items-center justify-center rounded-2xl"
+    style={{
+      background: "rgba(255,255,255,0.78)",
+      backdropFilter: "blur(8px)",
+      WebkitBackdropFilter: "blur(8px)",
+      animation: "indOverlayFadeIn 200ms ease-out",
+    }}
+  >
+    <div
+      className="relative rounded-3xl bg-white border border-gray-100 p-10 flex flex-col items-center"
+      style={{
+        width: 380,
+        boxShadow: "0 24px 80px -12px rgba(26,47,138,0.25), 0 8px 24px -8px rgba(0,0,0,0.08)",
+        animation: "indPopIn 320ms cubic-bezier(0.34,1.56,0.64,1)",
+      }}
+    >
+<div className="relative" style={{ width: 140, height: 140 }}>
+        <svg width="140" height="140" viewBox="0 0 140 140">
+          <circle cx="70" cy="70" r="60" fill="none" stroke="#f3f4f6" strokeWidth="10" />
+          <circle
+            cx="70" cy="70" r="60" fill="none"
+            stroke="url(#indProgGrad)"
+            strokeWidth="10"
+            strokeLinecap="round"
+            strokeDasharray={2 * Math.PI * 60}
+            strokeDashoffset={2 * Math.PI * 60 * (1 - animatedDashProgress / 100)}
+            style={{
+              transform: "rotate(-90deg)",
+              transformOrigin: "70px 70px",
+            }}
+          />
+          <defs>
+            <linearGradient id="indProgGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor={colors.primary ?? "#1a2f8a"} />
+              <stop offset="100%" stopColor={colors.secondary ?? "#CF305D"} />
+            </linearGradient>
+          </defs>
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-3xl font-black tabular-nums" style={{ color: colors.primary }}>
+            {Math.round(animatedDashProgress)}<span className="text-base text-gray-300">%</span>
+          </span>
+        </div>
+      </div>
+      <p className="text-sm font-black text-gray-800 mt-6 tracking-wide">
+{probingPeriod
+          ? t("loading_overlay_period")
+          : effectiveSources.length === 0 || effectiveStructures.length === 0 || effectiveCompanies.length === 0
+            ? t("loading_overlay_filters")
+            : grpData.length === 0
+              ? t("loading_overlay_group_accounts")
+              : upData.length === 0
+                ? t("loading_overlay_current")
+                : t("loading_overlay_finish")}
+      </p>
+<p className="text-[10px] text-gray-300 mt-1.5 uppercase tracking-widest font-bold">
+        {t("loading_overlay_subtitle")}
+      </p>
+    </div>
+    <style>{`
+      @keyframes indOverlayFadeIn { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes indPopIn {
+        0%   { opacity: 0; transform: scale(0.92) translateY(8px); }
+        100% { opacity: 1; transform: scale(1) translateY(0); }
+      }
+    `}</style>
+  </div>
+)}
+
+{viewsMode ? (
+  <div className="flex-1 flex flex-col min-h-0">
+    <style>{`
+      @keyframes floatOrb1 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(20px,-30px) scale(1.1); } }
+      @keyframes floatOrb2 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-15px,20px) scale(0.95); } }
+      @keyframes floatOrb3 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(25px,15px) scale(1.05); } }
+      @keyframes spinSlow  { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      @keyframes spinSlowR { from { transform: rotate(0deg); } to { transform: rotate(-360deg); } }
+      @keyframes pulseDot  { 0%,100% { opacity: 0.3; transform: scale(1); } 50% { opacity: 0.8; transform: scale(1.4); } }
+    `}</style>
+
+
+
+    {/* Landing: two cards */}
+    {viewsMode === "landing" && (
+      <div className="flex-1 grid grid-cols-2 gap-4 min-h-0">
+        <button onClick={() => setViewsMode("structure")}
+          className="relative text-left rounded-2xl border-2 border-gray-100 overflow-hidden transition-all group hover:border-[#1a2f8a] flex flex-col"
+          style={{ background: "linear-gradient(135deg, #ffffff 0%, #f4f6ff 40%, #eef1fb 100%)", boxShadow: "0 8px 32px -8px rgba(26,47,138,0.18)" }}>
+          <div className="absolute inset-0 pointer-events-none overflow-hidden">
+            <div className="absolute" style={{ top: "15%", right: "10%", width: 150, height: 150, borderRadius: "50%", background: "radial-gradient(circle, #1a2f8a18 0%, transparent 70%)", animation: "floatOrb1 8s ease-in-out infinite" }} />
+            <div className="absolute" style={{ bottom: "10%", right: "25%", width: 100, height: 100, borderRadius: "50%", background: "radial-gradient(circle, #3b54b820 0%, transparent 70%)", animation: "floatOrb2 11s ease-in-out 2s infinite" }} />
+            <svg className="absolute" style={{ top: "8%", right: "8%", width: 180, height: 180, opacity: 0.07 }}>
+              <circle cx="90" cy="90" r="70" fill="none" stroke="#1a2f8a" strokeWidth="1" strokeDasharray="8 6" style={{ animation: "spinSlow 30s linear infinite", transformOrigin: "90px 90px" }} />
+              <circle cx="90" cy="90" r="48" fill="none" stroke="#1a2f8a" strokeWidth="0.8" strokeDasharray="4 8" style={{ animation: "spinSlowR 20s linear infinite", transformOrigin: "90px 90px" }} />
+            </svg>
+            <div className="absolute inset-0" style={{ backgroundImage: "radial-gradient(#1a2f8a0d 1px, transparent 1px)", backgroundSize: "24px 24px" }} />
+          </div>
+          <div className="relative z-10 flex flex-col h-full p-8">
+            <div className="mb-auto">
+              <div className="mb-6 relative w-16 h-16">
+                <div className="absolute inset-0 rounded-2xl opacity-20 group-hover:opacity-40 transition-opacity" style={{ background: "#1a2f8a", filter: "blur(12px)", transform: "translateY(4px)" }} />
+                <div className="relative w-16 h-16 rounded-2xl flex items-center justify-center transition-transform duration-300 group-hover:scale-105" style={{ background: "linear-gradient(145deg, #1a2f8a 0%, #3b54b8 100%)", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.2)" }}>
+                  <Layers size={26} className="text-white" strokeWidth={1.8} />
+                </div>
+              </div>
+<p className="font-black text-xl text-gray-800 mb-2">{t("views_structure_mappings")}</p>
+              <p className="text-xs text-gray-500 leading-relaxed max-w-xs">{t("views_structure_description")}</p>
+            </div>
+            <div className="mt-6 flex items-center justify-between">
+              <div className="flex gap-1.5">{["PGC", "Spanish IFRS", "Danish IFRS"].map(tag => <span key={tag} className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider" style={{ background: "#1a2f8a15", color: "#1a2f8a" }}>{tag}</span>)}</div>
+              <span className="text-xs font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300" style={{ color: "#1a2f8a" }}>{t("btn_open_arrow")}</span>
+            </div>
+          </div>
+        </button>
+
+        <button onClick={() => setViewsMode("report")}
+          className="relative text-left rounded-2xl border-2 border-gray-100 overflow-hidden transition-all group hover:border-[#CF305D] flex flex-col"
+          style={{ background: "linear-gradient(135deg, #ffffff 0%, #fff4f7 40%, #fef1f5 100%)", boxShadow: "0 8px 32px -8px rgba(207,48,93,0.18)" }}>
+          <div className="absolute inset-0 pointer-events-none overflow-hidden">
+            <div className="absolute" style={{ top: "15%", right: "10%", width: 150, height: 150, borderRadius: "50%", background: "radial-gradient(circle, #CF305D18 0%, transparent 70%)", animation: "floatOrb2 9s ease-in-out infinite" }} />
+            <div className="absolute" style={{ bottom: "10%", right: "25%", width: 100, height: 100, borderRadius: "50%", background: "radial-gradient(circle, #e0558520 0%, transparent 70%)", animation: "floatOrb1 12s ease-in-out 1s infinite" }} />
+            <svg className="absolute" style={{ top: "8%", right: "8%", width: 180, height: 180, opacity: 0.07 }}>
+              <circle cx="90" cy="90" r="70" fill="none" stroke="#CF305D" strokeWidth="1" strokeDasharray="8 6" style={{ animation: "spinSlowR 25s linear infinite", transformOrigin: "90px 90px" }} />
+              <circle cx="90" cy="90" r="48" fill="none" stroke="#CF305D" strokeWidth="0.8" strokeDasharray="4 8" style={{ animation: "spinSlow 18s linear infinite", transformOrigin: "90px 90px" }} />
+            </svg>
+            <div className="absolute inset-0" style={{ backgroundImage: "radial-gradient(#CF305D0d 1px, transparent 1px)", backgroundSize: "24px 24px" }} />
+          </div>
+          <div className="relative z-10 flex flex-col h-full p-8">
+            <div className="mb-auto">
+              <div className="mb-6 relative w-16 h-16">
+                <div className="absolute inset-0 rounded-2xl opacity-20 group-hover:opacity-40 transition-opacity" style={{ background: "#CF305D", filter: "blur(12px)", transform: "translateY(4px)" }} />
+                <div className="relative w-16 h-16 rounded-2xl flex items-center justify-center transition-transform duration-300 group-hover:scale-105" style={{ background: "linear-gradient(145deg, #CF305D 0%, #e05585 100%)", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.2)" }}>
+                  <FileText size={26} className="text-white" strokeWidth={1.8} />
+                </div>
+              </div>
+              <p className="font-black text-xl text-gray-800 mb-2">Report Mappings</p>
+              <p className="text-xs text-gray-500 leading-relaxed max-w-xs">Define custom report templates and layouts. Control which sections, KPIs, and account groups appear in your financial reports.</p>
+            </div>
+            <div className="mt-6 flex items-center justify-between">
+              <span className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider" style={{ background: "#CF305D15", color: "#CF305D" }}>Coming soon</span>
+              <span className="text-xs font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300" style={{ color: "#CF305D" }}>Preview →</span>
+            </div>
+          </div>
+        </button>
+      </div>
+    )}
+
+    {/* Report: coming soon */}
+    {viewsMode === "report" && (
+      <div className="flex-1 flex items-center justify-center bg-white rounded-2xl shadow-sm border border-gray-100">
+        <div className="text-center">
+          <p className="text-5xl mb-3">🚧</p>
+          <p className="text-base font-black text-gray-300">Coming soon</p>
+        </div>
+      </div>
+    )}
+
+    {/* Structure: library */}
+    {viewsMode === "structure" && (
+      <div className="flex-1 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col min-h-0">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
+          <div>
+            <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Library</p>
+            <p className="font-black text-xs text-gray-700">Saved mappings</p>
+          </div>
+          {activeMapping && (
+            <button onClick={() => { setActiveMapping(null); setViewsMode(null); }}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest text-red-500 hover:bg-red-50 transition-colors">
+              <X size={10} /> Clear active
+            </button>
+          )}
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4">
+          {mappingsLoading && (
+            <div className="py-16 text-center">
+              <Loader2 size={24} className="text-[#1a2f8a] animate-spin mx-auto mb-2" />
+              <p className="text-gray-400 text-xs">Loading mappings…</p>
+            </div>
+          )}
+
+          {mappingsError && !mappingsLoading && (
+            <div className="py-12 text-center">
+              <AlertCircle size={20} className="text-red-400 mx-auto mb-2" />
+              <p className="text-red-500 text-xs font-bold">{mappingsError}</p>
+              <button onClick={fetchSavedMappings} className="mt-2 text-xs text-[#1a2f8a] underline font-bold">Retry</button>
+            </div>
+          )}
+
+          {!mappingsLoading && !mappingsError && savedMappings.length === 0 && (
+            <div className="py-16 text-center">
+              <div className="w-14 h-14 bg-[#eef1fb] rounded-2xl flex items-center justify-center mx-auto mb-3">
+                <Library size={24} className="text-[#1a2f8a]" />
+              </div>
+              <p className="text-gray-700 font-black text-sm mb-1">No saved mappings yet</p>
+              <p className="text-gray-400 text-xs">Create one from the Mappings page in the sidebar.</p>
+            </div>
+          )}
+
+          {!mappingsLoading && !mappingsError && savedMappings.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {savedMappings.map(m => {
+                const isActive = activeMapping?.mapping_id === m.mapping_id;
+                return (
+                  <button key={m.mapping_id}
+                    onClick={() => { handleApplyMapping(m); setViewsMode(null); }}
+                    className="text-left bg-white rounded-xl border-2 p-4 transition-all hover:shadow-md group flex flex-col"
+                    style={{ borderColor: isActive ? colors.primary : "#f3f4f6", background: isActive ? `${colors.primary}06` : "white" }}>
+                    <div className="flex items-start gap-2.5 mb-3">
+                      <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0"
+                        style={{ background: isActive ? colors.primary : "#eef1fb" }}>
+                        <Layers size={14} style={{ color: isActive ? "white" : colors.primary }} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <p className="font-black text-xs text-gray-800 truncate">{m.name ?? "Untitled"}</p>
+                          {isActive && (
+                            <span className="text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded flex-shrink-0"
+                              style={{ background: colors.primary, color: "white" }}>Active</span>
+                          )}
+                        </div>
+                        <p className="text-[9px] font-bold uppercase tracking-widest mt-0.5" style={{ color: colors.primary }}>{m.standard ?? "—"}</p>
+                      </div>
+                    </div>
+                    {m.description && <p className="text-[10px] text-gray-500 mb-2 line-clamp-2">{m.description}</p>}
+                    <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-50 mt-auto">
+                      <span className="text-[9px] text-gray-400">Updated {m.updated_at ? new Date(m.updated_at).toLocaleDateString() : "—"}</span>
+                      <span className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-widest bg-emerald-500 group-hover:bg-emerald-600 text-white shadow-sm transition-all">
+                        <CheckCircle2 size={9} />Apply
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+  </div>
+) : (
+  <>
+{activeTab === "pl" && (() => {
+  const filteredUpData = upData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions));
+  const hasDimFilter = (Array.isArray(upDimGroups) && upDimGroups.length > 0) || (Array.isArray(upDimensions) && upDimensions.length > 0);
+
+  // Build a set of accountCodes that belong to P/L or DIS in groupAccounts
+  const plCodes = new Set();
+  grpData.forEach(g => {
+    const code = String(g.accountCode ?? g.AccountCode ?? "");
+    const type = String(g.accountType ?? g.AccountType ?? "");
+    if (code && (type === "P/L" || type === "DIS")) plCodes.add(code);
+  });
+  // Check if any filtered row maps to a P/L account
+  const hasPlRows = filteredUpData.some(r => plCodes.has(String(r.accountCode ?? r.AccountCode ?? "")));
+
+  const dimEmpty = hasDimFilter && upData.length > 0 && !hasPlRows;
+  console.log("[PL EMPTY CHECK]", { groups: upDimGroups, dims: upDimensions, hasDimFilter, upDataLen: upData.length, filteredLen: filteredUpData.length, hasPlRows, dimEmpty });
+
+if (dimEmpty) {
+    return (
+      <div key={`pl-${animKey}`} style={{ display: "flex", alignItems: "center", justifyContent: "center", flex: 1, minHeight: 0 }}>
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-xl"
+          style={{ width: 440, padding: "48px 36px", display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
+          <div style={{ width: 56, height: 56, borderRadius: 16, background: `${colors.primary}10`, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 16 }}>
+            <Filter size={22} style={{ color: colors.primary }} />
+          </div>
+<p style={{ fontSize: 15, fontWeight: 800, color: "#1f2937", marginBottom: 6 }}>
+            {t("no_pl_match_filter")}
+          </p>
+          <p style={{ fontSize: 12, color: "#9ca3af", lineHeight: 1.5, maxWidth: 320, marginBottom: 20 }}>
+            {t("no_pl_match_filter_desc")}
+          </p>
+          <button onClick={() => handleTabChange("bs")}
+            style={{
+              padding: "8px 16px", borderRadius: 10, fontSize: 11, fontWeight: 900,
+              textTransform: "uppercase", letterSpacing: "0.08em",
+              background: colors.primary, color: "white",
+              boxShadow: `0 4px 12px -2px ${colors.primary}60`,
+              transition: "transform 200ms ease",
+            }}
+            onMouseEnter={e => e.currentTarget.style.transform = "scale(1.04)"}
+onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}>
+            {t("try_bs_arrow")}
+          </button>
+          <button onClick={() => { setUpDimGroups(null); setUpDimensions(null); }}
+            style={{
+              marginTop: 12, fontSize: 10, fontWeight: 700,
+              textTransform: "uppercase", letterSpacing: "0.1em",
+              color: "#9ca3af", transition: "color 180ms ease",
+            }}
+            onMouseEnter={e => e.currentTarget.style.color = "#4b5563"}
+            onMouseLeave={e => e.currentTarget.style.color = "#9ca3af"}>
+            {t("clear_dim_filter")}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
 <div key={`pl-${animKey}`} className="tab-content" style={{ "--slide-from": TAB_ORDER.indexOf("pl") > TAB_ORDER.indexOf(prevTab ?? "pl") ? "30px" : "-30px" }}>
 <PLStatement
+  externalExpandedMap={plExpandedMap}
+  externalSetExpandedMap={setPlExpandedMap}
+  token={token}
+  upDimGroups={upDimGroups}
+  upDimensions={upDimensions}
+  onHistoryExpandedChange={setPlHistoryExpanded}
   ytdOnly={ytdOnly}
-  dimensionActive={!!upDimension || !!upDimGroup}
+  dimensionActive={(upDimGroups?.length > 0) || (upDimensions?.length > 0)}
   groupAccounts={grpData}
-uploadedAccounts={
-  upDimension
-    ? upData.filter(r => rowMatchesDim(r, upDimGroup, upDimension))
-    : upDimGroup
-      ? upData.filter(r => rowMatchesDim(r, upDimGroup, null))
-      : upData
-}
-prevUploadedAccounts={
-  upDimension
-    ? prevData.filter(r => rowMatchesDim(r, upDimGroup, upDimension))
-    : upDimGroup
-      ? prevData.filter(r => rowMatchesDim(r, upDimGroup, null))
-      : prevData
-}
+  dimensions={effectiveDimensions}
+  dimensions={effectiveDimensions}
+uploadedAccounts={upData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions))}
+prevUploadedAccounts={prevData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions))}
   compareMode={compareMode}
   onToggleCompare={() => {
     if (!compareMode) {
@@ -6724,16 +9126,16 @@ prevUploadedAccounts={
     }
     setCompareMode(c => !c);
   }}
-cmpUploadedAccounts={cmpDimension ? cmpData.filter(r => rowMatchesDim(r, cmpDimGroup, cmpDimension)) : cmpDimGroup ? cmpData.filter(r => rowMatchesDim(r, cmpDimGroup, null)) : cmpData}
-  cmpPrevUploadedAccounts={cmpDimension ? cmpPrevData.filter(r => rowMatchesDim(r, cmpDimGroup, cmpDimension)) : cmpDimGroup ? cmpPrevData.filter(r => rowMatchesDim(r, cmpDimGroup, null)) : cmpPrevData}
+cmpUploadedAccounts={cmpData.filter(r => rowMatchesDimMulti(r, cmpDimGroups, cmpDimensions))}
+  cmpPrevUploadedAccounts={cmpPrevData.filter(r => rowMatchesDimMulti(r, cmpDimGroups, cmpDimensions))}
 cmpFilters={{
     year: cmpYear,
     month: cmpMonth,
     source: cmpSource,
     structure: cmpStructure,
     company: cmpCompany,
-    dimGroup: cmpDimGroup,
-    dimension: cmpDimension,
+    dimGroups: cmpDimGroups,
+    dimensions: cmpDimensions,
   }}
   onCmpFilterChange={(key, val) => {
     if (key === "year")      setCmpYear(val);
@@ -6741,8 +9143,8 @@ cmpFilters={{
     if (key === "source")    setCmpSource(val);
     if (key === "structure") setCmpStructure(val);
     if (key === "company")   setCmpCompany(val);
-    if (key === "dimGroup")  { setCmpDimGroup(val); setCmpDimension(""); }
-    if (key === "dimension") setCmpDimension(val);
+    if (key === "dimGroups")  { setCmpDimGroups(val); setCmpDimensions(null); }
+    if (key === "dimensions") setCmpDimensions(val);
   }}
 
  sources={effectiveSources}
@@ -6750,12 +9152,12 @@ cmpFilters={{
    companies={effectiveCompanies}
   dimGroups={dimGroups}
   cmpFilteredDims={cmpFilteredDims}
-  cmp2UploadedAccounts={cmp2Dimension ? cmp2Data.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === cmp2Dimension) : cmp2Data}
-  cmp2PrevUploadedAccounts={cmp2Dimension ? cmp2PrevData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === cmp2Dimension) : cmp2PrevData}
+cmp2UploadedAccounts={cmp2Data.filter(r => rowMatchesDimMulti(r, cmp2DimGroups, cmp2Dimensions))}
+  cmp2PrevUploadedAccounts={cmp2PrevData.filter(r => rowMatchesDimMulti(r, cmp2DimGroups, cmp2Dimensions))}
   cmp2Filters={{
     year: cmp2Year, month: cmp2Month, source: cmp2Source,
     structure: cmp2Structure, company: cmp2Company,
-    dimGroup: cmp2DimGroup, dimension: cmp2Dimension,
+    dimGroups: cmp2DimGroups, dimensions: cmp2Dimensions,
   }}
   onCmp2FilterChange={(key, val) => {
     if (key === "year")      setCmp2Year(val);
@@ -6763,8 +9165,8 @@ cmpFilters={{
     if (key === "source")    setCmp2Source(val);
     if (key === "structure") setCmp2Structure(val);
     if (key === "company")   setCmp2Company(val);
-    if (key === "dimGroup")  { setCmp2DimGroup(val); setCmp2Dimension(""); }
-    if (key === "dimension") setCmp2Dimension(val);
+    if (key === "dimGroups")  { setCmp2DimGroups(val); setCmp2Dimensions(null); }
+    if (key === "dimensions") setCmp2Dimensions(val);
   }}
   cmp2FilteredDims={cmp2FilteredDims}
   cmp2Enabled={plCmp2Enabled}
@@ -6781,26 +9183,67 @@ journalEntriesCmp={jrnCmpData}
 journalEntriesCmp2={jrnCmp2Data}
   breakers={breakers}
 pgcMapping={activeMapping?.plConverted ?? pgcMapping ?? danishIfrsPlMapping ?? spanishIfrsEsPlMapping}
+savedPlLiteral={activeMapping?.plLiteral ?? null}
+savedHighlightedIds={activeMapping?.highlightedIds ?? null}
 />
 </div>
-)}
+);
+})()}
 
 {/* ── BALANCE SHEET */}
-{activeTab === "bs" && (
+{activeTab === "bs" && (() => {
+  const filteredUpData = upData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions));
+  const hasDimFilter = (Array.isArray(upDimGroups) && upDimGroups.length > 0) || (Array.isArray(upDimensions) && upDimensions.length > 0);
+
+  const bsCodes = new Set();
+  grpData.forEach(g => {
+    const code = String(g.accountCode ?? g.AccountCode ?? "");
+    const type = String(g.accountType ?? g.AccountType ?? "");
+    if (code && type === "B/S") bsCodes.add(code);
+  });
+  const hasBsRows = filteredUpData.some(r => bsCodes.has(String(r.accountCode ?? r.AccountCode ?? "")));
+
+  const dimEmpty = hasDimFilter && upData.length > 0 && !hasBsRows;
+
+  if (dimEmpty) {
+    return (
+      <div key={`bs-${animKey}`} className="tab-content">
+        <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center shadow-xl flex flex-col items-center justify-center" style={{ minHeight: 400 }}>
+          <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4" style={{ background: `${colors.primary}10` }}>
+            <Filter size={26} style={{ color: colors.primary }} />
+          </div>
+<p className="text-base font-black text-gray-700 mb-2">{t("no_bs_match_filter")}</p>
+          <p className="text-xs text-gray-400 max-w-md leading-relaxed">
+            {t("no_bs_match_filter_desc")}
+          </p>
+          <button onClick={() => handleTabChange("pl")}
+            className="mt-5 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all hover:scale-105"
+            style={{ background: colors.primary, color: "white", boxShadow: `0 4px 12px -2px ${colors.primary}60` }}>
+            {t("try_pl_arrow")}
+          </button>
+          <button onClick={() => { setUpDimGroups(null); setUpDimensions(null); }}
+            className="mt-2 text-[10px] font-bold text-gray-400 hover:text-gray-600 uppercase tracking-widest">
+            {t("clear_dim_filter")}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
 <div key={`bs-${animKey}`} className="tab-content" style={{ "--slide-from": TAB_ORDER.indexOf("bs") > TAB_ORDER.indexOf(prevTab ?? "bs") ? "30px" : "-30px" }}>
 <BalanceSheet
-  dimensionActive={!!upDimension || !!upDimGroup}
-  upDimension={upDimension}
-  upDimGroup={upDimGroup}
+  externalBsDrillMap={bsDrillMap}
+  externalSetBsDrillMap={setBsDrillMap}
+  onHistoryExpandedChange={setBsHistoryExpanded}
+dimensionActive={(upDimGroups?.length > 0) || (upDimensions?.length > 0)}
+upDimensions={upDimensions}
+upDimGroups={upDimGroups}
   filteredDims={filteredDims}
   groupAccounts={grpData}
-uploadedAccounts={
-    upDimension
-      ? upData.filter(r => rowMatchesDim(r, upDimGroup, upDimension))
-      : upDimGroup
-        ? upData.filter(r => rowMatchesDim(r, upDimGroup, null))
-        : upData
-  }
+  dimensions={effectiveDimensions}
+  dimensions={effectiveDimensions}
+uploadedAccounts={upData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions))}
   loading={probingPeriod || (anyLoading && (!upData.length || !grpData.length))}
   error={upError || grpError || null}
   month={upMonth}
@@ -6840,20 +9283,27 @@ uploadedAccounts={
   cmp2Data={bsCmp2Data} setCmp2Data={setBsCmp2Data}
 externalCmp2Enabled={bsCmp2Enabled}
   onBsCmp2EnabledChange={setBsCmp2Enabled}
+  bsCmpDimGroups={bsCmpDimGroups} setBsCmpDimGroups={setBsCmpDimGroups}
+  bsCmpDimensions={bsCmpDimensions} setBsCmpDimensions={setBsCmpDimensions}
+  bsCmp2DimGroups={bsCmp2DimGroups} setBsCmp2DimGroups={setBsCmp2DimGroups}
+  bsCmp2Dimensions={bsCmp2Dimensions} setBsCmp2Dimensions={setBsCmp2Dimensions}
+  effectiveDimensions={effectiveDimensions}
 breakers={breakers}
 pgcBsMapping={activeMapping?.bsConverted ?? pgcBsMapping ?? danishIfrsBsMapping ?? spanishIfrsEsBsMapping}
+savedBsLiteral={activeMapping?.bsLiteral ?? null}
+savedHighlightedIds={activeMapping?.highlightedIds ?? null}
 />
 </div>
-)}
-
+);
+})()}
 
       {/* ── UPLOADED ACCOUNTS */}
-      {activeTab === "uploaded" && (
+{activeTab === "uploaded" && (
 <div key={`uploaded-${animKey}`} className="tab-content" style={{ "--slide-from": TAB_ORDER.indexOf("uploaded") > TAB_ORDER.indexOf(prevTab ?? "uploaded") ? "30px" : "-30px" }}>
-      <div className="space-y-6">
+<div style={{ overflowY: "auto", flex: 1, minHeight: 0 }}>
 
 
-<div className={dataSubTab === "uploaded" ? "" : "hidden"}>
+<div style={{ display: dataSubTab === "uploaded" ? "block" : "none" }}>
   {upError && <ErrorBox error={upError} onRetry={handleLoadUploaded} />}
 {upFetched && !upError && (
   <DataTable
@@ -6867,7 +9317,7 @@ pgcBsMapping={activeMapping?.bsConverted ?? pgcBsMapping ?? danishIfrsBsMapping 
 )}
 </div>
 
-<div className={dataSubTab === "mapped" ? "" : "hidden"}>
+<div style={{ display: dataSubTab === "mapped" ? "block" : "none" }}>
   {mapError && <ErrorBox error={mapError} onRetry={fetchMapped} />}
   {mapFetched && !mapError && (
   <DataTable
@@ -6881,7 +9331,7 @@ pgcBsMapping={activeMapping?.bsConverted ?? pgcBsMapping ?? danishIfrsBsMapping 
 )}
 </div>
 
-<div className={dataSubTab === "group" ? "" : "hidden"}>
+<div style={{ display: dataSubTab === "group" ? "block" : "none" }}>
   {grpError && <ErrorBox error={grpError} onRetry={fetchGroup} />}
   {grpFetched && !grpError && (
   <DataTable
@@ -6894,8 +9344,7 @@ pgcBsMapping={activeMapping?.bsConverted ?? pgcBsMapping ?? danishIfrsBsMapping 
   />
 )}
 </div>
-
-<div className={dataSubTab === "journal" ? "" : "hidden"}>
+<div style={{ display: dataSubTab === "journal" ? "block" : "none" }}>
   {jrnError && <ErrorBox error={jrnError} onRetry={fetchJournal} />}
   {jrnFetched && !jrnError && (
   <DataTable
@@ -6909,23 +9358,30 @@ pgcBsMapping={activeMapping?.bsConverted ?? pgcBsMapping ?? danishIfrsBsMapping 
 )}
 </div>
 
-<div className={dataSubTab === "report" ? "space-y-4" : "hidden"}>
+<div style={{ display: dataSubTab === "report" ? "block" : "none" }}>
   <div className="flex items-center gap-3 flex-wrap">
     {dataSubTabSelector}
   </div>
-
-  <FinancialReport
-    groupAccounts={grpData}
-    uploadedAccounts={upData}
-   loading={probingPeriod || (anyLoading && (!upData.length || !grpData.length))}
-    error={upError || grpError || null}
-  />
+  {dataSubTab === "report" && (
+    <FinancialReport
+      groupAccounts={grpData}
+  dimensions={effectiveDimensions}
+  dimensions={effectiveDimensions}
+      uploadedAccounts={upData}
+      loading={probingPeriod || (anyLoading && (!upData.length || !grpData.length))}
+      error={upError || grpError || null}
+    />
+  )}
 </div>
 </div>
       </div>
 )}
 
+</>
+)}
+
     </div>
     </div>
   );
-}
+});
+export default AccountsDashboard;

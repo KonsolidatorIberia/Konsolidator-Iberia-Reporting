@@ -24,7 +24,7 @@ function UserPage({ user, onLogout }) {
 }
 
 export default function Shell({ user, onRefresh, onLogout, children }) {
-  const [collapsed, setCollapsed] = useState(false);
+
   const [activePage, setActivePage] = useState("home");
   const asideWrapRef = useRef(null);
   const [geom, setGeom] = useState(null);
@@ -58,7 +58,7 @@ measure();
     const t = setInterval(measure, 100);
     setTimeout(() => clearInterval(t), 4000);
     return () => { ro.disconnect(); window.removeEventListener("resize", measure); window.removeEventListener("load", measure); clearInterval(t); };
-  }, [collapsed]);
+}, []);
 
   const content = typeof children === "function"
     ? children(activePage, setActivePage)
@@ -71,10 +71,7 @@ measure();
           activePage={activePage}
           onNavigate={setActivePage}
           user={user}
-          collapsed={collapsed}
-          onToggleCollapse={() => setCollapsed(c => !c)}
           height="100vh"
-          onRefresh={onRefresh}
         />
       </div>
 <div className="flex-1 relative h-full" style={{ overflow: "visible" }}>

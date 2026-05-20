@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import {
   TrendingUp, DollarSign, Target, Activity,
   Building2, Layers, Database, Network, Loader2, ArrowUp, ArrowDown,
-  Sparkles, ChevronRight, Wallet, Settings, Search, ChevronDown,
+Sparkles, ChevronRight, Wallet, Settings, Search, ChevronDown, GitCompare,
 } from "lucide-react";
 import {
   AreaChart, Area, BarChart, Bar,
@@ -85,7 +85,14 @@ async function loadStandardMapping(standard, groupAccounts) {
     if (r.section_code) codeSection.set(String(r.account_code), r.section_code);
   }
 
-  const parentOf = new Map();
+const parentOf = new Map();
+  // First: parent relationships from the standard mapping table
+  for (const r of allRows) {
+    if (r.account_code && r.parent_code) {
+      parentOf.set(String(r.account_code), String(r.parent_code));
+    }
+  }
+  // Then: parent relationships from groupAccounts (overrides for runtime leaves)
   for (const ga of (groupAccounts || [])) {
     if (ga.AccountCode && ga.SumAccountCode) {
       parentOf.set(String(ga.AccountCode), String(ga.SumAccountCode));
@@ -377,10 +384,8 @@ function buildPivotFromRows(rows, sumAccountCodes) {
   if (!rows?.length) return p;
   rows.forEach(r => {
     const ac = r.AccountCode ?? r.accountCode ?? "";
-    const acType = r.AccountType ?? r.accountType ?? "";
     if (!ac) return;
     if (sumAccountCodes && sumAccountCodes.has(ac)) return;
-    if (acType && acType !== "P/L") return;
     const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
     p.set(ac, (p.get(ac) ?? 0) + amt);
   });
@@ -487,9 +492,8 @@ style={{
             <div className="w-8 h-8 rounded-lg bg-white/15 backdrop-blur-sm flex items-center justify-center border border-white/20 flex-shrink-0">
               {Icon && <Icon size={14} className="text-white" />}
             </div>
-            <div className="min-w-0">
+<div className="min-w-0">
               <p className="text-[9px] font-black text-white/75 uppercase tracking-[0.18em] truncate">{label}</p>
-              {code && <p className="text-[9px] text-white/45 font-mono mt-0.5 truncate">{code}</p>}
             </div>
           </div>
           {change != null && (
@@ -510,8 +514,8 @@ style={{
               {fmtBig(value)}
             </p>
           )}
-          {prevValue != null && prevValue !== 0 && (
-            <p className="text-[9px] text-white/55 mt-0.5 font-medium">vs {fmtBig(prevValue)}</p>
+{prevValue != null && prevValue !== 0 && (
+            <p className="text-[12px] text-white/65 mt-1 font-semibold">vs {fmtBig(prevValue)}</p>
           )}
         </div>
 
@@ -536,10 +540,11 @@ style={{
   );
 }
 
-function MiniTile({ label, value, icon: Icon, color, delay = 0 }) {
+function MiniTile({ label, value, icon: Icon, color, delay = 0, onClick }) {
   return (
-    <div
-      className="relative overflow-hidden rounded-xl p-3 bg-white/95 backdrop-blur-sm border border-gray-100/80 hover:shadow-md transition-all duration-300 group"
+    <button
+      onClick={onClick}
+      className="relative overflow-hidden rounded-xl p-3 bg-white/95 backdrop-blur-sm border border-gray-100/80 hover:shadow-md hover:scale-[1.02] hover:border-gray-200 transition-all duration-300 group text-left w-full cursor-pointer"
 style={{ animation: `kCardEntry 0.6s cubic-bezier(0.4,0,0.2,1) ${delay}s both`, boxShadow: "0 8px 24px -8px rgba(26,47,138,0.15), 0 2px 8px -2px rgba(0,0,0,0.06)" }}
     >
       <div className="absolute -top-4 -right-4 w-16 h-16 rounded-full opacity-10 blur-xl group-hover:opacity-20 transition-opacity"
@@ -552,6 +557,145 @@ style={{ animation: `kCardEntry 0.6s cubic-bezier(0.4,0,0.2,1) ${delay}s both`, 
         <div className="min-w-0">
           <p className="text-[8px] font-black uppercase tracking-[0.16em] text-gray-400 truncate">{label}</p>
           <p className="text-base font-black text-gray-800">{value}</p>
+</div>
+      </div>
+    </button>
+  );
+}
+
+function AnimatedNumber({ value, format = fmtBig, duration = 600 }) {
+  const [display, setDisplay] = useState(value);
+  const fromRef = useRef(value);
+  const startRef = useRef(null);
+  const rafRef = useRef(null);
+
+  useEffect(() => {
+    cancelAnimationFrame(rafRef.current);
+    fromRef.current = display;
+    startRef.current = null;
+    const target = Number(value) || 0;
+    const from = Number(fromRef.current) || 0;
+    if (from === target) { setDisplay(target); return; }
+
+    const tick = (ts) => {
+      if (startRef.current === null) startRef.current = ts;
+      const elapsed = ts - startRef.current;
+      const t = Math.min(1, elapsed / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(from + (target - from) * eased);
+      if (t < 1) rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  return <>{format(display)}</>;
+}
+
+function useAnimatedNumber(target, duration = 700) {
+  const [display, setDisplay] = useState(target);
+  const fromRef = useRef(target);
+  const startRef = useRef(null);
+  const rafRef = useRef(null);
+
+  useEffect(() => {
+    cancelAnimationFrame(rafRef.current);
+    fromRef.current = display;
+    startRef.current = null;
+    const from = Number(fromRef.current) || 0;
+    const to = Number(target) || 0;
+    if (from === to) { setDisplay(to); return; }
+
+    const tick = (ts) => {
+      if (startRef.current === null) startRef.current = ts;
+      const elapsed = ts - startRef.current;
+      const t = Math.min(1, elapsed / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(from + (to - from) * eased);
+      if (t < 1) rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, duration]);
+
+  return display;
+}
+
+function DetailPopup({ title, items, icon: Icon, color, onClose, renderItem }) {
+  const t = useT();
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+    const escHandler = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("mousedown", handler);
+    document.addEventListener("keydown", escHandler);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      document.removeEventListener("keydown", escHandler);
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[400] flex items-center justify-center p-6"
+      style={{
+        background: "rgba(15, 23, 42, 0.4)",
+        backdropFilter: "blur(8px)",
+        animation: "hpOverlayFadeIn 200ms ease-out",
+      }}
+    >
+      <div
+        ref={ref}
+        className="relative bg-white rounded-3xl border border-gray-100 flex flex-col"
+        style={{
+          width: 480,
+          maxHeight: "75vh",
+          boxShadow: "0 24px 80px -12px rgba(26,47,138,0.3), 0 8px 24px -8px rgba(0,0,0,0.1)",
+          animation: "hpPopIn 320ms cubic-bezier(0.34,1.56,0.64,1)",
+        }}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <div className="flex items-center gap-3">
+            <div
+              className="w-9 h-9 rounded-xl flex items-center justify-center"
+              style={{ background: `${color}15`, border: `1px solid ${color}25` }}
+            >
+              <Icon size={15} style={{ color }} />
+            </div>
+            <div>
+              <p className="text-[9px] font-black uppercase tracking-[0.18em] text-gray-400">{title}</p>
+             <p className="text-base font-black text-gray-800">{items.length} {items.length === 1 ? t("detail_item") : t("detail_items")}</p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* List */}
+        <div className="flex-1 overflow-y-auto p-3 hide-scrollbar">
+          {items.length === 0 ? (
+           <p className="text-xs text-gray-300 text-center py-10">{t("detail_no_items")}</p>
+          ) : (
+            <div className="space-y-1">
+              {items.map((item, i) => (
+                <div
+                  key={i}
+                  className="px-3 py-2.5 rounded-xl hover:bg-gray-50 transition-colors"
+                  style={{ animation: `kCardEntry 0.3s ease-out ${Math.min(i, 15) * 0.02}s both` }}
+                >
+                  {renderItem(item, i)}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -577,23 +721,69 @@ function CustomTooltip({ active, payload, label }) {
 /* ═══════════════════════════════════════════════════════════════
    PERIOD + SCOPE PICKER
 ═══════════════════════════════════════════════════════════════ */
+function CompareCalendar({ compareYear, compareMonth, onSelectCompare, colors }) {
+  const t = useT();
+  const [browseYear, setBrowseYear] = useState(Number(compareYear) || new Date().getFullYear());
+  const MONTHS = [t("month_1"),t("month_2"),t("month_3"),t("month_4"),t("month_5"),t("month_6"),t("month_7"),t("month_8"),t("month_9"),t("month_10"),t("month_11"),t("month_12")].map(m => m.slice(0,3));
+  const currentYear = new Date().getFullYear();
+  return (
+    <div className="p-3 border-b border-gray-100">
+      <p className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 mb-2">{t("picker_compare_to")}</p>
+      <div className="flex items-center justify-between mb-2.5">
+        <button onClick={() => setBrowseYear(y => y - 1)}
+          className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-gray-100 transition-colors text-gray-500">‹</button>
+        <span className="text-sm font-black text-gray-800">{browseYear}</span>
+        <button onClick={() => setBrowseYear(y => Math.min(y + 1, currentYear))}
+          className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-gray-100 transition-colors text-gray-500"
+          disabled={browseYear >= currentYear}>›</button>
+      </div>
+      <div className="grid grid-cols-4 gap-1">
+        {MONTHS.map((m, i) => {
+          const mNum = i + 1;
+          const isSelected = String(browseYear) === String(compareYear) && String(mNum) === String(compareMonth);
+          const isFuture = browseYear === currentYear && mNum > new Date().getMonth() + 1;
+          return (
+            <button key={m}
+              disabled={isFuture}
+              onClick={() => { onSelectCompare?.(String(browseYear), String(mNum)); }}
+              className="py-1.5 rounded-xl text-xs font-bold transition-all"
+              style={{
+                background: isSelected ? colors.primary : "transparent",
+                color: isSelected ? "#fff" : isFuture ? "#d1d5db" : "#374151",
+                cursor: isFuture ? "not-allowed" : "pointer",
+              }}
+              onMouseEnter={e => { if (!isSelected && !isFuture) e.currentTarget.style.background = `${colors.primary}12`; }}
+              onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}>
+              {m}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function PeriodPicker({
   year, month, onSelectPeriod,
   viewScope, onScopeChange,
-  structures, companies,
+  valueMode, onValueModeChange,
+  structures, companies, holdings = [],
   selectedStructure, onStructureChange,
   selectedCompany, onCompanyChange,
+  compareYear, compareMonth, onSelectCompare,
   colors, onClose,
 }) {
+  const t = useT();
   const [browseYear, setBrowseYear] = useState(Number(year) || new Date().getFullYear());
-  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const MONTHS = [t("month_1"),t("month_2"),t("month_3"),t("month_4"),t("month_5"),t("month_6"),t("month_7"),t("month_8"),t("month_9"),t("month_10"),t("month_11"),t("month_12")].map(m => m.slice(0,3));
   const currentYear = new Date().getFullYear();
 
   return (
-    <div
-     className="absolute right-0 top-full mt-2 z-[200] rounded-2xl overflow-hidden"
+<div
+     className="absolute top-full mt-2 z-[200] rounded-2xl overflow-hidden"
       style={{
-        width: 320,
+        width: 340,
+        right: 0,
         background: "rgba(255,255,255,0.99)",
         backdropFilter: "blur(24px)",
         border: "1px solid rgba(26,47,138,0.1)",
@@ -642,13 +832,44 @@ function PeriodPicker({
         </div>
       </div>
 
-      {/* ── Scope toggle ── */}
+{/* ── Compare-to mini calendar ── */}
+      <CompareCalendar
+        compareYear={compareYear} compareMonth={compareMonth}
+        onSelectCompare={onSelectCompare}
+        colors={colors}
+      />
+
+{/* ── Value-mode toggle (Monthly / YTD) ── */}
       <div className="p-3 border-b border-gray-100">
-        <p className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 mb-2">View</p>
+<p className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 mb-2">{t("picker_values")}</p>
         <div className="flex gap-1.5 p-1 rounded-xl bg-gray-100">
           {[
-            { value: "consolidated", label: "Consolidated" },
-            { value: "individual",   label: "Individual" },
+            { value: "monthly", label: t("picker_monthly") },
+            { value: "ytd",     label: t("picker_ytd") },
+          ].map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => onValueModeChange?.(opt.value)}
+              className="flex-1 py-1.5 rounded-lg text-xs font-black transition-all"
+              style={{
+                background: valueMode === opt.value ? "#fff" : "transparent",
+                color: valueMode === opt.value ? colors.primary : "#9ca3af",
+                boxShadow: valueMode === opt.value ? "0 1px 4px rgba(0,0,0,0.08)" : "none",
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Scope toggle ── */}
+      <div className="p-3 border-b border-gray-100">
+<p className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 mb-2">{t("picker_view")}</p>
+        <div className="flex gap-1.5 p-1 rounded-xl bg-gray-100">
+          {[
+            { value: "consolidated", label: t("picker_consolidated") },
+            { value: "individual",   label: t("picker_individual") },
           ].map(opt => (
             <button
               key={opt.value}
@@ -666,43 +887,53 @@ function PeriodPicker({
         </div>
       </div>
 
-      {/* ── Company / Structure selector ── */}
+{/* ── Company / Holding selector ── */}
       <div className="p-3 max-h-48 overflow-y-auto" style={{ scrollbarWidth: "none" }}>
-        <p className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 mb-2">
-          {viewScope === "consolidated" ? "Group Structure" : "Company"}
+<p className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 mb-2">
+          {viewScope === "consolidated" ? t("picker_holding") : t("picker_company")}
         </p>
-        {viewScope === "consolidated" ? (
-          structures.length > 0 ? structures.map((s, i) => {
-            const val = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? String(s)) : String(s);
-            const active = val === selectedStructure;
+{viewScope === "consolidated" ? (
+          holdings.length > 0 ? holdings.map(h => {
+            const active = h.shortName === selectedCompany;
             return (
-              <button key={i}
-                onClick={() => { onStructureChange(val); onClose(); }}
-                className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold mb-0.5 transition-all"
-                style={{ background: active ? colors.primary : "transparent", color: active ? "#fff" : "#374151" }}
+              <button key={h.shortName}
+                onClick={() => { onCompanyChange(h.shortName); onClose(); }}
+                onMouseLeave={e => { e.currentTarget.style.background = active ? colors.primary : "transparent"; }}
                 onMouseEnter={e => { if (!active) e.currentTarget.style.background = `${colors.primary}10`; }}
-                onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
+                className="w-full text-left px-3 py-2 rounded-xl mb-0.5 transition-all"
+                style={{ background: active ? colors.primary : "transparent" }}
               >
-                {val}
+                <p className="text-xs font-bold flex items-center gap-2" style={{ color: active ? "#fff" : "#374151" }}>
+                  {h.legalName}
+                  {h.isRoot && (
+                    <span className="px-1.5 py-0.5 rounded-md text-[8px] font-black uppercase tracking-wider"
+                      style={{ background: active ? "rgba(255,255,255,0.2)" : `${colors.primary}15`, color: active ? "#fff" : colors.primary }}>
+{t("picker_root")}
+                    </span>
+                  )}
+                </p>
+                <p className="text-[9px] font-mono mt-0.5" style={{ color: active ? "rgba(255,255,255,0.7)" : "#9ca3af" }}>{h.shortName}</p>
               </button>
             );
-          }) : <p className="text-xs text-gray-300 px-2">No structures available</p>
+          }) : <p className="text-xs text-gray-300 px-2">{t("picker_no_holdings")}</p>
         ) : (
           companies.length > 0 ? companies.map((c, i) => {
-            const val = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? String(c)) : String(c);
-            const active = val === selectedCompany;
+            const shortName = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? String(c)) : String(c);
+            const legalName = typeof c === "object" ? (c.CompanyLegalName ?? c.companyLegalName ?? shortName) : shortName;
+            const active = shortName === selectedCompany;
             return (
               <button key={i}
-                onClick={() => { onCompanyChange(val); onClose(); }}
-                className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold mb-0.5 transition-all"
-                style={{ background: active ? colors.primary : "transparent", color: active ? "#fff" : "#374151" }}
+                onClick={() => { onCompanyChange(shortName); onClose(); }}
+                onMouseLeave={e => { e.currentTarget.style.background = active ? colors.primary : "transparent"; }}
                 onMouseEnter={e => { if (!active) e.currentTarget.style.background = `${colors.primary}10`; }}
-                onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
+                className="w-full text-left px-3 py-2 rounded-xl mb-0.5 transition-all"
+                style={{ background: active ? colors.primary : "transparent" }}
               >
-                {val}
+                <p className="text-xs font-bold" style={{ color: active ? "#fff" : "#374151" }}>{legalName}</p>
+                <p className="text-[9px] font-mono mt-0.5" style={{ color: active ? "rgba(255,255,255,0.7)" : "#9ca3af" }}>{shortName}</p>
               </button>
             );
-          }) : <p className="text-xs text-gray-300 px-2">No companies available</p>
+          }) : <p className="text-xs text-gray-300 px-2">{t("picker_no_companies")}</p>
         )}
       </div>
     </div>
@@ -713,6 +944,7 @@ function PeriodPicker({
    KPI SLOT SELECTOR POPOVER
 ═══════════════════════════════════════════════════════════════ */
 function KpiSelectorPopover({ kpiList, currentId, onSelect, onClose }) {
+  const t = useT();
   const [search, setSearch] = useState("");
   const ref = useRef(null);
 
@@ -749,9 +981,8 @@ function KpiSelectorPopover({ kpiList, currentId, onSelect, onClose }) {
       }}
       onClick={e => e.stopPropagation()}
     >
-      {/* Header */}
+{/* Header — search only, no title */}
       <div className="px-3 pt-3 pb-2 border-b border-gray-100">
-        <p className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 mb-2">Change KPI</p>
         <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-gray-50 border border-gray-100">
           <Search size={11} className="text-gray-400 flex-shrink-0" />
           <input
@@ -759,14 +990,14 @@ function KpiSelectorPopover({ kpiList, currentId, onSelect, onClose }) {
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search KPIs…"
+           placeholder={t("kpi_search")}
             className="flex-1 text-xs outline-none bg-transparent text-gray-700 placeholder:text-gray-300"
           />
         </div>
       </div>
 
 {/* List */}
-      <div className="overflow-y-auto p-1.5" style={{ maxHeight: 220 }}>
+      <div className="overflow-y-auto p-1.5 hide-scrollbar" style={{ maxHeight: 220 }}>
         {Object.entries(grouped).map(([cat, kpis], catIdx) => {
           const CAT_COLORS = [
             "#1a2f8a", "#CF305D", "#57aa78", "#7c3aed",
@@ -810,8 +1041,8 @@ function KpiSelectorPopover({ kpiList, currentId, onSelect, onClose }) {
             </div>
           );
         })}
-        {filtered.length === 0 && (
-          <p className="text-xs text-gray-400 text-center py-6">No KPIs match</p>
+{filtered.length === 0 && (
+          <p className="text-xs text-gray-400 text-center py-6">{t("kpi_no_match")}</p>
         )}
       </div>
 
@@ -889,11 +1120,65 @@ const displayName = useMemo(() => {
     t("month_9"), t("month_10"), t("month_11"), t("month_12"),
   ].map(m => m.slice(0, 3));
 
-  const sources    = initialData.sources ?? [];
+const sources    = initialData.sources ?? [];
   const structures = initialData.structures ?? [];
   const companies  = initialData.companies ?? [];
   const dimensions = initialData.dimensions ?? [];
   const groupAccountsProp = initialData.groupAccounts ?? [];
+
+// Current user's role + resource-access whitelist for this company
+  const [userRole, setUserRole] = useState(null);
+  const [allowedCompanyShortNames, setAllowedCompanyShortNames] = useState(null); // null = not loaded yet; Set = whitelist
+useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    (async () => {
+      // Resolve user's active company directly (don't rely on settings context)
+      const { data: ucRow } = await supabase.schema("accounts").from("user_companies")
+        .select("company_id, role")
+        .eq("user_id", userId)
+        .eq("is_active", true)
+        .order("is_default", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (cancelled) return;
+      const cid = ucRow?.company_id;
+      const role = ucRow?.role ?? null;
+      console.log("[ACCESS] resolved cid=", cid, "role=", role);
+      setUserRole(role);
+      if (!cid) return;
+      if (role === "admin") { setAllowedCompanyShortNames(null); return; }
+      const { data: rows } = await supabase
+        .from("role_resource_access")
+        .select("resource_id, allowed")
+        .eq("company_id", cid)
+        .eq("role", role)
+        .eq("resource_kind", "company");
+      if (cancelled) return;
+      const allowed = new Set();
+      (rows ?? []).forEach(r => { if (r.allowed) allowed.add(String(r.resource_id)); });
+      console.log("[ACCESS] allowed companies:", [...allowed]);
+      setAllowedCompanyShortNames(allowed);
+    })();
+    return () => { cancelled = true; };
+  }, [userId]);
+
+  // Group structure rows (parent/child relations) — fetched lazily for the picker
+  const [groupStructure, setGroupStructure] = useState(initialData.groupStructure ?? []);
+  useEffect(() => {
+    if (groupStructure.length > 0) return;
+    if (!token) return;
+    fetch(`${BASE_URL}/v2/group-structure`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return;
+        const rows = d.value ?? (Array.isArray(d) ? d : []);
+        setGroupStructure(rows);
+      })
+      .catch(() => {});
+  }, [token, groupStructure.length]);
 
   // If parent didn't pre-load groupAccounts, fetch them ourselves
   const [groupAccountsLocal, setGroupAccountsLocal] = useState([]);
@@ -1046,6 +1331,7 @@ const { setDetectedLocale } = useSettingsControls();
 const [year, setYear]     = useState(prefetch?.year  ? String(prefetch.year)  : "");
   const [month, setMonth]   = useState(prefetch?.month ? String(prefetch.month) : "");
   const [viewScope, setViewScope]           = useState("consolidated"); // "consolidated" | "individual"
+  const [valueMode, setValueMode]           = useState("monthly"); // "monthly" | "ytd"
   const [pickerOpen, setPickerOpen]         = useState(false);
   const [pickerYear, setPickerYear]         = useState(null); // year being browsed in picker
   const pickerRef = useRef(null);
@@ -1071,20 +1357,144 @@ const source = useMemo(() => {
     const s = structures[0];
     return typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : (s ?? "");
   }, [structures]);
-  const defaultCompany = useMemo(() => {
-    const c = companies[0];
-    return typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : (c ?? "");
-  }, [companies]);
+// Default companies — computed once per scope; the active one is picked
+  // further down once viewScope is in scope.
+// Filter companies by access whitelist (admin/null = pass-through)
+  const visibleCompanies = useMemo(() => {
+    if (!allowedCompanyShortNames) return companies;
+    return companies.filter(c => {
+      const sn = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : String(c);
+      return allowedCompanyShortNames.has(sn);
+    });
+  }, [companies, allowedCompanyShortNames]);
 
-  const [structureOverride, setStructureOverride] = useState(null);
-  const [companyOverride, setCompanyOverride]     = useState(null);
+  const defaultIndividualCompany = useMemo(() => {
+    const c = visibleCompanies[0];
+    return typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : (c ?? "");
+  }, [visibleCompanies]);
+
+const [structureOverride, setStructureOverride] = useState(null);
+  // Two independent overrides — one per scope. Switching scope clears the other.
+  const [consolidatedCompanyOverride, setConsolidatedCompanyOverride] = useState(null);
+  const [individualCompanyOverride,   setIndividualCompanyOverride]   = useState(null);
   const structure = structureOverride ?? defaultStructure;
-  const company   = companyOverride   ?? defaultCompany;
+
+// Set of "leaf" companies (no children) — these are the real individual entities
+  const leafCompanies = useMemo(() => {
+    const set = new Set();
+    groupStructure
+      .map(g => ({
+        company:  g.companyShortName ?? g.CompanyShortName ?? "",
+        structure: g.groupStructure  ?? g.GroupStructure   ?? "",
+        hasChild: g.hasChild         ?? g.HasChild         ?? false,
+        detached: g.detached         ?? g.Detached         ?? false,
+      }))
+      .filter(r => !r.detached && (!r.structure || r.structure === structure))
+      .forEach(r => { if (!r.hasChild && r.company) set.add(r.company); });
+    return set;
+  }, [groupStructure, structure]);
+
+// Map: holding shortName → Set of all descendant company shortNames (for consolidated ranking)
+  const holdingDescendants = useMemo(() => {
+    const rows = groupStructure
+      .map(g => ({
+        company:  g.companyShortName ?? g.CompanyShortName ?? "",
+        parent:   g.parentShortName  ?? g.ParentShortName  ?? "",
+        structure: g.groupStructure  ?? g.GroupStructure   ?? "",
+        detached: g.detached         ?? g.Detached         ?? false,
+      }))
+      .filter(r => !r.detached && (!r.structure || r.structure === structure));
+
+    // Build parent → direct children map
+    const childrenOf = new Map();
+    rows.forEach(r => {
+      if (!r.parent) return;
+      if (!childrenOf.has(r.parent)) childrenOf.set(r.parent, []);
+      childrenOf.get(r.parent).push(r.company);
+    });
+
+    // For each company, recursively collect all descendants (incl. itself)
+    const out = new Map();
+    const collect = (co, acc) => {
+      acc.add(co);
+      const kids = childrenOf.get(co) ?? [];
+      kids.forEach(k => collect(k, acc));
+    };
+    rows.forEach(r => {
+      const set = new Set();
+      collect(r.company, set);
+      out.set(r.company, set);
+    });
+    return out;
+  }, [groupStructure, structure]);
+
+  // Holdings: companies that act as parent (have children) plus the root.
+  // Source: /v2/group-structure, filtered by current structure, non-detached.
+  const holdings = useMemo(() => {
+    const gsRows = groupStructure
+      .map(g => ({
+        company:   g.companyShortName ?? g.CompanyShortName ?? "",
+        parent:    g.parentShortName  ?? g.ParentShortName  ?? "",
+        structure: g.groupStructure   ?? g.GroupStructure   ?? "",
+        hasChild:  g.hasChild         ?? g.HasChild         ?? false,
+        detached:  g.detached         ?? g.Detached         ?? false,
+      }))
+      .filter(g => !g.detached && (!g.structure || g.structure === structure));
+    const root = gsRows.find(g => !g.parent)?.company || "";
+    const shortNames = gsRows
+      .filter(g => g.hasChild || g.company === root)
+      .map(g => g.company);
+return shortNames
+      .filter(sn => !allowedCompanyShortNames || allowedCompanyShortNames.has(sn))
+      .map(sn => {
+        const co = companies.find(c => (c.CompanyShortName ?? c.companyShortName) === sn);
+        return {
+          shortName: sn,
+          legalName: co?.CompanyLegalName ?? co?.companyLegalName ?? sn,
+          isRoot:    sn === root,
+        };
+      })
+.sort((a, b) => a.legalName.localeCompare(b.legalName, "es", { sensitivity: "base" }));
+  }, [groupStructure, structure, companies, allowedCompanyShortNames]);
+
+  // Default company per scope
+  const defaultConsolidatedCompany = useMemo(() => {
+    const root = holdings.find(h => h.isRoot);
+    if (root) return root.shortName;
+    if (holdings.length > 0) return holdings[0].shortName;
+    return defaultIndividualCompany;
+  }, [holdings, defaultIndividualCompany]);
+
+  // Active company = override-for-scope ?? default-for-scope
+  const company = viewScope === "consolidated"
+    ? (consolidatedCompanyOverride ?? defaultConsolidatedCompany)
+    : (individualCompanyOverride   ?? defaultIndividualCompany);
+    console.log("[SCOPE-DEBUG]", { viewScope, company, defaultConsolidatedCompany, defaultIndividualCompany, consolidatedCompanyOverride, individualCompanyOverride, holdingsCount: holdings.length, holdings, firstCompany: companies[0] });
+// Compare period — defaults to month-before-current; user can pick any.
+  const [compareYear, setCompareYear]   = useState("");
+  const [compareMonth, setCompareMonth] = useState("");
+  const [compareTouched, setCompareTouched] = useState(false);
+  useEffect(() => {
+    if (compareTouched) return;
+    if (!year || !month) return;
+    const y = Number(year), m = Number(month);
+    let pm = m - 1, py = y;
+    if (pm < 1) { pm = 12; py -= 1; }
+    setCompareYear(String(py));
+    setCompareMonth(String(pm));
+  }, [year, month, compareTouched]);
+  const compareLabel = useMemo(() => {
+    if (!compareYear || !compareMonth) return "—";
+    const mNum = Number(compareMonth);
+    if (!Number.isFinite(mNum) || mNum < 1 || mNum > 12) return "—";
+    return `${MONTHS_ABBR[mNum - 1]} ${compareYear}`;
+  }, [compareYear, compareMonth, MONTHS_ABBR]);
 
   const [currentRows, setCurrentRows]     = useState(prefetch?.current ?? []);
   const [prevRows, setPrevRows]           = useState(prefetch?.prev ?? []);
   const [trendRows, setTrendRows]         = useState(prefetch?.trend ?? []);
 const [allCoCurrentRows, setAllCoCurrentRows] = useState([]);
+  const [allCoPrevRows,    setAllCoPrevRows]    = useState([]);
   const [loading, setLoading]             = useState(false);
   const [trendLoading, setTrendLoading]   = useState(false);
   const [allCoLoading, setAllCoLoading]   = useState(false);
@@ -1249,7 +1659,7 @@ const vndKeys = [...map.keys()].filter(k => k.endsWith("-VND")).slice(0, 5);
     })();
   }, [source, structure, company, token, year, month, headers]);
 
-  // Fetch current + prev (for KPI deltas)
+// Fetch current (anchor period)
   const initialFetchSkippedRef = useRef(!!prefetch);
   useEffect(() => {
     if (!year || !month || !source || !structure || !company) return;
@@ -1257,17 +1667,25 @@ const vndKeys = [...map.keys()].filter(k => k.endsWith("-VND")).slice(0, 5);
     let cancelled = false;
     setLoading(true);
     (async () => {
-      const [cur, prev] = await Promise.all([
-        fetchPeriod(year, month, source, structure, company),
-        Number(month) > 1 ? fetchPeriod(year, String(Number(month) - 1), source, structure, company) : Promise.resolve([]),
-      ]);
+      const cur = await fetchPeriod(year, month, source, structure, company);
       if (cancelled) return;
       setCurrentRows(cur);
-      setPrevRows(prev);
       setLoading(false);
     })();
     return () => { cancelled = true; };
   }, [year, month, source, structure, company, fetchPeriod]);
+
+  // Fetch compare period (drives KPI deltas + cost-structure deltas)
+  useEffect(() => {
+    if (!compareYear || !compareMonth || !source || !structure || !company) return;
+    let cancelled = false;
+    (async () => {
+      const cmp = await fetchPeriod(compareYear, compareMonth, source, structure, company);
+      if (cancelled) return;
+      setPrevRows(cmp);
+    })();
+    return () => { cancelled = true; };
+  }, [compareYear, compareMonth, source, structure, company, fetchPeriod]);
 
 // Fetch trend — extend the rolling 24-month window backwards so the chart
   // always starts on a January (option B). The window covers from January of
@@ -1315,7 +1733,7 @@ const anchorY = Number(year), anchorM = Number(month);
     return () => { cancelled = true; };
 }, [year, month, source, structure, company, fetchPeriod, trendWindow]);
 
-  // Fetch all-companies YTD for ranking
+// Fetch all-companies YTD for ranking (current)
   useEffect(() => {
     if (!year || !month || !source || !structure) return;
     const cacheKey = `${source}|${structure}|${year}|${month}|ytd-allco`;
@@ -1331,6 +1749,24 @@ const anchorY = Number(year), anchorM = Number(month);
       setAllCoLoading(false);
     })();
   }, [year, month, source, structure, fetchPeriodAllCompanies]);
+
+  // Fetch all-companies prev month YTD (only needed for Monthly mode)
+  useEffect(() => {
+    if (valueMode !== "monthly") { setAllCoPrevRows([]); return; }
+    const m = Number(month);
+    if (!year || !m || m <= 1 || !source || !structure) { setAllCoPrevRows([]); return; }
+    const prevM = m - 1;
+    const cacheKey = `${source}|${structure}|${year}|${prevM}|ytd-allco-prev`;
+    const cached = allCoCacheRef.current.get(cacheKey);
+    if (cached) { setAllCoPrevRows(cached); return; }
+    let cancelled = false;
+    (async () => {
+      const rows = await fetchPeriodAllCompanies(year, String(prevM), source, structure);
+      if (cancelled) return;
+      allCoCacheRef.current.set(cacheKey, rows);
+      setAllCoPrevRows(rows);
+    })();
+  }, [year, month, source, structure, valueMode, fetchPeriodAllCompanies]);
 
 // Resolve the 4 configured slot KPIs from the library
   const slottedKpis = useMemo(() => {
@@ -1355,40 +1791,73 @@ const anchorY = Number(year), anchorM = Number(month);
     [prevRows, sumAccountCodes]
   );
 
-  // Monthly pivot for the CURRENT period: subtract previous-month YTD from
-  // current-month YTD per account. For January, monthly = YTD (no prior month
-  // in the same fiscal year).
-  const currentMonthlyPivot = useMemo(() => {
-    const isJanuary = parseInt(month) === 1;
-    if (isJanuary) return currentYtdPivot;
-    const out = new Map();
-    const allCodes = new Set([...currentYtdPivot.keys(), ...prevYtdPivot.keys()]);
-    allCodes.forEach(ac => {
-      out.set(ac, (currentYtdPivot.get(ac) ?? 0) - (prevYtdPivot.get(ac) ?? 0));
-    });
-    return out;
-  }, [currentYtdPivot, prevYtdPivot, month]);
+// Dedicated fetch for the month-before-anchor — replaces trendRows fallback
+  // which races against the 24-month window load. This is the same approach
+  // the ranking uses, so hero === ranking always.
+  const [monthBeforeAnchorRows, setMonthBeforeAnchorRows] = useState([]);
+  useEffect(() => {
+    if (!year || !month || !source || !structure || !company) return;
+    const m = Number(month);
+    if (m === 1 || valueMode === "ytd") { setMonthBeforeAnchorRows([]); return; }
+    const beforeM = m - 1;
+    const beforeY = Number(year);
+    let cancelled = false;
+    (async () => {
+      const rows = await fetchPeriod(beforeY, String(beforeM), source, structure, company);
+      if (!cancelled) setMonthBeforeAnchorRows(rows);
+    })();
+    return () => { cancelled = true; };
+  }, [year, month, source, structure, company, valueMode, fetchPeriod]);
 
-  // Monthly pivot for the PREVIOUS period (used as the "vs" comparison in hero
-  // cards). We need YTD of the month BEFORE prev to subtract — pull it from
-  // the trend results when available; otherwise fall back to YTD only.
-  const prevMonthlyPivot = useMemo(() => {
-    const prevM = Number(month) - 1;
-    if (prevM < 1) return prevYtdPivot; // best effort: Dec of prior year as YTD
-    if (prevM === 1) return prevYtdPivot; // Jan monthly = Jan YTD
-    // Find month-2 in trendRows
-    const prevPrevM = prevM - 1;
-    const prevPrevY = Number(year);
-    const found = trendRows.find(t => Number(t.year) === prevPrevY && Number(t.month) === prevPrevM);
-    if (!found) return prevYtdPivot; // best effort
-    const prevPrevYtd = buildPivotFromRows(found.rows, sumAccountCodes);
+  // Pivot for the CURRENT anchor period. In YTD mode = raw YTD pivot. In
+  // monthly mode = YTD(current) − YTD(month-1). For Jan, monthly = YTD.
+  const currentMonthlyPivot = useMemo(() => {
+    if (valueMode === "ytd") return currentYtdPivot;
+    const m = parseInt(month);
+    if (m === 1) return currentYtdPivot;
+    if (!monthBeforeAnchorRows.length) {
+      // Fallback to trendRows if dedicated fetch hasn't returned yet
+      const beforeM = m - 1;
+      const beforeY = Number(year);
+      const found = trendRows.find(t => Number(t.year) === beforeY && Number(t.month) === beforeM);
+      if (!found) return currentYtdPivot;
+      const beforeYtd = buildPivotFromRows(found.rows, sumAccountCodes);
+      const out = new Map();
+      const allCodes = new Set([...currentYtdPivot.keys(), ...beforeYtd.keys()]);
+      allCodes.forEach(ac => {
+        out.set(ac, (currentYtdPivot.get(ac) ?? 0) - (beforeYtd.get(ac) ?? 0));
+      });
+      return out;
+    }
+    const beforeYtd = buildPivotFromRows(monthBeforeAnchorRows, sumAccountCodes);
     const out = new Map();
-    const allCodes = new Set([...prevYtdPivot.keys(), ...prevPrevYtd.keys()]);
+    const allCodes = new Set([...currentYtdPivot.keys(), ...beforeYtd.keys()]);
     allCodes.forEach(ac => {
-      out.set(ac, (prevYtdPivot.get(ac) ?? 0) - (prevPrevYtd.get(ac) ?? 0));
+      out.set(ac, (currentYtdPivot.get(ac) ?? 0) - (beforeYtd.get(ac) ?? 0));
     });
     return out;
-  }, [prevYtdPivot, month, year, trendRows, sumAccountCodes]);
+  }, [currentYtdPivot, year, month, trendRows, monthBeforeAnchorRows, sumAccountCodes, valueMode]);
+
+// Pivot for the COMPARE period. In YTD mode = raw YTD. In monthly mode =
+  // YTD(compare) − YTD(month-before-compare).
+  const prevMonthlyPivot = useMemo(() => {
+    if (valueMode === "ytd") return prevYtdPivot;
+    const cmpM = Number(compareMonth);
+    const cmpY = Number(compareYear);
+    if (!Number.isFinite(cmpM) || cmpM < 1 || cmpM > 12) return prevYtdPivot;
+    if (cmpM === 1) return prevYtdPivot;
+    const beforeM = cmpM - 1;
+    const beforeY = cmpY;
+    const found = trendRows.find(t => Number(t.year) === beforeY && Number(t.month) === beforeM);
+    if (!found) return prevYtdPivot;
+    const beforeYtd = buildPivotFromRows(found.rows, sumAccountCodes);
+    const out = new Map();
+    const allCodes = new Set([...prevYtdPivot.keys(), ...beforeYtd.keys()]);
+    allCodes.forEach(ac => {
+      out.set(ac, (prevYtdPivot.get(ac) ?? 0) - (beforeYtd.get(ac) ?? 0));
+    });
+    return out;
+  }, [prevYtdPivot, compareYear, compareMonth, trendRows, sumAccountCodes, valueMode]);
 
 const kpiValues = useMemo(() => {
     if (!slottedKpis || kpiList.length === 0) return null;
@@ -1421,18 +1890,22 @@ const kpiValues = useMemo(() => {
       const currP = pivotsByKey.get(`${y}-${m}`);
       if (!currP) continue;
 
-      let monthlyPivot;
-      const isJanuary = m === 1;
-      if (isJanuary) {
+let monthlyPivot;
+      if (valueMode === "ytd") {
         monthlyPivot = currP;
       } else {
-        const prevP = pivotsByKey.get(`${y}-${m - 1}`);
-        if (!prevP) continue; // skip oldest if we can't compute its delta
-        monthlyPivot = new Map();
-        const allCodes = new Set([...currP.keys(), ...prevP.keys()]);
-        allCodes.forEach(ac => {
-          monthlyPivot.set(ac, (currP.get(ac) ?? 0) - (prevP.get(ac) ?? 0));
-        });
+        const isJanuary = m === 1;
+        if (isJanuary) {
+          monthlyPivot = currP;
+        } else {
+          const prevP = pivotsByKey.get(`${y}-${m - 1}`);
+          if (!prevP) continue; // skip oldest if we can't compute its delta
+          monthlyPivot = new Map();
+          const allCodes = new Set([...currP.keys(), ...prevP.keys()]);
+          allCodes.forEach(ac => {
+            monthlyPivot.set(ac, (currP.get(ac) ?? 0) - (prevP.get(ac) ?? 0));
+          });
+        }
       }
 
 const cache = new Map();
@@ -1449,7 +1922,7 @@ const entry = {
       out.push(entry);
     }
     return out;
- }, [trendRows, kpiSlots, kpiList, ccTagToCodes, sectionCodes, sumAccountCodes]);
+}, [trendRows, kpiSlots, kpiList, ccTagToCodes, sectionCodes, sumAccountCodes, valueMode]);
 
 const trendFromYear = useMemo(() => {
     if (!year) return null;
@@ -1483,132 +1956,248 @@ const trendFromYear = useMemo(() => {
     [allCoCurrentRows]
   );
 
-const topByRevenue = useMemo(() => {
-    if (!slottedKpis || !allCoCurrentRows.length || kpiList.length === 0) return [];
+  // KPI used to rank companies / holdings in the multi-company card
+  const [rankingKpiId, setRankingKpiId] = useState("revenue");
+// Ranking entities — the set of companies/holdings we'll rank.
+  // Individual: ALL visible companies (leaves + holdings shown as standalone).
+  // Consolidated: only holdings.
+  const rankingEntities = useMemo(() => {
+    if (viewScope === "individual") {
+      const companyNames = (visibleCompanies ?? []).map(c =>
+        typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : String(c)
+      ).filter(Boolean);
+      return companyNames;
+    }
+    return holdings.map(h => h.shortName);
+  }, [viewScope, visibleCompanies, holdings]);
 
-    // Group rows by company, but ALSO track each company's currency.
-    const byCompany = new Map();
-    allCoCurrentRows.forEach(r => {
-      const co = String(r.CompanyShortName ?? r.companyShortName ?? "");
-      if (!co) return;
-      if (!byCompany.has(co)) byCompany.set(co, { rows: [], currency: null });
-      const entry = byCompany.get(co);
-      entry.rows.push(r);
-      if (!entry.currency) {
-        const cc = String(r.CurrencyCode ?? r.currencyCode ?? "").trim().toUpperCase();
-        if (cc) entry.currency = cc;
+  // Per-entity fetch state: { [entity]: { currentRows, prevRows, trendRows } }
+  // These mirror EXACTLY what the hero cards have (currentRows, prevRows,
+  // trendRows) — just one set per ranked entity instead of one for the page.
+  const rankingFetchCacheRef = useRef(new Map());
+  const [rankingDataByEntity, setRankingDataByEntity] = useState({});
+  useEffect(() => {
+    if (!year || !month || !source || !structure || rankingEntities.length === 0) return;
+    let cancelled = false;
+    const anchorY = Number(year), anchorM = Number(month);
+    // We need: currentRows, prevRows (compare period), AND the month-before-current
+    // (for monthly mode). Same as hero cards.
+    const prevAnchorM = anchorM > 1 ? anchorM - 1 : 12;
+    const prevAnchorY = anchorM > 1 ? anchorY : anchorY - 1;
+    // Compare period — same as compareYear/compareMonth state
+    const cmpY = compareYear ? Number(compareYear) : null;
+    const cmpM = compareMonth ? Number(compareMonth) : null;
+    const cmpPrevM = cmpM && cmpM > 1 ? cmpM - 1 : (cmpM === 1 ? 12 : null);
+    const cmpPrevY = cmpM && cmpM > 1 ? cmpY : (cmpM === 1 ? cmpY - 1 : null);
+
+    (async () => {
+      const out = {};
+      for (let i = 0; i < rankingEntities.length; i += 4) {
+        const batch = rankingEntities.slice(i, i + 4);
+        const results = await Promise.all(batch.map(async (entity) => {
+          const cache = rankingFetchCacheRef.current;
+          const getOrFetch = async (y, m) => {
+            if (!y || !m) return [];
+            const key = `${entity}|${y}|${m}`;
+            let rows = cache.get(key);
+            if (!rows) {
+              rows = await fetchPeriod(y, String(m), source, structure, entity);
+              cache.set(key, rows);
+            }
+            return rows;
+          };
+          const [curRows, monthBeforeCurRows, cmpRows, monthBeforeCmpRows] = await Promise.all([
+            getOrFetch(anchorY, anchorM),
+            getOrFetch(prevAnchorY, prevAnchorM),
+            getOrFetch(cmpY, cmpM),
+            getOrFetch(cmpPrevY, cmpPrevM),
+          ]);
+          return [entity, { curRows, monthBeforeCurRows, cmpRows, monthBeforeCmpRows }];
+        }));
+        if (cancelled) return;
+        results.forEach(([k, v]) => { out[k] = v; });
       }
-    });
+      if (!cancelled) setRankingDataByEntity(out);
+    })();
+    return () => { cancelled = true; };
+  }, [rankingEntities, year, month, compareYear, compareMonth, source, structure, fetchPeriod]);
 
-    const y = Number(year), m = Number(month);
-
+  // Compute the ranking KPI per entity using THE EXACT SAME cadena as hero:
+  //   currentYtdPivot = buildPivotFromRows(currentRows)
+  //   currentMonthlyPivot = valueMode==="ytd" ? currentYtdPivot
+  //                        : m===1 ? currentYtdPivot
+  //                        : currentYtdPivot - buildPivotFromRows(monthBeforeCurRows)
+  //   v = computeKpiById(id, currentMonthlyPivot, kpiList, ccTagToCodes, sectionCodes, cache)
+  // Then FX-convert to reporting currency on the final scalar.
+  const topByRevenue = useMemo(() => {
+    if (kpiList.length === 0) return [];
+    const m = Number(month);
     const out = [];
-    byCompany.forEach(({ rows: coRows, currency }, name) => {
-      const pivot = buildPivotFromRows(coRows, sumAccountCodes);
-      const cache = new Map();
-      let v = computeKpiById("revenue", pivot, kpiList, ccTagToCodes, sectionCodes, cache);
-      if (v === null || isNaN(v) || v <= 0) return;
-// Look up the rate for the current period; if 0 or missing, walk back
-      // up to 12 months trying earlier rate snapshots (the FX feed sometimes
-      // lags the journal by a month or two).
-      const findRate = (cc) => {
-        let yy = y, mm = m;
-        for (let i = 0; i < 12; i++) {
-          const r = fxRates.get(`${yy}-${mm}-${cc}`);
-          if (r != null && r !== 0) return { rate: r, yy, mm };
-          mm--; if (mm < 1) { mm = 12; yy--; }
-        }
-        return null;
-      };
+    rankingEntities.forEach(entity => {
+      const data = rankingDataByEntity[entity];
+      if (!data || !data.curRows?.length) return;
 
-// Walk back up to 24 months to find a non-zero rate (FX feed lags).
-const lookupRate = (cc) => {
-        const allKeys = Array.from(fxRates.keys());
-        const matchingKeys = allKeys.filter(k => k.endsWith(`-${cc}`));
-        console.log(`[FX-DEEP] ${cc}: total keys=${allKeys.length}, matching=${matchingKeys.length}, first 3 of all:`, allKeys.slice(0, 3), `, first 3 matching:`, matchingKeys.slice(0, 3));
-        for (let i = matchingKeys.length - 1; i >= 0; i--) {
-          const k = matchingKeys[i];
-          const r = fxRates.get(k);
-          console.log(`[FX-DEEP]   trying key="${k}" -> rate=${r}`);
-          if (r != null && r !== 0) {
-            console.log(`[FX-DEEP] ${cc}: FOUND rate=${r} at key=${k}`);
-            return r;
-          }
-        }
-        console.log(`[FX-DEEP] ${cc}: nothing matched`);
-        return null;
-      };
-console.log(`[FX-CHECK] ${name}: currency=${currency} reportingCurrency=${reportingCurrency} fxSize=${fxRates.size}`);
-      let converted = v;
-      if (currency && currency !== reportingCurrency && fxRates.size > 0) {
-        const rateFrom = lookupRate(currency);
-        const rateTo   = lookupRate(reportingCurrency) ?? 1;
-        console.log(`[FX-RATES] ${name}: rateFrom(${currency})=${rateFrom} rateTo(${reportingCurrency})=${rateTo}`);
-        if (rateFrom != null && rateFrom !== 0) {
-          converted = (v * rateFrom) / rateTo;
-        }
+// SAME as hero: currentYtdPivot
+      const curYtdPivot = buildPivotFromRows(data.curRows, sumAccountCodes);
+      if (entity === company) {
+        // Compare raw rows for accountCode 600000
+        const rankingRowsFor600 = data.curRows.filter(r => (r.AccountCode ?? r.accountCode) === "600000");
+        const heroRowsFor600    = currentRows.filter(r => (r.AccountCode ?? r.accountCode) === "600000");
+        console.log(`[RAW-CMP] ranking 600000 rows=${rankingRowsFor600.length} hero 600000 rows=${heroRowsFor600.length}`);
+        console.log(`[RAW-CMP] ranking 600000 sample:`, rankingRowsFor600.slice(0, 2));
+        console.log(`[RAW-CMP] hero 600000 sample:`, heroRowsFor600.slice(0, 2));
+        const rankingSum = rankingRowsFor600.reduce((s, r) => s + parseAmt(r.AmountYTD ?? r.amountYTD ?? 0), 0);
+        const heroSum    = heroRowsFor600.reduce((s, r) => s + parseAmt(r.AmountYTD ?? r.amountYTD ?? 0), 0);
+        console.log(`[RAW-CMP] ranking sum=${rankingSum} hero sum=${heroSum}`);
+        // Check if rows differ in dimension values
+        const rankingDims = new Set(rankingRowsFor600.map(r => JSON.stringify({d1: r.D1 ?? r.d1, d2: r.D2 ?? r.d2, d3: r.D3 ?? r.d3, d4: r.D4 ?? r.d4})));
+        const heroDims    = new Set(heroRowsFor600.map(r => JSON.stringify({d1: r.D1 ?? r.d1, d2: r.D2 ?? r.d2, d3: r.D3 ?? r.d3, d4: r.D4 ?? r.d4})));
+        console.log(`[RAW-CMP] ranking dim combos:`, [...rankingDims].slice(0, 5));
+        console.log(`[RAW-CMP] hero dim combos:`, [...heroDims].slice(0, 5));
       }
 
-      console.log(`[topByRevenue] ${name}: rev=${v} ${currency} → ${converted.toFixed(0)} ${reportingCurrency}`);
-      out.push({ name, value: converted, originalValue: v, originalCurrency: currency });
+      // SAME as hero: currentMonthlyPivot
+      let monthlyPivot;
+      if (valueMode === "ytd") {
+        monthlyPivot = curYtdPivot;
+      } else if (m === 1) {
+        monthlyPivot = curYtdPivot;
+      } else {
+        const beforeYtd = buildPivotFromRows(data.monthBeforeCurRows ?? [], sumAccountCodes);
+        monthlyPivot = new Map();
+        const allCodes = new Set([...curYtdPivot.keys(), ...beforeYtd.keys()]);
+        allCodes.forEach(ac => {
+          monthlyPivot.set(ac, (curYtdPivot.get(ac) ?? 0) - (beforeYtd.get(ac) ?? 0));
+        });
+      }
+
+// SAME as hero: computeKpiById on monthlyPivot
+      const cache = new Map();
+      let v = computeKpiById(rankingKpiId, monthlyPivot, kpiList, ccTagToCodes, sectionCodes, cache);
+      if (entity === company) {
+        console.log(`[RANK-FINAL] entity=${entity} viewScope=${viewScope} valueMode=${valueMode}`);
+        console.log(`[RANK-FINAL] curRows=${data.curRows.length} monthBefore=${data.monthBeforeCurRows?.length ?? 0}`);
+        console.log(`[RANK-FINAL] HERO currentRows=${currentRows.length} HERO trendRows count=${trendRows.length}`);
+        console.log(`[RANK-FINAL] curYtdPivot size=${curYtdPivot.size} HERO currentYtdPivot size=${currentYtdPivot.size}`);
+        console.log(`[RANK-FINAL] monthlyPivot size=${monthlyPivot.size} HERO currentMonthlyPivot size=${currentMonthlyPivot.size}`);
+        // Compare values for a few specific codes
+        const sampleCodes = [...monthlyPivot.keys()].slice(0, 5);
+        sampleCodes.forEach(c => {
+          console.log(`[RANK-FINAL] code=${c} ranking=${monthlyPivot.get(c)} hero=${currentMonthlyPivot.get(c)}`);
+        });
+        const heroCache = new Map();
+        const heroV = computeKpiById(rankingKpiId, currentMonthlyPivot, kpiList, ccTagToCodes, sectionCodes, heroCache);
+        console.log(`[RANK-FINAL] ranking=${v} hero=${heroV}`);
+      }
+      if (v === null || isNaN(v)) return;
+
+// NO FX conversion. The API returns each holding's data already
+      // consolidated in that holding's own reporting currency — exactly
+      // what the hero card displays. Re-converting would double-count.
+      // For mixed-currency comparisons across holdings, the user can
+      // toggle the period picker; values stay in each holding's native
+      // currency just like the hero does.
+
+      out.push({ name: entity, value: v });
     });
-    return out.sort((a, b) => b.value - a.value).slice(0, 6);
-  }, [allCoCurrentRows, heroKpis, kpiList, ccTagToCodes, sectionCodes, sumAccountCodes, fxRates, reportingCurrency, year, month]);
+    return out.sort((a, b) => b.value - a.value);
+}, [rankingEntities, rankingDataByEntity, kpiList, ccTagToCodes, sectionCodes, sumAccountCodes, month, valueMode, rankingKpiId]);
 
   const periodLabel = useMemo(() => {
-    if (!year || !month) return probing ? "Buscando…" : "—";
+   if (!year || !month) return probing ? t("loading_searching") : "—";
     const mNum = Number(month);
     if (!Number.isFinite(mNum) || mNum < 1 || mNum > 12) return "—";
     return `${MONTHS_ABBR[mNum - 1]} ${year}`;
-  }, [year, month, probing]);
+  }, [year, month, probing, t]);
 
-  const anyLoading = loading || trendLoading || probing || allCoLoading || !resolverReady;
+const anyLoading = loading || trendLoading || probing || allCoLoading || !resolverReady;
+
+// Progress meter: 5 stages, weighted by perceptual cost
+  const loadProgress = useMemo(() => {
+    let pct = 0;
+    if (year && month)                        pct += 15;
+    if (resolverReady && kpiList.length > 0)  pct += 25;
+    if (currentRows.length > 0)               pct += 25;
+    if (trendRows.length >= 6)                pct += 20;
+    if (allCoCurrentRows.length > 0)          pct += 15;
+    return Math.min(100, pct);
+  }, [year, month, resolverReady, kpiList.length, currentRows.length, trendRows.length, allCoCurrentRows.length]);
+
+  // Smoothly animate the displayed value between progress changes
+  const animatedLoadProgress = useAnimatedNumber(loadProgress, 700);
+
+  // Track progress history to estimate time remaining
+  const loadStartRef = useRef(Date.now());
+  const [etaSeconds, setEtaSeconds] = useState(null);
+  useEffect(() => {
+    if (loadProgress >= 100) { setEtaSeconds(0); return; }
+    if (loadProgress <= 0)   { setEtaSeconds(null); return; }
+    const elapsed = (Date.now() - loadStartRef.current) / 1000;
+    const totalEstimate = (elapsed / loadProgress) * 100;
+    const remaining = Math.max(0, totalEstimate - elapsed);
+    setEtaSeconds(Math.ceil(remaining));
+  }, [loadProgress]);
 
 // ── Breakdown views ─────────────────────────────────────────────
-  const BREAKDOWN_VIEWS = [
+  const BREAKDOWN_VIEWS = useMemo(() => [
     {
       id: "cost_structure",
-      label: "Cost Structure",
+      label: t("breakdown_cost_structure"),
       icon: "💰",
-      description: "All expense categories",
+      description: t("breakdown_cost_structure_desc"),
       tags: ["CC_02-Cost Of Sales","CC_05-Lease Expense","CC_06-General and administrative","CC_07-Employee Expense","CC_08-R&D","CC_09-Impairment Gain (Loss) on Fixed Assets","CC_10-Depreciation and Amotization","CC_11-Other Operating Expenses","CC_15-Interest expense","CC_16-Other financial expense","CC_18-Income Tax"],
     },
     {
       id: "revenue_mix",
-      label: "Revenue Mix",
+      label: t("breakdown_revenue_mix"),
       icon: "📈",
-      description: "Revenue & other income sources",
+      description: t("breakdown_revenue_mix_desc"),
       tags: ["CC_01-Revenue","CC_03-Other Operating Income","CC_13-Interest Income","CC_14-Other financial income"],
     },
     {
       id: "opex_detail",
-      label: "Opex Detail",
+      label: t("breakdown_opex_detail"),
       icon: "🔧",
-      description: "Operating expenses only",
+      description: t("breakdown_opex_detail_desc"),
       tags: ["CC_05-Lease Expense","CC_06-General and administrative","CC_07-Employee Expense","CC_08-R&D","CC_09-Impairment Gain (Loss) on Fixed Assets","CC_10-Depreciation and Amotization","CC_11-Other Operating Expenses"],
     },
     {
       id: "financial_pl",
-      label: "Financial P&L",
+      label: t("breakdown_financial_pl"),
       icon: "🏦",
-      description: "Below EBIT — financial items",
+      description: t("breakdown_financial_pl_desc"),
       tags: ["CC_13-Interest Income","CC_14-Other financial income","CC_15-Interest expense","CC_16-Other financial expense","CC_17-Foreign Exchange","CC_18-Income Tax"],
     },
     {
       id: "pl_bridge",
-      label: "P&L Bridge",
+      label: t("breakdown_pl_bridge"),
       icon: "🌉",
-      description: "Full P&L from revenue to tax",
+      description: t("breakdown_pl_bridge_desc"),
       tags: ["CC_01-Revenue","CC_03-Other Operating Income","CC_02-Cost Of Sales","CC_05-Lease Expense","CC_06-General and administrative","CC_07-Employee Expense","CC_08-R&D","CC_10-Depreciation and Amotization","CC_11-Other Operating Expenses","CC_13-Interest Income","CC_14-Other financial income","CC_15-Interest expense","CC_16-Other financial expense","CC_17-Foreign Exchange","CC_18-Income Tax"],
     },
-  ];
+  ], [t]);
 
   const INCOME_TAGS = new Set(["CC_01-Revenue","CC_03-Other Operating Income","CC_13-Interest Income","CC_14-Other financial income"]);
 
   const [activeBreakdownView, setActiveBreakdownView] = useState("cost_structure");
 const [breakdownSettingsOpen, setBreakdownSettingsOpen] = useState(false);
   const breakdownSettingsRef = useRef(null);
-  const [aiPanelOpen, setAiPanelOpen] = useState(false);
+const [aiPanelOpen, setAiPanelOpen] = useState(false);
+const [openDetail, setOpenDetail] = useState(null); // "companies" | "structures" | "dimensions" | "sources" | null
+const [middleCardView, setMiddleCardView] = useState("trend"); // "trend" | "ranking" | "tag_drill"
+  const [drillTag, setDrillTag] = useState(null); // CC tag string when middleCardView === "tag_drill"
+  const [rankingSelectorOpen, setRankingSelectorOpen] = useState(false);
+  const rankingSelectorRef = useRef(null);
+
+  useEffect(() => {
+    if (!rankingSelectorOpen) return;
+    const handler = (e) => {
+      if (rankingSelectorRef.current && !rankingSelectorRef.current.contains(e.target))
+        setRankingSelectorOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [rankingSelectorOpen]);
 
   useEffect(() => {
     if (!breakdownSettingsOpen) return;
@@ -1622,10 +2211,10 @@ const [breakdownSettingsOpen, setBreakdownSettingsOpen] = useState(false);
 
   const activeView = BREAKDOWN_VIEWS.find(v => v.id === activeBreakdownView) ?? BREAKDOWN_VIEWS[0];
 
-  const TAG_LABELS = useMemo(() => ({
-    "CC_01-Revenue":                                t("cost_of_sales") === "Coste de ventas" ? "Ingresos" : "Revenue",
+const TAG_LABELS = useMemo(() => ({
+    "CC_01-Revenue":                                t("tag_revenue"),
     "CC_02-Cost Of Sales":                          t("cost_of_sales"),
-    "CC_03-Other Operating Income":                 "Other Op. Income",
+    "CC_03-Other Operating Income":                 t("tag_other_op_income"),
     "CC_05-Lease Expense":                          t("lease_expense"),
     "CC_06-General and administrative":             t("general_admin"),
     "CC_07-Employee Expense":                       t("employee_expense"),
@@ -1633,11 +2222,11 @@ const [breakdownSettingsOpen, setBreakdownSettingsOpen] = useState(false);
     "CC_09-Impairment Gain (Loss) on Fixed Assets": t("impairment"),
     "CC_10-Depreciation and Amotization":           t("depreciation"),
     "CC_11-Other Operating Expenses":               t("other_opex"),
-    "CC_13-Interest Income":                        "Interest Income",
-    "CC_14-Other financial income":                 "Other Fin. Income",
+    "CC_13-Interest Income":                        t("tag_interest_income"),
+    "CC_14-Other financial income":                 t("tag_other_fin_income"),
     "CC_15-Interest expense":                       t("interest_expense"),
     "CC_16-Other financial expense":                t("other_fin_expense"),
-    "CC_17-Foreign Exchange":                       "FX",
+    "CC_17-Foreign Exchange":                       t("tag_fx"),
     "CC_18-Income Tax":                             t("income_tax"),
   }), [t]);
 
@@ -1660,18 +2249,190 @@ const [breakdownSettingsOpen, setBreakdownSettingsOpen] = useState(false);
       .slice(0, 8);
   }, [activeView, ccTagToCodes, currentMonthlyPivot, prevMonthlyPivot, TAG_LABELS]);
 
-  const totalCosts = useMemo(
+const totalCosts = useMemo(
     () => costBreakdown.reduce((s, c) => s + Math.abs(c.value), 0),
     [costBreakdown]
   );
+
+// ── TAG DRILL-DOWN: data when a cost-structure row is clicked ───────────
+  const drillAccountBreakdown = useMemo(() => { // eslint-disable-line
+    if (!drillTag || !ccTagToCodes || !currentMonthlyPivot) return [];
+    const codes = ccTagToCodes.get(drillTag) ?? [];
+    const isIncome = INCOME_TAGS.has(drillTag);
+    const rows = codes.map(code => {
+      const rawCurr = currentMonthlyPivot.get(code) ?? 0;
+      const rawPrev = prevMonthlyPivot.get(code) ?? 0;
+      const curr = isIncome ? -rawCurr : Math.abs(rawCurr);
+      const prev = isIncome ? -rawPrev : Math.abs(rawPrev);
+      const ga = groupAccounts.find(g => String(g.AccountCode ?? g.accountCode) === code);
+      const name = ga?.AccountName ?? ga?.accountName ?? code;
+      let change = null;
+      if (Math.abs(prev) > 0.005) change = ((curr - prev) / Math.abs(prev)) * 100;
+      return { code, name, value: curr, prevValue: prev, change };
+    });
+    return rows
+      .filter(r => Math.abs(r.value) > 0.005)
+      .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+      .slice(0, 12);
+  }, [drillTag, ccTagToCodes, currentMonthlyPivot, prevMonthlyPivot, groupAccounts]);
+
+  const drillTimeSeries = useMemo(() => {
+    if (!drillTag || !trendRows.length || !ccTagToCodes) return [];
+    const codes = ccTagToCodes.get(drillTag) ?? [];
+    if (codes.length === 0) return [];
+    const isIncome = INCOME_TAGS.has(drillTag);
+    const anchorY = Number(year);
+    const anchorM = Number(month);
+    if (!Number.isFinite(anchorY) || !Number.isFinite(anchorM)) return [];
+
+    const pivotsByKey = new Map();
+    trendRows.forEach(({ year: y, month: m, rows }) => {
+      pivotsByKey.set(`${y}-${m}`, buildPivotFromRows(rows, sumAccountCodes));
+    });
+
+    const getMonthlyTagValue = (y, m) => {
+      const currP = pivotsByKey.get(`${y}-${m}`);
+      if (!currP) return null;
+      let monthlyPivot;
+      if (m === 1) {
+        monthlyPivot = currP;
+      } else {
+        const prevP = pivotsByKey.get(`${y}-${m - 1}`);
+        if (!prevP) return null;
+        monthlyPivot = new Map();
+        const allCodes = new Set([...currP.keys(), ...prevP.keys()]);
+        allCodes.forEach(ac => monthlyPivot.set(ac, (currP.get(ac) ?? 0) - (prevP.get(ac) ?? 0)));
+      }
+      let total = 0;
+      codes.forEach(c => { total += (monthlyPivot.get(c) ?? 0); });
+      return isIncome ? -total : Math.abs(total);
+    };
+
+    const out = [];
+    for (let m = 1; m <= 12; m++) {
+      const curVal = getMonthlyTagValue(anchorY, m);
+      const prevVal = getMonthlyTagValue(anchorY - 1, m);
+      const cur = m <= anchorM ? curVal : null;
+      out.push({
+        month: m,
+        label: MONTHS_ABBR[m - 1],
+        current: cur,
+        prior: prevVal,
+      });
+    }
+    return out;
+  }, [drillTag, trendRows, ccTagToCodes, year, month, sumAccountCodes, MONTHS_ABBR]);
+
+  const drillStats = useMemo(() => {
+    if (!drillTag) return null;
+    const row = costBreakdown.find(r => r.tag === drillTag);
+    if (!row) return null;
+    let ytdCurrent = 0, ytdPrior = 0;
+    const anchorM = Number(month);
+    drillTimeSeries.forEach(p => {
+      if (p.current != null) ytdCurrent += p.current;
+      if (p.month <= anchorM && p.prior != null) ytdPrior += p.prior;
+    });
+    const yoyChange = ytdPrior > 0.005 ? ((ytdCurrent - ytdPrior) / Math.abs(ytdPrior)) * 100 : null;
+    return {
+      label: row.name,
+      isIncome: row.isIncome,
+      monthlyValue: row.value,
+      monthlyChange: row.change,
+      ytdCurrent,
+      ytdPrior,
+      yoyChange,
+    };
+  }, [drillTag, costBreakdown, drillTimeSeries, month]);
+  
+
+  const rankingKpiLabel = useMemo(() => {
+    const k = kpiList.find(k => k.id === rankingKpiId);
+    return k?.label ?? rankingKpiId;
+  }, [kpiList, rankingKpiId]);
 
 const costColors = useMemo(() => {
     return [colors.primary ?? "#1a2f8a", "#3b54b8", "#7c5fcc", "#b370cc", "#cf6595", "#cf5070", "#cf3940"];
   }, [colors]);
 
 return (
-    <>
+<>
+    {loadProgress < 100 && (
+      <div
+        className="fixed inset-0 z-[300] flex items-center justify-center"
+        style={{
+          background: "rgba(255,255,255,0.78)",
+          backdropFilter: "blur(8px)",
+          WebkitBackdropFilter: "blur(8px)",
+          animation: "hpOverlayFadeIn 200ms ease-out",
+        }}
+      >
+        <div
+          className="relative rounded-3xl bg-white border border-gray-100 p-10 flex flex-col items-center"
+          style={{
+            width: 380,
+            boxShadow: "0 24px 80px -12px rgba(26,47,138,0.25), 0 8px 24px -8px rgba(0,0,0,0.08)",
+            animation: "hpPopIn 320ms cubic-bezier(0.34,1.56,0.64,1)",
+          }}
+        >
+{/* Circular progress */}
+          <div className="relative" style={{ width: 140, height: 140 }}>
+            <svg width="140" height="140" viewBox="0 0 140 140">
+              <circle cx="70" cy="70" r="60" fill="none" stroke="#f3f4f6" strokeWidth="10" />
+              <circle
+                cx="70" cy="70" r="60" fill="none"
+                stroke={`url(#hpProgGrad)`}
+                strokeWidth="10"
+                strokeLinecap="round"
+                strokeDasharray={2 * Math.PI * 60}
+                strokeDashoffset={2 * Math.PI * 60 * (1 - animatedLoadProgress / 100)}
+                style={{
+                  transform: "rotate(-90deg)",
+                  transformOrigin: "70px 70px",
+                }}
+              />
+              <defs>
+                <linearGradient id="hpProgGrad" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stopColor={colors.primary ?? "#1a2f8a"} />
+                  <stop offset="100%" stopColor={colors.secondary ?? "#CF305D"} />
+                </linearGradient>
+              </defs>
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+<span className="text-3xl font-black tabular-nums" style={{ color: colors.primary }}>
+                {Math.round(animatedLoadProgress)}<span className="text-base text-gray-300">%</span>
+              </span>
+            </div>
+          </div>
+
+          {/* Label + sub-step */}
+          <p className="text-sm font-black text-gray-800 mt-6 tracking-wide">
+{probing
+              ? t("loading_overlay_period")
+              : !resolverReady
+                ? t("loading_overlay_kpi")
+                : currentRows.length === 0
+                  ? t("loading_overlay_current")
+                  : trendRows.length < 6
+                    ? t("loading_overlay_trend")
+                    : allCoCurrentRows.length === 0
+                      ? t("loading_overlay_multico")
+                      : t("loading_overlay_finish")}
+          </p>
+          <p className="text-[10px] text-gray-300 mt-1.5 uppercase tracking-widest font-bold">
+            {t("loading_overlay_subtitle")}
+          </p>
+        </div>
+      </div>
+    )}
     <div className="relative h-full flex flex-col">
+      <style>{`
+        @keyframes hpOverlayFadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes hpPopIn {
+          0%   { opacity: 0; transform: scale(0.92) translateY(8px); }
+          100% { opacity: 1; transform: scale(1) translateY(0); }
+        }
+      `}</style>
       <ConsolidationBackground primary={colors.primary ?? "#1a2f8a"} />
 
       <style>{`
@@ -1719,8 +2480,24 @@ return (
           0%   { transform: scale(1); opacity: 0.8; }
           100% { transform: scale(2.4); opacity: 0; }
         }
-        .hide-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.hide-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
         .hide-scrollbar::-webkit-scrollbar { display: none; }
+        @keyframes drillFadeIn {
+          0%   { opacity: 0; transform: translateY(8px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes acctSlide {
+          0%   { opacity: 0; transform: translateX(12px); }
+          100% { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes barGrow {
+          0%   { width: 0 !important; opacity: 0.4; }
+          100% { opacity: 1; }
+        }
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(2px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
       `}</style>
 <div className="relative z-10 flex flex-col flex-1 min-h-0 px-5 gap-3">
   {/* HEADER — same height/style as PageHeader so it aligns with sidebar logo card */}
@@ -1822,9 +2599,14 @@ return (
               >
                 <div className="w-1.5 h-1.5 rounded-full flex-shrink-0"
                   style={{ background: pickerOpen ? "rgba(255,255,255,0.8)" : colors.primary }} />
-                <span className="text-[11px] font-black uppercase tracking-wider"
+<span className="text-[11px] font-black uppercase tracking-wider"
                   style={{ color: pickerOpen ? "#fff" : "#374151" }}>
                   {periodLabel}
+                </span>
+                <GitCompare size={10} style={{ color: pickerOpen ? "rgba(255,255,255,0.7)" : "#9ca3af", marginLeft: 2 }} />
+                <span className="text-[11px] font-black uppercase tracking-wider"
+                  style={{ color: pickerOpen ? "#fff" : "#374151" }}>
+                  {compareLabel}
                 </span>
                 {company && (
                   <>
@@ -1845,14 +2627,28 @@ return (
                 <ChevronDown size={10} style={{ color: pickerOpen ? "rgba(255,255,255,0.7)" : "#9ca3af", marginLeft: 2 }} />
               </button>
 
-              {pickerOpen && (
+{pickerOpen && (
                 <PeriodPicker
                   year={year} month={month}
                   onSelectPeriod={(y, m) => { setYear(y); setMonth(m); }}
-                  viewScope={viewScope} onScopeChange={setViewScope}
-                  structures={structures} companies={companies}
+                  viewScope={viewScope}
+                  onScopeChange={(scope) => {
+                    // Clear the *other* scope's override so it falls back to its default
+                    if (scope === "consolidated") setIndividualCompanyOverride(null);
+                    else                          setConsolidatedCompanyOverride(null);
+                    setViewScope(scope);
+                  }}
+                  valueMode={valueMode} onValueModeChange={setValueMode}
+structures={structures} companies={visibleCompanies}
+holdings={holdings}
                   selectedStructure={structure} onStructureChange={v => { setStructureOverride(v); }}
-                  selectedCompany={company}   onCompanyChange={v => { setCompanyOverride(v); }}
+selectedCompany={company}
+                  onCompanyChange={(v) => {
+                    if (viewScope === "consolidated") setConsolidatedCompanyOverride(v);
+                    else                              setIndividualCompanyOverride(v);
+                  }}
+                  compareYear={compareYear} compareMonth={compareMonth}
+                  onSelectCompare={(y, m) => { setCompareYear(y); setCompareMonth(m); setCompareTouched(true); }}
                   colors={colors}
                   onClose={() => setPickerOpen(false)}
                 />
@@ -1977,25 +2773,330 @@ return (
           )}
         </div>
 
-        {/* MIDDLE */}
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-3 flex-1 min-h-0">
+{/* MIDDLE */}
+        <div className={`grid grid-cols-1 lg:grid-cols-4 gap-3 min-h-0 transition-all duration-300 ${middleCardView === "ranking" ? "flex-1" : "flex-1"}`}>
 <div className="lg:col-span-3 relative overflow-hidden rounded-2xl bg-white/95 backdrop-blur-sm border border-gray-100 p-4 flex flex-col"
             style={{ boxShadow: "0 8px 32px -8px rgba(26,47,138,0.18), 0 2px 8px -2px rgba(0,0,0,0.08)", animation: "kCardEntry 0.6s ease-out 0.25s both" }}>
+            {middleCardView === "ranking" ? (
+              <>
+                <div className="mb-2.5 flex-shrink-0 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <button
+                      onClick={() => setMiddleCardView("trend")}
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg transition-colors hover:bg-gray-100"
+                      style={{ color: "#6b7280" }}
+                    >
+                      <ChevronRight size={12} style={{ transform: "rotate(180deg)" }} />
+                      <span className="text-[10px] font-black uppercase tracking-wider">Back</span>
+                    </button>
+                    <span className="h-px w-3 bg-gray-200 flex-shrink-0" />
+<p className="text-[12px] font-black uppercase tracking-widest text-gray-500 flex-shrink-0">{t("home_ranking")}</p>
+                    <span className="h-px w-3 bg-gray-200 flex-shrink-0" />
+                    <p className="text-[11px] text-gray-400 truncate">{t("rank_all")} {topByRevenue.length} {t("rank_by")} {rankingKpiLabel}</p>
+                  </div>
+
+
+                </div>
+                <div className="flex-1 min-h-0 overflow-y-auto pr-1 hide-scrollbar space-y-1.5">
+                  {topByRevenue.map((c, i) => {
+                    const max = topByRevenue[0].value;
+                    const pct = max > 0 ? (c.value / max) * 100 : 0;
+                    return (
+                      <div key={c.name}
+                        className="grid items-center gap-3 px-2 py-1.5 rounded-lg hover:bg-gray-50/60 transition-colors"
+                        style={{
+                          gridTemplateColumns: "32px 200px 1fr 100px",
+                          animation: `kCardEntry 0.3s ease-out ${Math.min(i, 10) * 0.03}s both`,
+                        }}>
+                        <span className="text-[11px] font-black tabular-nums text-center" style={{ color: i === 0 ? colors.primary : i < 3 ? colors.primary : "#9ca3af" }}>
+                          {i + 1}
+                        </span>
+                        <span className="text-[12px] font-bold text-gray-800 truncate" title={c.name}>{c.name}</span>
+                        <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
+                          <div className="h-full rounded-full transition-all duration-700"
+                            style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${colors.primary}cc 0%, ${colors.primary} 100%)` }} />
+                        </div>
+                        <span className="text-[12px] font-mono font-black text-right" style={{ color: colors.primary }}>{fmtBig(c.value)}</span>
+                      </div>
+                    );
+                  })}
+</div>
+              </>
+            ) : middleCardView === "tag_drill" && drillTag ? (
+              <>
+                <div className="mb-3 flex-shrink-0 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <button
+                      onClick={() => { setMiddleCardView("trend"); setDrillTag(null); }}
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg transition-colors hover:bg-gray-100"
+                      style={{ color: "#6b7280" }}
+                    >
+<ChevronRight size={12} style={{ transform: "rotate(180deg)" }} />
+                      <span className="text-[10px] font-black uppercase tracking-wider">{t("drill_back")}</span>
+                    </button>
+                    <span className="h-px w-3 bg-gray-200 flex-shrink-0" />
+                    <p className="text-[12px] font-black uppercase tracking-widest text-gray-500 flex-shrink-0">
+                      {drillStats?.label ?? drillTag}
+                    </p>
+                    <span className="h-px w-3 bg-gray-200 flex-shrink-0" />
+                    <p className="text-[11px] text-gray-400">{drillAccountBreakdown.length} {t("drill_accounts")}</p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+<div className="flex flex-col items-end">
+<span className="text-[8px] font-black uppercase tracking-wider text-gray-400">{t("drill_monthly")}</span>
+                      <span className="text-[13px] font-mono font-black text-gray-800">
+                        <AnimatedNumber value={drillStats?.monthlyValue ?? 0} />
+                      </span>
+                    </div>
+                    {drillStats?.monthlyChange != null && (
+                      <div className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-black ${
+                        (drillStats.isIncome ? drillStats.monthlyChange > 0 : drillStats.monthlyChange < 0)
+                          ? "bg-emerald-100 text-emerald-700"
+                          : "bg-red-100 text-red-700"
+                      }`}>
+                        {drillStats.monthlyChange > 0 ? <ArrowUp size={9} /> : <ArrowDown size={9} />}
+                        {Math.abs(drillStats.monthlyChange).toFixed(1)}%
+                      </div>
+                    )}
+                    <div style={{ width: 1, height: 24, background: "rgba(0,0,0,0.08)" }} />
+<div className="flex flex-col items-end">
+<span className="text-[8px] font-black uppercase tracking-wider text-gray-400">{t("drill_ytd_vs_py")}</span>
+                      <span className="text-[13px] font-mono font-black text-gray-800">
+                        <AnimatedNumber value={drillStats?.ytdCurrent ?? 0} />
+                      </span>
+                    </div>
+                    {drillStats?.yoyChange != null && (
+                      <div className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-black ${
+                        (drillStats.isIncome ? drillStats.yoyChange > 0 : drillStats.yoyChange < 0)
+                          ? "bg-emerald-100 text-emerald-700"
+                          : "bg-red-100 text-red-700"
+                      }`}>
+                        {drillStats.yoyChange > 0 ? <ArrowUp size={9} /> : <ArrowDown size={9} />}
+                        {Math.abs(drillStats.yoyChange).toFixed(1)}%
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+<div key={`drill-${drillTag}`} className="flex-1 min-h-0 grid grid-cols-5 gap-4" style={{ animation: "drillFadeIn 0.4s cubic-bezier(0.4,0,0.2,1) both" }}>
+                  <div className="col-span-3 min-h-0 flex flex-col">
+                    <div className="flex items-center justify-between mb-1">
+<p className="text-[9px] font-black uppercase tracking-[0.18em] text-gray-400">
+                        {t("drill_monthly_evolution")}
+                      </p>
+                      <div className="flex items-center gap-2.5">
+                        <div className="flex items-center gap-1">
+                          <div className="w-2 h-2 rounded-sm" style={{ background: "#9ca3af", opacity: 0.4 }} />
+                          <span className="text-[9px] font-bold text-gray-400">{Number(year) - 1}</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <div className="w-2 h-2 rounded-sm" style={{ background: drillStats?.isIncome ? (colors.tertiary ?? "#57aa78") : (colors.primary ?? "#1a2f8a") }} />
+                          <span className="text-[9px] font-bold" style={{ color: drillStats?.isIncome ? (colors.tertiary ?? "#57aa78") : (colors.primary ?? "#1a2f8a") }}>{year}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex-1 min-h-0">
+                      {drillTimeSeries.length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={drillTimeSeries} margin={{ top: 10, right: 10, bottom: 0, left: 0 }} barCategoryGap="18%">
+                            <defs>
+                              <linearGradient id="drillBarCur" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor={drillStats?.isIncome ? (colors.tertiary ?? "#57aa78") : (colors.primary ?? "#1a2f8a")} stopOpacity={1} />
+                                <stop offset="100%" stopColor={drillStats?.isIncome ? (colors.tertiary ?? "#57aa78") : (colors.primary ?? "#1a2f8a")} stopOpacity={0.65} />
+                              </linearGradient>
+                              <linearGradient id="drillBarCurActive" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%"  stopColor={drillStats?.isIncome ? (colors.tertiary ?? "#57aa78") : (colors.secondary ?? "#CF305D")} stopOpacity={1} />
+                                <stop offset="100%" stopColor={drillStats?.isIncome ? (colors.tertiary ?? "#57aa78") : (colors.primary ?? "#1a2f8a")} stopOpacity={0.85} />
+                              </linearGradient>
+                              <linearGradient id="drillBarPrior" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor="#9ca3af" stopOpacity={0.45} />
+                                <stop offset="100%" stopColor="#9ca3af" stopOpacity={0.18} />
+                              </linearGradient>
+                              <filter id="drillGlow" x="-50%" y="-50%" width="200%" height="200%">
+                                <feGaussianBlur stdDeviation="3" result="blur" />
+                                <feMerge>
+                                  <feMergeNode in="blur" />
+                                  <feMergeNode in="SourceGraphic" />
+                                </feMerge>
+                              </filter>
+                            </defs>
+                            <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb" vertical={false} />
+                            <XAxis dataKey="label"
+                              tick={(props) => {
+                                const { x, y, payload } = props;
+                                const isActive = payload.value === MONTHS_ABBR[Number(month) - 1];
+                                return (
+                                  <text x={x} y={y + 14} textAnchor="middle"
+                                    fontSize={isActive ? 11 : 10}
+                                    fontWeight={isActive ? 900 : 700}
+                                    fill={isActive ? (colors.primary ?? "#1a2f8a") : "#6b7280"}>
+                                    {payload.value}
+                                  </text>
+                                );
+                              }}
+                              axisLine={false} tickLine={false} />
+                            <YAxis
+                              tick={{ fontSize: 9, fill: "#9ca3af", fontWeight: 600 }}
+                              axisLine={false} tickLine={false}
+                              tickFormatter={fmtBig} width={42} />
+                            <Tooltip cursor={{ fill: "rgba(0,0,0,0.025)" }} content={({ active, payload, label }) => {
+                              if (!active || !payload?.length) return null;
+                              const cur = payload.find(p => p.dataKey === "current")?.value;
+                              const pri = payload.find(p => p.dataKey === "prior")?.value;
+                              let yoy = null;
+                              if (cur != null && pri != null && Math.abs(pri) > 0.005) yoy = ((cur - pri) / Math.abs(pri)) * 100;
+return (
+                                <div className="rounded-xl border border-gray-200 px-3 py-2 text-xs"
+                                  style={{
+                                    background: "#ffffff",
+                                    boxShadow: "0 8px 24px -6px rgba(15,23,42,0.18), 0 2px 6px -2px rgba(15,23,42,0.08)",
+                                  }}>
+                                  <p className="font-black text-gray-800 mb-1.5">{label}</p>
+                                  {payload.map((p, i) => (
+                                    <div key={i} className="flex items-center gap-2 py-0.5">
+                                      <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: p.color }} />
+                                      <span className="text-gray-500 font-medium">{p.name}:</span>
+                                      <span className="font-black text-gray-800 ml-auto tabular-nums">{p.value != null ? fmtBig(p.value) : "—"}</span>
+                                    </div>
+                                  ))}
+                                  {yoy != null && (
+                                    <div className="mt-1.5 pt-1.5 border-t border-gray-100 flex items-center justify-between">
+                                      <span className="text-[10px] font-bold text-gray-500">YoY</span>
+                                      <span className={`text-[10px] font-black ${yoy >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                                        {yoy >= 0 ? "+" : ""}{yoy.toFixed(1)}%
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            }} />
+                            <Bar dataKey="prior"   name={`${Number(year) - 1}`} fill="url(#drillBarPrior)" radius={[4, 4, 0, 0]} animationDuration={700} animationBegin={0} />
+                            <Bar dataKey="current" name={`${year}`}             radius={[4, 4, 0, 0]} animationDuration={900} animationBegin={150}
+                              shape={(props) => {
+                                const { x, y, width, height, payload } = props;
+                                const isActive = payload.month === Number(month);
+                                if (y == null || height == null) return null;
+                                return (
+                                  <g>
+                                    {isActive && (
+                                      <rect x={x - 2} y={y - 4} width={width + 4} height={height + 4}
+                                        rx={5} fill="none"
+                                        stroke={drillStats?.isIncome ? (colors.tertiary ?? "#57aa78") : (colors.secondary ?? "#CF305D")}
+                                        strokeWidth={1.5} strokeDasharray="3 2" opacity={0.6} />
+                                    )}
+                                    <rect x={x} y={y} width={width} height={height}
+                                      rx={4}
+                                      fill={isActive ? "url(#drillBarCurActive)" : "url(#drillBarCur)"}
+                                      filter={isActive ? "url(#drillGlow)" : undefined} />
+                                  </g>
+                                );
+                              }} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="flex items-center justify-center h-full text-gray-300 text-xs">
+                          <Loader2 size={20} className="animate-spin" />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+<div className="col-span-2 min-h-0 flex flex-col">
+                    <div className="flex items-center justify-between mb-1.5">
+<p className="text-[9px] font-black uppercase tracking-[0.18em] text-gray-400">
+                        {t("drill_top_accounts")}
+                      </p>
+                      <span className="text-[8px] font-bold text-gray-300">
+                        {drillAccountBreakdown.length} {t("drill_of")} {(ccTagToCodes.get(drillTag) ?? []).length}
+                      </span>
+                    </div>
+                    <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar space-y-2 pr-1">
+                      {drillAccountBreakdown.length === 0 ? (
+                       <p className="text-xs text-gray-300 text-center py-4">{t("drill_no_accounts")}</p>
+                      ) : (
+                        drillAccountBreakdown.map((row, i) => {
+                          const max = drillAccountBreakdown[0].value;
+                          const pct = max > 0 ? (row.value / max) * 100 : 0;
+                          const barColor = drillStats?.isIncome ? (colors.tertiary ?? "#57aa78") : costColors[i % costColors.length];
+                          const changeIsGood = drillStats?.isIncome ? row.change > 0 : row.change < 0;
+                          const changeColor = row.change == null ? "text-gray-300" : changeIsGood ? "text-emerald-500" : "text-red-500";
+                          return (
+                            <div key={row.code}
+                              className="flex flex-col gap-0.5 group/acct cursor-default px-1 -mx-1 py-0.5 rounded-md transition-colors hover:bg-gray-50/70"
+                              style={{ animation: `acctSlide 0.5s cubic-bezier(0.34,1.56,0.64,1) ${i * 0.04}s both` }}>
+                              <div className="flex items-center justify-between gap-2 text-[10px]">
+                                <div className="flex flex-col min-w-0">
+                                  <span className="font-bold text-gray-700 truncate" title={row.name}>{row.name}</span>
+                                  <span className="text-[8px] font-mono text-gray-400">{row.code}</span>
+                                </div>
+                                <div className="flex items-center gap-1.5 flex-shrink-0">
+                                  <span className="font-mono font-black text-gray-800 group-hover/acct:scale-110 transition-transform inline-block origin-right">{fmtBig(row.value)}</span>
+                                  {row.change != null && (
+                                    <span className={`font-black tabular-nums ${changeColor}`} style={{ fontSize: 9 }}>
+                                      {row.change > 0 ? "+" : ""}{row.change.toFixed(0)}%
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="h-1.5 rounded-full bg-gray-100 overflow-hidden relative">
+                                <div className="absolute inset-y-0 left-0 rounded-full transition-all duration-1000 group-hover/acct:brightness-110"
+                                  style={{
+                                    width: `${pct}%`,
+                                    background: `linear-gradient(90deg, ${barColor} 0%, ${barColor}dd 100%)`,
+                                    boxShadow: `0 0 8px -2px ${barColor}80`,
+                                    animation: `barGrow 0.9s cubic-bezier(0.4,0,0.2,1) ${i * 0.04 + 0.1}s both`,
+                                  }} />
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+
+                      {/* Concentration insight footer */}
+                      {drillAccountBreakdown.length >= 3 && (() => {
+                        const totalDrill = drillAccountBreakdown.reduce((s, r) => s + r.value, 0);
+                        const top3 = drillAccountBreakdown.slice(0, 3).reduce((s, r) => s + r.value, 0);
+                        const concentration = totalDrill > 0 ? (top3 / totalDrill) * 100 : 0;
+                        return (
+                          <div className="mt-2 pt-2 border-t border-gray-100"
+                            style={{ animation: "acctSlide 0.6s ease-out 0.5s both" }}>
+                            <div className="flex items-center justify-between text-[9px]">
+                              <span className="text-gray-400 font-bold uppercase tracking-wider">{t("drill_top3_concentration")}</span>
+                              <span className="font-black tabular-nums" style={{ color: drillStats?.isIncome ? (colors.tertiary ?? "#57aa78") : (colors.primary ?? "#1a2f8a") }}>
+                                {concentration.toFixed(0)}%
+                              </span>
+                            </div>
+                            <div className="mt-1 h-0.5 rounded-full bg-gray-100 overflow-hidden">
+                              <div className="h-full rounded-full transition-all duration-1000"
+                                style={{
+                                  width: `${concentration}%`,
+                                  background: drillStats?.isIncome ? (colors.tertiary ?? "#57aa78") : (colors.primary ?? "#1a2f8a"),
+                                  animation: "barGrow 1s cubic-bezier(0.4,0,0.2,1) 0.7s both",
+                                }} />
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
 <div ref={trendHeaderRef} className="flex items-center justify-between mb-2 flex-shrink-0 gap-4">
               {/* LEFT — title + interactive chips */}
               <div className="flex items-center gap-3 min-w-0">
                 <h3 className="text-sm font-black text-gray-800 flex-shrink-0">{t("home_kpi_evolution")}</h3>
 
                 <div className="flex items-center gap-1.5">
-                  {/* Interval chip */}
+{/* Interval chip */}
                   <div className="relative">
                     <button
                       onClick={() => setTrendChipOpen(trendChipOpen === "interval" ? null : "interval")}
                       className="flex items-center gap-1 px-2 py-1 rounded-lg transition-colors"
                       style={{ background: `${colors.primary}12`, color: colors.primary }}
                     >
-                      <span className="text-[9px] font-black uppercase tracking-wider">
-                        {{ monthly: "Monthly", "6months": "Every 6M", yearly: "Yearly" }[trendInterval]}
+<span className="text-[10px] font-black uppercase tracking-wider">
+                        {{ monthly: t("trend_monthly"), "6months": t("trend_6months"), yearly: t("trend_yearly") }[trendInterval]}
                       </span>
                       <ChevronDown size={8} />
                     </button>
@@ -2003,9 +3104,9 @@ return (
                       <div className="absolute top-full left-0 mt-1.5 z-50 bg-white rounded-xl border border-gray-100 py-1 min-w-[140px]"
                         style={{ boxShadow: "0 12px 32px -8px rgba(26,47,138,0.2)" }}>
                         {[
-                          { value: "monthly",  label: "Monthly" },
-                          { value: "6months",  label: "Every 6 months" },
-                          { value: "yearly",   label: "Yearly" },
+                          { value: "monthly",  label: t("trend_monthly") },
+                          { value: "6months",  label: t("trend_6months_long") },
+                          { value: "yearly",   label: t("trend_yearly") },
                         ].map(opt => (
                           <button key={opt.value}
                             onClick={() => { setTrendInterval(opt.value); setTrendChipOpen(null); }}
@@ -2022,25 +3123,25 @@ return (
 
                   {/* Window chip */}
                   <div className="relative">
-                    <button
+<button
                       onClick={() => setTrendChipOpen(trendChipOpen === "window" ? null : "window")}
                       className="flex items-center gap-1 px-2 py-1 rounded-lg transition-colors"
-                      style={{ background: "rgba(26,47,138,0.05)", color: "#9ca3af" }}
+                      style={{ background: `${colors.primary}12`, color: colors.primary }}
                     >
-                      <span className="text-[9px] font-black uppercase tracking-wider">
-                        From Jan {trendFromYear ?? "…"}
+<span className="text-[10px] font-black uppercase tracking-wider">
+                        {t("trend_from_jan")} {trendFromYear ?? "…"}
                       </span>
                       <ChevronDown size={8} />
                     </button>
                     {trendChipOpen === "window" && (
                       <div className="absolute top-full left-0 mt-1.5 z-50 bg-white rounded-xl border border-gray-100 py-1 min-w-[130px]"
                         style={{ boxShadow: "0 12px 32px -8px rgba(26,47,138,0.2)" }}>
-                        {[12, 24, 36, 48].map(w => (
+{[12, 24, 36, 48].map(w => (
                           <button key={w}
                             onClick={() => { setTrendWindow(w); setTrendChipOpen(null); }}
                             className="w-full text-left px-3 py-1.5 text-xs font-bold transition-colors hover:bg-gray-50"
                             style={{ color: trendWindow === w ? colors.primary : "#6b7280" }}>
-                            {w} months
+                            {w} {t("trend_months")}
                           </button>
                         ))}
                       </div>
@@ -2050,11 +3151,11 @@ return (
               </div>
 
               {/* RIGHT — legend */}
-              <div className="flex items-center gap-2.5 flex-wrap flex-shrink-0">
+<div className="flex items-center gap-3 flex-wrap flex-shrink-0">
                 {SLOT_COLORS.map((sc, i) => (
-                  <div key={i} className="flex items-center gap-1">
-                    <div className="w-1.5 h-1.5 rounded-full" style={{ background: sc.color }} />
-                    <span className="text-[9px] font-bold text-gray-500">
+                  <div key={i} className="flex items-center gap-1.5">
+                    <div className="w-2 h-2 rounded-full" style={{ background: sc.color }} />
+                    <span className="text-[11px] font-bold text-gray-600">
                       {slottedKpis?.[i]?.label ?? kpiSlots[i]}
                     </span>
                   </div>
@@ -2064,7 +3165,7 @@ return (
             <div className="flex-1 min-h-0">
 {trendSeriesDisplay.length > 1 ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={trendSeriesDisplay}margin={{ top: 5, right: 10, bottom: 0, left: -15 }}>
+              <AreaChart data={trendSeriesDisplay} margin={{ top: 5, right: 20, bottom: 0, left: 20 }}>
 <defs>
                       {SLOT_COLORS.map((sc, i) => (
                         <linearGradient key={i} id={`areaSlot${i}`} x1="0" y1="0" x2="0" y2="1">
@@ -2074,11 +3175,21 @@ return (
                       ))}
                     </defs>
                     <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb" vertical={false} />
-                    <XAxis dataKey="label"
-                      tick={{ fontSize: 9, fill: "#9ca3af", fontWeight: 700 }}
+<XAxis dataKey="label"
+                      tick={{ fontSize: 11, fill: "#6b7280", fontWeight: 700 }}
                       axisLine={false} tickLine={false}
-                      interval={1} />
-                    <YAxis tick={{ fontSize: 9, fill: "#9ca3af" }} axisLine={false} tickLine={false} tickFormatter={fmtBig} width={50} />
+                      interval={(() => {
+                        if (trendWindow <= 12) return 0;   // every month
+                        if (trendWindow <= 24) return 2;   // every 3 months
+                        if (trendWindow <= 36) return 3;   // every 4 months
+                        return 5;                          // every 6 months
+                      })()} />
+<YAxis
+                      tick={{ fontSize: 10, fill: "#9ca3af", fontWeight: 600, dx: 30 }}
+                      axisLine={false} tickLine={false}
+                      tickFormatter={fmtBig}
+                      width={0}
+                      mirror />
                     <Tooltip content={({ active, payload }) => {
                       if (!active || !payload?.length) return null;
                       const fullLabel = payload[0]?.payload?.fullLabel ?? "";
@@ -2110,22 +3221,24 @@ return (
                   ))}
                   </AreaChart>
                 </ResponsiveContainer>
-              ) : (
+) : (
                 <div className="flex items-center justify-center h-full text-gray-300 text-xs">
                   {trendLoading ? <Loader2 size={20} className="animate-spin" /> : t("home_no_trend")}
                 </div>
               )}
             </div>
+              </>
+            )}
           </div>
 
-<div className="relative rounded-2xl bg-white/95 backdrop-blur-sm border border-gray-100 p-4 flex flex-col group/breakdown overflow-hidden"
+          <div className="relative rounded-2xl bg-white/95 backdrop-blur-sm border border-gray-100 p-4 flex flex-col group/breakdown overflow-hidden"
             style={{ animation: "kCardEntry 0.6s ease-out 0.35s both", boxShadow: "0 8px 32px -8px rgba(26,47,138,0.12), 0 2px 8px -2px rgba(0,0,0,0.06)" }}>
 
             {/* Header */}
             <div className="mb-3 flex-shrink-0 flex items-start justify-between gap-2">
-              <div>
-                <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">{activeView.label}</p>
-                <p className="text-[9px] text-gray-300 mt-0.5">{activeView.description}</p>
+<div>
+                <p className="text-[12px] font-black uppercase tracking-widest text-gray-400">{activeView.label}</p>
+                <p className="text-[11px] text-gray-400 mt-0.5">{activeView.description}</p>
               </div>
            <div className="relative flex-shrink-0" ref={breakdownSettingsRef} style={{ overflow: "visible", zIndex: 10 }}>
 <button
@@ -2153,7 +3266,7 @@ className="absolute right-0 top-full mt-2 z-[500] rounded-2xl p-2 flex flex-col 
 
                     onClick={e => e.stopPropagation()}
                   >
-                    <p className="text-[8px] font-black uppercase tracking-[0.2em] text-gray-400 px-2 pt-1 pb-0.5">View</p>
+                   <p className="text-[8px] font-black uppercase tracking-[0.2em] text-gray-400 px-2 pt-1 pb-0.5">{t("breakdown_view_label")}</p>
                     {BREAKDOWN_VIEWS.map((v, vi) => {
                       const active = v.id === activeBreakdownView;
                       return (
@@ -2182,24 +3295,36 @@ className="absolute right-0 top-full mt-2 z-[500] rounded-2xl p-2 flex flex-col 
             {/* Rows */}
             {costBreakdown.length > 0 ? (
               <div className="flex-1 min-h-0 overflow-y-auto space-y-2.5 pr-1 hide-scrollbar">
-                {costBreakdown.map((c, i) => {
+{costBreakdown.map((c, i) => {
                   const pct = totalCosts > 0 ? (Math.abs(c.value) / totalCosts) * 100 : 0;
                   const barColor = c.isIncome ? (colors.tertiary ?? "#57aa78") : costColors[i % costColors.length];
                   const changeIsGood = c.isIncome ? c.change > 0 : c.change < 0;
                   const changeColor = c.change == null ? "text-gray-300" : changeIsGood ? "text-emerald-500" : "text-red-500";
+                  const isActive = drillTag === c.tag && middleCardView === "tag_drill";
                   return (
-                    <div key={`${activeBreakdownView}-${c.tag}`} className="flex flex-col gap-1"
-                      style={{ animation: `kCardEntry 0.4s ease-out ${i * 0.04}s both` }}>
-                      <div className="flex items-center justify-between gap-2 text-[10px]">
+                    <div key={`${activeBreakdownView}-${c.tag}`}
+                      onClick={() => {
+                        if (isActive) { setMiddleCardView("trend"); setDrillTag(null); }
+                        else          { setDrillTag(c.tag); setMiddleCardView("tag_drill"); }
+                      }}
+                      className="flex flex-col gap-1 cursor-pointer px-2 -mx-2 py-1 -my-1 rounded-lg transition-colors"
+                      style={{
+                        animation: `kCardEntry 0.4s ease-out ${i * 0.04}s both`,
+                        background: isActive ? `${barColor}12` : "transparent",
+                      }}
+                      onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = "rgba(0,0,0,0.025)"; }}
+                      onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
+                    > 
+<div className="flex items-center justify-between gap-2 text-[10px]">
                         <div className="flex items-center gap-1.5 min-w-0">
-                          {c.isIncome && <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: colors.tertiary ?? "#57aa78" }} />}
+                          {c.isIncome && <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: colors.tertiary ?? "#57aa78" }} />}
                           <span className="font-bold text-gray-700 truncate" title={c.name}>{c.name}</span>
                         </div>
                         <div className="flex items-center gap-2 flex-shrink-0">
-                          <span className="font-mono font-black text-gray-700">{fmtBig(Math.abs(c.value))}</span>
+                          <span className="font-mono font-black text-gray-800">{fmtBig(Math.abs(c.value))}</span>
                           {c.change != null && (
-                            <span className={`flex items-center gap-0.5 font-black tabular-nums ${changeColor}`} style={{ fontSize: 9 }}>
-                              {c.change > 0 ? <ArrowUp size={9} /> : <ArrowDown size={9} />}
+                            <span className={`flex items-center gap-0.5 font-black tabular-nums ${changeColor}`} style={{ fontSize: 11 }}>
+                              {c.change > 0 ? <ArrowUp size={10} /> : <ArrowDown size={10} />}
                               {Math.abs(c.change).toFixed(1)}%
                             </span>
                           )}
@@ -2209,13 +3334,13 @@ className="absolute right-0 top-full mt-2 z-[500] rounded-2xl p-2 flex flex-col 
                         <div className="h-full rounded-full transition-all duration-700"
                           style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${barColor} 0%, ${barColor}cc 100%)` }} />
                       </div>
-                      <div className="text-[9px] text-gray-400 font-mono text-right">{pct.toFixed(1)}%</div>
+                      <div className="text-[10px] text-gray-400 font-mono text-right">{pct.toFixed(1)}%</div>
                     </div>
                   );
                 })}
-                <div className="pt-2 mt-2 border-t border-gray-100 flex items-center justify-between text-[10px]">
-                  <span className="font-black uppercase tracking-widest text-gray-500">Total</span>
-                  <span className="font-mono font-black text-gray-800">{fmtBig(totalCosts)}</span>
+<div className="pt-2 mt-2 border-t border-gray-100 flex items-center justify-between text-[12px]">
+<span className="font-black uppercase tracking-widest text-gray-600">{t("cost_total")}</span>
+                  <span className="font-mono font-black text-gray-900">{fmtBig(totalCosts)}</span>
                 </div>
               </div>
             ) : (
@@ -2226,56 +3351,241 @@ className="absolute right-0 top-full mt-2 z-[500] rounded-2xl p-2 flex flex-col 
           </div>
         </div>
 
-{/* BOTTOM */}
-     <div className="grid grid-cols-1 lg:grid-cols-4 gap-3 flex-shrink-0" style={{ minHeight: 140, maxHeight: 140 }}>
-<div className="lg:col-span-3 relative overflow-hidden rounded-2xl bg-white/95 backdrop-blur-sm border border-gray-100 p-4 flex flex-col"
-            style={{ boxShadow: "0 8px 32px -8px rgba(26,47,138,0.18), 0 2px 8px -2px rgba(0,0,0,0.08)", animation: "kCardEntry 0.6s ease-out 0.45s both" }}>
-<div className="mb-2 flex-shrink-0 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-               <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">{t("home_ranking")}</p>
-                {reportingCurrency && (
-                  <span className="px-1.5 py-0.5 rounded-md text-[8px] font-black tracking-wider"
-                    style={{ background: `${colors.primary}15`, color: colors.primary }}>
-                    in {reportingCurrency}
-                  </span>
+{/* BOTTOM — collapses smoothly when ranking expands into middle card */}
+     <div
+       className="grid grid-cols-1 lg:grid-cols-4 gap-3 flex-shrink-0 transition-all duration-500 ease-in-out"
+       style={{
+         minHeight: middleCardView === "ranking" ? 0 : 150,
+         maxHeight: middleCardView === "ranking" ? 0 : 160,
+         opacity:   middleCardView === "ranking" ? 0 : 1,
+         marginTop: middleCardView === "ranking" ? "-0.75rem" : 0,
+         pointerEvents: middleCardView === "ranking" ? "none" : "auto",
+         overflow:  middleCardView === "ranking" ? "hidden" : "visible",
+         paddingBottom: middleCardView === "ranking" ? 0 : 8,
+       }}>
+<div
+            onClick={() => !rankingSelectorOpen && topByRevenue.length > 0 && setMiddleCardView(v => v === "ranking" ? "trend" : "ranking")}
+            ref={rankingSelectorRef}
+            className="lg:col-span-3 relative overflow-hidden rounded-2xl bg-white/95 backdrop-blur-sm border border-gray-100 p-4 flex flex-col text-left transition-all hover:border-gray-200 group/ranking"
+            style={{
+              boxShadow: "0 8px 32px -8px rgba(26,47,138,0.18), 0 2px 8px -2px rgba(0,0,0,0.08)",
+              animation: "kCardEntry 0.6s ease-out 0.45s both",
+              cursor: !rankingSelectorOpen && topByRevenue.length > 0 ? "pointer" : "default",
+            }}>
+{!rankingSelectorOpen && (
+              <div className="mb-2.5 flex-shrink-0 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <p className="text-[12px] font-black uppercase tracking-widest text-gray-500 flex-shrink-0">{t("home_ranking")}</p>
+                  <span className="h-px w-3 bg-gray-200 flex-shrink-0" />
+<p className="text-[11px] text-gray-400 truncate">
+                    {t("rank_by")} {rankingKpiLabel} {topByRevenue.length > 3
+                      ? `· ${t("rank_top3_of")} ${topByRevenue.length} · ${t("rank_click_expand")}`
+                      : topByRevenue.length > 0
+                        ? `· ${topByRevenue.length} ${topByRevenue.length === 1 ? t("rank_entry") : t("rank_entries")} · ${t("rank_click_expand")}`
+                        : `· ${t("rank_no_data")}`}
+                  </p>
+                </div>
+<div className="flex items-center gap-2 flex-shrink-0">
+                  {(allCoLoading || fxLoading) && <Loader2 size={12} className="animate-spin text-gray-300" />}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setRankingSelectorOpen(true); }}
+                    className="w-7 h-7 rounded-xl flex items-center justify-center transition-all duration-200 opacity-0 group-hover/ranking:opacity-100"
+                    style={{ background: `${colors.primary}12`, color: colors.primary }}
+                  >
+                    <Settings size={12} />
+                  </button>
+                </div>
+              </div>
+            )}
+
+{rankingSelectorOpen ? (
+              <div className="flex-1 min-h-0" onClick={e => e.stopPropagation()}>
+                <div className="grid grid-cols-5 gap-3 w-full h-full">
+                  {(() => {
+                    const TOP_IDS = ["revenue", "gross_profit", "ebitda", "ebit", "net_result"];
+                    const PRESET_ICONS = [DollarSign, Target, Activity, TrendingUp, Wallet];
+                    const PRESET_COLORS = [
+                      colors.primary ?? "#1a2f8a",
+                      "#0891b2",
+                      colors.tertiary ?? "#57aa78",
+                      "#d97706",
+                      NI_COLOR,
+                    ];
+                    const cards = TOP_IDS
+                      .map(id => kpiList.find(k => k.id === id))
+                      .filter(Boolean);
+                    // If the active KPI isn't in top 5, append it so user sees it highlighted
+                    if (!TOP_IDS.includes(rankingKpiId)) {
+                      const active = kpiList.find(k => k.id === rankingKpiId);
+                      if (active) cards.push(active);
+                    }
+                    return cards.slice(0, 5).map((k, i) => {
+                      const active = k.id === rankingKpiId;
+                      const cardColor = PRESET_COLORS[i] ?? colors.primary;
+                      const Icon = PRESET_ICONS[i] ?? Sparkles;
+                      return (
+                        <button
+                          key={k.id}
+                          onClick={(e) => { e.stopPropagation(); setRankingKpiId(k.id); setRankingSelectorOpen(false); }}
+                          className="relative overflow-hidden rounded-2xl p-4 flex flex-col justify-between transition-all hover:scale-[1.03] hover:shadow-xl text-left"
+                          style={{
+                            height: "100%",
+                            minHeight: 110,
+                            background: active
+                              ? `linear-gradient(135deg, ${cardColor}f0 0%, ${cardColor} 100%)`
+                              : "rgba(255,255,255,0.6)",
+                            border: `1px solid ${active ? cardColor : `${cardColor}30`}`,
+                            boxShadow: active
+                              ? `0 12px 28px -8px ${cardColor}80, 0 2px 6px -2px ${cardColor}50`
+                              : `0 2px 8px -2px ${cardColor}15`,
+                            animation: `kCardEntry 0.35s cubic-bezier(0.34,1.56,0.64,1) ${i * 0.05}s both`,
+                          }}
+                        >
+                          {/* Decorative blob */}
+                          <div className="absolute -top-6 -right-6 w-20 h-20 rounded-full opacity-20 blur-2xl"
+                            style={{ background: active ? "rgba(255,255,255,0.6)" : cardColor }} />
+
+                          <div className="relative flex items-start justify-between">
+                            <div className="w-9 h-9 rounded-xl flex items-center justify-center"
+                              style={{
+                                background: active ? "rgba(255,255,255,0.2)" : `${cardColor}15`,
+                                border: `1px solid ${active ? "rgba(255,255,255,0.25)" : `${cardColor}25`}`,
+                              }}>
+                              <Icon size={14} style={{ color: active ? "#fff" : cardColor }} />
+                            </div>
+                            {active && (
+                              <div className="w-5 h-5 rounded-full bg-white/25 flex items-center justify-center flex-shrink-0">
+                                <div className="w-1.5 h-1.5 rounded-full bg-white" />
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="relative">
+                            <p className="text-[13px] font-black leading-tight tracking-tight"
+                              style={{ color: active ? "#fff" : "#374151" }}>
+                              {k.label}
+                            </p>
+<p className="text-[9px] font-bold uppercase tracking-[0.18em] mt-1.5"
+                              style={{ color: active ? "rgba(255,255,255,0.7)" : `${cardColor}aa` }}>
+                              {k.category ?? t("kpi_metric")}
+                            </p>
+                          </div>
+                        </button>
+                      );
+                    });
+                  })()}
+                </div>
+              </div>
+            ) : (
+<div className="flex-1 min-h-0 flex flex-col justify-around gap-1.5 pb-1">
+                {(() => { console.log("[RANK-RENDER] topByRevenue array being painted:", topByRevenue); return null; })()}
+                {topByRevenue.length > 0 ? (
+                  topByRevenue.slice(0, 3).map((c, i) => {
+                    const max = topByRevenue[0].value;
+                    const pct = max > 0 ? (c.value / max) * 100 : 0;
+                    return (
+                      <div key={c.name}
+                        className="grid items-center gap-3"
+                        style={{
+                          gridTemplateColumns: "120px 1fr 80px",
+                          animation: `kCardEntry 0.4s ease-out ${i * 0.05}s both`,
+                        }}>
+                        <span className="text-[12px] font-bold text-gray-800 truncate" title={c.name}>{c.name}</span>
+                        <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
+                          <div className="h-full rounded-full transition-all duration-700"
+                            style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${colors.primary}cc 0%, ${colors.primary} 100%)` }} />
+                        </div>
+                        <span className="text-[12px] font-mono font-black text-right" style={{ color: colors.primary }}>{fmtBig(c.value)}</span>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="flex items-center justify-center h-full text-gray-300 text-xs">
+                    {allCoLoading ? <Loader2 size={20} className="animate-spin" /> : t("no_data")}
+                  </div>
                 )}
               </div>
-              {(allCoLoading || fxLoading) && <Loader2 size={12} className="animate-spin text-gray-300" />}
-            </div>
-            <div className="flex-1 min-h-0">
-              {topByRevenue.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={topByRevenue} layout="vertical" margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
-                    <defs>
-                      <linearGradient id="barRev" x1="0" y1="0" x2="1" y2="0">
-                        <stop offset="0%" stopColor={colors.primary} stopOpacity={0.6} />
-                        <stop offset="100%" stopColor={colors.primary} stopOpacity={1} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="2 4" stroke="#f3f4f6" horizontal={false} />
-                    <XAxis type="number" tick={{ fontSize: 9, fill: "#9ca3af" }} axisLine={false} tickLine={false} tickFormatter={fmtBig} />
-                    <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: "#6b7280", fontWeight: 700 }} axisLine={false} tickLine={false} width={60} />
-                    <Tooltip content={<CustomTooltip />} cursor={{ fill: `${colors.primary}08` }} />
-                    <Bar dataKey="value" fill="url(#barRev)" radius={[0, 8, 8, 0]} isAnimationActive />
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="flex items-center justify-center h-full text-gray-300 text-xs">
-                  {allCoLoading ? <Loader2 size={20} className="animate-spin" /> : t("no_data")}
-                </div>
-              )}
-            </div>
+            )}
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
-            <MiniTile label={t("mini_companies")}  value={companies.length}  icon={Building2} color={colors.primary}                delay={0.55} />
-            <MiniTile label={t("mini_perimeters")} value={structures.length} icon={Layers}    color={colors.secondary  ?? "#CF305D"} delay={0.6}  />
-            <MiniTile label={t("mini_dimensions")} value={dimensions.length} icon={Network}   color={colors.tertiary   ?? "#57aa78"} delay={0.65} />
-            <MiniTile label={t("mini_sources")}    value={sources.length}    icon={Database}  color={NI_COLOR}                       delay={0.7}  />
+<div className="grid grid-cols-2 gap-2">
+            <MiniTile label={t("mini_companies")}  value={companies.length}  icon={Building2} color={colors.primary}                delay={0.55} onClick={() => setOpenDetail("companies")}  />
+            <MiniTile label={t("mini_perimeters")} value={structures.length} icon={Layers}    color={colors.secondary  ?? "#CF305D"} delay={0.6}  onClick={() => setOpenDetail("structures")} />
+            <MiniTile label={t("mini_dimensions")} value={dimensions.length} icon={Network}   color={colors.tertiary   ?? "#57aa78"} delay={0.65} onClick={() => setOpenDetail("dimensions")} />
+            <MiniTile label={t("mini_sources")}    value={sources.length}    icon={Database}  color={NI_COLOR}                       delay={0.7}  onClick={() => setOpenDetail("sources")}    />
           </div>
         </div>
 </div>
 </div>
+
+
+
+{openDetail === "companies" && (
+        <DetailPopup
+          title={t("mini_companies")}
+          items={companies}
+          icon={Building2}
+          color={colors.primary}
+          onClose={() => setOpenDetail(null)}
+          renderItem={(c) => {
+            const shortName = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? String(c)) : String(c);
+            const legalName = typeof c === "object" ? (c.CompanyLegalName ?? c.companyLegalName ?? shortName) : shortName;
+            return (
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-gray-800 truncate">{legalName}</p>
+                  <p className="text-[10px] font-mono text-gray-400 mt-0.5">{shortName}</p>
+                </div>
+              </div>
+            );
+          }}
+        />
+      )}
+      {openDetail === "structures" && (
+        <DetailPopup
+          title={t("mini_perimeters")}
+          items={structures}
+          icon={Layers}
+          color={colors.secondary ?? "#CF305D"}
+          onClose={() => setOpenDetail(null)}
+          renderItem={(s) => {
+            const name = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? String(s)) : String(s);
+            return <p className="text-sm font-bold text-gray-800">{name}</p>;
+          }}
+        />
+      )}
+      {openDetail === "dimensions" && (
+        <DetailPopup
+          title={t("mini_dimensions")}
+          items={dimensions}
+          icon={Network}
+          color={colors.tertiary ?? "#57aa78"}
+          onClose={() => setOpenDetail(null)}
+          renderItem={(d) => {
+            const name = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? String(d)) : String(d);
+            const code = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : "";
+            return (
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-bold text-gray-800 truncate">{name}</p>
+                {code && <p className="text-[10px] font-mono text-gray-400 flex-shrink-0">{code}</p>}
+              </div>
+            );
+          }}
+        />
+      )}
+{openDetail === "sources" && (
+        <DetailPopup
+          title={t("mini_sources")}
+          items={sources}
+          icon={Database}
+          color={NI_COLOR}
+          onClose={() => setOpenDetail(null)}
+          renderItem={(s) => {
+            const name = typeof s === "object" ? (s.source ?? s.Source ?? String(s)) : String(s);
+            return <p className="text-sm font-bold text-gray-800">{name}</p>;
+          }}
+        />
+      )}
 
       <AiPanel
         open={aiPanelOpen}
