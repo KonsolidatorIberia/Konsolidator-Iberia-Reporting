@@ -607,28 +607,56 @@ useEffect(() => {
     const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
     const sbHeaders = { apikey: SUPABASE_APIKEY, Authorization: `Bearer ${SUPABASE_APIKEY}` };
 
-    const isPGC           = rawData.some(n => { const c = String(n.AccountCode ?? ""); return /[a-zA-Z]/.test(c) && c.endsWith(".S"); });
-    const isSpanishIfrsEs = !isPGC && rawData.some(n => /\.PL$/i.test(String(n.AccountCode ?? "").trim()));
-    const isSpanishIFRS   = !isPGC && !isSpanishIfrsEs && rawData.some(n => /^[A-Z]\.\d/.test(String(n.AccountCode ?? "")));
-    const isDanish        = !isPGC && !isSpanishIFRS && !isSpanishIfrsEs && rawData.some(n => /^\d{5,6}$/.test(String(n.AccountCode ?? "")));
+    (async () => {
+      try {
+        // 1. Fetch all known standards and their table mappings
+        const standards = await fetch(
+          `${SUPABASE_URL}/accounting_standards?select=*`,
+          { headers: sbHeaders }
+        ).then(r => r.json());
 
-    if (!isPGC && !isSpanishIFRS && !isSpanishIfrsEs && !isDanish) return;
+        if (!Array.isArray(standards) || standards.length === 0) return;
 
-    const rowsTable = isPGC ? "pgc_pl_rows"
-      : isSpanishIfrsEs ? "contributive_pl_rows"
-      : isDanish ? "danish_ifrs_pl_rows"
-      : null;
+        // 2. Collect all account codes from rawData for detection
+        const codes = [...new Set(rawData.map(r => String(r.AccountCode ?? "")))];
 
-    if (!rowsTable) return;
+        // 3. Find the first standard whose detect_pattern matches any code
+        let matched = null;
+        for (const std of standards) {
+          if (!std.detect_pattern) continue;
+          const re = new RegExp(std.detect_pattern);
+          if (codes.some(c => re.test(c))) { matched = std; break; }
+        }
 
-    fetch(`${SUPABASE_URL}/${rowsTable}?select=*&order=sort_order.asc`, { headers: sbHeaders })
-      .then(r => r.json())
-      .then(rowsArr => {
-        if (!Array.isArray(rowsArr)) return;
+        if (!matched) return;
+
+        // 4. Fetch all mapping tables for the matched standard in parallel
+        const tablesToFetch = [
+          matched.pl_table,
+          matched.bs_table,
+          matched.cf_table,
+        ].filter(Boolean);
+
+        const results = await Promise.all(
+          tablesToFetch.map(t =>
+            fetch(`${SUPABASE_URL}/${t}?select=*&order=sort_order.asc`, { headers: sbHeaders })
+              .then(r => r.json())
+              .then(rows => Array.isArray(rows) ? rows : [])
+              .catch(() => [])
+          )
+        );
+
+        const allRows = results.flat();
+        if (!allRows.length) return;
+
         const breakerOrder = new Map();
-        rowsArr.forEach((r, idx) => breakerOrder.set(r.account_code, idx));
+        allRows.forEach((r, idx) => breakerOrder.set(r.account_code, idx));
         setBreakerSortOrder(breakerOrder);
-      }).catch(e => console.error("BREAKERS FETCH ERROR:", e));
+
+      } catch (e) {
+        console.error("STANDARD DETECTION ERROR:", e);
+      }
+    })();
   }, [rawData]);
 
   // ── Fetch compare data ────────────────────────────────────────────────────
@@ -785,15 +813,14 @@ const { accountMap, tree } = useMemo(() => {
     });
 if (!accountMap.size) return { accountMap, tree: [] };
 
-    const typeFilteredMap = typeFilter
-      ? new Map([...accountMap.entries()].filter(([, v]) => {
-          const t = v.AccountType ?? "";
-          if (typeFilter === "P/L") return t === "P/L" || t === "DIS";
-          if (typeFilter === "B/S") return t === "B/S";
-          if (typeFilter === "C/F") return t === "C/F" || t === "CFS";
-          return true;
-        }))
-      : accountMap;
+const typeFilteredMap = new Map([...accountMap.entries()].filter(([, v]) => {
+      const t = v.AccountType ?? "";
+      if (typeFilter === "P/L") return t === "P/L" || t === "DIS";
+      if (typeFilter === "B/S") return t === "B/S";
+      if (typeFilter === "C/F") return t === "C/F" || t === "CFS";
+      // "All" tab — exclude cash flow from main view, it has its own tab
+      return t !== "C/F" && t !== "CFS";
+    }));
 
     if (breakerSortOrder.size > 0) {
       const tree = [...typeFilteredMap.values()]
