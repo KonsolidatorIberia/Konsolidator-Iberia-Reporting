@@ -3899,6 +3899,8 @@ const loadDash = async (scope, setter) => {
 // metadata for badges + context filtering.
 // ── System KPI override helpers ───────────────────────────────────────────
 const OVERRIDE_TAG_PREFIX = "__override__:";
+const [editingKpi, setEditingKpi] = useState(null);
+const [viewMode, setViewMode] = useState("company");
 
 const systemOverrides = useMemo(() => {
   const compMap = new Map();
@@ -4005,8 +4007,7 @@ const persistDashboard = useCallback(async (ids, scope = "individual_company") =
 // user where the KPI was created, and the cc_tag override system already
 // recomputes values against the active mapping. Hiding KPIs on mapping change
 // is more confusing than helpful.
-const [editingKpi, setEditingKpi] = useState(null);
-const [viewMode, setViewMode] = useState("company");
+
 
 const builtInKpiIds = useMemo(() => new Set(resolvedAllKpis.map(k => k.id)), [resolvedAllKpis]);
 
