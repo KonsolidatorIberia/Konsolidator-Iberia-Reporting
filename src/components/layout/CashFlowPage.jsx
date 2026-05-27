@@ -1,5 +1,5 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-import { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { ChevronDown, ChevronRight, Loader2, RefreshCw, Maximize2, Minimize2, GitMerge, Download, Library } from "lucide-react";
 import PageHeader from "./PageHeader.jsx";
 import { useTypo, useSettings } from "./SettingsContext";
@@ -783,152 +783,83 @@ const { elimPivot, elimHeaders } = useMemo(() => {
             <div className="cf-scroll-outer flex-1 min-h-0" style={{ minWidth: 0 }}>
               <div className="cf-scroll" style={{ minWidth: 0 }}>
                 <table className="text-xs border-collapse" style={{ borderSpacing: 0, width: "100%", minWidth: "max-content", tableLayout: "auto" }}>
-                  <thead className="sticky top-0 z-30" style={{ backgroundColor: colors.primary }}>
-                    <tr style={{ backgroundColor: colors.primary }}>
-                      <th className="sticky left-0 z-40 text-left px-4 py-3"
-                        style={{ minWidth: 220, width: 220, backgroundColor: colors.primary, boxShadow: "inset -1px 0 0 rgba(255,255,255,0.25)" }} rowSpan={2}>
-                        <div className="flex items-center justify-between gap-2">
-                          <span style={header2Style}>ACCOUNT</span>
+<thead className="sticky top-0 z-30">
+                    <tr style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)" }}>
+                      <th className="sticky left-0 z-40 text-left px-6" style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", height: "64px", boxShadow: "0 4px 12px -4px rgba(26,47,138,0.08)", minWidth: 220, width: 220 }}>
+                        <div className="flex items-center gap-3">
+                          <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>Account</span>
                           <button
-                            onClick={() => {
-                              if (expanded.size > 0) setExpanded(new Set());
-                              else setExpanded(new Set([...accountMap.keys()]));
-                            }}
-                            className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white/70 hover:text-white transition-all font-bold normal-case tracking-normal flex-shrink-0">
-                            {expanded.size > 0 ? <Minimize2 size={11}/> : <Maximize2 size={11}/>}
+                            onClick={() => { if (expanded.size > 0) setExpanded(new Set()); else setExpanded(new Set([...accountMap.keys()])); }}
+                            className="flex items-center justify-center"
+                            style={{ background: "#fff", color: colors.primary, width: 34, height: 34, borderRadius: 10, boxShadow: "0 1px 4px rgba(0,0,0,0.10), 0 0 0 1px rgba(26,47,138,0.06)", transition: "transform 200ms cubic-bezier(0.34,1.56,0.64,1), box-shadow 200ms ease" }}
+                            onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.08)"; e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.15), 0 0 0 1px rgba(26,47,138,0.10)"; }}
+                            onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = "0 1px 4px rgba(0,0,0,0.10), 0 0 0 1px rgba(26,47,138,0.06)"; }}>
+                            <span style={{ display: "inline-flex", transition: "transform 320ms cubic-bezier(0.34,1.56,0.64,1)", transform: expanded.size > 0 ? "rotate(180deg)" : "rotate(0deg)" }}>
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                {expanded.size > 0 ? <path d="M18 6L6 18M6 6l12 12"/> : <><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>}
+                              </svg>
+                            </span>
                           </button>
                         </div>
                       </th>
 
-                      <th colSpan={(2 + (elimExpanded ? elimHeaders.length : 0)) * (compareMode ? 3 : 1)}
-                        className="px-4 py-2 text-center"
-                        style={{ backgroundColor: colors.primary, boxShadow: "inset 1px 0 0 rgba(255,255,255,0.25), inset 0 0 0 9999px rgba(0,0,0,0.1)" }}>
-                        <span style={{ ...header2Style, textTransform: "uppercase", position: "relative" }}>
-                          Cash Flow · {getLegal(topParent)}
-                        </span>
-                      </th>
-                      <th colSpan={(contributionCompanies.length + 1) * (compareMode ? 3 : 1)}
-                        className="px-4 py-2 text-center"
-                        style={{ backgroundColor: colors.primary, boxShadow: "inset 1px 0 0 rgba(255,255,255,0.25), inset 0 0 0 9999px rgba(0,0,0,0.1)" }}>
-                        <span style={{ ...header2Style, textTransform: "uppercase", position: "relative" }}>Contribution</span>
-                      </th>
-                    </tr>
-
-                    <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-                      <th className="px-4 py-2.5 text-center" style={{ minWidth: 100, backgroundColor: colors.primary }}>
+                      {/* Consolidated group */}
+                      <th className="text-center px-4" style={{ background: "rgba(255,255,255,0.95)", borderLeft: "2px solid #f0f0f0" }}>
                         <div className="flex flex-col items-center gap-0.5">
-                          <span style={underscore1Style}>{topParent || "Total"}</span>
-                          <span style={underscore2Style}>{isRootView ? "Consolidated" : "Subgroup"}</span>
+                          <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{topParent || "Total"}</span>
+                          <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: `${colors.primary}60` }}>{isRootView ? "Consolidated" : "Subgroup"}</span>
                         </div>
                       </th>
-                      {compareMode && (
-                        <>
-                          <th className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
-                            <div className="flex flex-col items-center gap-0.5">
-                              <span style={{ ...underscore1Style, color: "#FFF" }}>Compare</span>
-                              <span style={underscore2Style}>&nbsp;</span>
-                            </div>
-                          </th>
-                          <th className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "1px solid rgba(255,255,255,0.15)" }}>
-                            <div className="flex flex-col items-center gap-0.5">
-                              <span style={{ ...underscore1Style, color: "#FFF" }}>Δ</span>
-                              <span style={underscore2Style}>&nbsp;</span>
-                            </div>
-                          </th>
-                        </>
-                      )}
+                      {compareMode && <>
+                        <th className="text-center px-3" style={{ background: `${colors.primary}08`, fontSize: 11, fontWeight: 900, color: "#CF305D", opacity: 0.8 }}>CMP</th>
+                        <th className="text-center px-3" style={{ background: `${colors.primary}12`, fontSize: 11, fontWeight: 900, color: "#CF305D", opacity: 0.8 }}>Δ</th>
+                      </>}
 
-                      <th className="px-4 py-2.5 text-center cursor-pointer hover:bg-white/10 transition-colors select-none"
-                        style={{ minWidth: 100, backgroundColor: colors.primary }}
+                      {/* Eliminations */}
+                      <th className="text-center px-4 cursor-pointer select-none" style={{ background: "rgba(255,255,255,0.95)", borderLeft: "2px solid #f0f0f0" }}
                         onClick={() => setElimExpanded(e => !e)}>
                         <div className="flex flex-col items-center gap-0.5">
-                          <span style={underscore1Style}>Eliminations {elimExpanded ? "▾" : "▸"}</span>
-                          <span style={underscore2Style}>&nbsp;</span>
+                          <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>Elim. {elimExpanded ? "▾" : "▸"}</span>
+                          <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: `${colors.primary}60` }}>Interco</span>
                         </div>
                       </th>
-                      {compareMode && (
-                        <>
-                          <th className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
-                            <div className="flex flex-col items-center gap-0.5">
-                              <span style={{ ...underscore1Style, color: "#FFF" }}>Compare</span>
-                              <span style={underscore2Style}>&nbsp;</span>
-                            </div>
-                          </th>
-                          <th className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "1px solid rgba(255,255,255,0.15)" }}>
-                            <div className="flex flex-col items-center gap-0.5">
-                              <span style={{ ...underscore1Style, color: "#FFF" }}>Δ</span>
-                              <span style={underscore2Style}>&nbsp;</span>
-                            </div>
-                          </th>
-                        </>
-                      )}
-                      {elimExpanded && elimHeaders.map((h, idx) => (
-                        <th key={`elim-head-${h}`}
-                          className="px-3 py-2.5 text-center"
-                          style={{
-                            minWidth: 140, backgroundColor: colors.primary,
-                            boxShadow: `inset 0 0 0 9999px rgba(0,0,0,${0.03 * (idx + 1)})`,
-                          }}>
-                          <div className="flex flex-col items-center gap-0.5">
-                            <span style={{ ...underscore1Style, position: "relative", textTransform: "none" }} title={h}>{h}</span>
-                            <span style={underscore2Style}>&nbsp;</span>
-                          </div>
+                      {compareMode && <>
+                        <th className="text-center px-3" style={{ background: `${colors.primary}08`, fontSize: 11, fontWeight: 900, color: "#CF305D", opacity: 0.8 }}>CMP</th>
+                        <th className="text-center px-3" style={{ background: `${colors.primary}12`, fontSize: 11, fontWeight: 900, color: "#CF305D", opacity: 0.8 }}>Δ</th>
+                      </>}
+                      {elimExpanded && elimHeaders.map(h => (
+                        <th key={`elim-head-${h}`} className="text-center px-3" style={{ background: "#f8f9ff", borderLeft: "1px solid #e5e7eb" }}>
+                          <span className="font-black" style={{ color: colors.primary, fontSize: 11 }} title={h}>{h}</span>
                         </th>
                       ))}
 
-                      <th className="px-4 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: colors.primary }}>
+                      {/* Contribution sum */}
+                      <th className="text-center px-4" style={{ background: "rgba(255,255,255,0.95)", borderLeft: "2px solid #f0f0f0" }}>
                         <div className="flex flex-col items-center gap-0.5">
-                          <span style={underscore1Style}>Contribution</span>
-                          <span style={underscore2Style}>Sum</span>
+                          <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>Contribution</span>
+                          <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: `${colors.primary}60` }}>Sum</span>
                         </div>
                       </th>
-                      {compareMode && (
-                        <>
-                          <th className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
-                            <div className="flex flex-col items-center gap-0.5">
-                              <span style={{ ...underscore1Style, color: "#FFF" }}>Compare</span>
-                              <span style={underscore2Style}>&nbsp;</span>
-                            </div>
-                          </th>
-                          <th className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "1px solid rgba(255,255,255,0.15)" }}>
-                            <div className="flex flex-col items-center gap-0.5">
-                              <span style={{ ...underscore1Style, color: "#FFF" }}>Δ</span>
-                              <span style={underscore2Style}>&nbsp;</span>
-                            </div>
-                          </th>
-                        </>
-                      )}
+                      {compareMode && <>
+                        <th className="text-center px-3" style={{ background: `${colors.primary}08`, fontSize: 11, fontWeight: 900, color: "#CF305D", opacity: 0.8 }}>CMP</th>
+                        <th className="text-center px-3" style={{ background: `${colors.primary}12`, fontSize: 11, fontWeight: 900, color: "#CF305D", opacity: 0.8 }}>Δ</th>
+                      </>}
 
-                      {contributionCompanies.flatMap(c => {
-                        const colCcy = displayCurrency || "—";
-                        return [
-                          <th key={c} className="px-4 py-2.5 text-center"
-                            style={{ minWidth: 100, backgroundColor: colors.primary }}>
+                      {/* Per-company columns */}
+                      {contributionCompanies.map(c => (
+                        <React.Fragment key={c}>
+                          <th className="text-center px-4" style={{ background: "rgba(255,255,255,0.95)", borderLeft: "1px solid #f0f0f0" }}>
                             <div className="flex flex-col items-center gap-0.5">
-                              <span className="block overflow-hidden text-ellipsis whitespace-nowrap max-w-full" style={underscore1Style} title={getLegal(c)}>
-                                {getLegal(c)}
-                              </span>
-                              <span style={underscore2Style}>{colCcy}</span>
+                              <span className="font-black tracking-tight truncate max-w-[120px]" style={{ color: colors.primary, fontSize: 13, letterSpacing: "-0.01em" }} title={getLegal(c)}>{getLegal(c)}</span>
+                              <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: `${colors.primary}60` }}>{displayCurrency || "—"}</span>
                             </div>
-                          </th>,
-                          ...(compareMode ? [
-                            <th key={`${c}-cmp`} className="px-3 py-2.5 text-center"
-                              style={{ minWidth: 110, backgroundColor: "#0a1547", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
-                              <div className="flex flex-col items-center gap-0.5">
-                                <span style={{ ...underscore1Style, opacity: 0.85, position: "relative" }}>Compare</span>
-                                <span style={underscore2Style}>&nbsp;</span>
-                              </div>
-                            </th>,
-                            <th key={`${c}-delta`} className="px-3 py-2.5 text-center"
-                              style={{ minWidth: 130, backgroundColor: "#0a1547", borderRight: "1px solid rgba(255,255,255,0.15)" }}>
-                              <div className="flex flex-col items-center gap-0.5">
-                                <span style={{ ...underscore1Style, opacity: 0.85, position: "relative" }}>Δ</span>
-                                <span style={underscore2Style}>&nbsp;</span>
-                              </div>
-                            </th>,
-                          ] : []),
-                        ];
-                      })}
+                          </th>
+                          {compareMode && <>
+                            <th className="text-center px-3" style={{ background: `${colors.primary}08`, fontSize: 11, fontWeight: 900, color: "#CF305D", opacity: 0.8 }}>CMP</th>
+                            <th className="text-center px-3" style={{ background: `${colors.primary}12`, fontSize: 11, fontWeight: 900, color: "#CF305D", opacity: 0.8 }}>Δ</th>
+                          </>}
+                        </React.Fragment>
+                      ))}
                     </tr>
                   </thead>
 

@@ -11,9 +11,10 @@ const SMOOTH = "cubic-bezier(0.4, 0, 0.2, 1)";
 ═══════════════════════════════════════════════════════════════ */
 export function FilterPill({ label, value, onChange, options = [] }) {
 
-  const [open, setOpen] = useState(false);
+const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
   const [search, setSearch] = useState("");
+  const [dropdownRect, setDropdownRect] = useState(null);
   const ref = useRef(null);
   const filterTypo = useTypo("filter");
   const { colors } = useSettings();
@@ -25,12 +26,16 @@ const filteredOptions = search.trim()
 
 const [highlightIdx, setHighlightIdx] = useState(0);
 
-useEffect(() => {
+const prevOpenRef = useRef(open);
+const prevSearchRef = useRef(search);
+if (prevOpenRef.current !== open) {
+  prevOpenRef.current = open;
   if (!open) { setSearch(""); setHighlightIdx(0); }
-}, [open]);
-
-// Reset highlight to top whenever the filtered list changes
-useEffect(() => { setHighlightIdx(0); }, [search]);
+}
+if (prevSearchRef.current !== search) {
+  prevSearchRef.current = search;
+  setHighlightIdx(0);
+}
 
 const handleKeyDown = (e) => {
   if (e.key === "ArrowDown") {
@@ -51,11 +56,22 @@ const handleKeyDown = (e) => {
 const matchedOption = options.find(o => String(o.value) === String(value));
 const display = matchedOption?.displayLabel ?? matchedOption?.label ?? "—";
 
-  useEffect(() => {
+useEffect(() => {
     function handler(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
+
+useEffect(() => {
+    if (!open) { setDropdownRect(null); return; }
+    let rafId;
+    const track = () => {
+      if (ref.current) setDropdownRect(ref.current.getBoundingClientRect());
+      rafId = requestAnimationFrame(track);
+    };
+    rafId = requestAnimationFrame(track);
+    return () => cancelAnimationFrame(rafId);
+  }, [open]);
 
   const showLabel = hover || open;
 
@@ -104,8 +120,10 @@ const display = matchedOption?.displayLabel ?? matchedOption?.label ?? "—";
       </button>
 
 {open && (
-        <div className="absolute top-full left-0 mt-2 z-50 min-w-[180px] rounded-2xl overflow-hidden"
+        <div className="fixed z-[9999] min-w-[180px] rounded-2xl overflow-hidden"
           style={{
+            top: dropdownRect ? dropdownRect.bottom + 8 : 0,
+            left: dropdownRect ? dropdownRect.left : 0,
             background: "rgba(255,255,255,0.95)",
             backdropFilter: "blur(20px)",
             WebkitBackdropFilter: "blur(20px)",
@@ -136,7 +154,7 @@ const display = matchedOption?.displayLabel ?? matchedOption?.label ?? "—";
               </div>
             </div>
           )}
-          <div className="p-1.5 max-h-72 overflow-y-auto">
+          <div className="p-1.5 max-h-72 overflow-y-auto" style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}>
             {filteredOptions.length === 0 ? (
               <div className="px-3 py-4 text-center text-[10px] text-gray-300 italic">
                 No matches
@@ -162,8 +180,8 @@ const display = matchedOption?.displayLabel ?? matchedOption?.label ?? "—";
               );
             })}
           </div>
-        </div>
-      )}
+</div>
+)}
 
       <style>{`
         @keyframes dropdownIn {
@@ -182,6 +200,7 @@ export function MultiFilterPill({ label, values, onChange, options }) {
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
   const [search, setSearch] = useState("");
+  const [dropdownRect, setDropdownRect] = useState(null);
   const ref = useRef(null);
   const filterTypo = useTypo("filter");
   const { colors } = useSettings();
@@ -216,12 +235,22 @@ const handleKeyDown = (e) => {
   }
 };
 
-  useEffect(() => {
+useEffect(() => {
     function handler(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+useEffect(() => {
+    if (!open) { setDropdownRect(null); return; }
+    let rafId;
+    const track = () => {
+      if (ref.current) setDropdownRect(ref.current.getBoundingClientRect());
+      rafId = requestAnimationFrame(track);
+    };
+    rafId = requestAnimationFrame(track);
+    return () => cancelAnimationFrame(rafId);
+  }, [open]);
 const allSelected = !values || values.length === options.length;
 const noneSelected = Array.isArray(values) && values.length === 0;
 const isDefault = allSelected || noneSelected;
@@ -263,8 +292,11 @@ const display = isDefault
       </button>
 
 {open && (
-        <div className="absolute top-full left-0 mt-2 z-50 min-w-[220px] rounded-2xl overflow-hidden"
-          style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: "1px solid rgba(26,47,138,0.08)", boxShadow: "0 20px 50px -12px rgba(26,47,138,0.18)", animation: "dropdownIn 240ms cubic-bezier(0.34,1.56,0.64,1)" }}>
+        <div className="fixed z-[9999] min-w-[220px] rounded-2xl overflow-hidden"
+          style={{
+            top: dropdownRect ? dropdownRect.bottom + 8 : 0,
+            left: dropdownRect ? dropdownRect.left : 0,
+            background: "rgba(255,255,255,0.95)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: "1px solid rgba(26,47,138,0.08)", boxShadow: "0 20px 50px -12px rgba(26,47,138,0.18)", animation: "dropdownIn 240ms cubic-bezier(0.34,1.56,0.64,1)" }}>
           {showSearch && (
             <div className="px-2 pt-2 pb-1.5 border-b border-gray-50">
               <div className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg"
@@ -288,7 +320,7 @@ const display = isDefault
               </div>
             </div>
           )}
-          <div className="p-1.5 max-h-72 overflow-y-auto">
+         <div className="p-1.5 max-h-72 overflow-y-auto" style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}>
             <button onClick={() => onChange(allSelected ? [] : null)}
               className="w-full text-left px-3 py-2 rounded-xl text-xs font-black uppercase tracking-widest flex items-center gap-3 border-b border-gray-100 mb-1"
               style={{ color: colors.primary }}
@@ -326,8 +358,8 @@ const display = isDefault
               );
             })}
           </div>
-        </div>
-      )}
+</div>
+)}
     </div>
   );
 }
@@ -447,7 +479,7 @@ export function TabSwitcher({ tabs, activeTab, onChange, onHoverChange }) {
         const Icon = t.icon;
         const active = activeTab === t.id;
         const hovered = hoveredId === t.id;
-        const expanded = hovered;
+// const expanded = hovered;
         return (
           <button
             key={t.id}
@@ -807,8 +839,9 @@ style={{
         {tabs && filters.length > 0 && <SoftDivider />}
 
         {/* Filters */}
-        {filters.length > 0 && (
-          <div className="flex items-center gap-1 px-3 flex-wrap">
+{filters.length > 0 && (
+         <div className="no-scrollbar flex items-center gap-1 px-3 overflow-x-auto" style={{ flexWrap: "nowrap" }}>
+            
             {filters.map((f, i) =>
               f.render
                 ? <span key={i}>{f.render()}</span>
@@ -944,12 +977,14 @@ onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareTog
         )}
       </div>
 
-      <style>{`
+<style>{`
         @keyframes titleMorph {
           0%   { opacity: 0; transform: translateY(4px); filter: blur(2px); }
           60%  { opacity: 1; filter: blur(0px); }
           100% { opacity: 1; transform: translateY(0); filter: blur(0px); }
         }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
       `}</style>
     </div>
   );

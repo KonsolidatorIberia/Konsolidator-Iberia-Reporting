@@ -30,7 +30,7 @@ function useAnimatedNumber(target, duration = 800) {
 }
 
 function AnimatedCell({ value, format, baseStyle }) {
-  const isNum = value !== null && value !== undefined && !isNaN(value);
+  const isNum = value !== null && value !== undefined && !isNaN(value) && isFinite(value);
   const animated = useAnimatedNumber(isNum ? value : 0);
   if (!isNum) return <span style={{ ...baseStyle, color: "#D1D5DB" }}>—</span>;
   return <span style={{ ...baseStyle, color: value < 0 ? "#EF4444" : "#000000" }}>{fmtValue(animated, format)}</span>;
@@ -283,8 +283,13 @@ function evalFormulaWithCcTags(node, pivot, cache, kpiList, ccTagToCodes, sectio
   if (!node) return 0;
 
   switch (node.type) {
-    case "account": {
-      // legacy node — keeps the old -flip for backward compat with custom KPIs
+case "account": {
+      if (node.dimGroup || node.dimCode) {
+        if (pivot.__dimPivot) {
+          const key = `${node.accountCode}:::${node.dimGroup ?? ""}:::${node.dimCode ?? ""}`;
+          return -(pivot.__dimPivot.get(key) ?? 0);
+        }
+      }
       let total = 0;
       pivot.forEach((val, ac) => { if (ac === node.accountCode) total += val; });
       return -total;
@@ -378,10 +383,10 @@ import {
   GitCompareArrows, Library, Download,
   CheckCircle2, AlertTriangle, Search,
 } from "lucide-react";
-import PageHeader from "./PageHeader.jsx";
+import PageHeader, { FilterPill as HeaderFilterPill, MultiFilterPill } from "./PageHeader.jsx";
 
 import {
-  listCompanyKpis, createCompanyKpi, updateCompanyKpi, archiveCompanyKpi,
+  listCompanyKpis, createCompanyKpi, updateCompanyKpi, archiveCompanyKpi, deleteCompanyKpi,
   getUserDashboard, saveUserDashboard,
 } from "../../lib/kpisApi";
 import { getActiveCompanyId } from "../../lib/mappingsApi";
@@ -443,7 +448,13 @@ function makeId() { return Math.random().toString(36).slice(2, 10); }
 function evalFormula(node, pivot, cache, kpiList) {
   if (!node) return 0;
   switch (node.type) {
- case "account": {
+case "account": {
+      if (node.dimGroup || node.dimCode) {
+        if (pivot.__dimPivot) {
+          const key = `${node.accountCode}:::${node.dimGroup ?? ""}:::${node.dimCode ?? ""}`;
+          return -(pivot.__dimPivot.get(key) ?? 0);
+        }
+      }
       let total = 0;
       pivot.forEach((val, ac) => { if (ac === node.accountCode) total += val; });
       return -total;
@@ -507,14 +518,14 @@ function computeAllKpis(kpiList, pivot) {
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 function fmtValue(val, format) {
-  if (val === null || val === undefined || isNaN(val)) return "—";
+  if (val === null || val === undefined || isNaN(val) || !isFinite(val)) return "—";
   if (format === "percent") return val.toFixed(1) + "%";
   if (format === "currency") return val.toLocaleString("de-DE", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
   return val.toFixed(2);
 }
 
 function getBenchmarkColor(value, benchmark) {
-  if (!benchmark || value === null || value === undefined || isNaN(value)) return null;
+if (!benchmark || value === null || value === undefined || isNaN(value) || !isFinite(value)) return null;
   const check = (range) => {
     if (!range) return false;
     const min = range.min !== "" && range.min !== undefined ? parseFloat(range.min) : null;
@@ -1311,7 +1322,7 @@ const LIBRARY_SECTIONS = [
 
 
 
-function LibraryPicker({ onSave }) {
+function LibraryPicker({ onSave, onDuplicate }) {
   const [activeSection, setActiveSection] = useState(null);
 
   if (!activeSection) {
@@ -1379,21 +1390,32 @@ className="text-left p-5 rounded-2xl border border-gray-100 hover:border-[#1a2f8
       </div>
       <div className="overflow-y-auto flex-1 px-5 pb-5 grid grid-cols-2 gap-2 content-start">
         {sec.kpis.map((k, i) => (
-          <button key={i} onClick={() => onSave({ ...k })}
-className="text-left p-4 rounded-xl border border-gray-100 hover:border-[#1a2f8a]/30 hover:bg-[#eef1fb] transition-all group">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-black text-[#1a2f8a] leading-snug">{k.label}</p>
-                <p className="text-xs text-gray-700 mt-1 leading-snug">{k.description}</p>
+<div key={i} className="relative group">
+            <button onClick={() => onSave({ ...k, _fromLibrary: true })}
+              className="w-full text-left p-4 rounded-xl border border-gray-100 hover:border-[#1a2f8a]/30 hover:bg-[#eef1fb] transition-all">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-black text-[#1a2f8a] leading-snug">{k.label}</p>
+                  <p className="text-xs text-gray-700 mt-1 leading-snug">{k.description}</p>
+                </div>
+                <span className={`flex-shrink-0 text-[10px] font-black px-2 py-1 rounded-md ${k.format === "percent" ? "bg-emerald-50 text-emerald-700" : k.format === "currency" ? "bg-[#eef1fb] text-[#1a2f8a]" : "bg-gray-50 text-gray-500"}`}>
+                  {k.format === "percent" ? "%" : k.format === "currency" ? "€" : "#"}
+                </span>
               </div>
-              <span className={`flex-shrink-0 text-[10px] font-black px-2 py-1 rounded-md ${k.format === "percent" ? "bg-emerald-50 text-emerald-700" : k.format === "currency" ? "bg-[#eef1fb] text-[#1a2f8a]" : "bg-gray-50 text-gray-500"}`}>
-                {k.format === "percent" ? "%" : k.format === "currency" ? "€" : "#"}
-              </span>
-            </div>
-            {k.benchmark && (
-              <p className="text-[10px] text-gray-600 mt-2 italic">{k.benchmark}</p>
-            )}
-          </button>
+              {k.benchmark && (
+                <p className="text-[10px] text-gray-600 mt-2 italic">{k.benchmark}</p>
+              )}
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onDuplicate?.({ ...k, label: k.label + " 2" }); }}
+              className="absolute top-2 right-2 w-6 h-6 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all hover:scale-110"
+              style={{ background: "#eef1fb", color: "#1a2f8a" }}
+              title="Duplicate">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+            </button>
+          </div>
         ))}
       </div>
     </div>
@@ -1421,7 +1443,7 @@ function SearchableList({ items, value, onChange, placeholder = "Buscar..." }) {
           </button>
         )}
       </div>
-      <div className="max-h-44 overflow-y-auto flex flex-col gap-0.5 border border-gray-100 rounded-xl bg-white">
+     <div className="max-h-[55vh] overflow-y-auto flex flex-col gap-0.5 border border-gray-100 rounded-xl bg-white">
         {filtered.length === 0 ? (
           <p className="text-[10px] text-gray-300 text-center py-4">Sin resultados</p>
         ) : filtered.map(item => (
@@ -1436,7 +1458,137 @@ function SearchableList({ items, value, onChange, placeholder = "Buscar..." }) {
   );
 }
 
-function SlotPicker({ onSelect, onClose, kpiList, accountCodes }) {
+function KpiRefPicker({ kpiList, kpiId, setKpiId, builtInIds }) {
+  const [search, setSearch] = useState("");
+  const filtered = kpiList.filter(k =>
+    !search.trim() || k.label.toLowerCase().includes(search.toLowerCase())
+  );
+  return (
+    <div className="flex flex-col gap-1.5 flex-1 min-h-0">
+      <div className="relative">
+        <input autoFocus value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="Buscar KPI..."
+          className="w-full rounded-xl px-3 py-2 text-xs text-gray-700 outline-none pr-7"
+          style={{ background: "#f8f9ff", border: "1.5px solid #e8eaf0" }} />
+        {search && <button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-300"><X size={10} /></button>}
+      </div>
+<div className="flex-1 min-h-0 overflow-y-auto rounded-xl border border-gray-100 bg-white">
+        {filtered.length === 0 ? (
+          <p className="text-[10px] text-gray-300 text-center py-4">Sin resultados</p>
+        ) : filtered.map(k => {
+          const isSystem = builtInIds?.has(k.id);
+          const selected = kpiId === k.id;
+          return (
+<button key={k.id} onClick={() => setKpiId(k.id)}
+              className="w-full text-left px-4 py-3 flex items-center gap-3 transition-all border-b border-gray-50 last:border-0"
+              style={{ background: selected ? "#eef1fb" : "transparent", color: selected ? "#1a2f8a" : "#374151" }}
+              onMouseEnter={e => { if (!selected) e.currentTarget.style.background = "#f8f9ff"; }}
+              onMouseLeave={e => { if (!selected) e.currentTarget.style.background = "transparent"; }}>
+              <span className="w-2 h-2 rounded-full flex-shrink-0"
+                style={{ background: isSystem ? "#1a2f8a" : "#16a34a" }} />
+              <span className="flex-1 font-semibold text-xs truncate">{k.label}</span>
+              <span className="text-[9px] font-black px-2 py-0.5 rounded-lg flex-shrink-0"
+                style={{ background: isSystem ? "#eef1fb" : "#dcfce7", color: isSystem ? "#1a2f8a" : "#15803d" }}>
+                {isSystem ? "sistema" : "custom"}
+              </span>
+              {selected && <Check size={11} className="flex-shrink-0 text-[#1a2f8a]" />}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function AccountPicker({ items, value, onChange, dimsByAccount = new Map() }) {
+  const [search, setSearch] = useState("");
+  const [expandedDims, setExpandedDims] = useState(new Set());
+
+  // value can be "code" or "code:::dimGroup:::dimCode"
+  const selectedCode = value?.split(":::")?.[0] ?? value;
+
+  const filtered = items.filter(i =>
+    !search.trim() || i.label.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div className="flex flex-col gap-1.5 flex-1 min-h-0">
+      <div className="relative">
+        <input autoFocus value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="Buscar cuenta..."
+          className="w-full rounded-xl px-3 py-2 text-xs text-gray-700 outline-none pr-7"
+          style={{ background: "#f8f9ff", border: "1.5px solid #e8eaf0" }} />
+        {search && <button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-300"><X size={10} /></button>}
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto rounded-xl border border-gray-100 bg-white">
+        {filtered.length === 0 ? (
+          <p className="text-[10px] text-gray-300 text-center py-4">Sin resultados</p>
+        ) : filtered.map(item => {
+          const isSelected = selectedCode === item.code && !value?.includes(":::");
+          const [code, ...nameParts] = item.label.split(" — ");
+          const name = nameParts.join(" — ");
+          const dims = dimsByAccount.get(item.code) ?? [];
+          const hasDims = dims.length > 0;
+          const isDimExpanded = expandedDims.has(item.code);
+
+          return (
+            <div key={item.code} className="border-b border-gray-50 last:border-0">
+              <div className="flex items-center gap-1">
+                <button onClick={() => onChange(item.code)}
+                  className="flex-1 text-left px-4 py-3 flex items-center gap-3 transition-all"
+                  style={{ background: isSelected ? "#eef1fb" : "transparent" }}
+                  onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = "#f8f9ff"; }}
+                  onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}>
+                  <span className="font-mono font-black text-[#1a2f8a] flex-shrink-0 w-16 text-xs">{code}</span>
+                  {name && <span className="flex-1 text-gray-600 text-xs">{name}</span>}
+                  {hasDims && (
+                    <span className="flex-shrink-0 px-1.5 py-0.5 rounded-md text-[9px] font-black"
+                      style={{ background: "#fef3c7", color: "#d97706" }}>
+                      dims
+                    </span>
+                  )}
+                  {isSelected && <Check size={11} className="flex-shrink-0 text-[#1a2f8a]" />}
+                </button>
+                {hasDims && (
+                  <button onClick={() => setExpandedDims(prev => {
+                    const next = new Set(prev);
+                    next.has(item.code) ? next.delete(item.code) : next.add(item.code);
+                    return next;
+                  })}
+                    className="px-2 py-3 text-gray-400 hover:text-amber-600 transition-colors flex-shrink-0"
+                    title="Ver dimensiones">
+                    <ChevronDown size={11} className={`transition-transform ${isDimExpanded ? "rotate-180" : ""}`} />
+                  </button>
+                )}
+              </div>
+              {isDimExpanded && hasDims && dims.map((d, di) => {
+                const dimKey = `${item.code}:::${d.group}:::${d.code}`;
+                const isDimSelected = value === dimKey;
+                return (
+                  <button key={di} onClick={() => onChange(dimKey)}
+                    className="w-full text-left flex items-center gap-2 py-2 transition-all"
+                    style={{
+                      paddingLeft: 48, paddingRight: 16,
+                      background: isDimSelected ? "#fef3c7" : "transparent"
+                    }}
+                    onMouseEnter={e => { if (!isDimSelected) e.currentTarget.style.background = "#fffbeb"; }}
+                    onMouseLeave={e => { if (!isDimSelected) e.currentTarget.style.background = "transparent"; }}>
+                    <span className="w-1 h-1 rounded-full bg-amber-400 flex-shrink-0" />
+                    <span className="text-[9px] font-black uppercase tracking-wider text-amber-500 flex-shrink-0">{d.group}:</span>
+                    <span className="text-xs text-gray-600 flex-1">{d.name || d.code}</span>
+                    {isDimSelected && <Check size={10} className="flex-shrink-0 text-amber-600" />}
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SlotPicker({ onSelect, onClose, kpiList, accountCodes, accountCodeLabels = new Map(), builtInIds = new Set(), dimsByAccount = new Map() }) {
   const [step, setStep] = useState("type");
   const [type, setType] = useState(null);
   const [prefix, setPrefix] = useState("");
@@ -1456,111 +1608,130 @@ function SlotPicker({ onSelect, onClose, kpiList, accountCodes }) {
     return [...seen].sort();
   }, [accountCodes]);
 
-  const TYPES = [
-    { id: "accountGroup", label: "Grupo de cuentas", desc: "Suma por prefijo", color: "bg-blue-50 text-blue-700 border-blue-200" },
-    { id: "account",      label: "Cuenta individual", desc: "Código exacto",   color: "bg-[#eef1fb] text-[#1a2f8a] border-[#1a2f8a]/20" },
-    { id: "ref",          label: "KPI existente",     desc: "Referencia",      color: "bg-purple-50 text-purple-700 border-purple-200" },
-    { id: "manual",       label: "Número fijo",       desc: "Valor constante", color: "bg-amber-50 text-amber-700 border-amber-200" },
+const TYPES = [
+    { id: "accountGroup", label: "Grupo de cuentas", desc: "Suma todas las cuentas bajo un código padre", color: "bg-blue-50 text-blue-700 border-blue-200" },
+    { id: "account",      label: "Cuenta individual", desc: "Código exacto de una cuenta",   color: "bg-[#eef1fb] text-[#1a2f8a] border-[#1a2f8a]/20" },
+    { id: "ref",          label: "KPI existente",     desc: "Referencia a otro KPI calculado", color: "bg-purple-50 text-purple-700 border-purple-200" },
   ];
 
-  const confirm = () => {
+const confirm = () => {
     if (type === "accountGroup") onSelect({ type: "accountGroup", prefix });
-    else if (type === "account")  onSelect({ type: "account", accountCode });
+    else if (type === "account") {
+if (accountCode.includes(":::")) {
+        const [ac, dimGroup, dimCode] = accountCode.split(":::");
+        const dimEntry = dimsByAccount.get(ac)?.find(d => d.group === dimGroup && d.code === dimCode);
+        onSelect({ type: "account", accountCode: ac, dimGroup: dimGroup || undefined, dimCode: dimCode || undefined, dimName: dimEntry?.name || dimCode || undefined });
+      } else {
+        onSelect({ type: "account", accountCode });
+      }
+    }
     else if (type === "ref")      onSelect({ type: "ref", kpiId });
     else if (type === "manual")   onSelect({ type: "manual", value: manualVal });
     onClose();
   };
 
-  return (
+return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" />
-      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
-        <div className="bg-[#1a2f8a] px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-md" />
+<div className="relative flex flex-col bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden"
+        style={{ boxShadow: "0 32px 80px -16px rgba(26,47,138,0.25)", height: "90vh", maxHeight: "90vh" }}
+        onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div className="px-5 pt-5 pb-4 flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-2.5">
             {step === "detail" && (
-              <button onClick={() => setStep("type")} className="w-6 h-6 rounded-md bg-white/10 hover:bg-white/20 flex items-center justify-center">
-                <ChevronDown size={11} className="text-white/70 rotate-90" />
+              <button onClick={() => setStep("type")}
+                className="w-7 h-7 rounded-xl flex items-center justify-center transition-all hover:scale-110"
+                style={{ background: "#f3f4f6", color: "#6b7280" }}>
+                <ChevronDown size={12} className="rotate-90" />
               </button>
             )}
-            <p className="text-white text-xs font-black">
-              {step === "type" ? "Selecciona tipo de variable" : TYPES.find(t => t.id === type)?.label}
-            </p>
+            <div>
+              <p className="font-black text-[14px] text-gray-900 leading-tight">
+                {step === "type" ? "Tipo de variable" : TYPES.find(t => t.id === type)?.label}
+              </p>
+              <p className="text-[10px] text-gray-400 font-medium mt-0.5">
+                {step === "type" ? "Selecciona cómo calcular esta variable" : TYPES.find(t => t.id === type)?.desc}
+              </p>
+            </div>
           </div>
-          <button onClick={onClose} className="w-6 h-6 rounded-md bg-white/10 hover:bg-white/20 flex items-center justify-center">
-            <X size={11} className="text-white/70" />
+          <button onClick={onClose}
+            className="w-7 h-7 rounded-xl flex items-center justify-center transition-all hover:scale-110"
+            style={{ background: "#f3f4f6", color: "#6b7280" }}>
+            <X size={12} />
           </button>
         </div>
 
-        {step === "type" && (
-          <div className="p-3 flex flex-col gap-2">
-            {TYPES.map(t => (
+        <div className="h-px mx-5" style={{ background: "linear-gradient(90deg, transparent, rgba(26,47,138,0.08), transparent)" }} />
+
+{step === "type" && (
+          <div className="p-5 flex flex-col gap-3 overflow-y-auto flex-1">
+            {[
+              { id: "accountGroup", label: "Grupo de cuentas", desc: "Suma todas las cuentas bajo un código padre", icon: "Σ", iconBg: "#dbeafe", iconColor: "#1d4ed8" },
+              { id: "account",      label: "Cuenta individual", desc: "Código exacto de una cuenta", icon: "#", iconBg: "#eef1fb", iconColor: "#1a2f8a" },
+              { id: "ref",          label: "KPI existente",     desc: "Referencia a otro KPI calculado", icon: "↗", iconBg: "#f3e8ff", iconColor: "#7c3aed" },
+            ].map((t) => (
               <button key={t.id} onClick={() => { setType(t.id); setStep("detail"); }}
-                className={`text-left px-3 py-2.5 rounded-xl border text-xs font-black transition-all hover:shadow-sm ${t.color}`}>
-                {t.label}
-                <span className="block text-[10px] font-normal opacity-60 mt-0.5">{t.desc}</span>
+                className="text-left rounded-2xl border transition-all duration-200 group flex-1 flex items-center"
+                style={{ background: "#f8f9ff", borderColor: "#e8eaf0", padding: "24px 24px" }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = "#1a2f8a30"; e.currentTarget.style.background = "#fff"; e.currentTarget.style.boxShadow = "0 4px 20px -4px rgba(26,47,138,0.12)"; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = "#e8eaf0"; e.currentTarget.style.background = "#f8f9ff"; e.currentTarget.style.boxShadow = "none"; }}>
+                <div className="flex items-center gap-4 w-full">
+                  <div className="w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 text-xl font-black transition-transform duration-200 group-hover:scale-110"
+                    style={{ background: t.iconBg, color: t.iconColor }}>
+                    {t.icon}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-black text-gray-900 text-base leading-tight">{t.label}</p>
+                    <p className="text-xs text-gray-400 mt-1">{t.desc}</p>
+                  </div>
+                  <ChevronDown size={16} className="-rotate-90 text-gray-300 group-hover:text-[#1a2f8a] transition-colors flex-shrink-0" />
+                </div>
               </button>
-            ))}
+))}
           </div>
         )}
 
-        {step === "detail" && (
-          <div className="p-3 flex flex-col gap-3">
-            {type === "accountGroup" && (
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Prefijo de grupo</label>
-                <p className="text-[10px] text-gray-300">Suma todas las cuentas que empiecen por este prefijo</p>
+        {step === "detail" &&(
+          <div className="p-5 flex flex-col gap-4 flex-1 min-h-0">
+{type === "accountGroup" && (
+              <div className="flex flex-col gap-2">
+                <p className="text-[10px] text-gray-400 leading-snug bg-blue-50 px-3 py-2 rounded-xl">
+                  Suma todas las cuentas cuyo código empiece por este prefijo. Ej: <span className="font-mono font-bold text-blue-700">70</span> incluye 7000, 7001, 7010…
+                </p>
                 <SearchableList
                   items={groupPrefixes.length > 0 ? groupPrefixes : accountCodes}
                   value={prefix}
                   onChange={setPrefix}
                   placeholder="Buscar prefijo..."
                 />
-                <div className="flex items-center gap-2 pt-1">
-                  <span className="text-[10px] text-gray-400">O escribe manualmente:</span>
-                  <input value={prefix} onChange={e => setPrefix(e.target.value)}
-                    placeholder="e.g. 42"
-                    className="flex-1 border border-gray-200 rounded-lg px-2 py-1 text-xs font-mono text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-[#f8f9ff]" />
-                </div>
               </div>
             )}
-            {type === "account" && (
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Cuenta individual</label>
-                <SearchableList
-                  items={accountCodes}
+<div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+{type === "account" && (() => {
+              const items = accountCodes.map(ac => ({
+                code: ac,
+                label: accountCodeLabels.get(ac) ? `${ac} — ${accountCodeLabels.get(ac)}` : ac,
+              }));
+              return (
+                <AccountPicker
+                  items={items}
                   value={accountCode}
                   onChange={setAccountCode}
-                  placeholder="Buscar cuenta..."
+                  dimsByAccount={dimsByAccount}
                 />
-              </div>
+              );
+            })()}
+{type === "ref" && (
+              <KpiRefPicker kpiList={kpiList} kpiId={kpiId} setKpiId={setKpiId} builtInIds={builtInIds} />
             )}
-            {type === "ref" && (
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">KPI de referencia</label>
-                <SearchableList
-                  items={kpiList.map(k => k.id)}
-                  value={kpiId}
-                  onChange={setKpiId}
-                  placeholder="Buscar KPI..."
-                />
-                {kpiId && (
-                  <p className="text-[10px] text-[#1a2f8a] font-black">
-                    {kpiList.find(k => k.id === kpiId)?.label}
-                  </p>
-                )}
-              </div>
-            )}
-            {type === "manual" && (
-              <div>
-                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5 block">Valor fijo</label>
-                <input autoFocus type="number" value={manualVal} onChange={e => setManualVal(parseFloat(e.target.value) || 0)}
-                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-xs text-gray-700 outline-none focus:border-[#1a2f8a]/40 bg-[#f8f9ff]" />
-              </div>
-            )}
+</div>
             <button onClick={confirm}
-              disabled={(type === "accountGroup" && !prefix) || (type === "account" && !accountCode) || (type === "ref" && !kpiId)}
-              className="w-full py-2 rounded-xl bg-[#1a2f8a] text-white text-[10px] font-black hover:bg-[#1a2f8a]/90 transition-all disabled:opacity-40">
-              Confirmar
+              disabled={(type === "accountGroup" && !prefix) || (type === "account" && !accountCode.split(":::")[0]) || (type === "ref" && !kpiId)}
+              className="w-full py-3 rounded-xl text-white text-sm font-black transition-all disabled:opacity-30 flex items-center justify-center gap-2 flex-shrink-0"
+              style={{ background: "linear-gradient(135deg, #1a2f8a 0%, #3b54b8 100%)", boxShadow: "0 6px 20px -4px rgba(26,47,138,0.45)" }}>
+              <Check size={14} /> Confirmar selección
             </button>
           </div>
         )}
@@ -1569,10 +1740,17 @@ function SlotPicker({ onSelect, onClose, kpiList, accountCodes }) {
   );
 }
 
-function SlotLabel({ node, kpiList }) {
+function SlotLabel({ node, kpiList, accountCodeLabels = new Map() }) {
   if (!node) return <span className="text-gray-300 italic">vacío</span>;
   if (node.type === "accountGroup") return <span>Grupo <span className="font-black">{node.prefix || "?"}</span></span>;
-  if (node.type === "account") return <span className="font-black">{node.accountCode || "?"}</span>;
+if (node.type === "account") {
+    const name = accountCodeLabels.get(node.accountCode);
+    const base = name ? `${node.accountCode} — ${name}` : (node.accountCode || "?");
+if (node.dimGroup || node.dimCode) {
+      return <span className="font-black">{base} <span style={{ color: "#d97706", fontWeight: 700 }}>· {node.dimGroup}: {node.dimName || node.dimCode}</span></span>;
+    }
+    return <span className="font-black">{base}</span>;
+  }
   if (node.type === "ref") {
     const k = kpiList.find(k => k.id === node.kpiId);
     return <span className="font-black">{k?.label || node.kpiId || "?"}</span>;
@@ -1580,25 +1758,24 @@ function SlotLabel({ node, kpiList }) {
   if (node.type === "manual") return <span className="font-black">{node.value}</span>;
   return <span className="text-gray-400 text-[10px]">complejo</span>;
 }
-
-function Slot({ node, onChange, kpiList, accountCodes, color = "bg-[#eef1fb] text-[#1a2f8a] border-[#1a2f8a]/20" }) {
+function Slot({ node, onChange, kpiList, accountCodes, accountCodeLabels = new Map(), builtInIds = new Set(), dimsByAccount = new Map(), color = "bg-[#eef1fb] text-[#1a2f8a] border-[#1a2f8a]/20" }) {
   const [open, setOpen] = useState(false);
   return (
     <>
       <button onClick={() => setOpen(true)}
         className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all hover:shadow-sm ${node ? color : "bg-gray-50 text-gray-400 border-gray-200 border-dashed hover:border-[#1a2f8a]/30 hover:bg-[#f8f9ff]"}`}>
-        {node ? <SlotLabel node={node} kpiList={kpiList} /> : <>
+        {node ? <SlotLabel node={node} kpiList={kpiList} accountCodeLabels={accountCodeLabels} /> : <>
           <Plus size={10} className="opacity-50" /> variable
         </>}
       </button>
-      {open && <SlotPicker onSelect={onChange} onClose={() => setOpen(false)} kpiList={kpiList} accountCodes={accountCodes} />}
+{open && <SlotPicker onSelect={onChange} onClose={() => setOpen(false)} kpiList={kpiList} accountCodes={accountCodes} accountCodeLabels={accountCodeLabels} builtInIds={builtInIds} dimsByAccount={dimsByAccount} />}
     </>
   );
 }
 
 const OP_SYMBOL = { "+": "+", "-": "−", "*": "×", "/": "÷" };
 
-function VisualFormula({ formula, onChange, kpiList, accountCodes }) {
+function VisualFormula({ formula, onChange, kpiList, accountCodes, accountCodeLabels = new Map(), builtInIds = new Set() }) {
   if (!formula) return null;
 
   const updateLeft  = left  => onChange({ ...formula, left });
@@ -1618,12 +1795,12 @@ function VisualFormula({ formula, onChange, kpiList, accountCodes }) {
       <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg">( </span>
       {formula.arg?.type === "op" ? (
         <>
-          <Slot node={formula.arg.left}  onChange={l => onChange({ ...formula, arg: { ...formula.arg, left: l } })}  kpiList={kpiList} accountCodes={accountCodes} />
+          <Slot node={formula.arg.left}  onChange={l => onChange({ ...formula, arg: { ...formula.arg, left: l } })} kpiList={kpiList} accountCodes={accountCodes} accountCodeLabels={accountCodeLabels} builtInIds={builtInIds} />
           <span className="text-lg font-black text-[#1a2f8a]/50 px-1">{OP_SYMBOL[formula.arg.op]}</span>
-          <Slot node={formula.arg.right} onChange={r => onChange({ ...formula, arg: { ...formula.arg, right: r } })} kpiList={kpiList} accountCodes={accountCodes} />
+          <Slot node={formula.arg.right} onChange={r => onChange({ ...formula, arg: { ...formula.arg, right: r } })} kpiList={kpiList} accountCodes={accountCodes} accountCodeLabels={accountCodeLabels} builtInIds={builtInIds} />
         </>
       ) : (
-        <Slot node={formula.arg} onChange={updateArg} kpiList={kpiList} accountCodes={accountCodes} />
+        <Slot node={formula.arg} onChange={updateArg} kpiList={kpiList} accountCodes={accountCodes} accountCodeLabels={accountCodeLabels} builtInIds={builtInIds} />
       )}
       <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg"> ) × 100</span>
     </div>
@@ -1633,7 +1810,7 @@ function VisualFormula({ formula, onChange, kpiList, accountCodes }) {
     <div className="flex items-center gap-2 flex-wrap">
       <span className="text-lg font-black text-[#1a2f8a]/50 px-1">−</span>
       <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg">( </span>
-      <Slot node={formula.arg} onChange={updateArg} kpiList={kpiList} accountCodes={accountCodes} />
+      <Slot node={formula.arg} onChange={updateArg} kpiList={kpiList} accountCodes={accountCodes} accountCodeLabels={accountCodeLabels} builtInIds={builtInIds} />
       <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg"> )</span>
     </div>
   );
@@ -1641,21 +1818,21 @@ function VisualFormula({ formula, onChange, kpiList, accountCodes }) {
   if (formula.type === "fn" && formula.fn === "abs") return (
     <div className="flex items-center gap-2 flex-wrap">
       <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg">|</span>
-      <Slot node={formula.arg} onChange={updateArg} kpiList={kpiList} accountCodes={accountCodes} />
+      <Slot node={formula.arg} onChange={updateArg} kpiList={kpiList} accountCodes={accountCodes} accountCodeLabels={accountCodeLabels} builtInIds={builtInIds} />
       <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg">|</span>
     </div>
   );
 
   // fallback for single node types
   return (
-    <Slot node={formula} onChange={onChange} kpiList={kpiList} accountCodes={accountCodes} />
+    <Slot node={formula} onChange={onChange} kpiList={kpiList} accountCodes={accountCodes} accountCodeLabels={accountCodeLabels} builtInIds={builtInIds} />
   );
 }
 
 // ── Text Formula Builder ──────────────────────────────────────────────────────
 const VARIABLE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
-function TextFormulaBuilder({ formula, onChange, kpiList, accountCodes }) {
+function TextFormulaBuilder({ formula, onChange, kpiList, accountCodes, accountCodeLabels = new Map(), builtInIds = new Set(), dimsByAccount = new Map() }) {
   const [expression, setExpression] = useState(() => {
     if (formula?.type === "text") return formula.expression ?? "";
     return "";
@@ -1702,10 +1879,15 @@ function TextFormulaBuilder({ formula, onChange, kpiList, accountCodes }) {
     setTimeout(() => { el.focus(); el.setSelectionRange(start + 1, start + 1); }, 0);
   };
 
-  const updateExpr = (val) => {
-    // remove variables no longer in expression
+const updateExpr = (val) => {
     const newVars = { ...variables };
+    // Remove variables no longer in expression
     Object.keys(newVars).forEach(l => { if (!val.includes(l)) delete newVars[l]; });
+    // Auto-add new capital letters found in expression
+    const lettersInExpr = [...new Set([...val.matchAll(/[A-Z]/g)].map(m => m[0]))];
+    lettersInExpr.forEach(l => {
+      if (!(l in newVars)) newVars[l] = null;
+    });
     setExpression(val);
     setVariables(newVars);
     onChange({ type: "text", expression: val, variables: newVars });
@@ -1745,7 +1927,6 @@ function TextFormulaBuilder({ formula, onChange, kpiList, accountCodes }) {
       <div className="relative">
         <div className="flex items-center gap-2 mb-1.5">
           <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Expresión</label>
-          <span className="text-[10px] text-gray-300">usa letras como variables, números y símbolos</span>
         </div>
         <div className="flex gap-2">
           <input
@@ -1763,7 +1944,7 @@ function TextFormulaBuilder({ formula, onChange, kpiList, accountCodes }) {
           </button>
         </div>
         <p className="text-[10px] text-gray-300 mt-1">
-          Operadores: <span className="font-mono">+ − * / ( ) ^ %</span>
+
         </p>
       </div>
 
@@ -1777,9 +1958,9 @@ function TextFormulaBuilder({ formula, onChange, kpiList, accountCodes }) {
               <span className="text-[10px] font-black opacity-40">=</span>
               <div className="flex-1 min-w-0">
                 {variables[letter] ? (
-                  <button onClick={() => setEditingVar(letter)}
+<button onClick={() => setEditingVar(letter)}
                     className="text-xs font-black truncate hover:opacity-70 transition-opacity text-left w-full">
-                    <SlotLabel node={variables[letter]} kpiList={kpiList} />
+                    <SlotLabel node={variables[letter]} kpiList={kpiList} accountCodeLabels={accountCodeLabels} />
                   </button>
                 ) : (
                   <button onClick={() => setEditingVar(letter)}
@@ -1802,13 +1983,74 @@ function TextFormulaBuilder({ formula, onChange, kpiList, accountCodes }) {
       )}
 
       {/* SlotPicker popover for editing a variable */}
-      {editingVar && (
-        <SlotPicker
+{editingVar && (
+<SlotPicker
           onSelect={(node) => updateVar(editingVar, node)}
           onClose={() => setEditingVar(null)}
           kpiList={kpiList}
           accountCodes={accountCodes}
+          accountCodeLabels={accountCodeLabels}
+          builtInIds={builtInIds}
+          dimsByAccount={dimsByAccount}
         />
+      )}
+    </div>
+  );
+}
+
+function LibTagPill({ value, onChange, allLocalKpis }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const { colors } = useSettings();
+  const SPRING = "cubic-bezier(0.34, 1.56, 0.64, 1)";
+  const SMOOTH = "cubic-bezier(0.4, 0, 0.2, 1)";
+
+  const tags = useMemo(() => {
+    const seen = new Set();
+    allLocalKpis.forEach(k => {
+      if (k.tag && k.tag !== "__library__") seen.add(k.tag);
+    });
+    return [...seen].sort();
+  }, [allLocalKpis]);
+
+  const options = [{ value: null, label: "All tags" }, ...tags.map(t => ({ value: t, label: t }))];
+  const display = options.find(o => o.value === value)?.label ?? "All tags";
+
+  useEffect(() => {
+    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  if (tags.length === 0) return null;
+
+  return (
+    <div ref={ref} className="relative flex-shrink-0">
+      <button onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-bold transition-all"
+        style={{ background: value ? colors.primary : "#f8f9ff", color: value ? "#fff" : "#6b7280", border: `1.5px solid ${value ? colors.primary : "#e8eaf0"}` }}>
+        <span>{display}</span>
+        <ChevronDown size={10} style={{ opacity: 0.6, transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: `transform 280ms ${SPRING}` }} />
+      </button>
+      {open && (
+        <div className="absolute top-full right-0 mt-2 z-50 min-w-[160px] rounded-2xl overflow-hidden"
+          style={{ background: "rgba(255,255,255,0.98)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: "1px solid rgba(26,47,138,0.08)", boxShadow: "0 20px 50px -12px rgba(26,47,138,0.18)", animation: "dropdownIn 240ms cubic-bezier(0.34,1.56,0.64,1)" }}>
+          <div className="p-1.5 overflow-y-auto" style={{ maxHeight: "calc(5 * 36px)", scrollbarWidth: "none" }}>
+            {options.map(o => {
+              const selected = value === o.value;
+              return (
+                <button key={String(o.value)} onClick={() => { onChange(o.value); setOpen(false); }}
+                  className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between gap-3"
+                  style={{ background: selected ? colors.primary : "transparent", color: selected ? "#fff" : "#475569", transition: `background 180ms ${SMOOTH}` }}
+                  onMouseEnter={e => { if (!selected) e.currentTarget.style.background = "rgba(26,47,138,0.08)"; }}
+                  onMouseLeave={e => { if (!selected) e.currentTarget.style.background = "transparent"; }}>
+                  {o.label}
+                  {selected && <span className="w-1.5 h-1.5 rounded-full bg-white/70 flex-shrink-0" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1896,7 +2138,7 @@ const CATEGORY_OPTIONS = [
   { value: "__custom__",    label: "Custom…" },
 ];
 
-function CategoryPill({ value, onChange }) {
+function CategoryPill({ value, onChange, options: optionsProp }) {
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
   const ref = useRef(null);
@@ -1910,7 +2152,8 @@ function CategoryPill({ value, onChange }) {
     return () => document.removeEventListener("mousedown", h);
   }, []);
 
-  const display = CATEGORY_OPTIONS.find(o => o.value === value)?.label ?? value ?? "—";
+const options = optionsProp ?? CATEGORY_OPTIONS;
+  const display = options.find(o => o.value === value)?.label ?? value ?? "—";
   const showLabel = hover || open;
 
   return (
@@ -1939,7 +2182,7 @@ function CategoryPill({ value, onChange }) {
             animation: `dropdownIn 240ms cubic-bezier(0.34,1.56,0.64,1)`,
           }}>
           <div className="p-1.5">
-            {CATEGORY_OPTIONS.map(o => {
+          {options.map(o => {
               const selected = value === o.value;
               return (
                 <button key={o.value}
@@ -1965,7 +2208,147 @@ function CategoryPill({ value, onChange }) {
   );
 }
 
-function KpiEditorModal({ kpi, onSave, onClose, onReset, onEditLibraryKpi, onDeleteLibraryKpi, kpiList, allLocalKpis = [], accountCodes, builtInIds = new Set(), currentUserId }) {
+function DisintegrationOverlay() {
+  const canvasRef = useRef(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const parent = canvas.parentElement;
+    const W = canvas.width = parent.offsetWidth;
+    const H = canvas.height = parent.offsetHeight;
+    const ctx = canvas.getContext("2d");
+
+    // Sample the parent's visual content via html2canvas-style approach
+    // Since we can't do that easily, build dense grid of colored particles
+    const COLS = 40, ROWS = 20;
+    const pw = W / COLS, ph = H / ROWS;
+    const particles = [];
+
+    // Color palette sampled from common card colors
+    const colors = [
+      "#1a2f8a","#3b54b8","#6b7280","#9ca3af","#e5e7eb",
+      "#eef1fb","#f8f9ff","#ffffff","#d1d5db","#4f63c2"
+    ];
+
+    for (let col = 0; col < COLS; col++) {
+      for (let row = 0; row < ROWS; row++) {
+        const x = col * pw + pw / 2;
+        const y = row * ph + ph / 2;
+        // Stagger delay from left to right + slight random
+        const delay = (col / COLS) * 0.6 + Math.random() * 0.25;
+        // Each particle explodes rightward and downward (Thanos style)
+        const spread = Math.random() * 0.4 + 0.8;
+        const vx = (Math.random() * 2 + 1) * spread;
+        const vy = (Math.random() * 1.5 - 0.3) * spread;
+        const size = Math.random() * (pw * 0.6) + 1.5;
+        const color = colors[Math.floor(Math.random() * colors.length)];
+        // Darker particles for text/border areas
+        const isDark = col < 6 || row < 3;
+        particles.push({ x, y, ox: x, oy: y, vx, vy, size, delay,
+          color: isDark ? "#1a2f8a" : color, alpha: 1, rotation: Math.random() * Math.PI * 2,
+          rotSpeed: (Math.random() - 0.5) * 0.3 });
+      }
+    }
+
+    let start = null;
+    const DURATION = 1400;
+
+    const animate = (ts) => {
+      if (!start) start = ts;
+      const elapsed = (ts - start) / DURATION;
+      ctx.clearRect(0, 0, W, H);
+
+      let anyAlive = false;
+      particles.forEach(p => {
+        const t = Math.max(0, elapsed - p.delay);
+        if (t <= 0) {
+          anyAlive = true;
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = p.color;
+          ctx.fillRect(p.ox - p.size / 2, p.oy - p.size / 2, p.size, p.size);
+          return;
+        }
+        const progress = Math.min(1, t / (1 - Math.min(p.delay, 0.7)));
+        p.alpha = Math.max(0, 1 - Math.pow(progress, 1.8));
+        if (p.alpha <= 0) return;
+        anyAlive = true;
+
+        const px = p.ox + p.vx * progress * W * 0.5;
+        const py = p.oy + p.vy * progress * H * 0.5 + progress * progress * H * 0.12;
+        const s = p.size * (1 - progress * 0.4);
+        p.rotation += p.rotSpeed;
+
+        ctx.save();
+        ctx.globalAlpha = p.alpha;
+        ctx.translate(px, py);
+        ctx.rotate(p.rotation);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-s / 2, -s / 2, s, s);
+        ctx.restore();
+      });
+
+      ctx.globalAlpha = 1;
+      if (anyAlive && elapsed < 2.5) requestAnimationFrame(animate);
+      else ctx.clearRect(0, 0, W, H);
+    };
+
+    requestAnimationFrame(animate);
+  }, []);
+
+return (
+    <canvas ref={canvasRef}
+      className="absolute inset-0 rounded-xl pointer-events-none"
+  style={{ zIndex: 10, width: "100%", height: "100%", animation: "disintCanvasFade 1.6s ease-out forwards" }} />
+  );
+}
+
+function TagInput({ tag, setTag, allLocalKpis }) {
+  const existingTags = [...new Set(allLocalKpis.map(k => k.tag).filter(t => t && t !== "__library__" && !t.startsWith("__")))].sort();
+  const [tagOpen, setTagOpen] = useState(false);
+  const tagRef = useRef(null);
+  useEffect(() => {
+    const h = e => { if (tagRef.current && !tagRef.current.contains(e.target)) setTagOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+  return (
+    <div ref={tagRef} className="relative">
+      <div className="flex rounded-xl overflow-hidden" style={{ background: "#f8f9ff", border: "1.5px solid #e8eaf0" }}>
+        <input value={tag} onChange={e => setTag(e.target.value)}
+          placeholder="e.g. Core, Deuda…"
+          className="flex-1 px-3 py-2.5 text-xs font-semibold text-gray-800 outline-none bg-transparent"
+          onFocus={e => e.currentTarget.parentElement.style.borderColor = "#1a2f8a40"}
+          onBlur={e => e.currentTarget.parentElement.style.borderColor = "#e8eaf0"} />
+        {existingTags.length > 0 && (
+          <button type="button" onClick={() => setTagOpen(o => !o)}
+            className="px-2 flex items-center justify-center border-l border-gray-200 hover:bg-gray-100 transition-colors flex-shrink-0">
+            <ChevronDown size={11} className={`text-gray-400 transition-transform ${tagOpen ? "rotate-180" : ""}`} />
+          </button>
+        )}
+      </div>
+      {tagOpen && existingTags.length > 0 && (
+        <div className="absolute top-full left-0 right-0 mt-2 z-50 rounded-2xl overflow-hidden"
+          style={{ background: "rgba(255,255,255,0.98)", backdropFilter: "blur(20px)", border: "1px solid rgba(26,47,138,0.08)", boxShadow: "0 20px 50px -12px rgba(26,47,138,0.18)" }}>
+          <div className="p-1.5 max-h-48 overflow-y-auto">
+            {existingTags.map(t => (
+              <button key={t} type="button"
+                onClick={() => { setTag(t); setTagOpen(false); }}
+                className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between gap-3 transition-all"
+                style={{ background: tag === t ? "#1a2f8a" : "transparent", color: tag === t ? "#fff" : "#475569" }}
+                onMouseEnter={e => { if (tag !== t) e.currentTarget.style.background = "rgba(26,47,138,0.08)"; }}
+                onMouseLeave={e => { if (tag !== t) e.currentTarget.style.background = "transparent"; }}>
+                {t}
+                {tag === t && <span className="w-1.5 h-1.5 rounded-full bg-white/70 flex-shrink-0" />}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KpiEditorModal({ kpi, onSave, onClose, onReset, onEditLibraryKpi, onDeleteLibraryKpi, onDuplicate, kpiList, allLocalKpis = [], systemKpis = [], accountCodes, accountCodeLabels = new Map(), builtInIds = new Set(), currentUserId, dimsByAccount = new Map() }) {
   const [mode, setMode] = useState(kpi ? "custom" : "library");
 
   const [label, setLabel] = useState(kpi?.label ?? "");
@@ -2018,23 +2401,127 @@ if (node.type === "op") {
   });
 const [tab, setTab] = useState(kpi ? "builder" : "presets");
 const [customCategoryLabel, setCustomCategoryLabel] = useState("");
-const [benchmark, setBenchmark] = useState(kpi?.benchmark ?? {
-    unhealthy: { min: "", max: "" },
-    healthy:   { min: "", max: "" },
-    vhealthy:  { min: "", max: "" },
+const [benchmark, setBenchmark] = useState(() => {
+    const b = kpi?.benchmark;
+    return {
+      unhealthy: { min: b?.unhealthy?.min ?? "", max: b?.unhealthy?.max ?? "" },
+      healthy:   { min: b?.healthy?.min   ?? "", max: b?.healthy?.max   ?? "" },
+      vhealthy:  { min: b?.vhealthy?.min  ?? "", max: b?.vhealthy?.max  ?? "" },
+    };
   });
 const [tag, setTag] = useState(kpi?.tag ?? "");
-  const [libSearch, setLibSearch] = useState("");
+const [libSearch, setLibSearch] = useState("");
   const [libCatFilter, setLibCatFilter] = useState(null);
+const [libTagFilter, setLibTagFilter] = useState(null);
+const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [disintegratingId, setDisintegratingId] = useState(null);
+const [removedIds, setRemovedIds] = useState(new Set());
+const [dupeLabelWarning, setDupeLabelWarning] = useState(false);
+const [formulaWarning, setFormulaWarning] = useState(null);
+  useEffect(() => {
+    if (document.getElementById("disint-style")) return;
+    const s = document.createElement("style");
+    s.id = "disint-style";
+    s.textContent = `@keyframes disintCanvasFade { 0%{opacity:1} 85%{opacity:1} 100%{opacity:0} }`;
+    document.head.appendChild(s);
+  }, []);
 
-  const otherKpis = kpiList.filter(k => k.id !== kpi?.id);
+const otherKpis = useMemo(() => {
+    const seen = new Set();
+    const result = [];
+    // systemKpis first (built-in), then custom library — dedup by id
+    [...(systemKpis ?? []), ...(allLocalKpis ?? [])].forEach(k => {
+      if (k.id !== kpi?.id && !seen.has(k.id)) { seen.add(k.id); result.push(k); }
+    });
+    return result;
+  }, [systemKpis, allLocalKpis, kpi?.id]);
+
+const validateFormula = (f) => {
+    if (!f) return "No hay fórmula definida.";
+    if (f.type === "text") {
+      const unassigned = Object.entries(f.variables ?? {}).filter(([, v]) => !v).map(([k]) => k);
+      if (unassigned.length > 0) return `Variables sin asignar: ${unassigned.join(", ")}`;
+      if (!f.expression?.trim()) return "La expresión está vacía.";
+      try {
+        let expr = f.expression;
+        Object.keys(f.variables ?? {}).forEach(letter => { expr = expr.replaceAll(letter, "(1)"); });
+        Function(`"use strict"; return (${expr})`)();
+      } catch (e) {
+        return `Expresión inválida: ${e.message}`;
+      }
+      const usedLetters = [...(f.expression ?? "").matchAll(/[A-Z]/g)].map(m => m[0]);
+      const definedLetters = new Set(Object.keys(f.variables ?? {}));
+      const undefinedLetters = [...new Set(usedLetters)].filter(l => !definedLetters.has(l));
+      if (undefinedLetters.length > 0) return `Letras sin mapear: ${undefinedLetters.join(", ")}`;
+    }
+    return null;
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
 <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-hidden flex flex-col"
         style={{ boxShadow: "0 32px 80px -16px rgba(26,47,138,0.25), 0 8px 24px -8px rgba(0,0,0,0.08)" }}
-        onClick={e => e.stopPropagation()}>
+onClick={e => e.stopPropagation()}>
+
+{dupeLabelWarning && (
+  <div className="absolute inset-0 z-50 flex items-center justify-center rounded-3xl"
+    style={{ background: "rgba(255,255,255,0.85)", backdropFilter: "blur(8px)" }}>
+    <div className="flex flex-col items-center gap-4 p-8 rounded-2xl bg-white border border-gray-100 mx-6"
+      style={{ boxShadow: "0 24px 60px -12px rgba(26,47,138,0.2)" }}>
+      <div className="w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0"
+        style={{ background: "#fef3c7" }}>
+        <AlertTriangle size={22} style={{ color: "#d97706" }} />
+      </div>
+      <div className="text-center">
+        <p className="text-sm font-black text-gray-900 mb-1">Nombre duplicado</p>
+        <p className="text-xs text-gray-400 leading-relaxed">
+          Ya existe un KPI llamado <span className="font-black text-gray-700">"{label.trim()}"</span>.<br />
+          Por favor elige un nombre único antes de guardar.
+        </p>
+      </div>
+      <button
+        onClick={() => setDupeLabelWarning(false)}
+        className="w-full py-2.5 rounded-xl text-xs font-black text-white transition-all"
+        style={{ background: "linear-gradient(135deg, #1a2f8a 0%, #3b54b8 100%)" }}>
+        Entendido
+      </button>
+    </div>
+  </div>
+)}
+{formulaWarning && (
+  <div className="absolute inset-0 z-50 flex items-center justify-center rounded-3xl"
+    style={{ background: "rgba(255,255,255,0.85)", backdropFilter: "blur(8px)" }}>
+    <div className="flex flex-col items-center gap-4 p-8 rounded-2xl bg-white border border-gray-100 mx-6"
+      style={{ boxShadow: "0 24px 60px -12px rgba(26,47,138,0.2)" }}>
+      <div className="w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0"
+        style={{ background: "#fee2e2" }}>
+        <AlertTriangle size={22} style={{ color: "#dc2626" }} />
+      </div>
+      <div className="text-center">
+        <p className="text-sm font-black text-gray-900 mb-1">Fórmula inválida</p>
+        <p className="text-xs text-gray-400 leading-relaxed">{formulaWarning}</p>
+      </div>
+      <div className="flex gap-2 w-full">
+        <button
+          onClick={() => setFormulaWarning(null)}
+          className="flex-1 py-2.5 rounded-xl text-xs font-black transition-all"
+          style={{ background: "#f3f4f6", color: "#6b7280" }}>
+          Corregir
+        </button>
+        <button
+          onClick={() => {
+            setFormulaWarning(null);
+            onSave({ label: label.trim(), description, format, tag, benchmark, category: category === "__custom__" ? customCategoryLabel || "Custom" : category, formula });
+          }}
+          className="flex-1 py-2.5 rounded-xl text-xs font-black text-white transition-all"
+          style={{ background: "#dc2626" }}>
+          Guardar igual
+        </button>
+      </div>
+    </div>
+  </div>
+)}
 
 {/* Header */}
 <div className="px-6 pt-6 pb-5 flex items-center justify-between flex-shrink-0">
@@ -2067,13 +2554,16 @@ const [tag, setTag] = useState(kpi?.tag ?? "");
 
 {/* Library mode */}
 {mode === "library" && (
-<LibraryPicker onSave={(data) => {
-    if (data === "__custom__") {
-      setMode("customList");
-    } else {
-      onSave(data);
-    }
-  }} />
+<LibraryPicker
+    onSave={(data) => {
+      if (data === "__custom__") {
+        setMode("customList");
+      } else {
+        onSave(data);
+      }
+    }}
+    onDuplicate={onDuplicate}
+  />
 )}
 {/* Custom KPI list mode */}
 {mode === "customList" && (
@@ -2097,13 +2587,17 @@ const [tag, setTag] = useState(kpi?.tag ?? "");
                 )}
               </div>
 <LibCategoryPill value={libCatFilter} onChange={setLibCatFilter} />
+              <LibTagPill value={libTagFilter} onChange={setLibTagFilter} allLocalKpis={allLocalKpis} />
             </div>
             <div className="overflow-y-auto flex-1 px-5 pb-5">
              {(() => {
-                const filtered = allLocalKpis.filter(k => {
+const filtered = allLocalKpis.filter(k => {
+                  if (removedIds.has(k.id)) return false;
+                  if (k.tag === "__library__") return false;
                   const matchSearch = !libSearch.trim() || k.label.toLowerCase().includes(libSearch.toLowerCase()) || (k.description ?? "").toLowerCase().includes(libSearch.toLowerCase());
                   const matchCat = !libCatFilter || k.category === libCatFilter;
-                  return matchSearch && matchCat;
+                  const matchTag = !libTagFilter || k.tag === libTagFilter;
+                  return matchSearch && matchCat && matchTag;
                 });
                 return filtered.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-12 text-center">
@@ -2116,7 +2610,18 @@ const [tag, setTag] = useState(kpi?.tag ?? "");
 ) : (
 <div className="grid grid-cols-2 gap-2 mb-4 pt-2">
                   {filtered.map(k => (
-<div key={k.id} onClick={() => onSave(k)} className="flex flex-col p-4 rounded-xl border border-gray-100 hover:border-[#1a2f8a]/30 hover:bg-[#eef1fb]/50 transition-all group cursor-pointer">
+<div key={k.id}
+  onClick={() => (confirmDeleteId === k.id || disintegratingId === k.id) ? null : onSave(k)}
+  className={`relative flex flex-col rounded-xl border transition-all group overflow-hidden ${
+    disintegratingId === k.id ? "border-gray-100 cursor-default p-4" :
+    confirmDeleteId === k.id ? "border-red-200 bg-red-50 cursor-pointer p-4" :
+    "border-gray-100 hover:border-[#1a2f8a]/30 hover:bg-[#eef1fb]/50 p-4 cursor-pointer"
+  }`}
+style={{
+    pointerEvents: disintegratingId === k.id ? "none" : "auto",
+    opacity: disintegratingId === k.id ? 0 : 1,
+    transition: disintegratingId === k.id ? "opacity 0.4s ease-in 0.2s" : "none",
+  }}>
                       <div className="flex items-start justify-between gap-3 mb-3">
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
@@ -2148,17 +2653,67 @@ const [tag, setTag] = useState(kpi?.tag ?? "");
                         )}
                       </div>
 <div className="flex items-center justify-end gap-1.5 mt-auto pt-2 border-t border-gray-50 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+                        <button onClick={(e) => { e.stopPropagation(); onDuplicate?.({ ...k, label: k.label + " 2" }); }}
+                          className="w-7 h-7 rounded-lg flex items-center justify-center transition-all hover:scale-110 flex-shrink-0"
+                          style={{ background: "#f3f4f6", color: "#6b7280" }}
+                          title="Duplicate">
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                        </button>
                         <button onClick={(e) => { e.stopPropagation(); onEditLibraryKpi?.(k); }}
                           className="w-7 h-7 rounded-lg flex items-center justify-center transition-all hover:scale-110 flex-shrink-0"
                           style={{ background: "#eef1fb", color: "#1a2f8a" }}>
                           <Edit3 size={10} />
                         </button>
-                        <button onClick={(e) => { e.stopPropagation(); onDeleteLibraryKpi?.(k.id); }}
-                          className="w-7 h-7 rounded-lg flex items-center justify-center transition-all hover:scale-110 flex-shrink-0"
-                          style={{ background: "#fee2e2", color: "#dc2626" }}>
-                          <Trash2 size={10} />
-                        </button>
+{confirmDeleteId !== k.id && (
+                          <button onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(k.id); }}
+                            className="w-7 h-7 rounded-lg flex items-center justify-center transition-all hover:scale-110 flex-shrink-0"
+                            style={{ background: "#fee2e2", color: "#dc2626" }}>
+                            <Trash2 size={10} />
+                          </button>
+                        )}
+</div>
+{disintegratingId === k.id && (
+                      <>
+                        <div className="absolute inset-0 rounded-xl z-[9]"
+                          style={{ animation: "disintFade 1.4s ease-in forwards" }} />
+                        <DisintegrationOverlay />
+                        <style>{`@keyframes disintFade { 0% { background: transparent; } 30% { background: rgba(255,255,255,0); } 100% { background: rgba(255,255,255,1); } }`}</style>
+                      </>
+                    )}
+                    {confirmDeleteId === k.id && (
+                      <div className="absolute inset-0 rounded-xl flex flex-col items-center justify-center gap-3 p-4"
+                        style={{ background: "rgba(254,242,242,0.97)", backdropFilter: "blur(4px)" }}
+                        onClick={e => e.stopPropagation()}>
+                        <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
+                          <Trash2 size={16} className="text-red-500" />
+                        </div>
+                        <div className="text-center">
+                          <p className="text-sm font-black text-red-700">¿Eliminar KPI?</p>
+                          <p className="text-[10px] text-red-400 mt-0.5 leading-snug">"{k.label}" será eliminado permanentemente</p>
+                        </div>
+                        <div className="flex gap-2 w-full">
+                          <button onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(null); }}
+                            className="flex-1 py-2 rounded-xl text-xs font-black transition-all hover:scale-105"
+                            style={{ background: "#f3f4f6", color: "#6b7280" }}>
+                            Cancelar
+                          </button>
+<button onClick={(e) => {
+                            e.stopPropagation();
+                            setConfirmDeleteId(null);
+                            setDisintegratingId(k.id);
+                            setTimeout(() => {
+                              setRemovedIds(prev => new Set([...prev, k.id]));
+                              onDeleteLibraryKpi?.(k.id);
+                              setDisintegratingId(null);
+                            }, 1600);
+                          }}
+                            className="flex-1 py-2 rounded-xl text-xs font-black text-white transition-all hover:scale-105"
+                            style={{ background: "#dc2626", boxShadow: "0 4px 12px -2px rgba(220,38,38,0.4)" }}>
+                            Eliminar
+                          </button>
+                        </div>
                       </div>
+                    )}
                     </div>
                   ))}
 </div>
@@ -2190,10 +2745,27 @@ const [tag, setTag] = useState(kpi?.tag ?? "");
             </div>
             <div>
               <label className="text-[9px] font-black uppercase tracking-[0.18em] mb-1.5 block" style={{ color: "#9ca3af" }}>Category</label>
-<CategoryPill
-                value={category}
-                onChange={v => { setCategory(v); if (v !== "__custom__") setCustomCategoryLabel(""); }}
-              />
+{(() => {
+  const existingCategories = [...new Set(allLocalKpis.map(k => k.category).filter(c => c && c !== "__custom__"))].sort();
+  const dynamicOptions = [
+    { value: "Liquidez",     label: "Liquidez" },
+    { value: "Solvencia",    label: "Solvencia" },
+    { value: "Rentabilidad", label: "Rentabilidad" },
+    { value: "Eficiencia",   label: "Eficiencia" },
+    { value: "Mercado",      label: "Mercado" },
+    ...existingCategories
+      .filter(c => !["Liquidez","Solvencia","Rentabilidad","Eficiencia","Mercado"].includes(c))
+      .map(c => ({ value: c, label: c })),
+    { value: "__custom__", label: "Custom…" },
+  ];
+  return (
+    <CategoryPill
+      value={category}
+      onChange={v => { setCategory(v); if (v !== "__custom__") setCustomCategoryLabel(""); }}
+      options={dynamicOptions}
+    />
+  );
+})()}
               {category === "__custom__" && (
                 <input value={customCategoryLabel} onChange={e => setCustomCategoryLabel(e.target.value)}
                   placeholder="Category name"
@@ -2213,12 +2785,7 @@ const [tag, setTag] = useState(kpi?.tag ?? "");
             </div>
             <div>
               <label className="text-[9px] font-black uppercase tracking-[0.18em] mb-1.5 block" style={{ color: "#9ca3af" }}>Tag</label>
-              <input value={tag} onChange={e => setTag(e.target.value)}
-                placeholder="e.g. Core, Deuda…"
-                className="w-full rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-800 outline-none transition-all"
-                style={{ background: "#f8f9ff", border: "1.5px solid #e8eaf0" }}
-                onFocus={e => e.target.style.borderColor = "#1a2f8a40"}
-                onBlur={e => e.target.style.borderColor = "#e8eaf0"} />
+<TagInput tag={tag} setTag={setTag} allLocalKpis={allLocalKpis} />
             </div>
           </div>
 
@@ -2247,54 +2814,58 @@ const [tag, setTag] = useState(kpi?.tag ?? "");
               </div>
 ) : (
               <div className="bg-[#f8f9ff] rounded-xl border border-gray-100 p-4 min-h-[80px]">
-                <TextFormulaBuilder
+<TextFormulaBuilder
                   formula={formula?.type === "text" ? formula : null}
                   onChange={setFormula}
                   kpiList={otherKpis}
                   accountCodes={accountCodes}
+                  accountCodeLabels={accountCodeLabels}
+                  builtInIds={builtInIds}
+                  dimsByAccount={dimsByAccount}
                 />
               </div>
             )}
           </div>
 
 
-
 {/* Benchmark ranges */}
 <div>
-            <label className="text-[9px] font-black uppercase tracking-[0.18em] mb-3 block" style={{ color: "#9ca3af" }}>Benchmark Ranges</label>
-            <div className="flex flex-col gap-2">
-              {[
-                { key: "unhealthy", label: "Unhealthy", dot: "#dc2626", bg: "#fff5f5", border: "#fecaca", text: "#dc2626" },
-                { key: "healthy",   label: "Healthy",   dot: "#16a34a", bg: "#f0fdf4", border: "#86efac", text: "#16a34a" },
-                { key: "vhealthy",  label: "Excellent", dot: "#1a2f8a", bg: "#eef1fb", border: "#a5b4fc", text: "#1a2f8a" },
-              ].map(({ key, label, dot, bg, border, text }) => (
-                <div key={key} className="flex items-center gap-3 px-3 py-2 rounded-xl"
-style={{ background: bg, border: `1.5px solid ${border}` }}>
-                  <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: dot }} />
-                  <span className="text-[10px] font-black uppercase tracking-wider w-20 flex-shrink-0" style={{ color: text }}>{label}</span>
-                  <div className="flex items-center gap-2 flex-1">
-                    <span className="text-[9px] font-black flex-shrink-0" style={{ color: text }}>{">"}</span>
-                    <input
-                      value={benchmark[key].min}
-                      onChange={e => setBenchmark(prev => ({ ...prev, [key]: { ...prev[key], min: e.target.value } }))}
-                      placeholder="no limit"
-                      className="flex-1 rounded-lg px-2 py-1 text-[11px] font-mono font-bold outline-none border"
-                      style={{ background: "#fff", borderColor: border, color: text }}
-                    />
-                    <span className="text-[9px] font-black flex-shrink-0" style={{ color: text }}>{"<"}</span>
-                    <input
-                      value={benchmark[key].max}
-                      onChange={e => setBenchmark(prev => ({ ...prev, [key]: { ...prev[key], max: e.target.value } }))}
-                      placeholder="no limit"
-                      className="flex-1 rounded-lg px-2 py-1 text-[11px] font-mono font-bold outline-none border"
-                      style={{ background: "#fff", borderColor: border, color: text }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-            <p className="text-[10px] mt-2" style={{ color: "#d1d5db" }}>Leave blank for no limit on that side</p>
-          </div>
+  <label className="text-[9px] font-black uppercase tracking-[0.18em] mb-2 block" style={{ color: "#9ca3af" }}>Benchmark Ranges</label>
+  <div className="flex flex-col gap-1.5">
+    {[
+      { key: "unhealthy", label: "Unhealthy", accent: "#dc2626", bg: "#fff8f8" },
+      { key: "healthy",   label: "Healthy",   accent: "#16a34a", bg: "#f8fff9" },
+      { key: "vhealthy",  label: "Excellent", accent: "#1a2f8a", bg: "#f8f9ff" },
+    ].map(({ key, label, accent, bg }) => (
+      <div key={key} className="flex items-center gap-3 rounded-xl px-3 py-2" style={{ background: bg }}>
+        <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: accent }} />
+        <span className="text-[10px] font-black uppercase tracking-wider flex-shrink-0" style={{ color: accent, width: 68 }}>{label}</span>
+        <div className="flex items-center gap-1.5 flex-1">
+          <span className="text-[9px] font-black text-gray-300 flex-shrink-0">MIN</span>
+          <input
+            value={benchmark[key].min}
+            onChange={e => setBenchmark(prev => ({ ...prev, [key]: { ...prev[key], min: e.target.value } }))}
+            placeholder="—"
+            className="w-0 flex-1 rounded-lg px-2.5 py-1.5 text-xs font-mono outline-none transition-all"
+            style={{ background: "rgba(0,0,0,0.04)", color: "#1f2937" }}
+            onFocus={e => { e.target.style.background = "#fff"; e.target.style.boxShadow = `0 0 0 2px ${accent}30`; }}
+            onBlur={e => { e.target.style.background = "rgba(0,0,0,0.04)"; e.target.style.boxShadow = "none"; }}
+          />
+          <span className="text-[9px] font-black text-gray-300 flex-shrink-0">MAX</span>
+          <input
+            value={benchmark[key].max}
+            onChange={e => setBenchmark(prev => ({ ...prev, [key]: { ...prev[key], max: e.target.value } }))}
+            placeholder="—"
+            className="w-0 flex-1 rounded-lg px-2.5 py-1.5 text-xs font-mono outline-none transition-all"
+            style={{ background: "rgba(0,0,0,0.04)", color: "#1f2937" }}
+            onFocus={e => { e.target.style.background = "#fff"; e.target.style.boxShadow = `0 0 0 2px ${accent}30`; }}
+            onBlur={e => { e.target.style.background = "rgba(0,0,0,0.04)"; e.target.style.boxShadow = "none"; }}
+          />
+        </div>
+      </div>
+    ))}
+  </div>
+</div>
 
         </div>
         )}
@@ -2304,7 +2875,25 @@ style={{ background: bg, border: `1.5px solid ${border}` }}>
 {mode === "custom" && (
         <div className="flex-shrink-0 px-6 py-4 border-t border-gray-100 flex flex-col gap-2"
           style={{ background: "rgba(248,249,255,0.8)" }}>
-          <button onClick={() => onSave({ label, description, format, tag, benchmark, category: category === "__custom__" ? customCategoryLabel || "Custom" : category, formula })}
+<button onClick={() => {
+            const allLabels = new Set([
+              ...(allLocalKpis ?? []).map(k => k.label),
+              ...(systemKpis ?? []).map(k => k.label),
+            ]);
+            if (kpi) allLabels.delete(kpi.label);
+            const finalLabel = label.trim();
+            const finalLabelLower = finalLabel.toLowerCase();
+            if ([...allLabels].some(l => l.toLowerCase() === finalLabelLower)) {
+              setDupeLabelWarning(true);
+              return;
+            }
+            const formulaErr = validateFormula(formula);
+            if (formulaErr) {
+              setFormulaWarning(formulaErr);
+              return;
+            }
+            onSave({ label: finalLabel, description, format, tag, benchmark, category: category === "__custom__" ? customCategoryLabel || "Custom" : category, formula });
+          }}
             disabled={!label}
             className="w-full py-3 rounded-xl text-xs font-black transition-all disabled:opacity-40 flex items-center justify-center gap-2"
             style={{ background: "linear-gradient(135deg, #1a2f8a 0%, #3b54b8 100%)", color: "white", boxShadow: "0 4px 14px -4px rgba(26,47,138,0.5)" }}>
@@ -2333,6 +2922,9 @@ function GraphSection({
   ccTagToCodes, sectionCodes, sumAccountCodes,
   defaultCompany, defaultKpiIds,
   onStateChange,
+  companyLegalName,
+  viewPeriod,
+  compareMode,
   filterStyle, colors, body1Style, body2Style,
 }) {
   // Default: end = anchor year/month, start = 12 months earlier
@@ -2341,7 +2933,7 @@ function GraphSection({
   let startY = anchorY, startM = anchorM - 11;
   while (startM < 1) { startM += 12; startY -= 1; }
 
-  const [secCompany, setSecCompany] = useState(defaultCompany || "");
+ const [secCompanies, setSecCompanies] = useState(defaultCompany ? [defaultCompany] : []);
   const [secStartYear, setSecStartYear] = useState(String(startY));
   const [secStartMonth, setSecStartMonth] = useState(String(startM));
   const [secEndYear, setSecEndYear] = useState(String(anchorY));
@@ -2350,15 +2942,26 @@ function GraphSection({
   const [secStructure, setSecStructure] = useState(structure);
   const [secDimGroup, setSecDimGroup] = useState("");
   const [secDim, setSecDim] = useState("");
-  const [secMode, setSecMode] = useState("monthly"); // "monthly" | "ytd"
-  const [secXAxis, setSecXAxis] = useState("month"); // "month" | "year"
+const secMode = viewPeriod === "ytd" ? "ytd" : "monthly";
+const [secXAxis, setSecXAxis] = useState("month");
+const [cmpBars, setCmpBars] = useState([
+    { id: "B", companies: [], source, structure, startYear: String(startY), startMonth: String(startM), endYear: String(anchorY), endMonth: String(anchorM), dimGroup: "", dim: "" },
+    { id: "C", companies: [], source, structure, startYear: String(startY), startMonth: String(startM), endYear: String(anchorY), endMonth: String(anchorM), dimGroup: "", dim: "" },
+  ]);
+  const [cmpChartData, setCmpChartData] = useState({});
+  const updateCmpBar = (id, patch) => setCmpBars(prev => prev.map(b => b.id === id ? { ...b, ...patch } : b));
+  const removeCmpBar = (id) => setCmpBars(prev => prev.filter(b => b.id !== id));
+
   const [secKpiIds, setSecKpiIds] = useState(defaultKpiIds || []);
-  const [kpiPickerOpen, setKpiPickerOpen] = useState(false);
+const [kpiPickerOpen, setKpiPickerOpen] = useState(false);
+  const [kpiSearch, setKpiSearch] = useState("");
+  const [kpiPickerRect, setKpiPickerRect] = useState(null);
   const kpiPickerRef = useRef(null);
 
-  const [chartData, setChartData] = useState([]);
+const [chartData, setChartData] = useState([]);
+
   const [loading, setLoading] = useState(false);
-  const [tableOpen, setTableOpen] = useState(false);
+const [tableOpen, setTableOpen] = useState(true);
   const chartContainerRef = useRef(null);
 
   useEffect(() => {
@@ -2416,12 +3019,13 @@ function GraphSection({
   }, [secStartYear, secStartMonth, secEndYear, secEndMonth]);
 
   const fetchChartData = useCallback(async () => {
-    if (!token || !secSource || !secStructure || !secCompany || periods.length < 2) { setChartData([]); return; }
+    if (!token || !secSource || !secStructure || !secCompanies?.length || periods.length < 2) { setChartData([]); return; }
     setLoading(true);
 
     try {
       const results = await Promise.all(periods.map(async ({ y, m, isPrior }) => {
-        const filter = `Year eq ${y} and Month eq ${m} and Source eq '${secSource}' and GroupStructure eq '${secStructure}' and CompanyShortName eq '${secCompany}'`;
+      const companyFilter = secCompanies.map(c => `CompanyShortName eq '${c}'`).join(" or ");
+        const filter = `Year eq ${y} and Month eq ${m} and Source eq '${secSource}' and GroupStructure eq '${secStructure}' and (${companyFilter})`;
         const res = await fetch(
           `/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
           { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }
@@ -2491,16 +3095,84 @@ const kpis = computeAllKpisResolved(kpiList, pivotForKpi, ccTagToCodes, sectionC
     } finally {
       setLoading(false);
     }
-}, [token, secSource, secStructure, secCompany, periods, secKpiIds, kpiList, allKpis, ccTagToCodes, sectionCodes, sumAccountCodes, secMode, secGroupDimCodes]);
+}, [token, secSource, secStructure, secCompanies, periods, secKpiIds, kpiList, allKpis, ccTagToCodes, sectionCodes, sumAccountCodes, secMode, secGroupDimCodes]);
 
- useEffect(() => { fetchChartData(); }, [fetchChartData]);
+useEffect(() => { fetchChartData(); }, [fetchChartData]);
+
+useEffect(() => {
+    if (!compareMode || !token) { setCmpChartData({}); return; }
+    cmpBars.forEach(bar => {
+      if (!bar.source || !bar.structure || !bar.companies?.length) return;
+      const sY = parseInt(bar.startYear), sM = parseInt(bar.startMonth);
+      const eY = parseInt(bar.endYear), eM = parseInt(bar.endMonth);
+      if (!sY || !sM || !eY || !eM) return;
+      const list = [];
+      let pY = sY, pM = sM - 1;
+      if (pM < 1) { pM = 12; pY -= 1; }
+      list.push({ y: pY, m: pM, isPrior: true });
+      let y = sY, m = sM;
+      while (y < eY || (y === eY && m <= eM)) {
+        list.push({ y, m, isPrior: false });
+        m += 1; if (m > 12) { m = 1; y += 1; }
+        if (list.length > 120) break;
+      }
+      (async () => {
+        try {
+          const results = await Promise.all(list.map(async ({ y, m, isPrior }) => {
+            const cf = bar.companies.map(c => `CompanyShortName eq '${c}'`).join(" or ");
+            const filter = `Year eq ${y} and Month eq ${m} and Source eq '${bar.source}' and GroupStructure eq '${bar.structure}' and (${cf})`;
+            const res = await fetch(`/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
+              { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+            if (!res.ok) return { y, m, isPrior, pivot: new Map() };
+            const json = await res.json();
+            const rows = json.value ?? (Array.isArray(json) ? json : []);
+            const p = new Map();
+            rows.forEach(r => {
+              const ac = r.AccountCode ?? r.accountCode ?? "";
+              const acType = r.AccountType ?? r.accountType ?? "";
+              if (!ac || (sumAccountCodes && sumAccountCodes.has(ac)) || (acType && acType !== "P/L")) return;
+              if (bar.dim) {
+                if (!parseDimensions(r.Dimensions).some(([, code]) => code === bar.dim)) return;
+              } else if (bar.dimGroup) {
+                if (!parseDimensions(r.Dimensions).some(([g]) => g === bar.dimGroup)) return;
+              }
+              p.set(ac, (p.get(ac) ?? 0) + parseAmt(r.AmountYTD ?? r.amountYTD ?? 0));
+            });
+            return { y, m, isPrior, pivot: p };
+          }));
+          const series = [];
+          for (let i = 1; i < results.length; i++) {
+            const curr = results[i];
+            if (curr.isPrior) continue;
+            let pivot;
+            if (secMode === "ytd") {
+              pivot = curr.pivot;
+            } else {
+              const prev = results[i - 1];
+              const mp = new Map();
+              new Set([...curr.pivot.keys(), ...prev.pivot.keys()]).forEach(ac => {
+                mp.set(ac, (curr.pivot.get(ac) ?? 0) - (curr.m === 1 ? 0 : (prev.pivot.get(ac) ?? 0)));
+              });
+              pivot = mp;
+            }
+            const kpis = computeAllKpisResolved(kpiList, pivot, ccTagToCodes, sectionCodes, allKpis);
+            const row = { period: `${String(curr.m).padStart(2, "0")}/${String(curr.y).slice(-2)}` };
+            secKpiIds.forEach(kid => { const v = kpis.get(kid); row[kid] = (v === null || v === undefined || isNaN(v)) ? null : v; });
+            series.push(row);
+          }
+          setCmpChartData(prev => ({ ...prev, [bar.id]: series }));
+        } catch (e) { console.error("Cmp fetch error:", e); }
+      })();
+    });
+  }, [compareMode, cmpBars, token, secMode, secKpiIds, kpiList, allKpis, ccTagToCodes, sectionCodes, sumAccountCodes]);
+
 
   // Expose state up to parent for export
   useEffect(() => {
     if (onStateChange) {
       onStateChange(sectionId, {
         sectionId,
-        company: secCompany,
+   company: Array.isArray(secCompanies) ? secCompanies.join(", ") : "",
         startY: secStartYear, startM: secStartMonth,
         endY: secEndYear, endM: secEndMonth,
         source: secSource, structure: secStructure,
@@ -2510,7 +3182,7 @@ const kpis = computeAllKpisResolved(kpiList, pivotForKpi, ccTagToCodes, sectionC
         chartContainerRef,
       });
     }
-  }, [sectionId, secCompany, secStartYear, secStartMonth, secEndYear, secEndMonth,
+}, [sectionId, secCompanies, secStartYear, secStartMonth, secEndYear, secEndMonth,
       secSource, secStructure, secDimGroup, secDim, secMode, secKpiIds, chartData, onStateChange]);
 
 const COLORS = [
@@ -2524,90 +3196,262 @@ const COLORS = [
     "#84cc16",
   ];
 
-  const toggleKpi = (id) => {
+const toggleKpi = (id) => {
     setSecKpiIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
 
+
+
+  const allPickerKpis = useMemo(() => {
+    const seen = new Set();
+    const result = [];
+    [...(allKpis ?? []), ...(kpiList ?? [])].forEach(k => {
+      if (!seen.has(k.id)) { seen.add(k.id); result.push(k); }
+    });
+    return result.sort((a, b) => a.label.localeCompare(b.label));
+  }, [allKpis, kpiList]);
+
+const graphFilters = [
+{ label: "Company", values: secCompanies, onChange: setSecCompanies, options: companyCodes.map(c => ({ value: c, label: companyLegalName(c) })), multiselect: true },
+    { label: "Start M", value: secStartMonth, onChange: setSecStartMonth, options: MONTHS.map(m => ({ value: String(m.value), label: m.label })) },
+    { label: "Start Y", value: secStartYear, onChange: setSecStartYear, options: YEARS.map(y => ({ value: String(y), label: String(y) })) },
+    { label: "End M", value: secEndMonth, onChange: setSecEndMonth, options: MONTHS.map(m => ({ value: String(m.value), label: m.label })) },
+    { label: "End Y", value: secEndYear, onChange: setSecEndYear, options: YEARS.map(y => ({ value: String(y), label: String(y) })) },
+    ...(sourceOpts.length > 0 ? [{ label: "Source", value: secSource, onChange: setSecSource, options: sourceOpts }] : []),
+    ...(structureOpts.length > 0 ? [{ label: "Structure", value: secStructure, onChange: setSecStructure, options: structureOpts }] : []),
+    ...(secDimGroups.length > 0 ? [{ label: "Dim Grp", value: secDimGroup, onChange: v => { setSecDimGroup(v); setSecDim(""); }, options: [{ value: "", label: "Dim Grp" }, ...secDimGroups.map(g => ({ value: g, label: g }))] }] : []),
+    ...(secDimGroup && secGroupDimOptions.length > 0 ? [{ label: "Dims", value: secDim, onChange: setSecDim, options: [{ value: "", label: "Dims" }, ...secGroupDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))] }] : []),
+
+  ];
 return (
-    <div className={`flex flex-col bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden ${tableOpen ? "flex-shrink-0" : "flex-1 min-h-[200px]"}`}>
-      {/* Section filter bar */}
-      <div className="flex items-center gap-1.5 flex-wrap px-4 py-2.5 bg-[#f8f9ff] border-b border-gray-100">
-        <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50 mr-1">§{sectionId}</span>
-
-<FilterPill label="COMP" value={secCompany} onChange={setSecCompany} options={companyCodes.map(c => ({ value: c, label: c }))} filterStyle={filterStyle} colors={colors} />
-
-        <span className="text-[9px] font-black text-gray-300 mx-1">│</span>
-        <FilterPill label="Start M" value={secStartMonth} onChange={setSecStartMonth} options={MONTHS.map(m => ({ value: String(m.value), label: m.label.slice(0,3) }))} filterStyle={filterStyle} colors={colors} />
-        <FilterPill label="Start Y" value={secStartYear} onChange={setSecStartYear} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} filterStyle={filterStyle} colors={colors} />
-        <FilterPill label="End M" value={secEndMonth} onChange={setSecEndMonth} options={MONTHS.map(m => ({ value: String(m.value), label: m.label.slice(0,3) }))} filterStyle={filterStyle} colors={colors} />
-        <FilterPill label="End Y" value={secEndYear} onChange={setSecEndYear} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} filterStyle={filterStyle} colors={colors} />
-
-        <span className="text-[9px] font-black text-gray-300 mx-1">│</span>
-        {sourceOpts.length > 0 && <FilterPill label="SRC" value={secSource} onChange={setSecSource} options={sourceOpts} filterStyle={filterStyle} colors={colors} />}
-        {structureOpts.length > 0 && <FilterPill label="STRUCT" value={secStructure} onChange={setSecStructure} options={structureOpts} filterStyle={filterStyle} colors={colors} />}
-
-        {secDimGroups.length > 0 && <FilterPill label="DIM GRP" value={secDimGroup} onChange={v => { setSecDimGroup(v); setSecDim(""); }} options={[{ value: "", label: "None" }, ...secDimGroups.map(g => ({ value: g, label: g }))]} filterStyle={filterStyle} colors={colors} />}
-        {secDimGroup && secGroupDimOptions.length > 0 && <FilterPill label="DIM" value={secDim} onChange={setSecDim} options={[{ value: "", label: "All" }, ...secGroupDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))]} filterStyle={filterStyle} colors={colors} />}
-
-        <span className="text-[9px] font-black text-gray-300 mx-1">│</span>
-        <FilterPill label="Mode" value={secMode} onChange={setSecMode} options={[{ value: "monthly", label: "Monthly" }, { value: "ytd", label: "YTD" }]} filterStyle={filterStyle} colors={colors} />
-
+  <div className="flex flex-col gap-3 flex-1 min-h-0">
+{/* Filter card — matches compare filter style */}
+    <div className="bg-white rounded-2xl shadow-xl border border-gray-100 flex-shrink-0"
+      style={{ overflow: "visible", position: "relative", zIndex: 30 }}>
+      <div className="px-5 py-3 flex items-center gap-2 no-scrollbar" style={{ flexWrap: "nowrap", overflowX: "auto", overflowY: "visible" }}>
+        <div className="flex items-center gap-2 mr-2 flex-shrink-0">
+          <div className="w-8 h-8 rounded-xl flex items-center justify-center"
+            style={{ background: `linear-gradient(135deg, ${colors?.primary} 0%, #3b54b8 100%)`, boxShadow: `0 4px 12px -4px ${colors?.primary}80` }}>
+            <BarChart3 size={14} className="text-white" />
+          </div>
+          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: colors?.primary }}>Graph</span>
+        </div>
+{graphFilters.map((f, i) =>
+          f.multiselect ? (
+            <MultiFilterPill key={i} label={f.label} values={f.values} onChange={f.onChange} options={f.options} colors={colors} />
+          ) : (
+            <HeaderFilterPill key={i} label={f.label} value={f.value} onChange={f.onChange} options={f.options} />
+          )
+        )}
         {/* KPI multiselect */}
         <div ref={kpiPickerRef} className="relative flex-shrink-0">
-          <button onClick={() => setKpiPickerOpen(o => !o)}
-            className="flex items-center gap-2 px-3 py-2 rounded-2xl border text-xs font-bold transition-all select-none bg-white border-[#c2c2c2] text-[#505050] shadow-sm hover:border-[#1a2f8a]/40">
-            <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50">KPIs</span>
-            <span className="text-[#1a2f8a]">{secKpiIds.length}</span>
-            <ChevronDown size={10} className={`transition-transform duration-200 text-[#1a2f8a]/40 ${kpiPickerOpen ? "rotate-180" : ""}`} />
+<button onClick={() => {
+            const rect = kpiPickerRef.current?.getBoundingClientRect();
+            setKpiPickerRect(rect ?? null);
+            setKpiPickerOpen(o => !o);
+          }}
+            className="flex items-center gap-2 rounded-xl select-none"
+            style={{ padding: "8px 12px", background: kpiPickerOpen ? "rgba(26,47,138,0.06)" : "transparent", transition: "background 220ms" }}>
+            <span className="text-[9px] font-black uppercase tracking-[0.18em]" style={{ color: colors?.primary, opacity: 0.55 }}>KPIs</span>
+            <span className="text-xs font-bold" style={{ color: colors?.primary }}>{secKpiIds.length}</span>
+            <ChevronDown size={11} style={{ color: colors?.primary, opacity: 0.4, transform: kpiPickerOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 280ms cubic-bezier(0.34,1.56,0.64,1)" }} />
           </button>
-          {kpiPickerOpen && (
-            <div className="absolute top-full right-0 mt-2 z-50 min-w-[240px] bg-white rounded-2xl border border-gray-100 shadow-xl overflow-hidden">
-              <div className="p-1.5 max-h-72 overflow-y-auto">
-                {kpiList.map(k => (
-                  <button key={k.id} onClick={() => toggleKpi(k.id)}
-                    className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-between gap-3
-                      ${secKpiIds.includes(k.id) ? "bg-[#eef1fb] text-[#1a2f8a]" : "text-gray-600 hover:bg-[#f8f9ff]"}`}>
-                    <span className="truncate">{k.label}</span>
-                    {secKpiIds.includes(k.id) && <Check size={10} className="flex-shrink-0" />}
-                  </button>
-                ))}
+{kpiPickerOpen && (() => {
+            const systemKpis = allPickerKpis.filter(k => allKpis?.some(s => s.id === k.id) && !kpiList?.some(c => c.id === k.id && c._createdBy));
+            const customKpis = allPickerKpis.filter(k => !systemKpis.some(s => s.id === k.id));
+            const filtered = (group) => group.filter(k => !kpiSearch.trim() || k.label.toLowerCase().includes(kpiSearch.toLowerCase()));
+            const filteredSystem = filtered(systemKpis);
+            const filteredCustom = filtered(customKpis);
+            return (
+              <div className="fixed z-[9999] rounded-2xl overflow-hidden flex flex-col"
+                style={{
+top: kpiPickerRect ? kpiPickerRect.bottom + 8 : 0,
+                  left: kpiPickerRect ? kpiPickerRect.left : 0,
+                  width: 280,
+                  maxHeight: 380,
+                  background: "rgba(255,255,255,0.98)", backdropFilter: "blur(20px)",
+                  border: "1px solid rgba(26,47,138,0.08)", boxShadow: "0 20px 50px -12px rgba(26,47,138,0.18)"
+                }}>
+                {/* Search */}
+                <div className="px-3 pt-3 pb-2 flex-shrink-0">
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-xl" style={{ background: "#f8f9ff", border: "1.5px solid #e8eaf0" }}>
+                    <Search size={11} style={{ color: "#9ca3af", flexShrink: 0 }} />
+                    <input
+                      autoFocus
+                      value={kpiSearch}
+                      onChange={e => setKpiSearch(e.target.value)}
+                      placeholder="Search KPIs…"
+                      className="flex-1 text-xs font-semibold text-gray-700 outline-none bg-transparent"
+                    />
+                    {kpiSearch && <button onClick={() => setKpiSearch("")}><X size={10} style={{ color: "#9ca3af" }} /></button>}
+                  </div>
+                </div>
+                {/* List */}
+                <div className="overflow-y-auto flex-1 px-1.5 pb-1.5" style={{ scrollbarWidth: "none" }}>
+                  {filteredSystem.length > 0 && (
+                    <>
+                      <div className="flex items-center gap-2 px-2 py-1.5">
+                        <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: colors?.primary }} />
+                        <span className="text-[9px] font-black uppercase tracking-[0.18em]" style={{ color: colors?.primary, opacity: 0.5 }}>System</span>
+                      </div>
+                      {filteredSystem.map(k => (
+                        <button key={k.id} onClick={() => toggleKpi(k.id)}
+                          className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between gap-3"
+                          style={{ background: secKpiIds.includes(k.id) ? "#eef1fb" : "transparent", color: secKpiIds.includes(k.id) ? "#1a2f8a" : "#475569" }}
+                          onMouseEnter={e => { if (!secKpiIds.includes(k.id)) e.currentTarget.style.background = "#f8f9ff"; }}
+                          onMouseLeave={e => { if (!secKpiIds.includes(k.id)) e.currentTarget.style.background = "transparent"; }}>
+                          <span className="truncate">{k.label}</span>
+                          {secKpiIds.includes(k.id) && <Check size={10} className="flex-shrink-0" style={{ color: colors?.primary }} />}
+                        </button>
+                      ))}
+                    </>
+                  )}
+                  {filteredCustom.length > 0 && (
+                    <>
+                      <div className="flex items-center gap-2 px-2 py-1.5 mt-1">
+                        <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: "#16a34a" }} />
+                        <span className="text-[9px] font-black uppercase tracking-[0.18em] text-emerald-600" style={{ opacity: 0.7 }}>Custom</span>
+                      </div>
+                      {filteredCustom.map(k => (
+                        <button key={k.id} onClick={() => toggleKpi(k.id)}
+                          className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between gap-3"
+                          style={{ background: secKpiIds.includes(k.id) ? "#dcfce7" : "transparent", color: secKpiIds.includes(k.id) ? "#15803d" : "#475569" }}
+                          onMouseEnter={e => { if (!secKpiIds.includes(k.id)) e.currentTarget.style.background = "#f0fdf4"; }}
+                          onMouseLeave={e => { if (!secKpiIds.includes(k.id)) e.currentTarget.style.background = "transparent"; }}>
+                          <span className="truncate">{k.label}</span>
+                          {secKpiIds.includes(k.id) && <Check size={10} className="flex-shrink-0 text-emerald-600" />}
+                        </button>
+                      ))}
+                    </>
+                  )}
+                  {filteredSystem.length === 0 && filteredCustom.length === 0 && (
+                    <p className="text-[10px] text-gray-300 text-center py-4 font-bold">No results</p>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
-
-        {loading && <Loader2 size={12} className="animate-spin text-[#1a2f8a] ml-auto" />}
+{loading && <Loader2 size={12} className="animate-spin ml-2" style={{ color: colors?.primary }} />}
+        {compareMode && (() => {
+          const CMP_COLORS = ["#CF305D", "#f59e0b"];
+          const allIds = ["B", "C"];
+          const missingIds = allIds.filter(id => !cmpBars.some(b => b.id === id));
+          if (missingIds.length === 0) return null;
+          return (
+            <div className="flex items-center gap-1 ml-1">
+              {missingIds.map((id, i) => {
+                const color = CMP_COLORS[allIds.indexOf(id)];
+                return (
+                  <button key={id} onClick={() => setCmpBars(prev => [...prev, {
+                    id,
+                    companies: [],
+                    source: secSource,
+                    structure: secStructure,
+                    startYear: secStartYear,
+                    startMonth: secStartMonth,
+                    endYear: secEndYear,
+                    endMonth: secEndMonth,
+                    dimGroup: "",
+                    dim: "",
+                  }])}
+                    className="flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-[9px] font-black uppercase tracking-[0.15em] transition-all hover:scale-105 flex-shrink-0"
+                    style={{ background: `${color}12`, color, border: `1px solid ${color}30` }}>
+                    <Plus size={9} />
+                    {id}
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })()}
       </div>
-
-   {/* Chart (full width) */}
-       <div ref={chartContainerRef}
-        className={tableOpen ? "relative flex-shrink-0" : "relative flex-1 min-h-0"}
-        style={tableOpen ? { height: "260px" } : undefined}>
-
-        <div className="absolute inset-0 px-4 py-3">
-{/* X-axis granularity toggle */}
-          <div className="absolute bottom-3 left-4 z-10 flex items-center gap-0.5 bg-white border border-gray-100 rounded-lg p-0.5 shadow-sm">
-            <button onClick={() => setSecXAxis("month")}
-              className="px-2 py-0.5 rounded-md text-[9px] font-black transition-all"
-              style={{
-                backgroundColor: secXAxis === "month" ? colors?.primary : "transparent",
-                color: secXAxis === "month" ? "#FFFFFF" : colors?.primary,
-              }}>
-              Month
-            </button>
-            <button onClick={() => setSecXAxis("year")}
-              className="px-2 py-0.5 rounded-md text-[9px] font-black transition-all"
-              style={{
-                backgroundColor: secXAxis === "year" ? colors?.primary : "transparent",
-                color: secXAxis === "year" ? "#FFFFFF" : colors?.primary,
-              }}>
-              Year
+{compareMode && cmpBars.map((bar, bi) => {
+        const CMP_COLORS = ["#CF305D", "#f59e0b"];
+        const cmpColor = CMP_COLORS[bi % CMP_COLORS.length];
+        const cmpDimOptions = bar.dimGroup ? dimensions.filter(d => (d.DimensionGroup ?? d.dimensionGroup ?? "") === bar.dimGroup).map(d => ({ code: d.DimensionCode ?? d.dimensionCode ?? "", name: d.DimensionName ?? d.dimensionName ?? "" })).filter(d => d.code) : [];
+        return (
+          <div key={bar.id} className="px-5 py-3 flex items-center gap-2 no-scrollbar border-t border-gray-50"
+            style={{ flexWrap: "nowrap", overflowX: "auto", overflowY: "visible" }}>
+            <div className="flex items-center gap-2 mr-2 flex-shrink-0">
+              <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+                style={{ background: `linear-gradient(135deg, ${cmpColor} 0%, ${cmpColor}aa 100%)`, boxShadow: `0 4px 12px -4px ${cmpColor}80` }}>
+                <span className="text-white text-[10px] font-black">{bar.id}</span>
+              </div>
+              <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: cmpColor }}>Compare {bar.id}</span>
+            </div>
+            <MultiFilterPill label="Company" values={bar.companies} onChange={v => updateCmpBar(bar.id, { companies: v })} options={companyCodes.map(c => ({ value: c, label: companyLegalName(c) }))} colors={{ primary: cmpColor }} />
+            <HeaderFilterPill label="Start M" value={bar.startMonth} onChange={v => updateCmpBar(bar.id, { startMonth: v })} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+            <HeaderFilterPill label="Start Y" value={bar.startYear} onChange={v => updateCmpBar(bar.id, { startYear: v })} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+            <HeaderFilterPill label="End M" value={bar.endMonth} onChange={v => updateCmpBar(bar.id, { endMonth: v })} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+            <HeaderFilterPill label="End Y" value={bar.endYear} onChange={v => updateCmpBar(bar.id, { endYear: v })} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+            {sourceOpts.length > 0 && <HeaderFilterPill label="Source" value={bar.source} onChange={v => updateCmpBar(bar.id, { source: v })} options={sourceOpts} />}
+            {structureOpts.length > 0 && <HeaderFilterPill label="Structure" value={bar.structure} onChange={v => updateCmpBar(bar.id, { structure: v })} options={structureOpts} />}
+            {secDimGroups.length > 0 && <HeaderFilterPill label="Dim Grp" value={bar.dimGroup} onChange={v => updateCmpBar(bar.id, { dimGroup: v, dim: "" })} options={[{ value: "", label: "Dim Grp" }, ...secDimGroups.map(g => ({ value: g, label: g }))]} />}
+            {bar.dimGroup && cmpDimOptions.length > 0 && <HeaderFilterPill label="Dims" value={bar.dim} onChange={v => updateCmpBar(bar.id, { dim: v })} options={[{ value: "", label: "Dims" }, ...cmpDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))]} />}
+            <button onClick={() => removeCmpBar(bar.id)}
+              className="flex-shrink-0 w-7 h-7 rounded-xl flex items-center justify-center ml-2 transition-all hover:scale-110"
+              style={{ background: `${cmpColor}15`, color: cmpColor }}>
+              <X size={11} />
             </button>
           </div>
+        );
+      })}
+    </div>
 
-          {chartData.length === 0 || secKpiIds.length === 0 ? (
-            <div className="flex items-center justify-center h-full text-xs text-gray-300 font-bold">
-              {secKpiIds.length === 0 ? "Select at least one KPI" : loading ? "Loading…" : "No data for selected range"}
+{/* Chart card */}
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
+
+{/* Chart */}
+      <div ref={chartContainerRef} className="relative flex-1 min-h-0" style={{ minHeight: 0 }}>
+        <div className="absolute inset-0 px-4 py-4">
+          {/* X-axis granularity toggle */}
+          <div className="absolute bottom-4 left-4 z-10 flex items-center gap-0.5 rounded-xl p-0.5 shadow-sm"
+            style={{ background: "rgba(255,255,255,0.9)", border: "1px solid rgba(26,47,138,0.08)", backdropFilter: "blur(8px)" }}>
+            {["month","year"].map(x => (
+              <button key={x} onClick={() => setSecXAxis(x)}
+                className="px-3 py-1 rounded-lg text-[10px] font-black transition-all"
+                style={{ background: secXAxis === x ? colors?.primary : "transparent", color: secXAxis === x ? "#fff" : colors?.primary }}>
+                {x.charAt(0).toUpperCase() + x.slice(1)}
+              </button>
+            ))}
+          </div>
+
+{loading ? (
+            <div className="flex flex-col items-center justify-center h-full gap-4">
+              <div className="relative" style={{ width: 80, height: 80 }}>
+                <svg width="80" height="80" viewBox="0 0 80 80">
+                  <circle cx="40" cy="40" r="32" fill="none" stroke="#f3f4f6" strokeWidth="6" />
+                  <circle cx="40" cy="40" r="32" fill="none"
+                    stroke="url(#graphProgGrad)" strokeWidth="6"
+                    strokeLinecap="round"
+                    strokeDasharray={2 * Math.PI * 32}
+                    strokeDashoffset={2 * Math.PI * 32 * 0.25}
+                    style={{ transform: "rotate(-90deg)", transformOrigin: "40px 40px", animation: "graphSpin 1.1s linear infinite" }}
+                  />
+                  <defs>
+                    <linearGradient id="graphProgGrad" x1="0" y1="0" x2="1" y2="1">
+                      <stop offset="0%" stopColor={colors?.primary ?? "#1a2f8a"} />
+                      <stop offset="100%" stopColor="#CF305D" />
+                    </linearGradient>
+                  </defs>
+                </svg>
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <BarChart3 size={18} style={{ color: colors?.primary, opacity: 0.4 }} />
+                </div>
+              </div>
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-gray-300">Loading data…</p>
+              <style>{`@keyframes graphSpin { from { transform: rotate(-90deg); } to { transform: rotate(270deg); } }`}</style>
+            </div>
+          ) : chartData.length === 0 || secKpiIds.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full gap-3">
+              <div className="w-16 h-16 rounded-2xl flex items-center justify-center"
+                style={{ background: `${colors?.primary}10` }}>
+                <BarChart3 size={28} style={{ color: colors?.primary, opacity: 0.3 }} />
+              </div>
+              <p className="text-xs font-bold text-gray-300">
+                {secKpiIds.length === 0 ? "Select at least one KPI above" : "No data for selected range"}
+              </p>
             </div>
           ) : (() => {
             let displayData = chartData;
@@ -2623,38 +3467,68 @@ return (
                 secKpiIds.forEach(kid => {
                   const kpi = kpiList.find(k => k.id === kid);
                   if (secMode === "ytd") {
-                    const last = entry._months[entry._months.length - 1];
-                    row[kid] = last[kid];
+                    row[kid] = entry._months[entry._months.length - 1]?.[kid];
                   } else {
                     const vals = entry._months.map(m => m[kid]).filter(v => v !== null && v !== undefined && !isNaN(v));
-                    if (vals.length === 0) row[kid] = null;
-                    else if (kpi?.format === "percent") row[kid] = vals.reduce((a, b) => a + b, 0) / vals.length;
-                    else row[kid] = vals.reduce((a, b) => a + b, 0);
+                    row[kid] = vals.length === 0 ? null : kpi?.format === "percent" ? vals.reduce((a,b) => a+b,0)/vals.length : vals.reduce((a,b) => a+b,0);
                   }
                 });
                 return row;
               });
             }
+const CHART_COLORS = [colors?.primary ?? "#1a2f8a", "#10b981", "#f59e0b", "#8b5cf6", "#06b6d4"];
+const CMP_COLORS = { B: "#CF305D", C: "#f59e0b" };
+            const activeCmpBars = compareMode ? cmpBars.filter(b => (cmpChartData[b.id]?.length ?? 0) > 0) : [];
+
+            const allPeriods = [...new Set([
+              ...displayData.map(d => d.period),
+              ...activeCmpBars.flatMap(b => (cmpChartData[b.id] ?? []).map(d => d.period)),
+            ])].sort();
+
+            const mergedData = allPeriods.map(period => {
+              const main = displayData.find(d => d.period === period) ?? {};
+              const row = { period };
+              secKpiIds.forEach(kid => { row[`a__${kid}`] = main[kid] ?? null; });
+              activeCmpBars.forEach(bar => {
+                const barRow = (cmpChartData[bar.id] ?? []).find(d => d.period === period) ?? {};
+                secKpiIds.forEach(kid => { row[`${bar.id}__${kid}`] = barRow[kid] ?? null; });
+              });
+              return row;
+            });
 
             return (
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={displayData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#eef1fb" />
-                  <XAxis dataKey="period" tick={{ fontSize: 10, fill: "#6b7280" }} interval={0} />
-                  <YAxis tick={{ fontSize: 10, fill: "#6b7280" }} tickFormatter={v => Math.abs(v) >= 1000 ? `${(v/1000).toFixed(0)}k` : v.toFixed(0)} />
+                <LineChart data={mergedData} margin={{ top: 8, right: 24, left: 8, bottom: 32 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(26,47,138,0.06)" vertical={false} />
+                  <XAxis dataKey="period" tick={{ fontSize: 10, fill: "#9ca3af", fontWeight: 600 }} axisLine={false} tickLine={false} interval={secXAxis === "year" ? 0 : "preserveStartEnd"} />
+                  <YAxis tick={{ fontSize: 10, fill: "#9ca3af", fontWeight: 600 }} axisLine={false} tickLine={false} tickFormatter={v => Math.abs(v) >= 1000000 ? `${(v/1000000).toFixed(1)}M` : Math.abs(v) >= 1000 ? `${(v/1000).toFixed(0)}k` : v.toFixed(0)} width={56} />
                   <Tooltip
-                    contentStyle={{ fontSize: 11, borderRadius: 8, border: "1px solid #eef1fb" }}
-                    formatter={(value, name) => {
-                      const kpi = kpiList.find(k => k.id === name);
-                      return [fmtValue(value, kpi?.format), kpi?.label ?? name];
+                    contentStyle={{ borderRadius: 16, border: "none", boxShadow: "0 20px 50px -12px rgba(26,47,138,0.25)", padding: "12px 16px", fontSize: 12 }}
+                    labelStyle={{ fontWeight: 800, color: "#1a2f8a", marginBottom: 6 }}
+formatter={(value, name) => {
+                      const [prefix, kid] = name.split("__");
+                      const kpi = kpiList.find(k => k.id === kid);
+                      return [fmtValue(value, kpi?.format), `${prefix.toUpperCase()} · ${kpi?.label ?? kid}`];
                     }}
                   />
-                  <Legend wrapperStyle={{ fontSize: 10 }} formatter={(value) => kpiList.find(k => k.id === value)?.label ?? value} />
+                  <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} formatter={(value) => {
+                    const [prefix, kid] = value.split("__");
+                    const kpi = kpiList.find(k => k.id === kid);
+                    return `${prefix.toUpperCase()} · ${kpi?.label ?? kid}`;
+                  }} />
                   {secKpiIds.map((kid, i) => (
-                    <Line key={kid} type="monotone" dataKey={kid}
-                      stroke={COLORS[i % COLORS.length]} strokeWidth={2}
-                      dot={{ r: 3 }} activeDot={{ r: 5 }} connectNulls />
+                    <Line key={`a__${kid}`} type="monotone" dataKey={`a__${kid}`}
+                      stroke={CHART_COLORS[i % CHART_COLORS.length]}
+                      strokeWidth={2.5} dot={false} activeDot={{ r: 6, strokeWidth: 0 }} connectNulls />
                   ))}
+{activeCmpBars.flatMap(bar => secKpiIds.map((kid, i) => (
+                    <Line key={`${bar.id}__${kid}`} type="monotone" dataKey={`${bar.id}__${kid}`}
+                      stroke={CMP_COLORS[bar.id] ?? "#CF305D"}
+                      strokeWidth={2}
+                      strokeOpacity={i === 0 ? 1 : 0.65 - i * 0.1}
+                      strokeDasharray={bar.id === "B" ? "6 3" : "2 3"}
+                      dot={false} activeDot={{ r: 5, strokeWidth: 0 }} connectNulls />
+                  )))}
                 </LineChart>
               </ResponsiveContainer>
             );
@@ -2662,61 +3536,68 @@ return (
         </div>
       </div>
 
-      {/* Expand/collapse data bar */}
-      <div className="border-t border-gray-100 bg-[#fafbff]">
-        <button onClick={() => setTableOpen(o => !o)}
-          className="w-full flex items-center justify-end gap-1.5 px-4 py-1.5 text-[10px] font-black text-[#1a2f8a]/60 hover:text-[#1a2f8a] hover:bg-[#eef1fb]/50 transition-colors">
-          <span>{tableOpen ? "Hide data" : "Show data"}</span>
-          <ChevronDown size={11} className={`transition-transform duration-200 ${tableOpen ? "rotate-180" : ""}`} />
-        </button>
+</div>
 
- {tableOpen && (
-          <div className="border-t border-gray-100">
-            {chartData.length === 0 || secKpiIds.length === 0 ? (
-              <div className="flex items-center justify-center py-8 text-[10px] text-gray-300 font-bold px-3 text-center">
-                {secKpiIds.length === 0 ? "Select KPIs to view data" : "—"}
-              </div>
-            ) : (
-<table className="w-full border-collapse">
-                <thead>
-                  <tr style={{ backgroundColor: colors?.primary }}>
-                    <th className="text-center px-3 py-2 whitespace-nowrap" style={{ ...body1Style, color: colors?.quaternary }}>Period</th>
+    {/* Data table card — collapsible */}
+<div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-shrink-0 overflow-hidden flex flex-col">
+      <button onClick={() => setTableOpen(o => !o)}
+        className="flex items-center justify-between px-5 py-3 hover:bg-[#f8f9ff] transition-colors"
+        style={{ borderBottom: tableOpen ? "1px solid #f0f0f0" : "none" }}>
+        <span className="text-[10px] font-black uppercase tracking-[0.18em]" style={{ color: colors?.primary, opacity: 0.6 }}>Data Table</span>
+        <div className="flex items-center gap-2">
+          {chartData.length > 0 && <span className="text-[9px] font-bold text-gray-400">{chartData.length} periods</span>}
+          <ChevronDown size={13} style={{ color: colors?.primary, opacity: 0.4, transform: tableOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 280ms cubic-bezier(0.34,1.56,0.64,1)" }} />
+        </div>
+      </button>
+<div style={{
+        maxHeight: tableOpen ? "20vh" : "0px",
+        overflowY: tableOpen ? "auto" : "hidden",
+        scrollbarWidth: "none",
+        transition: "max-height 350ms cubic-bezier(0.4,0,0.2,1)",
+      }}>
+          {chartData.length === 0 || secKpiIds.length === 0 ? (
+            <div className="flex items-center justify-center h-full text-[10px] text-gray-300 font-bold">
+              {secKpiIds.length === 0 ? "Select KPIs to view data" : "—"}
+            </div>
+          ) : (
+            <table className="w-full border-collapse">
+              <thead className="sticky top-0 z-10">
+                <tr style={{ background: colors?.primary }}>
+                  <th className="text-left px-4 py-2.5 text-[10px] font-black uppercase tracking-wider text-white/70 whitespace-nowrap">Period</th>
+                  {secKpiIds.map(kid => {
+                    const k = kpiList.find(k => k.id === kid);
+                    return <th key={kid} className="text-right px-4 py-2.5 text-[10px] font-black uppercase tracking-wider text-white/70 whitespace-nowrap">{k?.label ?? kid}</th>;
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {chartData.map((d, i) => (
+                  <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-[#f8f9ff]"}>
+                    <td className="px-4 py-2 text-xs font-bold whitespace-nowrap" style={{ color: colors?.primary }}>{d.period}</td>
                     {secKpiIds.map(kid => {
                       const k = kpiList.find(k => k.id === kid);
-                      return <th key={kid} className="text-center px-3 py-2 whitespace-nowrap" style={{ ...body1Style, color: colors?.quaternary }}>{k?.label ?? kid}</th>;
+                      const v = d[kid];
+                      const isNull = v === null || v === undefined || isNaN(v);
+                      return (
+                        <td key={kid} className="px-4 py-2 text-xs font-semibold text-right whitespace-nowrap"
+                          style={{ color: isNull ? "#d1d5db" : v < 0 ? "#ef4444" : "#111827" }}>
+                          {isNull ? "—" : fmtValue(v, k?.format)}
+                        </td>
+                      );
                     })}
                   </tr>
-                </thead>
-                <tbody>
-                  {chartData.map((d, i) => (
-                    <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-[#f8f9ff]"}>
-                      <td className="text-center px-3 py-1.5 whitespace-nowrap" style={body2Style}>{d.period}</td>
-                      {secKpiIds.map(kid => {
-                        const k = kpiList.find(k => k.id === kid);
-                        const v = d[kid];
-                        const cellStyle = v === null || v === undefined || isNaN(v)
-                          ? { ...body2Style, color: "#D1D5DB" }
-                          : { ...body2Style, color: v < 0 ? "#EF4444" : "#000000" };
-                        return (
-                          <td key={kid} className="text-center px-3 py-1.5 whitespace-nowrap" style={cellStyle}>
-                            {v === null || v === undefined || isNaN(v) ? "—" : fmtValue(v, k?.format)}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        )}
+                ))}
+              </tbody>
+            </table>
+          )}
+</div>
+</div>
       </div>
-    </div>
   );
 }
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
-async function renderChartToImage({ data, kpiIds, kpiList, width = 900, height = 420 }) {
+async function renderChartToImage({data, kpiIds, kpiList, width = 900, height = 420 }) {
   const COLORS = ["#1a2f8a", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"];
   const host = document.createElement("div");
   host.style.position = "fixed";
@@ -2962,6 +3843,7 @@ const [companyKpis, setCompanyKpis] = useState([]);
 // User's PERSONAL dashboard — ordered list of KPI ids (built-in OR custom).
 // null = not loaded yet; defaults applied once fetch resolves.
 const [dashboardKpiIds, setDashboardKpiIds] = useState(null);
+const [dashboardKpiIdsDim, setDashboardKpiIdsDim] = useState(null);
 
 // Resolve session + company on mount
 useEffect(() => {
@@ -2977,32 +3859,40 @@ useEffect(() => {
 }, []);
 
 // Fetch the company's shared KPI library (every saved custom KPI)
-useEffect(() => {
+const refreshCompanyKpis = useCallback(() => {
   if (!companyId) return;
   listCompanyKpis({ companyId, contextMappingId: "*", scope: "individual" })
-
     .then(rows => setCompanyKpis(rows ?? []))
     .catch(e => console.error("[KpiPage] listCompanyKpis:", e));
 }, [companyId]);
 
-// Fetch this user's personal dashboard
+useEffect(() => { refreshCompanyKpis(); }, [refreshCompanyKpis]);
+
+// Fetch this user's personal dashboards (one per tab)
 useEffect(() => {
   if (!authUserId || !companyId) return;
-  (async () => {
-    try {
-      const row = await getUserDashboard({ userId: authUserId, companyId, scope: "individual" });
+  const defaults = ["revenue", "gross_profit", "net_result", "net_margin"];
 
-      if (row && Array.isArray(row.kpi_ids) && row.kpi_ids.length > 0) {
-        setDashboardKpiIds(row.kpi_ids);
+const loadDash = async (scope, setter) => {
+    try {
+      const row = await getUserDashboard({ userId: authUserId, companyId, scope });
+      if (row && Array.isArray(row.kpi_ids)) {
+        const deduped = [...new Set(row.kpi_ids)];
+        setter(deduped);
       } else {
-        // First time on this company — start with the 4 built-in defaults
-        setDashboardKpiIds(["revenue", "gross_profit", "net_result", "net_margin"]);
+        setter(defaults);
+        try {
+          await saveUserDashboard({ userId: authUserId, companyId, kpiIds: defaults, scope });
+        } catch (e) { console.error(`[KpiPage] failed to save defaults for ${scope}:`, e); }
       }
     } catch (e) {
-      console.error("[KpiPage] getUserDashboard:", e);
-      setDashboardKpiIds(["revenue", "gross_profit", "net_result", "net_margin"]);
+      console.error(`[KpiPage] getUserDashboard ${scope}:`, e);
+      setter(defaults);
     }
-  })();
+  };
+
+  loadDash("individual_company", setDashboardKpiIds);
+  loadDash("individual_dimension", setDashboardKpiIdsDim);
 }, [authUserId, companyId]);
 
 // Adapt Supabase rows to the renderer's KPI shape. _contextMappingId is UI
@@ -3011,55 +3901,63 @@ useEffect(() => {
 const OVERRIDE_TAG_PREFIX = "__override__:";
 
 const systemOverrides = useMemo(() => {
-  const map = new Map();
+  const compMap = new Map();
+  const dimMap = new Map();
   companyKpis.forEach(k => {
-    if (k.tag?.startsWith(OVERRIDE_TAG_PREFIX)) {
-      const originalId = k.tag.slice(OVERRIDE_TAG_PREFIX.length);
-      map.set(originalId, k);
+    if (k.kpi_type === 'system_override' && k.source_system_kpi_id && k.created_by === authUserId) {
+      if (k.tag?.includes(":dim")) dimMap.set(k.source_system_kpi_id, k);
+      else compMap.set(k.source_system_kpi_id, k);
     }
   });
-  return map;
-}, [companyKpis]);
+  return { comp: compMap, dim: dimMap };
+}, [companyKpis, authUserId]);
 
 const saveSystemOverride = useCallback(async (originalKpiId, overrideData) => {
   if (!companyId || !authUserId) return;
-  const existing = systemOverrides.get(originalKpiId);
+  const overrideMap = viewMode === "dimension" ? systemOverrides.dim : systemOverrides.comp;
+  const existing = overrideMap.get(originalKpiId);
   try {
     if (existing) {
       const updated = await updateCompanyKpi({
-        kpiId: existing.kpi_id,
-        userId: authUserId,
-        label:       overrideData.label,
-        description: overrideData.description ?? null,
-        category:    overrideData.category ?? null,
-        tag:         `${OVERRIDE_TAG_PREFIX}${originalKpiId}`,
-        format:      overrideData.format ?? "currency",
-        formula:     overrideData.formula,
-        benchmark:   overrideData.benchmark ?? null,
+        kpiId:              existing.kpi_id,
+        userId:             authUserId,
+        label:              overrideData.label,
+        description:        overrideData.description ?? null,
+        category:           overrideData.category ?? null,
+        tag:               `${OVERRIDE_TAG_PREFIX}${originalKpiId}:${viewMode === "dimension" ? "dim" : "comp"}`,
+        format:             overrideData.format ?? "currency",
+        formula:            overrideData.formula,
+        benchmark:          overrideData.benchmark ?? null,
+        kpiType:            'system_override',
+        sourceSystemKpiId:  originalKpiId,
       });
       setCompanyKpis(prev => prev.map(k => k.kpi_id === updated.kpi_id ? updated : k));
     } else {
       const created = await createCompanyKpi({
-        companyId, userId: authUserId,
-        label:       overrideData.label,
-        description: overrideData.description ?? null,
-        category:    overrideData.category ?? null,
-        tag:         `${OVERRIDE_TAG_PREFIX}${originalKpiId}`,
-        format:      overrideData.format ?? "currency",
-        formula:     overrideData.formula,
-        benchmark:   overrideData.benchmark ?? null,
-        contextMappingId: null,
-        scope: "individual",
+        companyId,
+        userId:             authUserId,
+        label:              overrideData.label,
+        description:        overrideData.description ?? null,
+        category:           overrideData.category ?? null,
+        tag:               `${OVERRIDE_TAG_PREFIX}${originalKpiId}:${viewMode === "dimension" ? "dim" : "comp"}`,
+        format:             overrideData.format ?? "currency",
+        formula:            overrideData.formula,
+        benchmark:          overrideData.benchmark ?? null,
+        contextMappingId:   null,
+        scope:              "individual",
+        kpiType:            'system_override',
+        sourceSystemKpiId:  originalKpiId,
       });
       setCompanyKpis(prev => [...prev, created]);
     }
   } catch (e) {
     alert(`Could not save override: ${e.message}`);
   }
-}, [companyId, authUserId, systemOverrides]);
+}, [companyId, authUserId, systemOverrides, viewMode]);
 
 const resetSystemOverride = useCallback(async (originalKpiId) => {
-  const existing = systemOverrides.get(originalKpiId);
+  const overrideMap = viewMode === "dimension" ? systemOverrides.dim : systemOverrides.comp;
+  const existing = overrideMap.get(originalKpiId);
   if (!existing) return;
   try {
     await archiveCompanyKpi({ kpiId: existing.kpi_id, userId: authUserId });
@@ -3067,55 +3965,39 @@ const resetSystemOverride = useCallback(async (originalKpiId) => {
   } catch (e) {
     alert(`Could not reset: ${e.message}`);
   }
-}, [systemOverrides, authUserId]);
+}, [systemOverrides, authUserId, viewMode]);
 
 const localKpis = useMemo(() => companyKpis
-  .filter(k => !k.tag?.startsWith(OVERRIDE_TAG_PREFIX))
+  .filter(k => k.kpi_type !== 'system_override')
   .map(k => ({
-    id:                k.kpi_id,
-    label:             k.label,
-    description:       k.description ?? "",
-    category:          k.category    ?? "",
-    tag:               k.tag         ?? "",
-    format:            k.format,
-    formula:           k.formula,
-    benchmark:         k.benchmark,
-    _contextMappingId: k.context_mapping_id ?? null,
-    _createdBy:        k.created_by,
-    _updatedBy:        k.updated_by,
-    _updatedAt:        k.updated_at,
-    _createdAt:        k.created_at,
+    id:                  k.kpi_id,
+    label:               k.label,
+    description:         k.description ?? "",
+    category:            k.category    ?? "",
+    tag:                 k.tag         ?? "",
+    format:              k.format,
+    formula:             k.formula,
+    benchmark:           k.benchmark,
+    _contextMappingId:   k.context_mapping_id ?? null,
+    _createdBy:          k.created_by,
+    _updatedBy:          k.updated_by,
+    _updatedAt:          k.updated_at,
+    _createdAt:          k.created_at,
+    _kpiType:            k.kpi_type ?? "custom",
+    _sourceSystemKpiId:  k.source_system_kpi_id ?? null,
   })), [companyKpis]);
 
 // Persist dashboard changes to Supabase (optimistic — UI updates first)
-const persistDashboard = useCallback(async (ids) => {
+const persistDashboard = useCallback(async (ids, scope = "individual_company") => {
   if (!authUserId || !companyId) return;
   try {
-    await saveUserDashboard({ userId: authUserId, companyId, kpiIds: ids, scope: "individual" });
-
+    await saveUserDashboard({ userId: authUserId, companyId, kpiIds: ids, scope });
   } catch (e) {
     console.error("[KpiPage] saveUserDashboard:", e);
   }
 }, [authUserId, companyId]);
 
-const addToDashboard = useCallback((kpiId) => {
-  setDashboardKpiIds(prev => {
-    if (!prev) return prev;
-    if (prev.includes(kpiId)) return prev;
-    const next = [...prev, kpiId];
-    persistDashboard(next);
-    return next;
-  });
-}, [persistDashboard]);
 
-const removeFromDashboard = useCallback((kpiId) => {
-  setDashboardKpiIds(prev => {
-    if (!prev) return prev;
-    const next = prev.filter(id => id !== kpiId);
-    persistDashboard(next);
-    return next;
-  });
-}, [persistDashboard]);
 
 // Visible KPIs: resolve every dashboard id from built-ins or the custom
 // library and drop anything that can't be found (e.g. removed from library).
@@ -3123,28 +4005,76 @@ const removeFromDashboard = useCallback((kpiId) => {
 // user where the KPI was created, and the cc_tag override system already
 // recomputes values against the active mapping. Hiding KPIs on mapping change
 // is more confusing than helpful.
-const kpiList = useMemo(() => {
-  if (!dashboardKpiIds) return [];
+const [editingKpi, setEditingKpi] = useState(null);
+const [viewMode, setViewMode] = useState("company");
+
+const builtInKpiIds = useMemo(() => new Set(resolvedAllKpis.map(k => k.id)), [resolvedAllKpis]);
+
+const buildKpiList = useCallback((ids) => {
+  if (!ids) return [];
   const byId = new Map();
+  resolvedAllKpis.forEach(k => byId.set(k.id, k));
   resolvedKpiList.forEach(k => byId.set(k.id, k));
   localKpis.forEach(k => byId.set(k.id, k));
-  return dashboardKpiIds.map(id => {
+  const seen = new Set();
+  return ids.filter(id => { if (seen.has(id)) return false; seen.add(id); return true; }).map(id => {
     const base = byId.get(id);
     if (!base) return null;
-    const override = systemOverrides.get(id);
-    if (override) {
-      return {
-        ...base,
-        benchmark: override.benchmark ?? base.benchmark,
-        _isOverridden: true,
-        _overrideKpiId: override.kpi_id,
-      };
+// Only apply override if the dashboard id IS the system id (not a promoted custom UUID)
+if (builtInKpiIds.has(id)) {
+      const overrideMap = viewMode === "dimension" ? systemOverrides.dim : systemOverrides.comp;
+      const override = overrideMap.get(id);
+      if (override) {
+        return {
+          ...base,
+          label:       override.label       ?? base.label,
+          description: override.description ?? base.description,
+          category:    override.category    ?? base.category,
+          format:      override.format      ?? base.format,
+          formula:     override.formula     ?? base.formula,
+          benchmark:   override.benchmark   ?? base.benchmark,
+          tag:         override.tag?.startsWith("__override__:") ? base.tag : (override.tag ?? base.tag),
+          _isOverridden:  true,
+          _overrideKpiId: override.kpi_id,
+        };
+      }
     }
     return base;
   }).filter(Boolean);
-}, [dashboardKpiIds, resolvedKpiList, localKpis, systemOverrides]);
-  const [editingKpi, setEditingKpi] = useState(null);
-const [viewMode, setViewMode] = useState("company"); // "company" | "dimension"
+}, [resolvedAllKpis, resolvedKpiList, localKpis, systemOverrides, builtInKpiIds, viewMode]);
+
+const kpiList = useMemo(() =>
+  viewMode === "dimension" ? buildKpiList(dashboardKpiIdsDim) : buildKpiList(dashboardKpiIds),
+  [viewMode, dashboardKpiIds, dashboardKpiIdsDim, buildKpiList]
+);
+const addToDashboard = useCallback((kpiId, scope = "individual_company") => {
+  const setter = scope === "individual_dimension" ? setDashboardKpiIdsDim : setDashboardKpiIds;
+  setter(prev => {
+    if (!prev) return prev;
+    if (prev.includes(kpiId)) return prev;
+    const next = [...prev, kpiId];
+    persistDashboard(next, scope);
+    return next;
+  });
+}, [persistDashboard]);
+
+const removeFromDashboard = useCallback((kpiId, scope = "individual_company") => {
+  const setter = scope === "individual_dimension" ? setDashboardKpiIdsDim : setDashboardKpiIds;
+  setter(prev => {
+    if (!prev) return prev;
+    const next = prev.filter(id => id !== kpiId);
+    persistDashboard(next, scope);
+    return next;
+  });
+if (builtInKpiIds.has(kpiId)) {
+    const overrideMap = scope === "individual_dimension" ? systemOverrides.dim : systemOverrides.comp;
+    const override = overrideMap.get(kpiId);
+    if (override) {
+      archiveCompanyKpi({ kpiId: override.kpi_id, userId: authUserId }).catch(console.error);
+      setCompanyKpis(prev => prev.filter(k => k.kpi_id !== override.kpi_id));
+    }
+  }
+}, [persistDashboard, builtInKpiIds, systemOverrides, authUserId]);
 const [viewPeriod, setViewPeriod] = useState("ytd"); // "monthly" | "ytd"
 
 // Compare mode: when enabled, show 2 extra columns per existing column
@@ -3159,8 +4089,9 @@ const [cmpMonth, setCmpMonth] = useState("");
   const [colDragIdx, setColDragIdx] = useState(null);
   const [colDragOverIdx, setColDragOverIdx] = useState(null);
   const [colOrder, setColOrder] = useState(null);
-  const [selGroup, setSelGroup] = useState("");
+const [selGroup, setSelGroup] = useState("");
   const [selDim, setSelDim] = useState("");
+const [selCompanies, setSelCompanies] = useState(null);
   const graphSectionsRef = useRef({}); // { 1: {...}, 2: {...}, 3: {...} }
 const [exporting, setExporting] = useState(false);
   const [viewsModalOpen, setViewsModalOpen] = useState(false);
@@ -3300,7 +4231,14 @@ const kpiDashReady = kpiDashProgress >= 100;
 // here.
 const { dimGroups, dimsByGroup } = useMemo(() => {
     const groupSet = new Set();
-    const byGroup = new Map();  // group → Map<code, name>
+    const byGroup = new Map();
+    // Build name lookup from dimensions prop
+    const nameLookup = new Map();
+    dimensions.forEach(d => {
+      const code = String(d.dimensionCode ?? d.DimensionCode ?? d.code ?? "").trim();
+      const name = String(d.dimensionName ?? d.DimensionName ?? d.name ?? "").trim();
+      if (code && name) nameLookup.set(code, name);
+    });
     companyData.forEach(rows => {
       rows.forEach(r => {
         const pairs = parseDimensions(r.Dimensions);
@@ -3308,7 +4246,8 @@ const { dimGroups, dimsByGroup } = useMemo(() => {
           if (!group || !code) continue;
           groupSet.add(group);
           if (!byGroup.has(group)) byGroup.set(group, new Map());
-          byGroup.get(group).set(code, code);
+          const name = nameLookup.get(code) ?? code;
+          byGroup.get(group).set(code, name);
         }
       });
     });
@@ -3316,7 +4255,7 @@ const { dimGroups, dimsByGroup } = useMemo(() => {
       dimGroups: [...groupSet].sort(),
       dimsByGroup: byGroup,
     };
-  }, [companyData]);
+  }, [companyData, dimensions]);
 
 const groupDimOptions = useMemo(() => {
     if (!selGroup) return [];
@@ -3417,9 +4356,28 @@ useEffect(() => { fetchAllCompanies(); }, [fetchAllCompanies]);
   }, [groupAccounts]);
 
 const companyPivots = useMemo(() => {
-    // Helper that builds a pivot from a rows array, applying all filters.
+    // Build dimPivot from ALL rows (no AccountType filter, no sum filter)
+    // because dimension tags live on sum/aggregate rows (A.02, A.PL etc), not posting rows
+    const buildDimPivotFromRaw = (rows) => {
+      const dimPivot = new Map();
+      rows.forEach(r => {
+        const ac = r.AccountCode ?? r.accountCode ?? "";
+        if (!ac) return;
+        const dimsRaw = r.Dimensions ?? r.dimensions ?? "";
+        if (!dimsRaw || dimsRaw === "—") return;
+        const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+        parseDimensions(dimsRaw).forEach(([dGroup, dCode]) => {
+          if (!dGroup || !dCode) return;
+          const key = `${ac}:::${dGroup}:::${dCode}`;
+          dimPivot.set(key, (dimPivot.get(key) ?? 0) + amt);
+        });
+      });
+      return dimPivot;
+    };
+
     const buildPivot = (rows) => {
       const p = new Map();
+      const dimPivot = new Map(); // kept for compat, replaced below
       rows.forEach(r => {
         const ac = r.AccountCode ?? r.accountCode ?? "";
         const acType = r.AccountType ?? r.accountType ?? "";
@@ -3427,8 +4385,9 @@ const companyPivots = useMemo(() => {
         if (sumAccountCodes.has(ac)) return;
         if (acType && acType !== "P/L") return;
 
+       const dimPairs = parseDimensions(r.Dimensions ?? r.dimensions ?? "");
+
         if (selDim || selGroup) {
-          const dimPairs = parseDimensions(r.Dimensions);
           if (selDim) {
             const rowDimCodes = new Set(dimPairs.map(([, code]) => code));
             if (!rowDimCodes.has(selDim)) return;
@@ -3440,13 +4399,25 @@ const companyPivots = useMemo(() => {
 
         const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
         p.set(ac, (p.get(ac) ?? 0) + amt);
+
+        // Build dim pivot from ALL dim pairs on this row (regardless of page-level filter)
+        // This allows formula-level dim filtering to work correctly even when the page
+        // is already filtered by a different dimension
+        dimPairs.forEach(([dGroup, dCode]) => {
+          if (!dGroup || !dCode) return;
+          const key = `${ac}:::${dGroup}:::${dCode}`;
+          dimPivot.set(key, (dimPivot.get(key) ?? 0) + amt);
+        });
       });
+p.__dimPivot = dimPivot; // will be overwritten below with full raw version
       return p;
     };
 
-    const pivots = new Map();
+const pivots = new Map();
     companyData.forEach((rows, co) => {
       const currPivot = buildPivot(rows);
+      // Overwrite with full raw dimPivot (includes sum account rows where dims live)
+      currPivot.__dimPivot = buildDimPivotFromRaw(rows);
 
       if (viewPeriod === "ytd") {
         pivots.set(co, currPivot);
@@ -3456,7 +4427,7 @@ const companyPivots = useMemo(() => {
         // the delta equals YTD itself (which is correct: Jan YTD = Jan monthly).
         const prevRows = companyDataPrev.get(co) ?? [];
         const prevPivot = buildPivot(prevRows);
-        const monthlyPivot = new Map();
+const monthlyPivot = new Map();
         const isJanuary = parseInt(month) === 1;
         const allCodes = new Set([...currPivot.keys(), ...prevPivot.keys()]);
         allCodes.forEach(ac => {
@@ -3464,6 +4435,17 @@ const companyPivots = useMemo(() => {
           const prevYTD = isJanuary ? 0 : (prevPivot.get(ac) ?? 0);
           monthlyPivot.set(ac, currYTD - prevYTD);
         });
+// Build monthly dimPivot from raw rows (curr YTD - prev YTD)
+        const currRawDimPivot = buildDimPivotFromRaw(rows);
+        const prevRawDimPivot = buildDimPivotFromRaw(companyDataPrev.get(co) ?? []);
+        const monthlyDimPivot = new Map();
+        const allDimKeys = new Set([...currRawDimPivot.keys(), ...prevRawDimPivot.keys()]);
+        allDimKeys.forEach(key => {
+          const currVal = currRawDimPivot.get(key) ?? 0;
+          const prevVal = isJanuary ? 0 : (prevRawDimPivot.get(key) ?? 0);
+          monthlyDimPivot.set(key, currVal - prevVal);
+        });
+        monthlyPivot.__dimPivot = monthlyDimPivot;
         pivots.set(co, monthlyPivot);
       }
     });
@@ -3504,7 +4486,7 @@ const companyPivots = useMemo(() => {
       } else {
         const prevRows = companyDataCmpPrev.get(co) ?? [];
         const prevPivot = buildPivot(prevRows);
-        const monthlyPivot = new Map();
+const monthlyPivot = new Map();
         const isJanuary = parseInt(cmpMonth) === 1;
         const allCodes = new Set([...currPivot.keys(), ...prevPivot.keys()]);
         allCodes.forEach(ac => {
@@ -3512,6 +4494,19 @@ const companyPivots = useMemo(() => {
           const prevYTD = isJanuary ? 0 : (prevPivot.get(ac) ?? 0);
           monthlyPivot.set(ac, currYTD - prevYTD);
         });
+        if (currPivot.__dimPivot) {
+          const monthlyDimPivot = new Map();
+          const allDimKeys = new Set([
+            ...currPivot.__dimPivot.keys(),
+            ...(prevPivot.__dimPivot?.keys() ?? []),
+          ]);
+          allDimKeys.forEach(key => {
+            const currVal = currPivot.__dimPivot.get(key) ?? 0;
+            const prevVal = isJanuary ? 0 : (prevPivot.__dimPivot?.get(key) ?? 0);
+            monthlyDimPivot.set(key, currVal - prevVal);
+          });
+          monthlyPivot.__dimPivot = monthlyDimPivot;
+        }
         pivots.set(co, monthlyPivot);
       }
     });
@@ -3522,9 +4517,10 @@ const companyPivots = useMemo(() => {
   const dimensionPivots = useMemo(() => {
     // Build separate YTD pivots per (dim code) for current and previous, then
     // diff them when viewPeriod === "monthly".
-    const buildDimPivots = (dataMap) => {
+const buildDimPivots = (dataMap) => {
       const pivots = new Map();
-      dataMap.forEach(rows => {
+      dataMap.forEach((rows, co) => {
+if (selCompanies && selCompanies.length > 0 && !selCompanies.includes(co)) return;
         rows.forEach(r => {
           const ac = r.AccountCode ?? r.accountCode ?? "";
           const acType = r.AccountType ?? r.accountType ?? "";
@@ -3577,8 +4573,7 @@ const companyPivots = useMemo(() => {
       result.set(key, { name: meta.name, group: meta.group, pivot: monthlyPivot });
     });
     return result;
-  }, [companyData, companyDataPrev, viewPeriod, month, groupDimCodes, sumAccountCodes, selGroup]);
-
+}, [companyData, companyDataPrev, viewPeriod, month, groupDimCodes, sumAccountCodes, selGroup, selCompanies]);
   // Compare-scenario dimension pivots — mirrors dimensionPivots but reads
   // from companyDataCmp / companyDataCmpPrev with cmpMonth as the period.
   const dimensionPivotsCmp = useMemo(() => {
@@ -3639,11 +4634,61 @@ const companyPivots = useMemo(() => {
 const dimensionCodes = useMemo(() => [...dimensionPivots.keys()].sort(), [dimensionPivots]);
 
   // Collect all account codes and dim codes available
-  const allAccountCodes = useMemo(() => {
+const allAccountCodes = useMemo(() => {
     const codes = new Set();
     companyPivots.forEach(p => p.forEach((_, ac) => codes.add(ac)));
     return [...codes].sort();
   }, [companyPivots]);
+
+const accountCodeLabels = useMemo(() => {
+    const map = new Map();
+    groupAccounts.forEach(g => {
+      const code = String(g.accountCode ?? g.AccountCode ?? "");
+      const name = String(g.accountName ?? g.AccountName ?? g.name ?? "");
+      if (code) map.set(code, name);
+    });
+    return map;
+  }, [groupAccounts]);
+
+// Build dimsByAccount from actual data rows: Map<accountCode, [{group, code, name}]>
+  const dimsByAccount = useMemo(() => {
+    // Build a code → name lookup from the dimensions prop
+    const dimNameLookup = new Map();
+dimensions.forEach(d => {
+      const code = String(d.dimensionCode ?? d.DimensionCode ?? d.code ?? "");
+      const name = String(d.dimensionName ?? d.DimensionName ?? d.name ?? "");
+      if (code && name) {
+        dimNameLookup.set(code, name);
+        // Also index by name in case the API returns the name as the "code"
+        dimNameLookup.set(name, name);
+      }
+    });
+
+const map = new Map();
+    companyData.forEach(rows => {
+      rows.forEach(r => {
+        const ac = r.AccountCode ?? r.accountCode ?? "";
+        const dimsRaw = r.Dimensions ?? r.dimensions ?? "";
+        if (!ac || !dimsRaw || dimsRaw === "—") return;
+        const pairs = parseDimensions(dimsRaw);
+        if (!pairs.length) return;
+        if (!map.has(ac)) map.set(ac, new Map());
+        pairs.forEach(([group, rawCode]) => {
+          if (!group || !rawCode) return;
+          // rawCode is what appears in the data (could be "2", "1", "UK", etc.)
+          // dimNameLookup maps that code → human name ("Producción", "España"…)
+          const name = dimNameLookup.get(rawCode) ?? rawCode;
+          const key = `${group}:::${rawCode}`;
+          if (!map.get(ac).has(key)) {
+            map.get(ac).set(key, { group, code: rawCode, name });
+          }
+        });
+      });
+    });
+    const result = new Map();
+    map.forEach((inner, ac) => result.set(ac, [...inner.values()]));
+    return result;
+  }, [companyData, dimensions]);
 
   const allDimCodes = useMemo(() => {
     const codes = new Set();
@@ -3658,6 +4703,8 @@ const dimensionCodes = useMemo(() => [...dimensionPivots.keys()].sort(), [dimens
 
  // adaptedKpiList removed — KpiResolver loads KPIs already in the active
   // standard's vocabulary via cc_tag mapping.
+
+useEffect(() => { window.__debug_companyPivots = companyPivots; }, [companyPivots]);
 
 const companyResults = useMemo(() => {
     const results = new Map();
@@ -3709,28 +4756,80 @@ const companyResults = useMemo(() => {
 
 // Path 1: editing existing KPI from the table pencil icon
     if (editingKpi !== "new" && editingKpi && typeof editingKpi === "object" && editingKpi.id) {
-      const inLibrary = companyKpis.some(k => k.kpi_id === editingKpi.id && !k.tag?.startsWith(OVERRIDE_TAG_PREFIX));
-      const isBuiltIn = new Set(resolvedKpiList.map(k => k.id)).has(editingKpi.id);
-
-      // If label/description changed on a built-in → promote to full custom KPI
+const inLibrary = companyKpis.some(k => k.kpi_id === editingKpi.id && !k.tag?.startsWith(OVERRIDE_TAG_PREFIX));
+      const isBuiltIn = builtInKpiIds.has(editingKpi.id);
+      const sourceSystemId = editingKpi._sourceSystemKpiId ?? null;
       const labelChanged = data.label !== editingKpi.label;
       const descChanged  = data.description !== editingKpi.description;
 
-      if (isBuiltIn && !labelChanged && !descChanged) {
-        // Benchmark-only edit on built-in → save as system override
+      // If editing a clean system clone, treat as editing the original system KPI
+      if (!isBuiltIn && sourceSystemId && builtInKpiIds.has(sourceSystemId)) {
+if (!labelChanged) {
+          // Benchmark/formula/desc edit on clean clone → promote to independent custom KPI
+          // Auto-generate a unique label since the name is taken by the system KPI
+          const baseLabel = editingKpi.label;
+          const allLabels = new Set([
+            ...localKpis.map(k => k.label),
+            ...resolvedAllKpis.map(k => k.label),
+          ]);
+          let n = 2;
+          while (allLabels.has(`${baseLabel} ${n}`)) n++;
+          const uniqueLabel = `${baseLabel} ${n}`;
+          try {
+            const updated = await updateCompanyKpi({
+              kpiId:            editingKpi.id, userId: authUserId,
+              label:            uniqueLabel,
+              description:      data.description ?? null,
+              category:         data.category ?? null,
+              tag:              null,
+              format:           data.format ?? editingKpi.format,
+              formula:          data.formula ?? editingKpi.formula,
+              benchmark:        data.benchmark ?? null,
+              sourceSystemKpiId: null,
+            });
+            setCompanyKpis(prev => prev.map(k => k.kpi_id === updated.kpi_id ? updated : k));
+            setEditingKpi(null);
+          } catch (e) { alert(`No se pudo actualizar: ${e.message}`); }
+          return;
+        } else {
+          // Label changed → promote to full custom KPI, clear sourceSystemKpiId
+          try {
+            const updated = await updateCompanyKpi({
+              kpiId: editingKpi.id, userId: authUserId,
+              label:            data.label,
+              description:      data.description ?? null,
+              category:         data.category ?? null,
+              tag:              null,
+              format:           data.format ?? "currency",
+              formula:          data.formula,
+              benchmark:        data.benchmark ?? null,
+              sourceSystemKpiId: null,
+            });
+            setCompanyKpis(prev => prev.map(k => k.kpi_id === updated.kpi_id ? updated : k));
+            setEditingKpi(null);
+          } catch (e) { alert(`No se pudo actualizar: ${e.message}`); }
+          return;
+        }
+      }
+
+      // If label/description changed on a built-in → promote to full custom KPI
+
+
+if (isBuiltIn && !labelChanged) {
+        // Any edit on built-in without label change → save as system override (shows 'edited')
         await saveSystemOverride(editingKpi.id, {
           label:       editingKpi.label,
-          description: editingKpi.description,
-          category:    editingKpi.category,
-          format:      editingKpi.format,
-          formula:     editingKpi.formula,
+          description: data.description,
+          category:    data.category,
+          format:      data.format ?? editingKpi.format,
+          formula:     data.formula ?? editingKpi.formula,
           benchmark:   data.benchmark,
         });
         setEditingKpi(null);
         return;
       }
 
-      if (!inLibrary && isBuiltIn && (labelChanged || descChanged)) {
+      if (!inLibrary && isBuiltIn && labelChanged) {
         // Promote built-in to full custom KPI
         try {
           const created = await createCompanyKpi({
@@ -3749,12 +4848,11 @@ setCompanyKpis(prev => [...prev, created]);
           // Replace in dashboard
 setDashboardKpiIds(prev => {
             if (!prev) return prev;
-            const next = prev.map(id => id === editingKpi.id ? created.kpi_id : id);
-            console.log("[KpiPage] promoting built-in to custom:", { oldId: editingKpi.id, newId: created.kpi_id, prev, next });
-            // Persist immediately and log result
+const next = prev.map(id => id === editingKpi.id ? created.kpi_id : id);
+            const scope = viewMode === "dimension" ? "individual_dimension" : "individual_company";
             (async () => {
               try {
-                await saveUserDashboard({ userId: authUserId, companyId, kpiIds: next, scope: "individual" });
+                await saveUserDashboard({ userId: authUserId, companyId, kpiIds: next, scope });
                 console.log("[KpiPage] dashboard persisted after promote ✓", next);
               } catch (e) {
                 console.error("[KpiPage] dashboard persist FAILED after promote:", e);
@@ -3771,16 +4869,17 @@ setDashboardKpiIds(prev => {
         setEditingKpi(null);
         return;
       }
-      try {
+try {
         const updated = await updateCompanyKpi({
-          kpiId: editingKpi.id, userId: authUserId,
-          label:       data.label,
-          description: data.description ?? null,
-          category:    data.category    ?? null,
-          tag:         data.tag         ?? null,
-          format:      data.format      ?? "currency",
-          formula:     data.formula,
-          benchmark:   data.benchmark   ?? null,
+          kpiId:            editingKpi.id, userId: authUserId,
+          label:            data.label,
+          description:      data.description ?? null,
+          category:         data.category    ?? null,
+          tag:              data.tag         ?? null,
+          format:           data.format      ?? "currency",
+          formula:          data.formula,
+          benchmark:        data.benchmark   ?? null,
+          sourceSystemKpiId: null,
         });
         setCompanyKpis(prev => prev.map(k => k.kpi_id === updated.kpi_id ? updated : k));
         setEditingKpi(null);
@@ -3790,42 +4889,89 @@ setDashboardKpiIds(prev => {
       return;
     }
 
-    // Path 2: user clicked an existing custom KPI in the library picker
-    // (data.id matches an entry in companyKpis) → just add to dashboard
-    const existing = data.id ? companyKpis.find(k => k.kpi_id === data.id) : null;
-    if (existing) {
-      addToDashboard(existing.kpi_id);
+const activeScope = viewMode === "dimension" ? "individual_dimension" : "individual_company";
+
+    // Path 2a: system KPI from library picker → just add id to dashboard, no library entry
+const resolveSystemId = (data) => {
+      if (data.id && builtInKpiIds.has(data.id)) return data.id;
+      if (data._fromLibrary) {
+        const strippedId = (data.id ?? "").replace(/^_lib_/, "");
+        if (strippedId && builtInKpiIds.has(strippedId)) return strippedId;
+      }
+      return null;
+    };
+
+const systemId = resolveSystemId(data);
+    if (systemId) {
+const activeOverrideMap = viewMode === "dimension" ? systemOverrides.dim : systemOverrides.comp;
+      if (activeOverrideMap.has(systemId)) {
+        // An edited version already exists — create a clean copy with its own UUID
+        const base = resolvedAllKpis.find(k => k.id === systemId);
+        if (base) {
+          try {
+            const created = await createCompanyKpi({
+              companyId, userId: authUserId,
+              label:            base.label,
+              description:      base.description ?? null,
+              category:         base.category ?? null,
+              tag:              null,
+              format:           base.format ?? "currency",
+              formula:          base.formula,
+              benchmark:        base.benchmark ?? null,
+              contextMappingId: null,
+              scope:            "individual",
+              kpiType:          "custom",
+              sourceSystemKpiId: systemId,
+            });
+            setCompanyKpis(prev => [...prev, created]);
+            addToDashboard(created.kpi_id, activeScope);
+            setEditingKpi(null);
+            return;
+          } catch (e) { alert(`No se pudo crear: ${e.message}`); return; }
+        }
+      }
+      addToDashboard(systemId, activeScope);
       setEditingKpi(null);
       return;
     }
 
-    // Path 3: brand-new KPI (preset or custom builder) → create in library + add to dashboard
+    // Path 2b: existing custom KPI from library picker → just add to dashboard
+    const existing = data.id ? companyKpis.find(k => k.kpi_id === data.id) : null;
+    if (existing) {
+      addToDashboard(existing.kpi_id, activeScope);
+      setEditingKpi(null);
+      return;
+    }
+
+// Path 3: brand-new KPI (preset or custom builder) → create in library + add to dashboard
     try {
 const created = await createCompanyKpi({
         companyId, userId: authUserId,
         label:       data.label,
         description: data.description ?? null,
         category:    data.category    ?? null,
-        tag:         data.tag         ?? null,
+        tag:         (data.tag && !data.tag.startsWith("__")) ? data.tag : null,
         format:      data.format      ?? "currency",
         formula:     data.formula,
         benchmark:   data.benchmark   ?? null,
         contextMappingId: activeMapping?.mapping_id ?? null,
         scope: "individual",
       });
-      setCompanyKpis(prev => [...prev, created]);
-      addToDashboard(created.kpi_id);
+setCompanyKpis(prev => [...prev, created]);
+      addToDashboard(created.kpi_id, activeScope);
       setEditingKpi(null);
+      refreshCompanyKpis();
     } catch (e) {
       alert(`No se pudo crear: ${e.message}`);
     }
-  }, [companyId, authUserId, editingKpi, activeMapping, companyKpis, addToDashboard]);
+  }, [companyId, authUserId, editingKpi, activeMapping, companyKpis, addToDashboard, refreshCompanyKpis]);
 
   // Trash icon removes the KPI from THIS user's dashboard only — the library
   // entry stays so other users on the company still have it.
-  const deleteKpi = useCallback((id) => {
-    removeFromDashboard(id);
-  }, [removeFromDashboard]);
+const deleteKpi = useCallback((id) => {
+    const scope = viewMode === "dimension" ? "individual_dimension" : "individual_company";
+    removeFromDashboard(id, scope);
+  }, [removeFromDashboard, viewMode]);
 
  const fetchSectionData = useCallback(async (sectionConfig) => {
     const { company, startY, startM, endY, endM, source: secSource, structure: secStructure,
@@ -3988,21 +5134,22 @@ const imageDataUrl = await renderChartToImage({
   };
 
 const handleDragEnd = useCallback(() => {
-    if (dragIdx !== null && dragOverIdx !== null && dragIdx !== dragOverIdx && dashboardKpiIds) {
+const activeDashIds = viewMode === "dimension" ? dashboardKpiIdsDim : dashboardKpiIds;
+    if (dragIdx !== null && dragOverIdx !== null && dragIdx !== dragOverIdx && activeDashIds) {
       const newRows = [...kpiList];
       const [moved] = newRows.splice(dragIdx, 1);
       newRows.splice(dragOverIdx, 0, moved);
-      // Reorder visible KPIs WITHIN the dashboard, keeping hidden items
-      // (those from non-active mapping contexts) in their relative positions.
       const oldVisibleIds = kpiList.map(k => k.id);
       const newVisibleIds = newRows.map(k => k.id);
       const visibleSet = new Set(oldVisibleIds);
       const queue = [...newVisibleIds];
-      const newDashboard = dashboardKpiIds.map(id =>
+      const newDashboard = activeDashIds.map(id =>
         visibleSet.has(id) ? queue.shift() : id
       );
-      setDashboardKpiIds(newDashboard);
-      persistDashboard(newDashboard);
+const scope = viewMode === "dimension" ? "individual_dimension" : "individual_company";
+      if (viewMode === "dimension") setDashboardKpiIdsDim(newDashboard);
+      else setDashboardKpiIds(newDashboard);
+      persistDashboard(newDashboard, scope);
     }
     setDragIdx(null); setDragOverIdx(null);
   }, [dragIdx, dragOverIdx, kpiList, dashboardKpiIds, persistDashboard]);
@@ -4029,7 +5176,7 @@ const orderedCols = colOrder && colOrder.length === activeCols.length ? colOrder
 
 return (
     <div className="flex flex-col gap-4 h-full min-h-0">
-      <style>{`
+<style>{`
         @keyframes plRowSlideIn {
           0%   { opacity: 0; transform: translateY(8px); }
           100% { opacity: 1; transform: translateY(0); }
@@ -4038,6 +5185,8 @@ return (
           0%   { opacity: 0; transform: translateY(8px) scale(0.96); }
           100% { opacity: 1; transform: translateY(0) scale(1); }
         }
+        .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
       `}</style>
 
 {/* Header — built from shared <PageHeader> */}
@@ -4051,7 +5200,7 @@ return (
         ]}
         activeTab={viewMode}
         onTabChange={setViewMode}
-        filters={viewMode === "graphs" ? [] : [
+filters={viewMode === "graphs" ? [] : [
           { label: "Year",  value: year,  onChange: setYear,
             options: YEARS.map(y => ({ value: String(y), label: String(y) })) },
           { label: "Month", value: month, onChange: setMonth,
@@ -4061,6 +5210,9 @@ return (
             : []),
           ...(structureOpts.length > 0
             ? [{ label: "Structure", value: structure, onChange: setStructure, options: structureOpts }]
+            : []),
+...(viewMode === "dimension" && companyCodes.length > 0
+            ? [{ label: "Company", values: selCompanies, onChange: setSelCompanies, options: companyCodes.map(c => ({ value: c, label: companyLegalName(c) })), multiselect: true }]
             : []),
 ...(dimGroups.length > 0
             ? [{
@@ -4090,13 +5242,7 @@ periodToggle={{
           active: compareMode,
           onChange: setCompareMode,
         }}
-        fabActions={[
-          {
-            id: "views",
-            icon: Library,
-            label: "Views",
-            onClick: () => setViewsModalOpen(true),
-          },
+fabActions={[
           {
             id: "export",
             icon: Download,
@@ -4225,36 +5371,36 @@ periodToggle={{
             }
           `}</style>
         </div>
-      ) : viewMode === "graphs" ? (
-        <div className="flex flex-col gap-3 flex-1 min-h-0 overflow-auto pr-1">
-{[1, 2, 3].map(sid => (
-<GraphSection
-              key={sid}
-              sectionId={sid}
-              token={token}
-              source={source}
-              structure={structure}
-              year={year}
-              month={month}
-              sourceOpts={sourceOpts}
-              structureOpts={structureOpts}
-              companyCodes={companyCodes}
-              dimensions={dimensions}
-kpiList={kpiList}
-              allKpis={resolvedAllKpis}
-              ccTagToCodes={ccTagToCodes}
-              sectionCodes={sectionCodes}
-              sumAccountCodes={sumAccountCodes}
-              defaultCompany={companyCodes[0] || ""}
-              defaultKpiIds={["revenue", "gross_profit", "net_result"]}
-              onStateChange={handleGraphSectionState}
-              filterStyle={filterStyle}
-              colors={colors}
-              body1Style={body1Style}
-              body2Style={body2Style}
-            />
-          ))}
-        </div>
+) : viewMode === "graphs" ? (
+<div className="flex flex-col gap-3 flex-1 min-h-0">
+  <GraphSection
+    sectionId={1}
+    token={token}
+    source={source}
+    structure={structure}
+    year={year}
+    month={month}
+    sourceOpts={sourceOpts}
+    structureOpts={structureOpts}
+    companyCodes={companyCodes}
+    dimensions={dimensions}
+    kpiList={kpiList}
+    allKpis={resolvedAllKpis}
+    ccTagToCodes={ccTagToCodes}
+    sectionCodes={sectionCodes}
+    sumAccountCodes={sumAccountCodes}
+    defaultCompany={companyCodes[0] || ""}
+defaultKpiIds={["revenue", "gross_profit", "net_result"]}
+onStateChange={handleGraphSectionState}
+viewPeriod={viewPeriod}
+    compareMode={compareMode}
+    companyLegalName={companyLegalName}
+    filterStyle={filterStyle}
+    colors={colors}
+    body1Style={body1Style}
+    body2Style={body2Style}
+  />
+</div>
       ) : loading ? (
         <div className="flex items-center justify-center flex-1">
           <div className="flex flex-col items-center gap-3">
@@ -4263,26 +5409,50 @@ kpiList={kpiList}
           </div>
         </div>
       ) : (
+<div className="flex flex-col gap-3 flex-1 min-h-0">
+{compareMode && (
+<div className="bg-white rounded-2xl shadow-xl border border-gray-100 flex-shrink-0"
+    style={{ overflow: "visible", position: "relative", zIndex: 30 }}>
+   <div className="px-5 py-3 flex items-center gap-2 no-scrollbar" style={{ flexWrap: "nowrap", overflowX: "auto", overflowY: "visible" }}>
+      <div className="flex items-center gap-2 mr-2">
+        <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+          style={{ background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)", boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)" }}>
+          <span className="text-white text-[11px] font-black">B</span>
+        </div>
+        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Compare With</span>
+      </div>
+      {sourceOpts.length > 0 && (
+        <HeaderFilterPill label="Source" value={cmpSource} onChange={setCmpSource} options={sourceOpts} />
+      )}
+      {structureOpts.length > 0 && (
+        <HeaderFilterPill label="Structure" value={cmpStructure} onChange={setCmpStructure} options={structureOpts} />
+      )}
+      <HeaderFilterPill label="Year" value={cmpYear} onChange={setCmpYear}
+        options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+      <HeaderFilterPill label="Month" value={cmpMonth} onChange={setCmpMonth}
+        options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+{dimGroups.length > 0 && (
+        <HeaderFilterPill label="Dim Grp" value={selGroup} onChange={v => { setSelGroup(v); setSelDim(""); }}
+          options={[{ value: "", label: "Dim Grp" }, ...dimGroups.map(g => ({ value: g, label: g }))]} />
+      )}
+      {selGroup && groupDimOptions.length > 0 && (
+        <HeaderFilterPill label="Dims" value={selDim} onChange={setSelDim}
+          options={[{ value: "", label: "Dims" }, ...groupDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))]} />
+      )}
+    </div>
+  </div>
+)}
 <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
-          {compareMode && (
-            <div className="flex items-center gap-2 px-4 py-2.5 bg-[#f8f9ff] border-b border-gray-100 flex-shrink-0 flex-wrap">
-              <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50 mr-1">COMPARE WITH</span>
-              {sourceOpts.length > 0 && <FilterPill label="Source" value={cmpSource} onChange={setCmpSource} options={sourceOpts} filterStyle={filterStyle} colors={colors} />}
-              <FilterPill label="Year" value={cmpYear} onChange={setCmpYear} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} filterStyle={filterStyle} colors={colors} />
-              <FilterPill label="Month" value={cmpMonth} onChange={setCmpMonth} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} filterStyle={filterStyle} colors={colors} />
-              {structureOpts.length > 0 && <FilterPill label="Structure" value={cmpStructure} onChange={setCmpStructure} options={structureOpts} filterStyle={filterStyle} colors={colors} />}
-            </div>
-          )}
-          <div className="overflow-auto flex-1">
+        <div className="overflow-auto flex-1" style={{ paddingBottom: "0" }}>
             <table className="w-full text-xs border-collapse">
-<thead className="sticky top-0 z-40">
+<thead className="sticky top-0 z-20">
 <tr style={{
   background: "rgba(255,255,255,0.95)",
   backdropFilter: "blur(24px)",
   WebkitBackdropFilter: "blur(24px)",
   boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
 }}>
-<th className="sticky left-0 top-0 z-50 text-left px-6 py-3 border-r border-gray-100 min-w-[250px]"
+<th className="sticky left-0 top-0 z-20 text-left px-6 py-3 border-r border-gray-100 min-w-[250px]"
   style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", height: "64px" }}>
   <div className="flex items-baseline gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
     <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>KPI</span>
@@ -4308,20 +5478,25 @@ kpiList={kpiList}
                     if (compareMode) {
                       cells.push(
 <th key={`${col}__cmp`}
-                          className="text-center px-4 py-3 whitespace-nowrap min-w-[140px]"
+                          className="text-center px-4 py-3 whitespace-nowrap min-w-[120px]"
                           style={{ background: "transparent" }}>
-                          <span className="font-black tracking-tight inline-block" style={{ color: `${colors.primary}80`, fontSize: 13, letterSpacing: "-0.02em" }}>{label} (cmp)</span>
+                          <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}50`, fontSize: 10 }}>Σ cmp</span>
                         </th>,
                         <th key={`${col}__delta`}
-                          className="text-center px-4 py-3 whitespace-nowrap min-w-[140px]"
+                          className="text-center px-4 py-3 whitespace-nowrap min-w-[100px]"
                           style={{ background: "transparent" }}>
-                          <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>Δ</span>
+                          <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}50`, fontSize: 10 }}>Δ amt</span>
+                        </th>,
+                        <th key={`${col}__deltapct`}
+                          className="text-center px-4 py-3 whitespace-nowrap min-w-[90px]"
+                          style={{ background: "transparent" }}>
+                          <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}50`, fontSize: 10 }}>Δ %</span>
                         </th>
                       );
                     }
                     return cells;
                   })}
-<th className="sticky right-0 top-0 z-50 px-4 py-3 whitespace-nowrap border-l border-gray-100 min-w-[160px] text-center"
+<th className="sticky right-0 top-0 z-20 px-4 py-3 whitespace-nowrap border-l border-gray-100 min-w-[160px] text-center"
   style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}>
   <span className="font-black tracking-tight inline-block"
     style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em", animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
@@ -4377,13 +5552,16 @@ return (
             edited
           </span>
         )}
-        {kpi._contextMappingId !== undefined && (
+{kpi._contextMappingId && (
           <span className="px-2 py-0.5 rounded-full flex-shrink-0 text-[8px] font-black uppercase tracking-wider"
-            style={{
-              background: kpi._contextMappingId ? "#fef3c7" : "#dcfce7",
-              color:      kpi._contextMappingId ? "#92400e" : "#15803d",
-            }}>
-            {kpi._contextMappingId ? "mapped" : "custom"}
+            style={{ background: "#fef3c7", color: "#92400e" }}>
+            mapped
+          </span>
+        )}
+{kpi._kpiType === "custom" && kpi._createdBy && !kpi._contextMappingId && !kpi._sourceSystemKpiId && (
+          <span className="px-2 py-0.5 rounded-full flex-shrink-0 text-[8px] font-black uppercase tracking-wider"
+            style={{ background: "#dcfce7", color: "#15803d" }}>
+            custom
           </span>
         )}
       </div>
@@ -4449,21 +5627,25 @@ if (compareMode) {
                             : { ...body1Style, color: delta < 0 ? "#EF4444" : "#059669" };
 
 out.push(
-<td key={`${col}__cmp`}
+                            <td key={`${col}__cmp`}
                               className="px-4 py-3 text-center whitespace-nowrap bg-[#fafbff]">
                               <AnimatedCell value={cmpValid ? cmpVal : null} format={kpi.format} baseStyle={body1Style} />
                             </td>,
                             <td key={`${col}__delta`}
-                              className="px-4 py-3 text-center whitespace-nowrap bg-[#f5f7ff]"
-                              style={deltaStyle}>
-                              {delta === null ? "—" : (
-                                <div className="flex flex-col gap-0.5 leading-tight items-center">
-                                  <AnimatedCell value={delta} format={kpi.format} baseStyle={body1Style} />
-                                  {deltaPct !== null && (
-                                    <span className="text-[9px] opacity-70" style={{ color: delta < 0 ? "#EF4444" : "#059669" }}>{deltaPct >= 0 ? "+" : ""}{deltaPct.toFixed(1)}%</span>
-                                  )}
-                                </div>
-                              )}
+                              className="px-4 py-3 text-center whitespace-nowrap bg-[#f5f7ff]">
+                              {delta === null
+                                ? <span style={{ ...body1Style, color: "#D1D5DB" }}>—</span>
+                                : <AnimatedCell value={delta} format={kpi.format} baseStyle={{ ...body1Style, color: delta < 0 ? "#EF4444" : "#059669" }} />
+                              }
+                            </td>,
+                            <td key={`${col}__deltapct`}
+                              className="px-4 py-3 text-center whitespace-nowrap bg-[#f0f3ff]">
+                              {deltaPct === null
+                                ? <span style={{ ...body1Style, color: "#D1D5DB" }}>—</span>
+                                : <span className="text-xs font-black" style={{ color: deltaPct < 0 ? "#EF4444" : "#059669" }}>
+                                    {deltaPct >= 0 ? "+" : ""}{deltaPct.toFixed(1)}%
+                                  </span>
+                              }
                             </td>
                           );
                         }
@@ -4475,7 +5657,7 @@ out.push(
                           return (
 <td className="sticky right-0 px-4 py-3 text-center whitespace-nowrap transition-all"
                               style={{
-                                background: aggColor ? aggColor.bg : "linear-gradient(90deg, rgba(26,47,138,0.05) 0%, rgba(26,47,138,0.02) 100%)",
+                                background: aggColor ? aggColor.bg : "#eef1fb",
                                 borderLeft: aggColor ? `2px solid ${aggColor.border}` : "1px solid #e5e7eb",
                               }}>
                               {aggregate === null ? (
@@ -4493,29 +5675,29 @@ out.push(
                   );
                 })}
 
-{/* Add row prompt */}
-<tr className="group cursor-pointer" onClick={() => setEditingKpi("new")}>
-  <td colSpan={1 + orderedCols.length * (compareMode ? 3 : 1) + 1} className="px-5 py-2">
-    <div className="flex items-center justify-center gap-2.5 py-2.5 rounded-xl transition-all duration-200 group-hover:bg-[#eef1fb]"
-      style={{ border: `1.5px dashed ${colors.primary}25` }}>
-      <div className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 transition-all duration-200 group-hover:scale-110"
-        style={{ background: colors.primary, color: "white", boxShadow: `0 4px 10px -2px ${colors.primary}50` }}>
-        <Plus size={12} strokeWidth={3} />
-      </div>
-      <span className="text-[11px] font-black uppercase tracking-[0.18em] transition-colors duration-200"
-        style={{ color: colors.primary, opacity: 0.6 }}>
-        Add KPI
-      </span>
-    </div>
-  </td>
-</tr>
+
               </tbody>
             </table>
+</div>
+
+          {/* Add KPI — outside scroll, always pinned */}
+          <div className="flex-shrink-0 px-4 py-2 border-t border-gray-50">
+            <button onClick={() => setEditingKpi("new")}
+              className="w-full group flex items-center justify-center gap-2.5 py-2.5 rounded-xl transition-all duration-200 hover:bg-[#eef1fb]"
+              style={{ border: `1.5px dashed ${colors.primary}25` }}>
+              <div className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 transition-all duration-200 group-hover:scale-110"
+                style={{ background: colors.primary, color: "white", boxShadow: `0 4px 10px -2px ${colors.primary}50` }}>
+                <Plus size={12} strokeWidth={3} />
+              </div>
+              <span className="text-[11px] font-black uppercase tracking-[0.18em] transition-colors duration-200"
+                style={{ color: colors.primary, opacity: 0.6 }}>
+                Add KPI
+              </span>
+            </button>
           </div>
 
-          {/* Footer */}
-
-        </div>
+</div>
+      </div>
       )}
 
       {/* Editor modal */}
@@ -4525,19 +5707,46 @@ out.push(
           onSave={saveKpi}
           onClose={() => setEditingKpi(null)}
           onReset={resetSystemOverride}
-          onEditLibraryKpi={(k) => { setEditingKpi(k); }}
-          onDeleteLibraryKpi={async (id) => {
+          onEditLibraryKpi={(k) => { setEditingKpi(null); setTimeout(() => setEditingKpi(k), 0); }}
+onDeleteLibraryKpi={async (id) => {
             try {
-              await archiveCompanyKpi({ kpiId: id, userId: authUserId });
+              await deleteCompanyKpi({ kpiId: id });
               setCompanyKpis(prev => prev.filter(k => k.kpi_id !== id));
-              removeFromDashboard(id);
+              removeFromDashboard(id, viewMode === "dimension" ? "individual_dimension" : "individual_company");
+              refreshCompanyKpis();
             } catch (e) { alert(`Could not delete: ${e.message}`); }
           }}
-          kpiList={kpiList}
+          onDuplicate={async (data) => {
+            if (!companyId || !authUserId) return;
+            // Auto-increment suffix: "Label 2" → "Label 3" etc.
+            const base = data.label.replace(/ \d+$/, "");
+            const existing = [...(localKpis ?? []), ...(resolvedKpiList ?? [])];
+            let n = 2;
+            while (existing.some(k => k.label === `${base} ${n}`)) n++;
+            try {
+              const created = await createCompanyKpi({
+                companyId, userId: authUserId,
+                label:       `${base} ${n}`,
+                description: data.description ?? null,
+                category:    data.category ?? null,
+                tag:         null,
+                format:      data.format ?? "currency",
+                formula:     data.formula,
+                benchmark:   data.benchmark ?? null,
+                contextMappingId: null,
+                scope: "individual",
+              });
+              setCompanyKpis(prev => [...prev, created]);
+            } catch (e) { alert(`Could not duplicate: ${e.message}`); }
+          }}
+kpiList={kpiList}
           allLocalKpis={localKpis}
+          systemKpis={resolvedAllKpis}
           accountCodes={allAccountCodes}
-          builtInIds={new Set(resolvedKpiList.map(k => k.id))}
+          accountCodeLabels={accountCodeLabels}
+builtInIds={new Set(resolvedAllKpis.map(k => k.id))}
           currentUserId={authUserId}
+          dimsByAccount={dimsByAccount}
         />
       )}
     </div>

@@ -607,11 +607,14 @@ const handleSave = async () => {
         return;
       }
 
-      const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
+const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
         email: form.email.trim(),
         password: form.password,
         options: { data: { username: form.username.trim() } },
       });
+
+      console.log("[signUp] data:", JSON.stringify(signUpData));
+      console.log("[signUp] error:", JSON.stringify(signUpErr));
 
       if (signUpErr || !signUpData?.user) {
         await supabase.auth.setSession({
@@ -619,7 +622,9 @@ const handleSave = async () => {
           refresh_token: adminSession.refresh_token,
         });
         setSaving(false);
-        showToast("error", signUpErr?.message ?? "No se pudo crear el usuario");
+        const msg = signUpErr?.message ?? signUpErr?.status ?? JSON.stringify(signUpErr) ?? "No se pudo crear el usuario";
+        showToast("error", msg);
+        console.error("[signUp] full error object:", signUpErr);
         return;
       }
       userId = signUpData.user.id;
@@ -637,13 +642,26 @@ const handleSave = async () => {
       await new Promise(r => setTimeout(r, 700));
     }
 
-    const userPayload = {
+const userPayload = {
+      id:             userId,
       username:       form.username.trim(),
       email:          form.email.trim(),
       is_super_admin: form.is_super_admin,
       is_active:      form.is_active,
     };
-    const { error: userErr } = await sbAccounts.from("users").update(userPayload).eq("id", userId);
+
+    // Retry upsert up to 5 times — the DB trigger that creates the users row
+    // after signUp may not have fired yet when we get here.
+    let userErr = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 600 * attempt));
+      const { error } = await sbAccounts.from("users")
+        .upsert(userPayload, { onConflict: "id" });
+      userErr = error;
+      if (!error) break;
+      console.warn(`[UserModal] upsert attempt ${attempt + 1} failed:`, error.message);
+    }
+
     if (userErr) {
       setSaving(false);
       showToast("error", userErr.message);

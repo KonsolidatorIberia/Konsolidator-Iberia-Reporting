@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { ChevronDown, Loader2, Download, Library } from "lucide-react";
 import { useTypo, useSettings } from "./SettingsContext";
-import PageHeader, { MultiFilterPill } from "./PageHeader.jsx";
+import PageHeader, { MultiFilterPill, FilterPill as HeaderFilterPill } from "./PageHeader.jsx";
 
 import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
@@ -18,7 +18,73 @@ const MONTHS = [
   { value: 7,  label: "July"      }, { value: 8,  label: "August"    },
   { value: 9,  label: "September" }, { value: 10, label: "October"   },
   { value: 11, label: "November"  }, { value: 12, label: "December"  },
+
 ];
+
+function useCountUp(target, duration = 900) {
+  const [display, setDisplay] = useState(0);
+  const fromRef = useRef(0);
+  const startRef = useRef(null);
+  const rafRef = useRef(null);
+  useEffect(() => {
+    cancelAnimationFrame(rafRef.current);
+    fromRef.current = display;
+    startRef.current = null;
+    const from = Number(fromRef.current) || 0;
+    const to = Number(target) || 0;
+    if (from === to) { setDisplay(to); return; }
+    const tick = (ts) => {
+      if (startRef.current === null) startRef.current = ts;
+      const elapsed = ts - startRef.current;
+      const t = Math.min(1, elapsed / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(from + (to - from) * eased);
+      if (t < 1) rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, duration]);
+  return display;
+}
+
+function useAnimatedNumber(target, duration = 700) {
+  const [display, setDisplay] = useState(0);
+  const startRef = useRef(null);
+  const fromRef = useRef(0);
+  const rafRef = useRef(null);
+  useEffect(() => {
+    cancelAnimationFrame(rafRef.current);
+    const from = fromRef.current;
+    const to = Number(target) || 0;
+    startRef.current = null;
+    const tick = (ts) => {
+      if (startRef.current === null) startRef.current = ts;
+      const t = Math.min(1, (ts - startRef.current) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      const val = from + (to - from) * eased;
+      setDisplay(val);
+      if (t < 1) rafRef.current = requestAnimationFrame(tick);
+      else { fromRef.current = to; }
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target]);
+  return display;
+}
+
+function AnimatedAmountCell({ value, style, className }) {
+  const animated = useCountUp(Math.round(value ?? 0), 900);
+  const rounded = Math.round(value ?? 0);
+  const color = rounded === 0 ? "#D1D5DB" : rounded < 0 ? "#EF4444" : "#000000";
+  return (
+    <td className={className ?? "px-4 py-2.5 text-center whitespace-nowrap tabular-nums border-l border-gray-100"}
+      style={{ minWidth: 120, ...style, color }}>
+      {rounded === 0 ? "—" : fmt(animated)}
+    </td>
+  );
+}
 
 const fmt = (n) => {
   if (n == null || n === "") return "—";
@@ -26,6 +92,29 @@ const fmt = (n) => {
   if (rounded === 0) return "—";
   return new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 }).format(rounded);
 };
+
+function parseDimensionsField(str) {
+  if (!str || typeof str !== "string") return [];
+  return str.split("||").map(pair => {
+    const idx = pair.indexOf(":");
+    if (idx === -1) return null;
+    return { group: pair.slice(0, idx).trim(), code: pair.slice(idx + 1).trim() };
+  }).filter(Boolean);
+}
+
+function rowMatchesDimMulti(r, groups, codes) {
+  const groupsActive = Array.isArray(groups) && groups.length > 0;
+  const codesActive  = Array.isArray(codes)  && codes.length  > 0;
+  if (!groupsActive && !codesActive) return true;
+  const raw = r.Dimensions ?? r.dimensions ?? "";
+  const dims = parseDimensionsField(raw);
+  if (!dims.length) return false;
+  return dims.some(d => {
+    const groupOk = !groupsActive || groups.includes(d.group);
+    const codeOk  = !codesActive  || codes.includes(String(d.code));
+    return groupOk && codeOk;
+  });
+}
 
 const parseAmt = (val) => {
   if (val == null) return 0;
@@ -151,62 +240,214 @@ function MultiSelectPill({ label, values, onChange, options, filterStyle, colors
     </div>
   );
 }
+/* ─── CfLoadingSpinner ──────────────────────────────────────────────── */
+function CfLoadingSpinner({ colors, metaReady }) {
+  const progress = useAnimatedNumber(60, 700);
+  return (
+    <div className="relative flex-1 min-h-0 flex items-center justify-center rounded-2xl"
+      style={{ background: "rgba(255,255,255,0.78)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
+      <div className="relative rounded-3xl bg-white border border-gray-100 p-10 flex flex-col items-center"
+        style={{ width: 380, boxShadow: "0 24px 80px -12px rgba(26,47,138,0.25), 0 8px 24px -8px rgba(0,0,0,0.08)" }}>
+        <div className="relative" style={{ width: 140, height: 140 }}>
+          <svg width="140" height="140" viewBox="0 0 140 140">
+            <circle cx="70" cy="70" r="60" fill="none" stroke="#f3f4f6" strokeWidth="10" />
+            <circle cx="70" cy="70" r="60" fill="none"
+              stroke="url(#cfProgGrad)"
+              strokeWidth="10"
+              strokeLinecap="round"
+              strokeDasharray={2 * Math.PI * 60}
+              strokeDashoffset={2 * Math.PI * 60 * (1 - progress / 100)}
+              style={{ transform: "rotate(-90deg)", transformOrigin: "70px 70px" }}
+            />
+            <defs>
+              <linearGradient id="cfProgGrad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor={colors.primary ?? "#1a2f8a"} />
+                <stop offset="100%" stopColor="#CF305D" />
+              </linearGradient>
+            </defs>
+          </svg>
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <span className="text-3xl font-black tabular-nums" style={{ color: colors.primary }}>
+              {Math.round(progress)}<span className="text-base text-gray-300">%</span>
+            </span>
+          </div>
+        </div>
+        <p className="text-sm font-black text-gray-800 mt-6 tracking-wide">
+          {!metaReady ? "Finding latest period…" : "Building cash flow…"}
+        </p>
+        <p className="text-[10px] text-gray-300 mt-1.5 uppercase tracking-widest font-bold">
+          Individual Cash Flow
+        </p>
+      </div>
+    </div>
+  );
+}
+
+
+/* ─── DrillGroupRow ─────────────────────────────────────────────────── */
+function DrillGroupRow({ groupCode, groupName, localRows, visibleCompanies, colors, body1Style, body2Style, subbody1Style, compareMode, groupIndex = 0 }) {
+  const [open, setOpen] = useState(false);
+  const amtByCompany = useMemo(() => {
+    const m = {};
+    visibleCompanies.forEach(c => {
+      m[c] = localRows.filter(r => r.co === c).reduce((s, r) => s + r.amt, 0);
+    });
+    return m;
+  }, [localRows, visibleCompanies]);
+
+  return (
+    <>
+<tr className="border-b cursor-pointer hover:bg-[#eef1fb]/60 transition-colors"
+        style={{ background: `${colors.primary}05`, animation: `drillSlideIn 280ms cubic-bezier(0.34,1.56,0.64,1) ${groupIndex * 40}ms both`, transformOrigin: "top center" }}
+        onClick={() => setOpen(o => !o)}>
+        <td className="sticky left-0 z-10 py-2 pr-4 border-r border-gray-100"
+          style={{ paddingLeft: 32, minWidth: 260, width: 260, background: `${colors.primary}05` }}>
+          <div className="flex items-center gap-2">
+            <ChevronDown size={10} className={`transition-transform duration-200 flex-shrink-0`}
+              style={{ color: colors.primary, transform: open ? "rotate(180deg)" : "rotate(-90deg)" }} />
+<span className="font-mono" style={subbody1Style}>{groupCode}</span>
+            {groupName && <span className="truncate" style={body2Style}>{groupName}</span>}
+          </div>
+        </td>
+{visibleCompanies.map(c => {
+          const v = Math.round(amtByCompany[c] ?? 0);
+          return (
+            <Fragment key={c}>
+              <td className="px-4 py-2 text-center tabular-nums border-l border-gray-100"
+                style={{ ...body2Style, color: v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : "#000", minWidth: 120 }}>
+                {v === 0 ? "—" : fmt(v)}
+              </td>
+              {compareMode && <td className="px-4 py-2 text-center border-l border-gray-100" style={{ minWidth: 110, background: `${colors.primary}08` }} />}
+              {compareMode && <td className="px-4 py-2 text-center border-l border-gray-100" style={{ minWidth: 100, background: `${colors.primary}12` }} />}
+              {compareMode && <td className="px-3 py-2 text-center border-l border-gray-100" style={{ minWidth: 80, background: `${colors.primary}1e` }} />}
+            </Fragment>
+          );
+        })}
+      </tr>
+      {open && localRows.map((r, i) => (
+        <tr key={i} className="border-b" style={{ background: `${colors.primary}03`, animation: `drillSlideIn 220ms cubic-bezier(0.34,1.56,0.64,1) ${i * 25}ms both`, transformOrigin: "top center" }}>
+          <td className="sticky left-0 z-10 py-1.5 pr-4 border-r border-gray-100"
+            style={{ paddingLeft: 52, minWidth: 260, width: 260, background: `${colors.primary}03` }}>
+<div className="flex items-center gap-2">
+              <span className="font-mono flex-shrink-0" style={subbody1Style}>{r.localCode}</span>
+              <span className="truncate" style={subbody1Style}>{r.localName}</span>
+            </div>
+          </td>
+{visibleCompanies.map(c => {
+            const v = r.co === c ? Math.round(r.amt) : 0;
+            return (
+              <Fragment key={c}>
+                <td className="px-4 py-1.5 text-center tabular-nums border-l border-gray-100"
+                  style={{ ...subbody1Style, color: v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : "#000" }}>
+                  {v === 0 ? "—" : fmt(v)}
+                </td>
+                {compareMode && <td className="px-4 py-1.5 text-center border-l border-gray-100" style={{ minWidth: 110, background: `${colors.primary}08` }} />}
+                {compareMode && <td className="px-4 py-1.5 text-center border-l border-gray-100" style={{ minWidth: 100, background: `${colors.primary}12` }} />}
+                {compareMode && <td className="px-3 py-1.5 text-center border-l border-gray-100" style={{ minWidth: 80, background: `${colors.primary}1e` }} />}
+              </Fragment>
+            );
+          })}
+        </tr>
+      ))}
+    </>
+  );
+}
 
 /* ─── SheetRow (individual flat) ─────────────────────────────────────── */
 function SheetRow({
   node, depth, pivot, visibleCompanies,
   body1Style, body2Style, subbody1Style,
-  isSubtotal, compareMode = false, cmpPivot = new Map(),
+  isSubtotal, compareMode = false, cmpPivot = new Map(), colors, rowIndex = 0,
+  uploadedData = [], groupToCf,
 }) {
-  const rowStyle = isSubtotal ? body1Style : body2Style;
-  const cellStyle = (v) => {
-    const baseColor = v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : "#000000";
-    return { ...rowStyle, color: baseColor };
-  };
-
+  const [expanded, setExpanded] = useState(false);
   const byCompany = pivot.get(node.AccountCode) || {};
-
   const getContrib = (company) =>
     (byCompany[company] ?? []).reduce((s, r) => s + (Number(r._cfAmount ?? 0)), 0);
 
+  // Level 1: group codes that map to this CF code, with their local rows
+  const drillGroups = useMemo(() => {
+    if (!expanded) return [];
+    const byGroup = new Map();
+    uploadedData.forEach(r => {
+      const groupCode = String(r.AccountCode ?? r.accountCode ?? "");
+      const co = r.CompanyShortName ?? r.companyShortName ?? "";
+      const cfs = groupToCf?.get(groupCode) ?? [];
+      if (!cfs.includes(node.AccountCode)) return;
+      if (!byGroup.has(groupCode)) byGroup.set(groupCode, { groupCode, groupName: r.AccountName ?? r.accountName ?? "", localRows: [] });
+      byGroup.get(groupCode).localRows.push({
+        localCode: r.LocalAccountCode ?? r.localAccountCode ?? "",
+        localName: r.LocalAccountName ?? r.localAccountName ?? "",
+        co,
+        amt: Number(r.AmountYTD ?? r.amountYTD ?? 0),
+      });
+    });
+    return [...byGroup.values()].sort((a, b) => a.groupCode.localeCompare(b.groupCode));
+  }, [expanded, uploadedData, groupToCf, node.AccountCode]);
+
+  const totalCols = 1 + visibleCompanies.length * (compareMode ? 4 : 1);
+
   return (
-    <tr className="group border-b border-gray-100 transition-colors hover:bg-gray-50/50">
-      <td className="sticky left-0 z-10 py-2.5 pr-4 border-r border-gray-100 bg-white group-hover:bg-gray-50/50"
-        style={{ paddingLeft: `${14 + depth * 16}px`, minWidth: 220, width: 220 }}>
-        <div className="flex items-center gap-1.5 select-none">
-          <span className="w-3 flex-shrink-0" />
-          <span className="flex-shrink-0 mr-2" style={rowStyle}>{node.AccountCode}</span>
-          <span className="truncate" style={{ ...rowStyle, maxWidth: 260 }}>{node.AccountName}</span>
-        </div>
-     </td>
-      {visibleCompanies.map(c => {
-        const val = getContrib(c);
-        const cmpVal = compareMode
-          ? (cmpPivot?.get(node.AccountCode)?.[c] ?? []).reduce((s, r) => s + Number(r._cfAmount ?? 0), 0)
-          : null;
-        const delta = cmpVal !== null ? Math.round(val) - Math.round(cmpVal) : null;
-        return (
-          <Fragment key={c}>
-            <td className="px-4 py-2.5 text-center whitespace-nowrap border-l border-gray-100"
-              style={{ minWidth: 120, ...cellStyle(val) }}>
-              {fmt(val)}
-            </td>
-            {compareMode && (
-              <td className="px-4 py-2.5 text-center whitespace-nowrap border-l border-gray-100 bg-[#fafbff]"
-                style={{ minWidth: 110, ...cellStyle(cmpVal ?? 0) }}>
-                {fmt(cmpVal ?? 0)}
-              </td>
-            )}
-            {compareMode && (
-              <td className="px-4 py-2.5 text-center whitespace-nowrap border-l border-gray-100 bg-[#f5f7ff]"
-                style={{ minWidth: 100, ...rowStyle, color: !delta ? "#D1D5DB" : delta > 0 ? "#059669" : "#EF4444" }}>
-                {delta ? fmt(delta) : "—"}
-              </td>
-            )}
-          </Fragment>
-        );
-      })}
-    </tr>
+    <>
+      <tr className="group border-b border-gray-100 transition-colors hover:bg-[#eef1fb]/40 cursor-pointer"
+        onClick={() => setExpanded(e => !e)}
+        style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 25) * 35 + 50}ms both` }}>
+        <td className="sticky left-0 z-10 py-2.5 pr-6 border-r border-gray-100 bg-white group-hover:bg-[#eef1fb]/40"
+          style={{ paddingLeft: `${24 + depth * 16}px`, minWidth: 260, width: 260 }}>
+          <div className="flex items-center gap-2 select-none">
+            <ChevronDown size={10} className="flex-shrink-0 transition-transform duration-200"
+              style={{ color: `${colors.primary}60`, transform: expanded ? "rotate(0deg)" : "rotate(-90deg)" }} />
+            <span className="flex-shrink-0 mr-1" style={subbody1Style}>{node.AccountCode}</span>
+            <span className="truncate" style={body1Style}>{node.AccountName}</span>
+          </div>
+        </td>
+        {visibleCompanies.map(c => {
+          const val = getContrib(c);
+          const cmpVal = compareMode
+            ? (cmpPivot?.get(node.AccountCode)?.[c] ?? []).reduce((s, r) => s + Number(r._cfAmount ?? 0), 0)
+            : null;
+          const delta = cmpVal !== null ? Math.round(val) - Math.round(cmpVal) : null;
+          const pct = (cmpVal !== null && Math.round(cmpVal) !== 0)
+            ? ((Math.round(val) - Math.round(cmpVal)) / Math.abs(Math.round(cmpVal))) * 100
+            : null;
+          const devColor = !delta ? "#D1D5DB" : delta > 0 ? "#059669" : "#EF4444";
+          return (
+            <Fragment key={c}>
+              <AnimatedAmountCell value={val} style={{ ...body1Style, fontWeight: isSubtotal ? 800 : body1Style.fontWeight }} />
+              {compareMode && (
+                <AnimatedAmountCell value={cmpVal ?? 0}
+                  style={{ ...body1Style, background: `${colors.primary}08`, animation: "cmpColIn 380ms cubic-bezier(0.34,1.56,0.64,1) 60ms both", transformOrigin: "left center" }} />
+              )}
+              {compareMode && (
+                <td className="px-4 py-2.5 text-center whitespace-nowrap tabular-nums border-l border-gray-100"
+                  style={{ minWidth: 100, ...body1Style, color: devColor, background: `${colors.primary}12`, animation: "cmpColIn 380ms cubic-bezier(0.34,1.56,0.64,1) 120ms both", transformOrigin: "left center" }}>
+                  {delta ? fmt(delta) : "—"}
+                </td>
+              )}
+              {compareMode && (
+                <td className="px-3 py-2.5 text-center whitespace-nowrap tabular-nums"
+                  style={{ minWidth: 80, ...body1Style, color: !pct ? "#D1D5DB" : pct > 0 ? "#059669" : "#EF4444", background: `${colors.primary}1e`, animation: "cmpColIn 380ms cubic-bezier(0.34,1.56,0.64,1) 180ms both", transformOrigin: "left center" }}>
+                  {pct !== null ? `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%` : "—"}
+                </td>
+              )}
+            </Fragment>
+          );
+        })}
+      </tr>
+      {expanded && drillGroups.length === 0 && (
+        <tr>
+          <td colSpan={totalCols} className="px-8 py-2 text-[10px] font-black uppercase tracking-widest text-gray-300">
+            No underlying accounts
+          </td>
+        </tr>
+      )}
+{expanded && drillGroups.map((g, gi) => (
+        <DrillGroupRow key={g.groupCode} groupIndex={gi}
+          groupCode={g.groupCode} groupName={g.groupName} localRows={g.localRows}
+          visibleCompanies={visibleCompanies} colors={colors}
+          body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style} compareMode={compareMode} />
+      ))}
+    </>
   );
 }
  
@@ -241,7 +482,10 @@ export default function IndividualCashFlowPage({ token }) {
   const [month,     setMonth]     = useState("");
   const [source,    setSource]    = useState("");
   const [structure, setStructure] = useState("DefaultStructure");
-  const [selectedCompanies, setSelectedCompanies] = useState(null);
+const [selectedCompanies, setSelectedCompanies] = useState(null);
+const [upDimGroups, setUpDimGroups] = useState(null);
+  const [upDimensions, setUpDimensions] = useState(null);
+  const [dimensionsMeta, setDimensionsMeta] = useState([]);
 
   const [uploadedData, setUploadedData] = useState([]);
   const [loading,      setLoading]      = useState(false);
@@ -261,13 +505,15 @@ export default function IndividualCashFlowPage({ token }) {
       fetch(`${BASE}/companies`,                { headers: h }).then(r => r.json()).then(d => d.value || d),
       fetch(`${BASE}/group-structure`,          { headers: h }).then(r => r.json()).then(d => d.value || d || []).catch(() => []),
       fetch(`${BASE}/mapped-cashflow-accounts`, { headers: h }).then(r => r.json()).then(d => d.value || d || []).catch(() => []),
-      fetch(`${BASE}/mapped-accounts`,          { headers: h }).then(r => r.json()).then(d => d.value || d || []).catch(() => []),
-    ]).then(([p, s, st, co, gs, cf, ma]) => {
+fetch(`${BASE}/mapped-accounts`,          { headers: h }).then(r => r.json()).then(d => d.value || d || []).catch(() => []),
+      fetch(`${BASE}/dimensions`,               { headers: h }).then(r => r.json()).then(d => d.value || d || []).catch(() => []),
+    ]).then(([p, s, st, co, gs, cf, ma, dims]) => {
       if (cancelled) return;
       setPeriods(p); setSources(s); setStructures(st); setCompanies(co);
       setGroupStructure(Array.isArray(gs) ? gs : []);
       setCfMapping(Array.isArray(cf) ? cf : []);
       setMappedAccounts(Array.isArray(ma) ? ma : []);
+      setDimensionsMeta(Array.isArray(dims) ? dims : []);
 
       const structureNames = (st || []).map(x => x.GroupStructure ?? x);
       const defaultFlagged = (st || []).find(x => x.IsDefault === true || x.isDefault === true)?.GroupStructure;
@@ -385,10 +631,23 @@ export default function IndividualCashFlowPage({ token }) {
       });
   }, [groupStructure, structure, companies]);
 
-  const visibleCompanies = useMemo(() => {
+const visibleCompanies = useMemo(() => {
     if (!selectedCompanies) return contributionCompanies;
     return contributionCompanies.filter(c => selectedCompanies.includes(c));
   }, [contributionCompanies, selectedCompanies]);
+
+  const [colOrder, setColOrder] = useState(null);
+  const [draggingCol, setDraggingCol] = useState(null);
+  const [dragOverCol, setDragOverCol] = useState(null);
+
+  const orderedVisibleCompanies = useMemo(() => {
+    if (!colOrder) return visibleCompanies;
+    const map = new Map(visibleCompanies.map(c => [c, c]));
+    return colOrder.map(c => map.get(c)).filter(Boolean);
+  }, [visibleCompanies, colOrder]);
+
+  const visibleCompaniesKey = useMemo(() => visibleCompanies.join(","), [visibleCompanies]);
+  useEffect(() => { setColOrder(null); }, [visibleCompaniesKey]);
 
   /* ─── Fetch uploaded data + CF names ───────────────────────────── */
   useEffect(() => {
@@ -468,11 +727,15 @@ export default function IndividualCashFlowPage({ token }) {
   }, [cfMapping]);
 
   /* ─── Pivot from uploaded leaves ──────────────────────────────── */
+const filteredUploadedData = useMemo(() => {
+    return uploadedData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions));
+  }, [uploadedData, upDimGroups, upDimensions]);
+
   const pivot = useMemo(() => {
-    if (!uploadedData.length || !cfMetadata.size) return new Map();
+    if (!filteredUploadedData.length || !cfMetadata.size) return new Map();
     const piv = new Map();
 
-    uploadedData.forEach(r => {
+    filteredUploadedData.forEach(r => {
       const localCode = r.LocalAccountCode ?? r.localAccountCode ?? null;
       const groupCode = String(r.AccountCode ?? r.accountCode ?? "");
       const co = r.CompanyShortName ?? r.companyShortName ?? "";
@@ -510,7 +773,7 @@ export default function IndividualCashFlowPage({ token }) {
     });
 
     return piv;
-  }, [uploadedData, cfMetadata, groupToCf]);
+  }, [filteredUploadedData, cfMetadata, groupToCf]);
 
   const subtotalCodes = useMemo(() => {
     const s = new Set();
@@ -575,14 +838,51 @@ export default function IndividualCashFlowPage({ token }) {
  const getLegal = co => companies.find(c => c.CompanyShortName === co)?.CompanyLegalName || co;
   const hasData = uploadedData.length > 0;
 
-const [exporting, setExporting] = useState(false);
+const dimGroups = useMemo(() => {
+    const seen = new Set();
+    const groups = [];
+    uploadedData.forEach(r => {
+      parseDimensionsField(r.Dimensions ?? r.dimensions ?? "").forEach(d => {
+        if (d.group && !seen.has(d.group)) { seen.add(d.group); groups.push(d.group); }
+      });
+    });
+    return groups.sort();
+  }, [uploadedData]);
+
+  const filteredDims = useMemo(() => {
+    const seen = new Set();
+    const dims = [];
+    uploadedData.forEach(r => {
+      parseDimensionsField(r.Dimensions ?? r.dimensions ?? "").forEach(d => {
+        if (!upDimGroups || upDimGroups.includes(d.group)) {
+          const key = `${d.group}:${d.code}`;
+          if (!seen.has(key)) { seen.add(key); dims.push({ group: d.group, code: d.code }); }
+        }
+      });
+    });
+    return dims.sort((a, b) => a.code.localeCompare(b.code));
+}, [uploadedData, upDimGroups]);
+
+  const [exporting, setExporting] = useState(false);
   const [viewsModalOpen, setViewsModalOpen] = useState(false);
-  const [compareMode, setCompareMode] = useState(false);
+const [compareMode, setCompareMode] = useState(false);
+  const [cmpVisible, setCmpVisible] = useState(false);
+  const [cmpExiting, setCmpExiting] = useState(false);
   const [cmpYear,  setCmpYear]  = useState("");
   const [cmpMonth, setCmpMonth] = useState("");
   const [cmpSource, setCmpSource] = useState("");
   const [cmpPivot, setCmpPivot] = useState(new Map());
   const [cmpLoading, setCmpLoading] = useState(false);
+
+  useEffect(() => {
+    if (compareMode) {
+      setCmpVisible(true); setCmpExiting(false);
+    } else if (cmpVisible) {
+      setCmpExiting(true);
+      const t = setTimeout(() => { setCmpVisible(false); setCmpExiting(false); }, 350);
+      return () => clearTimeout(t);
+    }
+  }, [compareMode]);
 
  // Fetch compare period when compare mode is active
   useEffect(() => {
@@ -767,11 +1067,15 @@ const [exporting, setExporting] = useState(false);
         .cf-scroll::-webkit-scrollbar { width: 0; height: 0; display: none; }
         .cf-scroll::-webkit-scrollbar-thumb { background: transparent; }
         .cf-scroll::-webkit-scrollbar-track { background: transparent; }
-        .cf-scroll thead { background: ${colors.primary}; }
-        .cf-scroll thead th { border-color: transparent !important; }
-        .cf-scroll thead th + th { box-shadow: inset 1px 0 0 rgba(255,255,255,0.25); }
-        .cf-scroll thead tr:first-child th:first-child { border-top-left-radius: 1rem; }
-        .cf-scroll thead tr:first-child th:last-child  { border-top-right-radius: 1rem; }
+.cf-scroll thead { background: rgba(255,255,255,0.95); }
+        .cf-scroll thead th { border-color: transparent !important; box-shadow: none !important; }
+@keyframes cmpBarIn    { from { opacity:0; transform:translateY(-12px) scaleY(0.7); } to { opacity:1; transform:translateY(0) scaleY(1); } }
+        @keyframes cmpBarOut   { from { opacity:1; transform:translateY(0) scaleY(1); } to { opacity:0; transform:translateY(-12px) scaleY(0.7); } }
+        @keyframes plRowSlideIn { 0% { opacity:0; transform:translateY(8px); } 100% { opacity:1; transform:translateY(0); } }
+@keyframes cmpColIn    { from { opacity:0; transform:scaleX(0.6); } to { opacity:1; transform:scaleX(1); } }
+        @keyframes cmpColOut   { from { opacity:1; transform:scaleX(1); } to { opacity:0; transform:scaleX(0.6); } }
+        @keyframes drillSlideIn { 0% { opacity:0; transform:translateY(-6px) scaleY(0.85); } 100% { opacity:1; transform:translateY(0) scaleY(1); } }
+        @keyframes pageIn { 0% { opacity:0; transform:translateY(16px); } 100% { opacity:1; transform:translateY(0); } }
       `}</style>
 
  <PageHeader
@@ -792,7 +1096,7 @@ const [exporting, setExporting] = useState(false);
             ? [{ label: "Structure", value: structure, onChange: setStructure,
                 options: structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s })) }]
             : []),
-          ...(contributionCompanies.length > 1
+...(contributionCompanies.length > 1
             ? [{
                 label: "Companies",
                 multiselect: true,
@@ -804,15 +1108,26 @@ const [exporting, setExporting] = useState(false);
                 })),
               }]
             : []),
+          ...(dimGroups.length > 0
+            ? [{ label: "Dim Group", multiselect: true, values: upDimGroups,
+                onChange: vs => { setUpDimGroups(vs); setUpDimensions(null); },
+               options: dimGroups.map(g => ({ value: g, label: g })) }]
+            : []),
+          ...(filteredDims.length > 0
+            ? [{ label: "Dims", multiselect: true, values: upDimensions,
+                onChange: setUpDimensions,
+                options: filteredDims.map(d => {
+const meta = dimensionsMeta.find(m =>
+                    (m.dimensionCode ?? m.DimensionCode ?? m.code ?? m.Code) === d.code
+                  );
+                  const name = meta?.dimensionName ?? meta?.DimensionName ?? meta?.name ?? meta?.Name;
+                  return { value: d.code, label: name ?? d.code };
+                }) }]
+            : []),
         ]}
         compareToggle={{ active: compareMode, onChange: setCompareMode }}
 fabActions={[
-          {
-            id: "views",
-            icon: Library,
-            label: "Views",
-            onClick: () => setViewsModalOpen(true),
-          },
+
           {
             id: "export",
             icon: Download,
@@ -842,82 +1157,96 @@ fabActions={[
       />
 
 
-
-      {compareMode && (
-        <div className="flex items-center gap-2 flex-wrap px-4 py-2.5 bg-white rounded-2xl border border-gray-100 shadow-sm flex-shrink-0">
-          <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50 mr-1">Compare with</span>
-          <FilterPill label="Source" value={cmpSource} onChange={setCmpSource}
-            options={sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s }))}
-            filterStyle={filterStyle} colors={colors} />
-          <FilterPill label="Year" value={cmpYear} onChange={setCmpYear}
-            options={availableYears} filterStyle={filterStyle} colors={colors} />
-          <FilterPill label="Month" value={cmpMonth} onChange={setCmpMonth}
-            options={availableMonths} filterStyle={filterStyle} colors={colors} />
-          {cmpLoading && <Loader2 size={11} className="animate-spin text-[#1a2f8a] ml-2" />}
-        </div>
-      )}
+{cmpVisible && <div className="flex items-center gap-2 flex-wrap px-5 py-3 bg-white rounded-2xl border border-gray-100 shadow-sm flex-shrink-0"
+        style={{ transformOrigin: "top center", animation: cmpExiting ? "cmpBarOut 350ms cubic-bezier(0.4,0,0.2,1) both" : "cmpBarIn 400ms cubic-bezier(0.34,1.56,0.64,1) both" }}>
+          <div className="flex items-center gap-2 mr-2">
+            <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+              style={{ background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)", boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)" }}>
+              <span className="text-white text-[11px] font-black">B</span>
+            </div>
+            <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Compare with</span>
+          </div>
+          <HeaderFilterPill label="Source" value={cmpSource} onChange={setCmpSource}
+            options={sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s }))} />
+          <HeaderFilterPill label="Year" value={cmpYear} onChange={setCmpYear}
+            options={availableYears} />
+          <HeaderFilterPill label="Month" value={cmpMonth} onChange={setCmpMonth}
+            options={availableMonths} />
+          <HeaderFilterPill label="Structure" value={structure} onChange={() => {}}
+            options={structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s }))} />
+          {cmpLoading && <Loader2 size={11} className="animate-spin ml-2" style={{ color: colors.primary }} />}
+</div>}
 
       <div className="flex-1 min-h-0 flex flex-col">
         <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
-          {loading ? (
-            <div className="flex items-center justify-center flex-1 gap-3">
-              <Loader2 size={22} className="animate-spin text-[#1a2f8a]" />
-              <p className="text-xs text-gray-400">Building cash flow…</p>
-            </div>
+{loading || !metaReady ? (
+            <CfLoadingSpinner colors={colors} metaReady={metaReady} />
           ) : !hasData ? (
             <div className="flex items-center justify-center flex-1 text-xs text-gray-300 font-black uppercase tracking-widest">
               No data for selected filters
             </div>
           ) : (
-            <div className="cf-scroll-outer flex-1 min-h-0" style={{ minWidth: 0 }}>
+            <div className="cf-scroll-outer flex-1 min-h-0" style={{ minWidth: 0, animation: "pageIn 400ms cubic-bezier(0.34,1.56,0.64,1) both" }}>
               <div className="cf-scroll" style={{ minWidth: 0 }}>
                 <table className="text-xs border-collapse" style={{ borderSpacing: 0, width: "100%", minWidth: "max-content", tableLayout: "auto" }}>
-                  <thead className="sticky top-0 z-30" style={{ backgroundColor: colors.primary }}>
-                    <tr style={{ backgroundColor: colors.primary }}>
-                      <th className="sticky left-0 z-40 text-left px-4 py-3"
-                        style={{ minWidth: 220, width: 220, backgroundColor: colors.primary, boxShadow: "inset -1px 0 0 rgba(255,255,255,0.25)" }}>
-                        <span style={header2Style}>ACCOUNT</span>
+<thead className="sticky top-0 z-30">
+                    <tr style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)" }}>
+                      <th className="sticky left-0 z-40 text-left px-6" style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", height: "64px", minWidth: 220, width: 220 }}>
+                        <div className="flex items-baseline gap-2.5">
+                          <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>Account</span>
+                          <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>Cash Flow</span>
+                        </div>
                       </th>
-
-                      <th colSpan={visibleCompanies.length * (compareMode ? 3 : 1)}
-                        className="px-4 py-2 text-center"
-                        style={{ backgroundColor: colors.primary, boxShadow: "inset 1px 0 0 rgba(255,255,255,0.25), inset 0 0 0 9999px rgba(0,0,0,0.1)" }}>
-                        <span style={{ ...header2Style, textTransform: "uppercase", position: "relative" }}>
-                          Cash Flow · By Company (local currency)
-                        </span>
-                      </th>
-                    </tr>
-
-<tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-                      <th className="sticky left-0 z-40"
-                        style={{ minWidth: 220, width: 220, backgroundColor: colors.primary,
-                          boxShadow: "inset -1px 0 0 rgba(255,255,255,0.25)" }} />
-{visibleCompanies.map(c => {
+                      {orderedVisibleCompanies.map(c => {
                         const ccy = companies.find(x => x.CompanyShortName === c)?.CurrencyCode || "—";
                         return (
                           <Fragment key={c}>
-                            <th className="px-4 py-2.5 text-center"
-                              style={{ minWidth: 120, backgroundColor: colors.primary }}>
+<th className="text-center px-4 select-none"
+                              draggable
+                              onDragStart={() => setDraggingCol(c)}
+                              onDragOver={e => { e.preventDefault(); setDragOverCol(c); }}
+                              onDragLeave={() => setDragOverCol(null)}
+                              onDrop={e => {
+                                e.preventDefault();
+                                if (!draggingCol || draggingCol === c) { setDraggingCol(null); setDragOverCol(null); return; }
+                                const cols = colOrder ?? [...orderedVisibleCompanies];
+                                const from = cols.indexOf(draggingCol);
+                                const to = cols.indexOf(c);
+                                if (from === -1 || to === -1) { setDraggingCol(null); setDragOverCol(null); return; }
+                                const next = [...cols];
+                                next.splice(from, 1);
+                                next.splice(to, 0, draggingCol);
+                                setColOrder(next);
+                                setDraggingCol(null);
+                                setDragOverCol(null);
+                              }}
+                              onDragEnd={() => { setDraggingCol(null); setDragOverCol(null); }}
+                              style={{
+                                background: dragOverCol === c ? `${colors.primary}15` : "rgba(255,255,255,0.95)",
+                                borderLeft: "1px solid #f0f0f0",
+                                cursor: "grab",
+                                outline: dragOverCol === c ? `2px solid ${colors.primary}` : "none",
+                                opacity: draggingCol === c ? 0.4 : 1,
+                                transition: "background 150ms ease, outline 150ms ease",
+                              }}>
                               <div className="flex flex-col items-center gap-0.5">
-                                <span className="block overflow-hidden text-ellipsis whitespace-nowrap max-w-full" style={underscore1Style} title={getLegal(c)}>
-                                  {getLegal(c)}
-                                </span>
-                                <span style={underscore2Style}>{ccy}</span>
+                                <span className="font-black tracking-tight truncate max-w-[140px]" style={{ color: colors.primary, fontSize: 13, letterSpacing: "-0.01em" }} title={getLegal(c)}>{getLegal(c)}</span>
+                                <span className="text-[11px] font-bold uppercase tracking-widest" style={{ color: `${colors.primary}60` }}>{ccy}</span>
                               </div>
                             </th>
-                            {compareMode && (
-                              <th className="px-4 py-2.5 text-center"
-                                style={{ minWidth: 110, backgroundColor: colors.primary, opacity: 0.8 }}>
-                                <div className="flex flex-col items-center gap-0.5">
-                                  <span style={{ ...underscore1Style, fontSize: 9 }}>Cmp</span>
-                                  <span style={underscore2Style}>{ccy}</span>
-                                </div>
+{compareMode && (
+<th className="text-center px-3" style={{ background: `${colors.primary}08`, borderLeft: `2px solid ${colors.primary}15` }}>
+                                <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>CMP</span>
                               </th>
                             )}
                             {compareMode && (
-                              <th className="px-4 py-2.5 text-center"
-                                style={{ minWidth: 100, backgroundColor: colors.primary, opacity: 0.65 }}>
-                                <span style={{ ...underscore1Style, fontSize: 9 }}>Δ</span>
+                              <th className="text-center px-3" style={{ background: `${colors.primary}08` }}>
+                                <span className="font-black" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>Δ</span>
+                              </th>
+                            )}
+                            {compareMode && (
+                              <th className="text-center px-3" style={{ background: `${colors.primary}08` }}>
+                                <span className="font-black" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>Δ%</span>
                               </th>
                             )}
                           </Fragment>
@@ -932,12 +1261,12 @@ fabActions={[
                       if (!codes || codes.length === 0) return null;
 
                       const secInfo = activeCfMapping?.sections?.get(sec);
-                                            const totalCols = 1 + visibleCompanies.length * (compareMode ? 3 : 1);
+                                    const totalCols = 1 + visibleCompanies.length * (compareMode ? 4 : 1);
 
                       return (
                         <Fragment key={`section-${sec}`}>
 <tr>
-                            <td className="sticky left-0 z-10"
+<td className="sticky left-0 z-10 whitespace-nowrap"
                               style={{
                                 backgroundColor: secInfo?.color || colors.primary,
                                 color: "#fff", padding: "8px 16px",
@@ -949,7 +1278,7 @@ fabActions={[
                             <td colSpan={totalCols - 1}
                               style={{ backgroundColor: secInfo?.color || colors.primary }} />
                           </tr>
-                          {codes.map(code => {
+     {codes.map((code, idx) => {
                             const isSubtotal = subtotalCodes.has(code);
                             const node = {
                               AccountCode: code,
@@ -957,10 +1286,11 @@ fabActions={[
                             };
                             return (
 <SheetRow key={code} node={node} depth={0}
-                                pivot={pivot} visibleCompanies={visibleCompanies}
+                                pivot={pivot} visibleCompanies={orderedVisibleCompanies}
                                 body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style}
-                                isSubtotal={isSubtotal}
-                                compareMode={compareMode} cmpPivot={cmpPivot} />
+                                isSubtotal={isSubtotal} rowIndex={idx}
+                                compareMode={compareMode} cmpPivot={cmpPivot} colors={colors}
+                                uploadedData={filteredUploadedData} groupToCf={groupToCf} />
                             );
                           })}
                         </Fragment>

@@ -504,8 +504,15 @@ function sumNode(node) {
   if (node.type === "localAccount" || node.type === "dimension" || node.type === "plain")
     return node.amount ?? 0;
 
+  // If this node has direct upload leaves, sum only those (posting level)
+  if (node.uploadLeaves?.length > 0) {
+    let s = 0;
+    node.uploadLeaves.forEach(l => { s += sumNode(l); });
+    return s;
+  }
+
+  // Otherwise sum direct children only (no double-counting through grandchildren)
   let s = 0;
-  node.uploadLeaves?.forEach(l => { s += sumNode(l); });
   node.children?.forEach(c => { s += sumNode(c); });
   return s;
 }
@@ -531,6 +538,7 @@ function AmountCell({ value, bold }) {
 }
 
 function DimensionRow({ node, depth }) {
+  const t = useT();
   return (
     <tr className="hover:bg-amber-50/40 transition-colors">
       <td className="py-1" style={{ paddingLeft: depth * INDENT + 8 }}>
@@ -2852,6 +2860,7 @@ function PLStatement({
   compareMode, onToggleCompare,
   cmpUploadedAccounts = [], cmpPrevUploadedAccounts = [],
   cmpFilters, onCmpFilterChange,
+  prevUploadedAccountsRaw = [],
   cmp2UploadedAccounts = [], cmp2PrevUploadedAccounts = [],
   cmp2Filters, onCmp2FilterChange,
   sources = [], structures = [], companies = [],
@@ -3577,11 +3586,13 @@ if (typeof window !== "undefined") {
       savedPlLiteral.forEach(s => walkLit(s.nodes));
     }
 
-// Build a prev-month index for monthly mode (mirrors current dimFullIdx/dimValIdx logic)
+// Build a prev-month index for monthly mode — use RAW (unfiltered) prev data
+    // so that posting-account leaf rows (which have Dimensions="—") are included
     const prevAccIdx = new Map();
     const prevDimFullIdx = new Map();
     const prevDimValIdx = new Map();
-    (prevUploadedAccounts || []).forEach(row => {
+    const prevRawRows = prevUploadedAccountsRaw.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts;
+    (prevRawRows || []).forEach(row => {
       const code = String(getField(row, "accountCode") ?? "");
       if (!code) return;
       const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
@@ -3621,6 +3632,15 @@ if (typeof window !== "undefined") {
         }
       });
     }
+
+// Build raw prev leaf index (localAccountCode → YTD) for leaf monthly delta
+    const prevLeafIndexRaw = new Map();
+    (prevRawRows || []).forEach(row => {
+      const lac = String(getField(row, "localAccountCode") ?? "");
+      if (!lac) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      prevLeafIndexRaw.set(lac, (prevLeafIndexRaw.get(lac) ?? 0) + amt);
+    });
 
     // ── Define sumDimRecursivePrev (uses prevDimFullIdx/prevDimValIdx) ──
     const sumDimRecursivePrev = (gaNode, dimStr) => {
@@ -3838,10 +3858,50 @@ const cmp2PrevAccIdx = new Map();
 
 return (
       <div className="space-y-3 flex flex-col" style={{ minHeight: 0, flex: 1, overflow: "visible" }}>
+{compareMode && filtersOpen && (
+          <div className="bg-white rounded-2xl shadow-xl border border-gray-100"
+            style={{ overflow: "visible", position: "relative", zIndex: 100, marginBottom: 12, flex: "0 0 auto" }}>
+            <div className="px-5 py-3 flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-2 mr-2">
+                <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+                  style={{ background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)", boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)" }}>
+                  <span className="text-white text-[11px] font-black">B</span>
+                </div>
+                <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Period B</span>
+              </div>
+              <HeaderFilterPill label="Year" value={cmpFilters.year} onChange={v => onCmpFilterChange("year", v)} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+              <HeaderFilterPill label="Month" value={cmpFilters.month} onChange={v => onCmpFilterChange("month", v)} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+              <HeaderFilterPill label="Source" value={cmpFilters.source} onChange={v => onCmpFilterChange("source", v)} options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+              <HeaderFilterPill label="Structure" value={cmpFilters.structure} onChange={v => onCmpFilterChange("structure", v)} options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+              <HeaderFilterPill label="Company" value={cmpFilters.company} onChange={v => onCmpFilterChange("company", v)} options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+              <HeaderMultiFilterPill label="DIM GRP" values={cmpFilters.dimGroups} onChange={vs => onCmpFilterChange("dimGroups", vs)} options={dimGroups.map(g => ({ value: g, label: g }))} />
+              <HeaderMultiFilterPill label="DIMS" values={cmpFilters.dimensions} onChange={vs => onCmpFilterChange("dimensions", vs)} options={cmpFilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+              {!cmp2Enabled && <button onClick={() => onCmp2EnabledChange(true)} className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]" style={{ background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)", boxShadow: "0 4px 14px -4px rgba(87,170,120,0.5)" }}><span className="text-white text-[10px] font-black">+ Add Period C</span></button>}
+            </div>
+            {cmp2Enabled && (
+              <div className="px-5 py-3 flex items-center gap-2 flex-wrap border-t border-gray-100">
+                <div className="flex items-center gap-2 mr-2">
+                  <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)", boxShadow: "0 4px 12px -4px rgba(87,170,120,0.5)" }}>
+                    <span className="text-white text-[11px] font-black">C</span>
+                  </div>
+                  <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>Period C</span>
+                </div>
+                <HeaderFilterPill label="Year" value={cmp2Filters?.year} onChange={v => onCmp2FilterChange("year", v)} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+                <HeaderFilterPill label="Month" value={cmp2Filters?.month} onChange={v => onCmp2FilterChange("month", v)} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+                <HeaderFilterPill label="Source" value={cmp2Filters?.source} onChange={v => onCmp2FilterChange("source", v)} options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+                <HeaderFilterPill label="Structure" value={cmp2Filters?.structure} onChange={v => onCmp2FilterChange("structure", v)} options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+                <HeaderFilterPill label="Company" value={cmp2Filters?.company} onChange={v => onCmp2FilterChange("company", v)} options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+                <HeaderMultiFilterPill label="DIM GRP" values={cmp2Filters?.dimGroups} onChange={vs => onCmp2FilterChange("dimGroups", vs)} options={dimGroups.map(g => ({ value: g, label: g }))} />
+                <HeaderMultiFilterPill label="DIMS" values={cmp2Filters?.dimensions} onChange={vs => onCmp2FilterChange("dimensions", vs)} options={cmp2FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+                <button onClick={() => onCmp2EnabledChange(false)} className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all" style={{ background: "#fee2e2", color: "#dc2626" }} title="Remove Period C"><X size={12} strokeWidth={2.5} /></button>
+              </div>
+            )}
+          </div>
+        )}
         <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col"
           style={{ maxHeight: "100%", minHeight: 0, boxShadow: "0 20px 40px -8px rgba(26, 47, 138, 0.15), 0 4px 12px -2px rgba(26, 47, 138, 0.08)" }}>
           <div className="overflow-auto scrollbar-hide" style={{ flex: 1, minHeight: 0 }}>
-<table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "auto" }}>
+<table style={{ width: "100%",borderCollapse: "collapse", tableLayout: "auto" }}>
               <colgroup>
                 <col style={{ width: "1px" }} />
                 <col style={{ width: "1px" }} />
@@ -4127,7 +4187,10 @@ sectionRows.push(
                                 <span style={subbody2Style}>{String(d).split(":").pop()}</span>
                               </div>
                             </td>
-<PLAmountCell value={dimVal} typoStyle={subbody2Style} />
+<PLAmountCell value={ytdOnly ? dimVal : (() => {
+  const prevVal = prevDimFullIdx.get(`${node.code}|${String(d)}`) ?? 0;
+  return dimVal + prevVal;
+})() } typoStyle={subbody2Style} />
                             {compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
                             {compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
                             {historyExpanded && historyMonthsProcessed.map((h) => (
@@ -4161,7 +4224,14 @@ sectionRows.push(
                                 <span style={subbody1Style}>{leaf.name || ""}</span>
                               </div>
                             </td>
-<PLAmountCell value={-amt} typoStyle={subbody1Style} />
+{(() => {
+                              const ytdAmt = -amt;
+const prevAmt = leaf.code && Number(month) !== 1
+                                ? (prevLeafIndexRaw.get(String(leaf.code)) ?? 0)
+                                : 0;
+                              const displayAmt = ytdOnly ? ytdAmt : -(amt - prevAmt);
+                              return <PLAmountCell value={displayAmt} typoStyle={subbody1Style} />;
+                            })()}
                             {compareMode && (() => {
                               const cmpAmt = leaf.code ? -(cmpLeafIndex.get(String(leaf.code)) ?? 0) : 0;
                               return (
@@ -4217,7 +4287,28 @@ sectionRows.push(
                                     <span style={subbody2Style}>{dim.name || dim.code}</span>
                                   </div>
                                 </td>
-                                <PLAmountCell value={-dim.amount} typoStyle={subbody2Style} />
+{(() => {
+                                  let prevDimVal = 0;
+                                 if (Number(month) !== 1) {
+                                    const leafRawRows = (uploadedAccounts || []).filter(r =>
+                                      String(getField(r, "localAccountCode", "LocalAccountCode") ?? "") === String(leaf.code)
+                                    );
+                                    const dimsOnLeaf = new Set();
+                                    leafRawRows.forEach(r => {
+                                      const dimsStr = String(getField(r, "Dimensions", "dimensions") ?? "");
+                                      if (dimsStr) dimsOnLeaf.add(dimsStr);
+                                    });
+for (const dimsStr of dimsOnLeaf) {
+  const key = `${node.code}|${dimsStr}`;
+  console.log('[DIMFIX] trying key:', key, 'hit:', prevDimFullIdx.get(key));
+  if (prevDimFullIdx.has(key)) {
+    prevDimVal = prevDimFullIdx.get(key) ?? 0;
+    break;
+  }
+}
+                                  }
+                                  return <PLAmountCell value={ytdOnly ? -dim.amount : -(dim.amount - prevDimVal)} typoStyle={subbody2Style} />;
+                                })()}
                                 {compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
                                 {compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
                                 {historyExpanded && historyMonthsProcessed.map((h) => (
@@ -4918,16 +5009,26 @@ rows.push(
         <span style={subbody1Style}>{leaf.name || ""}</span>
       </div>
     </td>
-    {!ytdOnly && <PLAmountCell value={-(amt - (leaf.code ? getPrevLeafAmt(leaf.code) : 0))} typoStyle={subbody1Style} />}
-    {!ytdOnly && compareMode && (() => {
-      const cmpAmt = leaf.code ? -getCmpLeafAmt(leaf.code) : 0;
-      return <><PLAmountCell value={cmpAmt} typoStyle={subbody1Style} divider /><DeviationCells a={-(amt - (leaf.code ? getPrevLeafAmt(leaf.code) : 0))} b={cmpAmt} typoStyle={subbody1Style} /></>;
+{(() => {
+      const monthlyAmt = -(amt - (leaf.code ? getPrevLeafAmt(leaf.code) : 0));
+      const ytdAmt = -amt;
+      const displayAmt = ytdOnly ? ytdAmt : monthlyAmt;
+      return (
+        <>
+          <PLAmountCell value={displayAmt} typoStyle={subbody1Style} />
+          {compareMode && (() => {
+            const cmpYtd = leaf.code ? -(getCmpLeafAmt(leaf.code)) : 0;
+            // cmp monthly not available without prev cmp leaf index — show YTD for cmp
+            return <><PLAmountCell value={cmpYtd} typoStyle={subbody1Style} divider /><DeviationCells a={displayAmt} b={cmpYtd} typoStyle={subbody1Style} /></>;
+          })()}
+          {compareMode && cmp2Enabled && (() => {
+            const cmp2Ytd = leaf.code ? -(getCmp2LeafAmt(leaf.code)) : 0;
+            return <><PLAmountCell value={cmp2Ytd} typoStyle={subbody1Style} divider /><DeviationCells a={displayAmt} b={cmp2Ytd} typoStyle={subbody1Style} /></>;
+          })()}
+        </>
+      );
     })()}
-    {!ytdOnly && compareMode && cmp2Enabled && (() => {
-      const cmp2Amt = leaf.code ? -getCmp2LeafAmt(leaf.code) : 0;
-      return <><PLAmountCell value={cmp2Amt} typoStyle={subbody1Style} divider /><DeviationCells a={-(amt - (leaf.code ? getPrevLeafAmt(leaf.code) : 0))} b={cmp2Amt} typoStyle={subbody1Style} /></>;
-    })()}
-    {ytdOnly && <PLAmountCell value={-amt} typoStyle={subbody1Style} />}
+    {ytdOnly && false && null /* handled above */}
     {ytdOnly && compareMode && (() => {
       const cmpAmt = leaf.code ? -getCmpLeafAmt(leaf.code) : 0;
       return <><PLAmountCell value={cmpAmt} typoStyle={subbody1Style} divider /><DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody1Style} /></>;
@@ -4958,12 +5059,12 @@ if (leafExpanded && hasDims) {
           <span style={subbody2Style}>{dim.name || dim.code}</span>
         </div>
       </td>
-      {!ytdOnly && <PLAmountCell value={-(dim.amount - getPrevDimAmt(leaf.code, dim.code))} typoStyle={subbody2Style} />}
-      {!ytdOnly && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-      {!ytdOnly && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-      {ytdOnly && <PLAmountCell value={-dim.amount} typoStyle={subbody2Style} />}
-      {ytdOnly && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-      {ytdOnly && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+<PLAmountCell value={-dim.amount} typoStyle={subbody2Style} />
+      {compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+      {compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+      {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => (
+        <td key={`hist-dim-${h.year}-${h.month}-${j}`} />
+      ))}
       {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => (
         <td key={`hist-dim-${h.year}-${h.month}-${j}`} />
       ))}
@@ -4988,6 +5089,7 @@ if (leafExpanded && hasDims) {
 
 /* ── Financial Report panel ───────────────────────────────── */
 function FinancialReport({ groupAccounts, uploadedAccounts, loading, error }) {
+  const t = useT();
   const [expandedMap, setExpandedMap] = useState({});
   const [typeFilter, setTypeFilter]   = useState("ALL");
   const [search, setSearch]           = useState("");
@@ -6617,8 +6719,10 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                 options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
               <HeaderFilterPill label="Structure" value={cmpStructure} onChange={setCmpStructure}
                 options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-              <HeaderFilterPill label="Company" value={cmpCompany} onChange={setCmpCompany}
+<HeaderFilterPill label="Company" value={cmpCompany} onChange={setCmpCompany}
                 options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+              <HeaderMultiFilterPill label="DIM GRP" values={bsCmpDimGroups} onChange={vs => { setBsCmpDimGroups(vs); setBsCmpDimensions(null); }} options={dimGroups.map(g => ({ value: g, label: g }))} />
+              <HeaderMultiFilterPill label="DIMS" values={bsCmpDimensions} onChange={vs => setBsCmpDimensions(vs)} options={bsCmpFilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
               {!cmp2Enabled && (
                 <button onClick={() => setCmp2Enabled(true)}
                   className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]"
@@ -6645,8 +6749,10 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                   options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
                 <HeaderFilterPill label="Structure" value={cmp2Structure} onChange={setCmp2Structure}
                   options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-                <HeaderFilterPill label="Company" value={cmp2Company} onChange={setCmp2Company}
+<HeaderFilterPill label="Company" value={cmp2Company} onChange={setCmp2Company}
                   options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+                <HeaderMultiFilterPill label="DIM GRP" values={bsCmp2DimGroups} onChange={vs => { setBsCmp2DimGroups(vs); setBsCmp2Dimensions(null); }} options={dimGroups.map(g => ({ value: g, label: g }))} />
+                <HeaderMultiFilterPill label="DIMS" values={bsCmp2Dimensions} onChange={vs => setBsCmp2Dimensions(vs)} options={bsCmp2FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
                 <button onClick={() => setCmp2Enabled(false)}
                   className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all duration-200 hover:scale-[1.05]"
                   style={{ background: "#fee2e2", color: "#dc2626" }}
@@ -9105,6 +9211,7 @@ onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}>
   dimensions={effectiveDimensions}
 uploadedAccounts={upData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions))}
 prevUploadedAccounts={prevData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions))}
+prevUploadedAccountsRaw={prevData}
   compareMode={compareMode}
   onToggleCompare={() => {
     if (!compareMode) {

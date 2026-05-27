@@ -1,6 +1,72 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Search, Database, GitMerge, Maximize2, Minimize2, Library, CheckCircle2, AlertTriangle, TrendingUp, Scale, Download } from "lucide-react";import { useTypo, useSettings } from "./SettingsContext";
-import PageHeader from "./PageHeader.jsx";
+import ViewsSelector from "./ViewsSelector.jsx";
+function useAnimatedNumber(target, duration = 800) {
+  const [display, setDisplay] = useState(target);
+  const fromRef = useRef(target);
+  const startRef = useRef(null);
+  const rafRef = useRef(null);
+  useEffect(() => {
+    cancelAnimationFrame(rafRef.current);
+    fromRef.current = display;
+    startRef.current = null;
+    const from = Number(fromRef.current) || 0;
+    const to = Number(target) || 0;
+    if (from === to) { setDisplay(to); return; }
+    const tick = (ts) => {
+      if (startRef.current === null) startRef.current = ts;
+      const elapsed = ts - startRef.current;
+      const t = Math.min(1, elapsed / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(from + (to - from) * eased);
+      if (t < 1) rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [target, duration]); // eslint-disable-line react-hooks/exhaustive-deps
+  return display;
+}
+import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Search, Database, GitMerge, Maximize2, Minimize2, Library, CheckCircle2, AlertTriangle, TrendingUp, Scale, BarChart2, Download, Layers } from "lucide-react";
+
+function useCountUp(target, duration = 900) {
+  const [display, setDisplay] = useState(0);
+  const fromRef = useRef(target);
+  const startRef = useRef(null);
+  const rafRef = useRef(null);
+  useEffect(() => {
+    cancelAnimationFrame(rafRef.current);
+    fromRef.current = display;
+    startRef.current = null;
+    const from = Number(fromRef.current) || 0;
+    const to = Number(target) || 0;
+    if (from === to) { setDisplay(to); return; }
+    const tick = (ts) => {
+      if (startRef.current === null) startRef.current = ts;
+      const elapsed = ts - startRef.current;
+      const t = Math.min(1, elapsed / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(from + (to - from) * eased);
+      if (t < 1) rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [target, duration]); // eslint-disable-line react-hooks/exhaustive-deps
+  return display;
+}
+
+function DimAmountCell({ value, typoStyle, borderLeft, bgColor, extraStyle }) {
+  const animated = useCountUp(value ?? 0, 900);
+  const isEmpty = value === 0 || value == null;
+  const isNeg = animated < 0;
+  const color = isEmpty ? "#D1D5DB" : isNeg ? "#EF4444" : "#000000";
+  const fmt = (n) => Math.abs(n).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return (
+<td className="px-4 py-2.5 text-right whitespace-nowrap tabular-nums" style={{ ...typoStyle, color, borderLeft: borderLeft ? "2px solid #f0f0f0" : undefined, background: bgColor ?? undefined, ...extraStyle }}>
+      {isEmpty ? "—" : isNeg ? `(${fmt(animated)})` : fmt(animated)}
+    </td>
+  );
+}
+import { useTypo, useSettings } from "./SettingsContext";
+import PageHeader, { FilterPill as HeaderFilterPill, MultiFilterPill } from "./PageHeader.jsx";
 import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
 import jsPDF from "jspdf";
@@ -478,80 +544,112 @@ function FilterPill({ label, value, onChange, options }) {
 
 const INDENT = 14;
 
-function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, body1Style, body2Style, header2Style, colors, excludeCodes = null }) {
+function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0 }) {
+  const subbody2Style = useTypo("subbody2");
   const code = node.AccountCode;
-  // Filter out children that are already shown as siblings in the flat list
   const visibleChildren = excludeCodes
     ? (node.children || []).filter(c => !excludeCodes.has(String(c.AccountCode)))
     : (node.children || []);
   const hasChildren = visibleChildren.length > 0;
   const isExpanded = expandedSet.has(code);
-// Get value: prefer the node's own value (backend subtotal), fall back to summing children
+
   const getNodeVal = (dimKey) => {
     const ownVal = getVal(code, dimKey);
-    if (ownVal !== 0) return ownVal;  // backend already provides this subtotal
+    if (ownVal !== 0) return ownVal;
     if (!hasChildren) return 0;
     let total = 0;
     const sumChildren = (n) => {
       n.children.forEach(c => {
         const cv = getVal(c.AccountCode, dimKey);
-        if (cv !== 0) {
-          total += cv;
-        } else if (c.children?.length) {
-          sumChildren(c);
-        }
+        if (cv !== 0) { total += cv; }
+        else if (c.children?.length) { sumChildren(c); }
       });
     };
     sumChildren(node);
     return total;
   };
-const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 0);
 
-  const cellColor = (v) => v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : "#000000";
+  const getCmpNodeVal = (dimKey) => {
+    if (!getCmpVal) return 0;
+    const own = getCmpVal(code, dimKey);
+    if (own !== 0) return own;
+    if (!hasChildren) return 0;
+    let total = 0;
+    const sumChildren = (n) => {
+      n.children.forEach(c => {
+        const cv = getCmpVal(c.AccountCode, dimKey);
+        if (cv !== 0) { total += cv; }
+        else if (c.children?.length) { sumChildren(c); }
+      });
+    };
+    sumChildren(node);
+    return total;
+  };
+
+  const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 0);
   const rowStyle = depth === 0 ? body1Style : body2Style;
 
   return (
     <>
-      <tr className="border-b border-gray-50 hover:bg-[#f8f9ff] transition-colors group">
-<td className="py-2.5 sticky left-0 z-10 border-r border-gray-100 bg-white group-hover:bg-[#f8f9ff]"
-          style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 300 }}>
-          <div className={`flex items-center ${hasChildren ? "cursor-pointer" : ""}`}
-            onClick={() => hasChildren && onToggle(code)}>
+      <tr
+        className="border-b border-gray-100 bg-white hover:bg-[#eef1fb]/60 transition-colors"
+        style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 25) * 35 + 50}ms both` }}
+      >
+        <td
+          className="py-2.5 sticky left-0 z-10 border-r border-gray-100 bg-white"
+          style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 300 }}
+          onClick={() => hasChildren && onToggle(code)}
+        >
+          <div className={`flex items-center ${hasChildren ? "cursor-pointer" : ""}`}>
             {hasChildren
-              ? <span className="flex-shrink-0 mr-2" style={{ color: rowStyle?.color }}>
+              ? <span className="flex-shrink-0 mr-2" style={{ color: colors.primary }}>
                   {isExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
                 </span>
               : <span className="inline-block mr-2" style={{ width: 12 }} />}
-            <span className="flex-shrink-0 mr-2" style={rowStyle}>{code}</span>
+<span className="flex-shrink-0 mr-2" style={subbody2Style}>{code}</span>
             <span className="truncate max-w-[280px]" style={rowStyle}>{node.AccountName ?? node.accountName ?? ""}</span>
           </div>
         </td>
 {dimCols.map(dim => {
-          const val = getNodeVal(dim.code ?? "__none__");
+          const dk = dim.code ?? "__none__";
+          const val = getNodeVal(dk);
+          const cmpVal = getCmpNodeVal(dk);
+          const diff = val - cmpVal;
+          const pct = cmpVal !== 0 ? (diff / Math.abs(cmpVal)) * 100 : null;
+          const devColor = diff === 0 ? "#D1D5DB" : diff > 0 ? "#059669" : "#EF4444";
           return (
-            <td key={dim.code ?? "__none__"}
-              className="px-4 py-2.5 text-center whitespace-nowrap"
-              style={{ ...rowStyle, color: cellColor(val) }}>
-              {val === 0 ? "—" : fmtAmt(val)}
-            </td>
+            <React.Fragment key={dk}>
+              <DimAmountCell value={val} typoStyle={rowStyle} />
+{cmpVisible && <>
+                <DimAmountCell value={cmpVal} typoStyle={{ ...rowStyle, color: cmpVal === 0 ? "#D1D5DB" : "#CF305D" }} bgColor={`${colors.primary}08`} extraStyle={{ animation: cmpExiting ? "cmpColOut 320ms cubic-bezier(0.4,0,0.2,1) 0ms both" : "cmpColIn 380ms cubic-bezier(0.34,1.56,0.64,1) 60ms both", transformOrigin: "left center" }} />
+                <td className="px-2 py-2.5 text-right whitespace-nowrap tabular-nums text-xs font-bold" style={{ color: devColor, width: 110, background: `${colors.primary}12`, animation: cmpExiting ? "cmpColOut 320ms cubic-bezier(0.4,0,0.2,1) 40ms both" : "cmpColIn 380ms cubic-bezier(0.34,1.56,0.64,1) 120ms both", transformOrigin: "left center" }}>
+                  {diff === 0 ? "—" : diff < 0 ? `(${Math.abs(diff).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : diff.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </td>
+                <td className="px-2 py-2.5 text-right whitespace-nowrap tabular-nums text-xs font-bold" style={{ color: devColor, width: 90, background: `${colors.primary}1e`, animation: cmpExiting ? "cmpColOut 320ms cubic-bezier(0.4,0,0.2,1) 80ms both" : "cmpColIn 380ms cubic-bezier(0.34,1.56,0.64,1) 180ms both", transformOrigin: "left center" }}>
+                  {pct === null ? "—" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}
+                </td>
+              </>}
+            </React.Fragment>
           );
         })}
-        <td className="px-4 py-2.5 text-center whitespace-nowrap sticky right-0 z-10 border-l border-gray-100 bg-[#fafafa]"
-          style={{ ...rowStyle, color: cellColor(rowTotal), minWidth: 150 }}>
-          {rowTotal === 0 ? "—" : fmtAmt(rowTotal)}
-        </td>
+{!cmpVisible && <td className="sticky right-0 z-10 border-l border-gray-100 bg-[#fafafa]"style={{ minWidth: 150 }}>
+          <DimAmountCell value={rowTotal} typoStyle={rowStyle} />
+        </td>}
       </tr>
-{isExpanded && hasChildren && visibleChildren.map(child => (
-        <DimensionRow key={child.AccountCode} node={child} depth={depth + 1}
+      {isExpanded && hasChildren && visibleChildren.map((child, ci) => (
+<DimensionRow key={child.AccountCode} node={child} depth={depth + 1}
           expandedSet={expandedSet} onToggle={onToggle}
-          dimCols={dimCols} getVal={getVal}
+          dimCols={dimCols} getVal={getVal} getCmpVal={getCmpVal} compareMode={compareMode} cmpVisible={cmpVisible} cmpExiting={cmpExiting}
           body1Style={body1Style} body2Style={body2Style}
           header2Style={header2Style} colors={colors}
-          excludeCodes={excludeCodes} />
+          excludeCodes={excludeCodes} rowIndex={rowIndex + ci + 1} />
       ))}
     </>
   );
 }
+
+
+
 
 /* ── Accounts Tab ─────────────────────────────────────────── */
 function AccountsTab({ data }) {
@@ -612,7 +710,7 @@ function AccountsTab({ data }) {
 
 
 /* ── Pivot Tab ────────────────────────────────────────────── */
-function PivotTab({ data, dimensions, groupAccounts = [], onShowAccounts, selGroup, compareMode, statementType = "pl", sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, exportRef = null }) {
+function PivotTab({ data, dimensions, groupAccounts = [], onShowAccounts, selGroups = new Set(), selDims = new Set(), onSelGroupsChange = () => {}, onSelDimsChange = () => {}, dimGroups = [], compareMode, statementType = "pl", externalViewMode = null,sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, exportRef = null, hasCustomMapping = false }) {
 
   const header2Style = useTypo("header2");
     const body1Style = useTypo("body1");
@@ -623,6 +721,19 @@ function PivotTab({ data, dimensions, groupAccounts = [], onShowAccounts, selGro
 // Summary/Detailed toggle (only used in non-compare mode). statementType
   // is lifted to DimensionesPage to drive PageHeader tabs.
   const [summaryMode, setSummaryMode] = useState(true);
+  const [cmpVisible, setCmpVisible] = useState(false);
+  const [cmpExiting, setCmpExiting] = useState(false);
+
+  useEffect(() => {
+    if (compareMode) {
+      setCmpExiting(false);
+      setCmpVisible(true);
+    } else if (cmpVisible) {
+      setCmpExiting(true);
+      const t = setTimeout(() => { setCmpVisible(false); setCmpExiting(false); }, 400);
+      return () => clearTimeout(t);
+    }
+  }, [compareMode]);
 
   const headerRef = useRef(null);
   const bodyRef   = useRef(null);
@@ -645,12 +756,16 @@ const [expandedSet, setExpandedSet] = useState(new Set());
 
     // Filter rows by selected group: keep rows that have AT LEAST ONE dim
     // in the selected group, OR rows with no dim at all (totals).
-    const rows = !selGroup
+const rows = selGroups.size === 0
       ? data
       : data.filter(r => {
           const pairs = parseDimensions(r.Dimensions);
-          if (pairs.length === 0) return true; // untagged rows are always included
-          return pairs.some(([group]) => group === selGroup);
+          if (pairs.length === 0) return true;
+          return pairs.some(([group, code]) => {
+            if (!selGroups.has(group)) return false;
+            if (selDims.size > 0 && !selDims.has(code)) return false;
+            return true;
+          });
         });
 
 // Get codes that actually have data in this period (with their names from data rows)
@@ -660,8 +775,9 @@ const [expandedSet, setExpandedSet] = useState(new Set());
       if (!code) return;
       const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
       if (lac && lac !== "—") return;
-      const acType = r.AccountType ?? r.accountType ?? "";
-      if (acType && acType !== "P/L") return;
+const acType = r.AccountType ?? r.accountType ?? "";
+      const targetType = statementType === "bs" ? "B/S" : "P/L";
+      if (acType && acType !== targetType) return;
       if (!dataAccountInfo.has(code)) {
         dataAccountInfo.set(code, {
           AccountCode: code,
@@ -677,8 +793,9 @@ const [expandedSet, setExpandedSet] = useState(new Set());
     (groupAccounts || []).forEach(a => {
       const code = a.AccountCode ?? a.accountCode ?? "";
       if (!code) return;
-      const acType = a.AccountType ?? a.accountType ?? "";
-      if (acType && acType !== "P/L") return;
+const acType = a.AccountType ?? a.accountType ?? "";
+      const targetType = statementType === "bs" ? "B/S" : "P/L";
+      if (acType && acType !== targetType) return;
       groupMap.set(code, {
         AccountCode: code,
         AccountName: a.AccountName ?? a.accountName ?? "",
@@ -711,10 +828,7 @@ const [expandedSet, setExpandedSet] = useState(new Set());
     }
 
     const tree = buildTree([...accountMap.values()]);
-    console.log("[TREE DEBUG] groupAccounts.length:", (groupAccounts || []).length, "dataAccountInfo.size:", dataAccountInfo.size, "accountMap.size:", accountMap.size, "tree roots:", tree.length);
-console.log("[TREE DEBUG] accounts:", [...accountMap.values()].slice(0, 5));
-console.log("[TREE DEBUG] tree roots:", tree.length, "first:", tree[0]);
-console.log("[TREE DEBUG] sample with children:", tree.find(n => n.children?.length > 0));
+
 // Unique dim columns — derived from the journal's Dimensions field.
     // When a Dim Group is selected, we restrict columns to that group; otherwise
     // we show ALL groups together (each dim code as its own column).
@@ -733,7 +847,8 @@ console.log("[TREE DEBUG] sample with children:", tree.find(n => n.children?.len
         return;
       }
       for (const [group, code] of pairs) {
-        if (selGroup && group !== selGroup) continue;
+      if (selGroups.size > 0 && !selGroups.has(group)) continue;
+        if (selDims.size > 0 && !selDims.has(code)) continue;
         if (!dimMap.has(code)) dimMap.set(code, { code, name: dimNameLookup.get(code) ?? code, group });
       }
     });
@@ -749,11 +864,12 @@ console.log("[TREE DEBUG] sample with children:", tree.find(n => n.children?.len
     rows.forEach(r => {
       const ac  = r.AccountCode ?? r.accountCode ?? "";
       const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? r.AmountPeriod ?? r.amountPeriod ?? 0);
-      const lacCheck = r.LocalAccountCode ?? r.localAccountCode ?? "";
+const lacCheck = r.LocalAccountCode ?? r.localAccountCode ?? "";
       const acType = r.AccountType ?? r.accountType ?? "";
       if (!ac) return;
       if (lacCheck && lacCheck !== "—") return;
-      if (acType && acType !== "P/L") return;
+const targetType = statementType === "bs" ? "B/S" : "P/L";
+      if (acType && acType !== targetType) return;
 
       const pairs = parseDimensions(r.Dimensions);
       if (pairs.length === 0) {
@@ -763,22 +879,42 @@ console.log("[TREE DEBUG] sample with children:", tree.find(n => n.children?.len
       }
 
       for (const [group, code] of pairs) {
-        if (selGroup && group !== selGroup) continue;
+        if (selGroups.size > 0 && !selGroups.has(group)) continue;
+        if (selDims.size > 0 && !selDims.has(code)) continue;
         if (!pivot.has(ac)) pivot.set(ac, new Map());
         pivot.get(ac).set(code, (pivot.get(ac).get(code) ?? 0) + amt);
       }
     });
 
 return { tree, accountMap, dimCols, pivot };
-  }, [data, selGroup, groupAccounts]);
+}, [data, selGroups, selDims, groupAccounts, statementType]);
+const [colOrder, setColOrder] = useState(null); // null = use natural order
+  const [draggingCol, setDraggingCol] = useState(null);
+  const [dragOverCol, setDragOverCol] = useState(null);
 
-  const expandAll = useCallback(() => {
+  const orderedDimCols = useMemo(() => {
+    if (!colOrder) return dimCols;
+    const map = new Map(dimCols.map(d => [d.code ?? "__none__", d]));
+    return colOrder.map(k => map.get(k)).filter(Boolean);
+  }, [dimCols, colOrder]);
+
+// Reset col order only when the actual set of dim codes changes, not on compare toggle
+  const dimColKeys = useMemo(() => dimCols.map(d => d.code ?? "__none__").join(","), [dimCols]);
+  useEffect(() => { setColOrder(null); }, [dimColKeys]); const expandAll = useCallback(() => {
     setExpandedSet(new Set([...allAccountMap.keys()]));
   }, [allAccountMap]);
 
   const collapseAll = useCallback(() => setExpandedSet(new Set()), []);
 
-  const getVal = (ac, dk) => pivot.get(ac)?.get(dk) ?? 0;
+const sign = statementType === "pl" ? -1 : 1;
+  const getVal = (ac, dk) => {
+    const ytd = (pivot.get(ac)?.get(dk) ?? 0) * sign;
+    if (viewMode === "ytd") return ytd;
+    const prevYtd = (prevPivotMain.get(ac)?.get(dk) ?? 0) * sign;
+    return ytd - prevYtd;
+  };
+
+
 
   // Compare filter states
 
@@ -787,6 +923,8 @@ const [cmp2Source, setCmp2Source]       = useState(masterSource);
   const [cmp2Month, setCmp2Month]         = useState(masterMonth);
   const [cmp2Structure, setCmp2Structure] = useState(masterStructure);
   const [cmp2Company, setCmp2Company]     = useState(masterCompany);
+  const [cmp2SelGroups, setCmp2SelGroups] = useState(new Set());
+  const [cmp2SelDims,   setCmp2SelDims]   = useState(new Set());
   const [cmp3Source, setCmp3Source]       = useState(masterSource);
   const [cmp3Year, setCmp3Year]           = useState(masterYear);
   const [cmp3Month, setCmp3Month]         = useState(masterMonth);
@@ -794,8 +932,9 @@ const [cmp2Source, setCmp2Source]       = useState(masterSource);
   const [cmp3Company, setCmp3Company]     = useState(masterCompany);
 
 const [line, setLine] = useState("all");
-const [viewMode, setViewMode] = useState("monthly");
+const viewMode = externalViewMode ?? "monthly";
 const [prevPivot, setPrevPivot] = useState(new Map());
+  const [prevPivotMain, setPrevPivotMain] = useState(new Map());
   const [prevPivot2, setPrevPivot2] = useState(new Map());
   const [prevPivot3, setPrevPivot3] = useState(new Map());
 
@@ -804,7 +943,7 @@ const [prevPivot, setPrevPivot] = useState(new Map());
 const [, setCmp2Loading] = useState(false);
   const [, setCmp3Loading] = useState(false);
 
-const buildPivot = useCallback((rows) => {
+const buildPivot = useCallback((rows, grpFilter = selGroups, dimFilter = selDims) => {
     const p = new Map();
     rows.forEach(r => {
       const ac  = r.AccountCode ?? r.accountCode ?? "";
@@ -813,7 +952,8 @@ const buildPivot = useCallback((rows) => {
       const acType = r.AccountType ?? r.accountType ?? "";
       if (!ac) return;
       if (lac && lac !== "—") return;
-      if (acType && acType !== "P/L") return;
+      const targetType = statementType === "bs" ? "B/S" : "P/L";
+      if (acType && acType !== targetType) return;
 
       const pairs = parseDimensions(r.Dimensions);
       if (pairs.length === 0) {
@@ -823,16 +963,19 @@ const buildPivot = useCallback((rows) => {
       }
 
       for (const [group, code] of pairs) {
-        if (selGroup && group !== selGroup) continue;
+        if (grpFilter.size > 0 && !grpFilter.has(group)) continue;
+        if (dimFilter.size > 0 && !dimFilter.has(code)) continue;
         if (!p.has(ac)) p.set(ac, new Map());
         p.get(ac).set(code, (p.get(ac).get(code) ?? 0) + amt);
       }
     });
     return p;
-  }, [selGroup]);
+}, [selGroups, selDims, statementType]);
 
-const pivot2 = useMemo(() => buildPivot(cmp2Data), [cmp2Data, buildPivot]);
+const pivot2 = useMemo(() => buildPivot(cmp2Data, cmp2SelGroups, cmp2SelDims), [cmp2Data, cmp2SelGroups, cmp2SelDims, buildPivot]);
   const pivot3 = useMemo(() => buildPivot(cmp3Data), [cmp3Data, buildPivot]);
+
+
 
 const fetchCmpData = useCallback(async (yr, mo, src, str, co, setter, loadSetter) => {
     if (!yr || !mo || !src || !str || !co) return;
@@ -850,15 +993,16 @@ const fetchCmpData = useCallback(async (yr, mo, src, str, co, setter, loadSetter
     finally { loadSetter(false); }
   }, [token]);
 
-// Fetch previous month data for monthly calc (Standard column)
+// Fetch prev month for main period (non-compare monthly mode)
   useEffect(() => {
-    if (!compareMode || viewMode !== "monthly" || !masterYear || !masterMonth || !masterSource || !masterStructure || !masterCompany) return;
+    if (viewMode !== "monthly" || !masterYear || !masterMonth || !masterSource || !masterStructure || !masterCompany) return;
     const mo = Number(masterMonth);
     const yr = Number(masterYear);
     const prevMo = mo === 1 ? 12 : mo - 1;
     const prevYr = mo === 1 ? yr - 1 : yr;
-    fetchCmpData(String(prevYr), String(prevMo), masterSource, masterStructure, masterCompany, (d) => setPrevPivot(buildPivot(d)), () => {});
-  }, [compareMode, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, fetchCmpData, buildPivot]);
+    fetchCmpData(String(prevYr), String(prevMo), masterSource, masterStructure, masterCompany, (d) => setPrevPivotMain(buildPivot(d)), () => {});
+  }, [viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, fetchCmpData, buildPivot]);
+
 
 useEffect(() => {
     if (compareMode) fetchCmpData(cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, setCmp2Data, setCmp2Loading);
@@ -886,13 +1030,40 @@ useEffect(() => {
     fetchCmpData(String(prevYr), String(prevMo), cmp3Source, cmp3Structure, cmp3Company, (d) => setPrevPivot3(buildPivot(d)), () => {});
   }, [compareMode, viewMode, cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3Company, fetchCmpData, buildPivot]);
 
+const cmp2DimGroups = useMemo(() => {
+    const seen = new Set();
+    cmp2Data.forEach(r => parseDimensions(r.Dimensions).forEach(([g]) => { if (g) seen.add(g); }));
+    return [...seen].sort().map(v => ({ value: v, label: v }));
+  }, [cmp2Data]);
+
+  const cmp2AllDims = useMemo(() => {
+    if (cmp2SelGroups.size === 0) return [];
+    const seen = new Set();
+    cmp2Data.forEach(r => parseDimensions(r.Dimensions).forEach(([g, code]) => { if (cmp2SelGroups.has(g)) seen.add(code); }));
+    return [...seen].sort().map(v => ({ value: v, label: v }));
+  }, [cmp2Data, cmp2SelGroups]);
+
   const cmpSources    = [...new Set(sources.map(s => typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
   const cmpYears      = YEARS.map(y => ({ value: String(y), label: String(y) }));
   const cmpMonths     = MONTHS.map(m => ({ value: String(m.value), label: m.label }));
   const cmpStructures = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
-  const cmpCompanies  = [...new Set(companies.map(c => typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : String(c)).filter(Boolean))].map(v => ({ value: v, label: v }));
-const ACOL = 480, DCOL = 140, TCOL = 150;
-  const totalWidth = ACOL + dimCols.length * DCOL + TCOL;
+const cmpCompanies  = companies.length > 0 && typeof companies[0] === "object"
+    ? companies.map(c => ({ value: c.companyShortName ?? c.CompanyShortName ?? String(c), label: c.CompanyLegalName ?? c.companyLegalName ?? c.companyShortName ?? c.CompanyShortName ?? String(c) })).filter(o => o.value)
+    : [...new Set(companies.map(c => String(c)).filter(Boolean))].map(v => ({ value: v, label: v }));
+const ACOL = 480, TCOL = 150;
+  const CMP_COL = 140, DELTA_COL = 110, PCT_COL = 90;
+  const MIN_DCOL = 140;
+
+  const dimColWidths = useMemo(() => {
+    return orderedDimCols.map(dim => {
+      const nameLen = (dim.name ?? "").length;
+      return Math.max(MIN_DCOL, nameLen * 9 + 40);
+    });
+  }, [orderedDimCols]);
+
+  const totalWidth = cmpVisible
+    ? ACOL + dimColWidths.reduce((s, w) => s + w + CMP_COL + DELTA_COL + PCT_COL, 0)
+    : ACOL + dimColWidths.reduce((s, w) => s + w, 0) + TCOL;
 
   // Compute which KPI lines actually produce data given the current 3 pivots
   // and dim columns. Lines that evaluate to 0 across every dim col (in every
@@ -943,7 +1114,7 @@ const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes,
   // Filter & order accounts by accountType + Supabase mapping
   // (Hooks must run unconditionally — placed BEFORE early return)
   // ─────────────────────────────────────────────────────────
-  const activeMapping = statementType === "pl" ? plMapping : bsMapping;
+const activeMapping = statementType === "pl" ? plMapping : bsMapping;
   const targetAccountType = statementType === "pl" ? ["P/L", "DIS"] : ["B/S"];
 
   const displayedTree = useMemo(() => {
@@ -971,9 +1142,13 @@ const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes,
       if (lac && lac !== "—") return;
       const acType = r.AccountType ?? r.accountType ?? "";
       if (!targetAccountType.includes(acType)) return;
-      if (selGroup) {
+if (selGroups.size > 0) {
         const pairs = parseDimensions(r.Dimensions);
-        if (pairs.length > 0 && !pairs.some(([g]) => g === selGroup)) return;
+        if (pairs.length > 0 && !pairs.some(([g, dc]) => {
+          if (!selGroups.has(g)) return false;
+          if (selDims.size > 0 && !selDims.has(dc)) return false;
+          return true;
+        })) return;
       }
       if (!dataAccountInfo.has(code)) {
         dataAccountInfo.set(code, {
@@ -1004,17 +1179,60 @@ const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes,
     }
 
     return buildTree([...accountMap.values()]);
-  }, [data, groupAccounts, selGroup, statementType]);
+ }, [data, groupAccounts, selGroups, selDims, statementType]);
 
-  const treeIndex = useMemo(() => {
-    const idx = new Map();
-    const walk = (nodes) => nodes.forEach(n => { idx.set(String(n.AccountCode), n); walk(n.children || []); });
-    walk(displayedTree);
-    return idx;
-  }, [displayedTree]);
+const treeIndex = useMemo(() => {
+  const idx = new Map();
+  const walk = (nodes) => nodes.forEach(n => { idx.set(String(n.AccountCode), n); walk(n.children || []); });
+  walk(displayedTree);
+  (groupAccounts || []).forEach(a => {
+    const code = String(a.AccountCode ?? a.accountCode ?? "");
+    if (code && !idx.has(code)) {
+      idx.set(code, {
+        AccountCode: code,
+        AccountName: a.AccountName ?? a.accountName ?? "",
+        SumAccountCode: a.SumAccountCode ?? a.sumAccountCode ?? "",
+        AccountType: a.AccountType ?? a.accountType ?? "",
+        children: [],
+      });
+    }
+  });
+  return idx;
+}, [displayedTree, groupAccounts]);
+const displayedTreeIndex = useMemo(() => {
+  const idx = new Map();
+  const walk = (nodes) => nodes.forEach(n => { idx.set(String(n.AccountCode), n); walk(n.children || []); });
+  walk(displayedTree);
+  return idx;
+}, [displayedTree]);
 
+const isCustomMapping = hasCustomMapping;
   const orderedRows = useMemo(() => {
     if (activeMapping?.rows) {
+if (isCustomMapping) {
+        const gaMap = new Map();
+        (groupAccounts || []).forEach(a => {
+          const code = String(a.AccountCode ?? a.accountCode ?? "");
+          if (code) gaMap.set(code, a);
+        });
+        return [...activeMapping.rows.entries()]
+          .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+          .map(([code]) => {
+            // Prefer node from displayedTree (has children with dim data)
+            if (displayedTreeIndex.has(code)) return displayedTreeIndex.get(code);
+            if (treeIndex.has(code)) return treeIndex.get(code);
+            const ga = gaMap.get(code);
+            if (ga) return {
+              AccountCode: code,
+              AccountName: ga.AccountName ?? ga.accountName ?? code,
+              SumAccountCode: ga.SumAccountCode ?? ga.sumAccountCode ?? "",
+              children: [],
+            };
+            return null;
+          })
+          .filter(Boolean);
+      }
+      // Default standard mapping — respect Summary/Detailed toggle
       const filterFn = summaryMode ? (info => info.showInSummary) : (info => info.isSum);
       return [...activeMapping.rows.entries()]
         .filter(([, info]) => filterFn(info))
@@ -1023,7 +1241,7 @@ const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes,
         .filter(Boolean);
     }
     return displayedTree;
-  }, [activeMapping, summaryMode, treeIndex, displayedTree]);
+  }, [activeMapping, isCustomMapping, summaryMode, treeIndex, displayedTree]);
 
   const palette = [colors.primary, colors.secondary, colors.tertiary];
   const dividerMap = useMemo(() => {
@@ -1044,6 +1262,62 @@ const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes,
     }
     return out;
   }, [activeMapping, orderedRows, colors]);
+
+const { childrenByParent, parentOf } = useMemo(() => {
+  const childrenByParent = new Map();
+  const parentOf = new Map();
+  // Build from both groupAccounts AND rawData rows so posting codes are included
+  const sources = [
+    ...(groupAccounts || []).map(a => ({
+      ac: String(a.AccountCode ?? a.accountCode ?? ""),
+      sum: String(a.SumAccountCode ?? a.sumAccountCode ?? ""),
+    })),
+    ...data.map(r => ({
+      ac: String(r.AccountCode ?? r.accountCode ?? ""),
+      sum: String(r.SumAccountCode ?? r.sumAccountCode ?? ""),
+    })),
+  ];
+  sources.forEach(({ ac, sum }) => {
+    if (ac && sum && ac !== sum) {
+      if (!childrenByParent.has(sum)) childrenByParent.set(sum, []);
+      if (!childrenByParent.get(sum).includes(ac)) childrenByParent.get(sum).push(ac);
+      parentOf.set(ac, sum);
+    }
+  });
+  return { childrenByParent, parentOf };
+}, [groupAccounts, data]);
+
+const getValWithDescendants = useCallback((code, dk) => {
+  // For each account in pivot, check if it rolls up to `code` via parentOf chain
+  let total = 0;
+  pivot.forEach((dimMap, ac) => {
+    if (ac === code) {
+      total += (dimMap.get(dk) ?? 0) * sign;
+      return;
+    }
+    let cur = parentOf.get(ac);
+    let hops = 0;
+    while (cur && hops < 25) {
+      if (cur === code) {
+        total += (dimMap.get(dk) ?? 0) * sign;
+        break;
+      }
+      cur = parentOf.get(cur);
+      hops++;
+    }
+  });
+  return total;
+}, [pivot, sign, parentOf]);
+
+useEffect(() => {
+  if (!activeMapping) return;
+  console.log("[debug] parentOf size:", parentOf.size);
+  console.log("[debug] parentOf for 60100000:", parentOf.get("60100000"));
+  console.log("[debug] pivot size:", pivot.size);
+  console.log("[debug] pivot keys with dims:", [...pivot.entries()].filter(([, m]) => m.size > 1).slice(0,5).map(([k,m]) => [k, [...m.keys()]]));
+}, [activeMapping, parentOf, pivot]);
+
+
 
 // ── Export helpers ──────────────────────────────────────────────────────
   const C = {
@@ -1168,7 +1442,7 @@ const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes,
       });
 
       let rn = 5;
-      orderedRows.forEach((node, idx) => {
+     (orderedRows ?? displayedTree).forEach((node, idx) => {
         const divider = dividerMap[String(node.AccountCode)];
         if (divider) {
           ws.mergeCells(rn, 1, rn, totalCols);
@@ -1226,7 +1500,7 @@ const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes,
     saveAs(new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
       `Konsolidator_Dimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.xlsx`);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compareMode, statementType, orderedRows, dimCols, getVal, dividerMap, pivot, prevPivot, pivot2, prevPivot2, pivot3, prevPivot3, viewMode, line, kpiList, ccTagToCodes, resolveCcTag, masterYear, masterMonth, masterSource, masterStructure]);
+}, [compareMode, statementType, dimCols, getVal, getValWithDescendants, pivot, prevPivot, pivot2, prevPivot2, pivot3, prevPivot3, viewMode, line, kpiList, ccTagToCodes, resolveCcTag, masterYear, masterMonth, masterSource, masterStructure]);
 
   const handleExportPdf = useCallback(() => {
     const H = { primary: "#1A2F8A", highlight: "#EEF1FB", white: "#FFFFFF", band2: "#F8F9FF", red: "#DC2626", green: "#059669", gray: "#9CA3AF" };
@@ -1289,7 +1563,7 @@ const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes,
       });
     } else {
       const head = [["Account", ...dimCols.map(d => d.name ?? d.code ?? "—"), "TOTAL"]];
-      const body = orderedRows.map(node => {
+     const body = (orderedRows ?? displayedTree).map(node => {
         const fmt = v => v === 0 ? "—" : v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         const vals = dimCols.map(dim => getVal(node.AccountCode, dim.code ?? "__none__"));
         const total = vals.reduce((s, v) => s + v, 0);
@@ -1307,7 +1581,7 @@ const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes,
 
     doc.save(`Konsolidator_Dimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.pdf`);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compareMode, statementType, orderedRows, dimCols, getVal, pivot, prevPivot, pivot2, prevPivot2, pivot3, prevPivot3, viewMode, line, kpiList, ccTagToCodes, resolveCcTag, masterYear, masterMonth, masterSource, masterStructure, filterStr]);
+  }, [compareMode, statementType, dimCols, getVal, getValWithDescendants, pivot, prevPivot, pivot2, prevPivot2, pivot3, prevPivot3, viewMode, line, kpiList, ccTagToCodes, resolveCcTag, masterYear, masterMonth, masterSource, masterStructure, filterStr]);
 
   // Wire export functions to the ref so DimensionesPage FAB can call them
   useEffect(() => {
@@ -1316,315 +1590,174 @@ const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes,
     exportRef.current.pdf  = handleExportPdf;
   }, [exportRef, handleExportXlsx, handleExportPdf]);
   // ── End export helpers ───────────────────────────────────────────────────
+const getCmpVal = useCallback((ac, dk) => {
+    const ytd = (pivot2.get(ac)?.get(dk) ?? 0) * sign;
+    if (viewMode === "ytd") return ytd;
+    const prevYtd = (prevPivot2.get(ac)?.get(dk) ?? 0) * sign;
+    return ytd - prevYtd;
+  }, [pivot2, prevPivot2, sign, viewMode]);
 
-if (compareMode) {
-    return (
-      <div className="flex flex-col gap-3 flex-1 min-h-0">
-        {/* Compare filter rows */}
-<div className="flex items-start gap-3 flex-shrink-0">
-          {/* Compare filter rows */}
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-4 py-3 flex flex-col gap-2 flex-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="w-2 h-2 rounded-full border-2 border-[#CF305D] flex-shrink-0" />
-              <span className="text-[9px] font-black uppercase tracking-widest text-[#CF305D]/50 flex-shrink-0">Compare 1</span>
-              {cmpSources.length > 0    && <FilterPill label="Source"    value={cmp2Source}    onChange={setCmp2Source}    options={cmpSources} />}
-              {cmpYears.length > 0      && <FilterPill label="Year"      value={cmp2Year}      onChange={setCmp2Year}      options={cmpYears} />}
-              {cmpMonths.length > 0     && <FilterPill label="Month"     value={cmp2Month}     onChange={setCmp2Month}     options={cmpMonths} />}
-              {cmpStructures.length > 0 && <FilterPill label="Structure" value={cmp2Structure} onChange={setCmp2Structure} options={cmpStructures} />}
-              {cmpCompanies.length > 0  && <FilterPill label="Company"   value={cmp2Company}   onChange={setCmp2Company}   options={cmpCompanies} />}
-            </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="w-2 h-2 rounded-full border-2 border-[#57aa78] flex-shrink-0" />
-              <span className="text-[9px] font-black uppercase tracking-widest text-[#57aa78]/50 flex-shrink-0">Compare 2</span>
-              {cmpSources.length > 0    && <FilterPill label="Source"    value={cmp3Source}    onChange={setCmp3Source}    options={cmpSources} />}
-              {cmpYears.length > 0      && <FilterPill label="Year"      value={cmp3Year}      onChange={setCmp3Year}      options={cmpYears} />}
-              {cmpMonths.length > 0     && <FilterPill label="Month"     value={cmp3Month}     onChange={setCmp3Month}     options={cmpMonths} />}
-              {cmpStructures.length > 0 && <FilterPill label="Structure" value={cmp3Structure} onChange={setCmp3Structure} options={cmpStructures} />}
-              {cmpCompanies.length > 0  && <FilterPill label="Company"   value={cmp3Company}   onChange={setCmp3Company}   options={cmpCompanies} />}
-            </div>
-          </div>
+  const allDimsForGroups = useMemo(() => {
+    if (selGroups.size === 0) return [];
+    const seen = new Set();
+    data.forEach(r => {
+      parseDimensions(r.Dimensions).forEach(([grp, code]) => {
+        if (selGroups.has(grp)) seen.add(code);
+      });
+    });
+    return [...seen].sort();
+  }, [data, selGroups]);
 
-{/* YTD / Monthly toggle */}
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm flex flex-col items-center justify-center gap-2 flex-shrink-0 self-stretch px-3">
-            
-            <div className="flex flex-col gap-2 p-2 bg-[#e6e6e6] rounded-xl items-center justify-center self-stretch w-[3vw]">
-              <button onClick={() => setViewMode("ytd")}
-                className={`px-2 py-1 rounded-lg text-[10px] font-black transition-all ${viewMode === "ytd" ? "bg-white text-[#1a2f8a] shadow-sm" : "text-[#636363]"}`}>
-                YTD
-              </button>
-              <button onClick={() => setViewMode("monthly")}
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-black transition-all ${viewMode === "monthly" ? "bg-white text-[#1a2f8a] shadow-sm" : "text-[#636363]"}`}>
-                MTD
-              </button>
-            </div>
-          </div>
 
-{/* Line filter — applies to all. Uses cc_tag KPIs from Supabase.
-              Only KPIs that produce a non-zero value in at least one of the
-              visible dim columns (any of the 3 scenarios) are shown — empty
-              lines are hidden so the dropdown stays manageable. */}
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm flex items-center justify-center flex-shrink-0 self-stretch w-[20vw]">
-            <FilterPill label="Line" value={line}
-              onChange={setLine}
-              options={lineOptions} />
-          </div>
-        </div>
-
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
-          <div className="overflow-auto flex-1">
-            <table className="w-full text-xs border-collapse">
-<thead className="sticky top-0 z-10">
-                <tr style={{ backgroundColor: colors.primary }}>
-                  <th className="sticky left-0 z-30 text-left px-5 py-3 border-r border-white/20" style={{ backgroundColor: colors.primary }}>
-                    <span style={header2Style}>Dimension</span>
-                  </th>
-                  <th className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary }}>
-                    <span style={header2Style}>Standard</span>
-                  </th>
-                  <th className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary }}>
-                    <span style={header2Style}>Compare 1</span>
-                  </th>
-                  <th className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary, opacity: 0.85 }}>
-                    <span style={header2Style}>Δ Amt</span>
-                  </th>
-                  <th className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary, opacity: 0.7 }}>
-                    <span style={header2Style}>Δ %</span>
-                  </th>
-                  <th className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary, filter: "brightness(0.75)" }}>
-                    <span style={header2Style}>Compare 2</span>
-                  </th>
-                  <th className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary, filter: "brightness(0.75)", opacity: 0.85 }}>
-                    <span style={header2Style}>Δ Amt</span>
-                  </th>
-                  <th className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary, filter: "brightness(0.75)", opacity: 0.7 }}>
-                    <span style={header2Style}>Δ %</span>
-                  </th>
-                </tr>
-              </thead>
-<tbody>
-{dimCols.filter(dim => !!dim.code).map(dim => {
-                  const dimKey = dim.code ?? "__none__";
-
-                  // Build a flat Map<accountCode, number> for THIS dim col,
-                  // applying the monthly delta if needed, then evaluate the
-                  // selected KPI's formula against it.
-                  const flattenForDim = (p, pPrev) => {
-                    const flat = new Map();
-                    p.forEach((dimMap, acCode) => {
-                      const ytd = dimMap.get(dimKey) ?? 0;
-                      if (viewMode === "monthly" && pPrev) {
-                        const prevYtd = pPrev.get(acCode)?.get(dimKey) ?? 0;
-                        flat.set(acCode, ytd - prevYtd);
-                      } else {
-                        flat.set(acCode, ytd);
-                      }
-                    });
-                    return flat;
-                  };
-const visibleDims = dimCols.filter(d => !!d.code);
-                  const evalLine = (p, pPrev, label) => {
-                    const flat = flattenForDim(p, pPrev);
-                    if (line === "all") {
-                      let total = 0;
-                      flat.forEach(v => { total += v; });
-                      return total;
-                    }
-                    const kpi = kpiList.find(k => k.id === line);
-                    if (!kpi) return 0;
-if (label === "Standard" && kpi.id === "revenue") {
-                      const flatNonZero = [...flat.entries()].filter(([, v]) => Math.abs(v) > 0.005);
-                      if (flatNonZero.length > 0) {
-                        const flatCodes = flatNonZero.map(([code]) => code);
-                        const revenueCodes = ccTagToCodes.get("CC_01-Revenue") ?? [];
-                        const flatSet = new Set(flatCodes);
-                        const revSet  = new Set(revenueCodes);
-                        const intersection = flatCodes.filter(c => revSet.has(c));
-                        const inFlatNotInCcTag = flatCodes.filter(c => !revSet.has(c));
-                        console.log(`[Dim ${dimKey}] flat codes:`, flatCodes);
-                        console.log(`[Dim ${dimKey}] CC_01-Revenue codes (sample):`, revenueCodes.slice(0, 15));
-                        console.log(`[Dim ${dimKey}] intersection:`, intersection);
-                        console.log(`[Dim ${dimKey}] in flat NOT in cc_tag:`, inFlatNotInCcTag);
-                      }
-                    }
-const cache = new Map();
-                    const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes, resolveCcTag);
-                    if (dimKey === visibleDims[0]?.code && label) {
-                      console.log(`[Dim ${dimKey} / ${label}] result=${v}`);
-                    }
-                    return (v === null || isNaN(v)) ? 0 : v;
-                  };
-                  const v1 = evalLine(pivot,  prevPivot,  "Standard");
-                  const v2 = evalLine(pivot2, prevPivot2, "Cmp1");
-                  const v3 = evalLine(pivot3, prevPivot3, "Cmp2");
-                  const valColor = v => v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : body1Style?.color ?? "#000000";
-                  const devColor = v => v === 0 ? "#D1D5DB" : v >= 0 ? "#059669" : "#EF4444";
-                  return (
-                    <tr key={dimKey} className="border-b border-gray-50 hover:bg-[#f8f9ff] transition-colors">
-<td className="sticky left-0 z-10 px-5 py-2.5 bg-white border-r border-gray-100">
-                        <span style={body1Style}>{dim.name}</span>
-                      </td>
-                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: valColor(v1) }}>
-                        {v1 === 0 ? "—" : fmtAmt(v1)}
-                      </td>
-                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: valColor(v2) }}>
-                        {v2 === 0 ? "—" : fmtAmt(v2)}
-                      </td>
-                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: v1 === 0 && v2 === 0 ? "#D1D5DB" : devColor(v1 - v2) }}>
-                        {v1 === 0 && v2 === 0 ? "—" : fmtAmt(v1 - v2)}
-                      </td>
-                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: v2 === 0 ? "#D1D5DB" : devColor(v1 - v2) }}>
-                        {v2 === 0 ? "—" : `${(((v1 - v2) / Math.abs(v2)) * 100).toFixed(1)}%`}
-                      </td>
-                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: valColor(v3) }}>
-                        {v3 === 0 ? "—" : fmtAmt(v3)}
-                      </td>
-                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: v1 === 0 && v3 === 0 ? "#D1D5DB" : devColor(v1 - v3) }}>
-                        {v1 === 0 && v3 === 0 ? "—" : fmtAmt(v1 - v3)}
-                      </td>
-                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: v3 === 0 ? "#D1D5DB" : devColor(v1 - v3) }}>
-                        {v3 === 0 ? "—" : `${(((v1 - v3) / Math.abs(v3)) * 100).toFixed(1)}%`}
-                      </td>
-                    </tr>
-                  );
-                })}
-{(() => {
-                  // Total row = sum of the line value across every dim column.
-                  // We build one flat pivot per dim col, evaluate the KPI on
-                  // each, and sum the results.
-                  const evalAll = (p, pPrev) => {
-                    let total = 0;
-                    dimCols.filter(d => !!d.code).forEach(d => {
-                      const dk = d.code;
-                      const flat = new Map();
-                      p.forEach((dimMap, acCode) => {
-                        const ytd = dimMap.get(dk) ?? 0;
-                        if (viewMode === "monthly" && pPrev) {
-                          const prevYtd = pPrev.get(acCode)?.get(dk) ?? 0;
-                          flat.set(acCode, ytd - prevYtd);
-                        } else {
-                          flat.set(acCode, ytd);
-                        }
-                      });
-                      if (line === "all") {
-                        flat.forEach(v => { total += v; });
-                      } else {
-                        const kpi = kpiList.find(k => k.id === line);
-                        if (kpi) {
-const cache = new Map();
-                          const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes, resolveCcTag);
-                          if (v !== null && !isNaN(v)) total += v;
-                        }
-                      }
-                    });
-                    return total;
-                  };
-                  const t1 = evalAll(pivot,  prevPivot);
-                  const t2 = evalAll(pivot2, prevPivot2);
-                  const t3 = evalAll(pivot3, prevPivot3);
-                  const valColor = v => v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : body1Style?.color ?? "#000000";
-                  const devColor = v => v === 0 ? "#D1D5DB" : v >= 0 ? "#059669" : "#EF4444";
-                  return (
-                    <tr key="__total__" className="border-t-2 border-[#1a2f8a]/20 bg-[#eef1fb]">
-<td className="sticky left-0 z-10 px-5 py-2.5 bg-[#eef1fb] border-r border-gray-100">
-                        <span style={body1Style}>Total</span>
-                      </td>
-                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: valColor(t1) }}>
-                        {t1 === 0 ? "—" : fmtAmt(t1)}
-                      </td>
-                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: valColor(t2) }}>
-                        {t2 === 0 ? "—" : fmtAmt(t2)}
-                      </td>
-                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: t1 === 0 && t2 === 0 ? "#D1D5DB" : devColor(t1 - t2) }}>
-                        {t1 === 0 && t2 === 0 ? "—" : fmtAmt(t1 - t2)}
-                      </td>
-                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: t2 === 0 ? "#D1D5DB" : devColor(t1 - t2) }}>
-                        {t2 === 0 ? "—" : `${(((t1 - t2) / Math.abs(t2)) * 100).toFixed(1)}%`}
-                      </td>
-                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: valColor(t3) }}>
-                        {t3 === 0 ? "—" : fmtAmt(t3)}
-                      </td>
-                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: t1 === 0 && t3 === 0 ? "#D1D5DB" : devColor(t1 - t3) }}>
-                        {t1 === 0 && t3 === 0 ? "—" : fmtAmt(t1 - t3)}
-                      </td>
-                      <td className="px-4 py-2.5 text-center whitespace-nowrap" style={{ ...body1Style, color: t3 === 0 ? "#D1D5DB" : devColor(t1 - t3) }}>
-                        {t3 === 0 ? "—" : `${(((t1 - t3) / Math.abs(t3)) * 100).toFixed(1)}%`}
-                      </td>
-                    </tr>
-                  );
-                })()}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
 return (
     <div className="flex flex-col gap-3 flex-1 min-h-0">
+<style>{`
+        @keyframes plRowSlideIn {
+          0%   { opacity: 0; transform: translateY(8px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes cmpColIn {
+          0%   { opacity: 0; transform: scaleX(0.4) translateX(-12px); }
+          60%  { opacity: 1; }
+          100% { opacity: 1; transform: scaleX(1) translateX(0); }
+        }
+@keyframes cmpBarIn {
+          0%   { opacity: 0; transform: translateY(-16px) scaleY(0.7); }
+          60%  { opacity: 1; }
+          100% { opacity: 1; transform: translateY(0) scaleY(1); }
+        }
+        @keyframes cmpBarOut {
+          0%   { opacity: 1; transform: translateY(0) scaleY(1); }
+          100% { opacity: 0; transform: translateY(-12px) scaleY(0.8); }
+        }
+        @keyframes cmpColOut {
+          0%   { opacity: 1; transform: scaleX(1) translateX(0); }
+          100% { opacity: 0; transform: scaleX(0.3) translateX(-8px); }
+        }
+        @keyframes totalColOut {
+          0%   { opacity: 1; max-width: 150px; }
+          100% { opacity: 0; max-width: 0; overflow: hidden; }
+        }
+`}</style>
+
+
+{cmpVisible && (
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex items-stretch gap-0 flex-shrink-0" style={{ height: "7vh", padding: "0 18px", position: "relative", zIndex: 10, animation: cmpExiting ? "cmpBarOut 380ms cubic-bezier(0.4,0,0.2,1) both" : "cmpBarIn 480ms cubic-bezier(0.34,1.56,0.64,1) both" }}>
+          <div className="flex items-center gap-2.5 pr-4">
+            <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+              style={{ background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)", boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)" }}>
+              <span className="text-white text-[11px] font-black">B</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-1 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
+            {cmpSources.length > 0    && <HeaderFilterPill label="Source"    value={cmp2Source}    onChange={setCmp2Source}    options={cmpSources} />}
+            {cmpYears.length > 0      && <HeaderFilterPill label="Year"      value={cmp2Year}      onChange={setCmp2Year}      options={cmpYears} />}
+            {cmpMonths.length > 0     && <HeaderFilterPill label="Month"     value={cmp2Month}     onChange={setCmp2Month}     options={cmpMonths} />}
+            {cmpStructures.length > 0 && <HeaderFilterPill label="Structure" value={cmp2Structure} onChange={setCmp2Structure} options={cmpStructures} />}
+            {cmpCompanies.length > 0  && <HeaderFilterPill label="Company"   value={cmp2Company}   onChange={setCmp2Company}   options={cmpCompanies} />}
+            {cmp2DimGroups.length > 0 && <MultiFilterPill label="Dim Group" values={cmp2SelGroups.size === 0 ? null : [...cmp2SelGroups]} onChange={next => { setCmp2SelGroups(next ? new Set(next) : new Set()); setCmp2SelDims(new Set()); }} options={cmp2DimGroups} />}
+            {cmp2SelGroups.size > 0 && cmp2AllDims.length > 0 && <MultiFilterPill label="Dimension" values={cmp2SelDims.size === 0 ? null : [...cmp2SelDims]} onChange={next => setCmp2SelDims(next ? new Set(next) : new Set())} options={cmp2AllDims} />}
+          </div>
+        </div>
+      )}
+
       <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
 
         {/* Synced header */}
-        <div ref={headerRef} style={{ overflowX: "auto", overflowY: "hidden", flexShrink: 0, scrollbarWidth: "none", msOverflowStyle: "none" }} onScroll={onHeaderScroll}>
+        <div ref={headerRef} style={{ overflowX: "auto", overflowY: "hidden", flexShrink: 0, scrollbarWidth: "none", msOverflowStyle: "none", boxShadow: "0 4px 12px -4px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)" }} onScroll={onHeaderScroll}>
 <table style={{ borderCollapse: "collapse", minWidth: totalWidth, width: "100%", tableLayout: "fixed" }}>
-            <colgroup>
+<colgroup>
               <col style={{ width: 480, minWidth: 480 }} />
-              {dimCols.map((_, i) => <col key={i} style={{ width: DCOL, minWidth: DCOL }} />)}
+{orderedDimCols.map((_, i) => (
+                <React.Fragment key={i}>
+                  <col style={{ width: dimColWidths[i], minWidth: dimColWidths[i] }} />
+                  {cmpVisible && <><col style={{ width: CMP_COL, minWidth: CMP_COL }} /><col style={{ width: DELTA_COL, minWidth: DELTA_COL }} /><col style={{ width: PCT_COL, minWidth: PCT_COL }} /></>}
+                </React.Fragment>
+              ))}
               <col style={{ width: TCOL, minWidth: TCOL }} />
             </colgroup>
-            <thead>
-              <tr style={{ backgroundColor: colors.primary }}>
-<th className="sticky left-0 z-30 text-left px-6 border-r border-white/20" style={{ backgroundColor: colors.primary, height: "56px" }}>
-                  <div className="flex items-center gap-3" style={{ minWidth: ACOL }}>
-                    <span className="uppercase tracking-widest" style={header2Style}>Account</span>
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => expandedSet.size > 0 ? collapseAll() : expandAll()}
-                        className="flex items-center justify-center rounded-lg transition-all"
-                        style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, width: 32, height: 32 }}
-                        title={expandedSet.size > 0 ? "Collapse all" : "Expand all"}>
-                        {expandedSet.size > 0 ? <Minimize2 size={13}/> : <Maximize2 size={13}/>}
-                      </button>
-                      <button onClick={onShowAccounts}
-                        className="flex items-center justify-center rounded-lg transition-all"
-                        style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}cc`, width: 32, height: 32 }}
-                        title="View uploaded accounts">
-                        <Database size={13} />
-                      </button>
+        <thead>
 
-                      <div className="flex items-center rounded-lg" style={{ backgroundColor: "rgba(255,255,255,0.12)", padding: 4 }}>
-                        <button onClick={() => setSummaryMode(false)}
-                          className="rounded-md text-[11px] font-black transition-colors"
-                          style={{
-                            backgroundColor: !summaryMode ? (colors.quaternary ?? "#F59E0B") : "transparent",
-                            color: !summaryMode ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
-                            padding: "7px 12px",
-                            lineHeight: 1
-                          }}>
-                          Detailed
+<tr style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)" }}>
+                  <th className="sticky left-0 z-30 text-left px-6" style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", height: "64px", boxShadow: "0 4px 12px -4px rgba(26,47,138,0.08)" }}>
+                    <div className="flex items-center gap-3" style={{ minWidth: ACOL }}>
+                      <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>Account</span>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => expandedSet.size > 0 ? collapseAll() : expandAll()}
+                          className="flex items-center justify-center"
+                          style={{ background: "#fff", color: colors.primary, width: 34, height: 34, borderRadius: 10, boxShadow: "0 1px 4px rgba(0,0,0,0.10), 0 0 0 1px rgba(26,47,138,0.06)", transition: "transform 200ms cubic-bezier(0.34,1.56,0.64,1), box-shadow 200ms ease" }}
+                          onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.08)"; e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.15), 0 0 0 1px rgba(26,47,138,0.10)"; }}
+                          onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = "0 1px 4px rgba(0,0,0,0.10), 0 0 0 1px rgba(26,47,138,0.06)"; }}
+                          title={expandedSet.size > 0 ? "Collapse all" : "Expand all"}>
+                          <span style={{ display: "inline-flex", transition: "transform 320ms cubic-bezier(0.34,1.56,0.64,1)", transform: expandedSet.size > 0 ? "rotate(180deg)" : "rotate(0deg)" }}>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              {expandedSet.size > 0 ? <path d="M18 6L6 18M6 6l12 12"/> : <><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>}
+                            </svg>
+                          </span>
                         </button>
-                        <button onClick={() => setSummaryMode(true)}
-                          className="rounded-md text-[11px] font-black transition-colors"
-                          style={{
-                            backgroundColor: summaryMode ? (colors.quaternary ?? "#F59E0B") : "transparent",
-                            color: summaryMode ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}cc`,
-                            padding: "7px 12px",
-                            lineHeight: 1
-                          }}>
-                          Summary
-                        </button>
+{!hasCustomMapping && <div className="flex items-center rounded-xl p-1" style={{ background: "#f3f4f6" }}>
+                          <button onClick={() => setSummaryMode(true)} className="rounded-lg font-black"
+                            style={{ fontSize: "10.5px", padding: "6px 16px", background: summaryMode ? "#fff" : "transparent", color: summaryMode ? colors.primary : "#9ca3af", boxShadow: summaryMode ? "0 1px 4px rgba(0,0,0,0.08)" : "none", transition: "background 250ms ease, color 250ms ease, box-shadow 250ms ease, transform 200ms cubic-bezier(0.34,1.56,0.64,1)", transform: summaryMode ? "scale(1.03)" : "scale(1)" }}>
+                            Summary
+                          </button>
+                          <button onClick={() => setSummaryMode(false)} className="rounded-lg font-black"
+                            style={{ fontSize: "10.5px", padding: "6px 16px", background: !summaryMode ? "#fff" : "transparent", color: !summaryMode ? colors.primary : "#9ca3af", boxShadow: !summaryMode ? "0 1px 4px rgba(0,0,0,0.08)" : "none", transition: "background 250ms ease, color 250ms ease, box-shadow 250ms ease, transform 200ms cubic-bezier(0.34,1.56,0.64,1)", transform: !summaryMode ? "scale(1.03)" : "scale(1)" }}>
+                            Detailed
+</button>
+                        </div>}
                       </div>
                     </div>
-                  </div>
-                </th>
-                {dimCols.map(dim => (
-                  <th key={dim.code ?? "__none__"} className="text-center px-4 py-3 whitespace-nowrap" style={{ backgroundColor: colors.primary }}>
-                    <span className="leading-tight truncate max-w-[120px] inline-block" style={header2Style}>{dim.name}</span>
                   </th>
-                ))}
-                <th className="sticky right-0 z-10 text-center px-4 py-3 whitespace-nowrap border-l border-white/20" style={{ backgroundColor: colors.primary }}>
-                  <span style={header2Style}>TOTAL</span>
-                </th>
-              </tr>
+{orderedDimCols.map((dim) => (
+                    <React.Fragment key={dim.code ?? "__none__"}>
+<th
+                        className="text-center px-4 py-3 whitespace-nowrap select-none"
+                        draggable
+                        onDragStart={() => setDraggingCol(dim.code ?? "__none__")}
+                        onDragOver={e => { e.preventDefault(); setDragOverCol(dim.code ?? "__none__"); }}
+                        onDragLeave={() => setDragOverCol(null)}
+                        onDrop={e => {
+                          e.preventDefault();
+                          if (!draggingCol || draggingCol === (dim.code ?? "__none__")) { setDraggingCol(null); setDragOverCol(null); return; }
+                          const cols = (colOrder ?? orderedDimCols.map(d => d.code ?? "__none__"));
+                          const from = cols.indexOf(draggingCol);
+                          const to = cols.indexOf(dim.code ?? "__none__");
+                          if (from === -1 || to === -1) { setDraggingCol(null); setDragOverCol(null); return; }
+                          const next = [...cols];
+                          next.splice(from, 1);
+                          next.splice(to, 0, draggingCol);
+                          setColOrder(next);
+                          setDraggingCol(null);
+                          setDragOverCol(null);
+                        }}
+                        onDragEnd={() => { setDraggingCol(null); setDragOverCol(null); }}
+                        style={{
+                          background: dragOverCol === (dim.code ?? "__none__") ? `${colors.primary}15` : "rgba(255,255,255,0.95)",
+                          cursor: "grab",
+                          outline: dragOverCol === (dim.code ?? "__none__") ? `2px solid ${colors.primary}` : "none",
+                          transition: "background 150ms ease, outline 150ms ease",
+                          opacity: draggingCol === (dim.code ?? "__none__") ? 0.4 : 1,
+                        }}>
+                        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{dim.name}</span>
+                      </th>
+{cmpVisible && <>
+                        <th className="text-center px-3 py-2 whitespace-nowrap" style={{ background: `${colors.primary}08`, animation: cmpExiting ? "cmpColOut 320ms cubic-bezier(0.4,0,0.2,1) 0ms both" : "cmpColIn 420ms cubic-bezier(0.34,1.56,0.64,1) 60ms both", transformOrigin: "left center" }}>
+                          <span style={{ ...header2Style, color: "#CF305D", opacity: 0.7 }}>CMP</span>
+                        </th>
+                        <th className="text-center px-3 py-2 whitespace-nowrap" style={{ background: `${colors.primary}12`, animation: cmpExiting ? "cmpColOut 320ms cubic-bezier(0.4,0,0.2,1) 40ms both" : "cmpColIn 420ms cubic-bezier(0.34,1.56,0.64,1) 120ms both", transformOrigin: "left center" }}>
+                          <span style={{ ...header2Style, color: "#CF305D", opacity: 0.7 }}>Δ AMT</span>
+                        </th>
+                        <th className="text-center px-3 py-2 whitespace-nowrap" style={{ background: `${colors.primary}1e`, animation: cmpExiting ? "cmpColOut 320ms cubic-bezier(0.4,0,0.2,1) 80ms both" : "cmpColIn 420ms cubic-bezier(0.34,1.56,0.64,1) 180ms both", transformOrigin: "left center" }}>
+                          <span style={{ ...header2Style, color: "#CF305D", opacity: 0.7 }}>Δ %</span>
+                        </th>
+                      </>}
+                    </React.Fragment>
+                  ))}
+{!cmpVisible && <th className="sticky right-0 z-10 text-center px-4 py-2" style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}>
+                    <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>TOTAL</span>
+                  </th>}
+</tr>
             </thead>
           </table>
         </div>
@@ -1632,10 +1765,15 @@ return (
         {/* Synced body */}
         <div ref={bodyRef} className="scrollbar-hide" style={{ flex: 1, minHeight: 0, overflowX: "auto", overflowY: "auto" }} onScroll={onBodyScroll}>
           <table style={{ borderCollapse: "collapse", minWidth: totalWidth, width: "100%", tableLayout: "fixed" }}>
-            <colgroup>
+<colgroup>
               <col style={{ width: ACOL, minWidth: ACOL }} />
-              {dimCols.map((_, i) => <col key={i} style={{ width: DCOL, minWidth: DCOL }} />)}
-              <col style={{ width: TCOL, minWidth: TCOL }} />
+{orderedDimCols.map((_, i) => (
+                <React.Fragment key={i}>
+                  <col style={{ width: dimColWidths[i], minWidth: dimColWidths[i] }} />
+                  {cmpVisible && <><col style={{ width: CMP_COL, minWidth: CMP_COL }} /><col style={{ width: DELTA_COL, minWidth: DELTA_COL }} /><col style={{ width: PCT_COL, minWidth: PCT_COL }} /></>}
+                </React.Fragment>
+              ))}
+{!cmpVisible && <col style={{ width: TCOL, minWidth: TCOL }} />}
             </colgroup>
 <tbody>
               {(() => {
@@ -1647,19 +1785,22 @@ return (
                   const divider = dividerMap[String(node.AccountCode)];
                   return (
                     <React.Fragment key={node.AccountCode}>
-                      {divider && (
+{divider && (
                         <tr>
-                          <td colSpan={dimCols.length + 2} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
+                          <td className="sticky left-0 z-20 px-6 py-1.5" style={{ backgroundColor: divider.color }}>
                             <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
                           </td>
+{Array.from({ length: dimCols.length * (cmpVisible ? 4 : 1) + 1 }).map((_, i) => (
+                            <td key={i} style={{ backgroundColor: divider.color }} />
+                          ))}
                         </tr>
                       )}
-                      <DimensionRow node={node} depth={0}
+<DimensionRow node={node} depth={0}
                         expandedSet={expandedSet} onToggle={toggleExpand}
-                        dimCols={dimCols} getVal={getVal}
+                       dimCols={orderedDimCols} getVal={getVal}getCmpVal={compareMode ? getCmpVal : null} compareMode={compareMode} cmpVisible={cmpVisible} cmpExiting={cmpExiting}
                         body1Style={body1Style} body2Style={body2Style}
                         header2Style={header2Style} colors={colors}
-                        excludeCodes={flatCodes} />
+                        excludeCodes={flatCodes} rowIndex={orderedRows.indexOf(node)} />
                     </React.Fragment>
                   );
                 });
@@ -1674,10 +1815,8 @@ return (
 
 /* ── Main ─────────────────────────────────────────────────── */
 /* ── Main ─────────────────────────────────────────────────── */
-export default function DimensionesPage({ token, sources = [], structures = [], companies = [], dimensions = [], groupAccounts = [] }) {
-  const { colors } = useSettings();
-  const header1Style = useTypo("header1");
-  const underscore1Style = useTypo("underscore1");
+export default function DimensionesPage({ token, sources = [], structures = [], companies = [], dimensions = [], groupAccounts = [], cachedPeriod = null }) {
+const { colors } = useSettings();
 
   const [year,      setYear]      = useState("");
   const [month,     setMonth]     = useState("");
@@ -1686,16 +1825,21 @@ const [source,    setSource]    = useState("");
   const [structure, setStructure] = useState("");
   const [company,   setCompany]   = useState("");
 const [showAccounts, setShowAccounts] = useState(false);
-const [selGroup, setSelGroup] = useState("");
+const [selGroups, setSelGroups] = useState(new Set());
+const [selDims, setSelDims] = useState(new Set());
 const [compareMode, setCompareMode] = useState(false);
+const [ytdOnly, setYtdOnly] = useState(false);
+  const viewMode = ytdOnly ? "ytd" : "monthly";
   // P&L / B/S statement type — lifted from PivotTab to drive PageHeader tabs
   const [statementType, setStatementType] = useState("pl");
   // Mapping application — Views modal + active custom mapping override
   const [viewsModalOpen, setViewsModalOpen]     = useState(false);
   const [activeMapping, setActiveMapping]       = useState(null);
   const [warningDismissed, setWarningDismissed] = useState(false);
-  const [exporting, setExporting] = useState(false);
+const [exporting, setExporting] = useState(false);
   const pivotExportRef = useRef({ xlsx: null, pdf: null });
+  const [viewsOpen, setViewsOpen] = useState(false);
+
 
   const handleApplyMapping = useCallback((m) => {
     setActiveMapping({
@@ -1712,6 +1856,7 @@ const [compareMode, setCompareMode] = useState(false);
 
   const [rawData,   setRawData]   = useState([]);
 const [loading,   setLoading]   = useState(true);
+const animatedProgress = useAnimatedNumber(loading ? 60 : 100, 700);
   const [error,     setError]     = useState(null);
 
   const authHeaders = useCallback(() => ({
@@ -1853,8 +1998,15 @@ const defaultPlMapping = pgcPlMapping ?? danishPlMapping ?? spIfrsEsPlMapping;
       mappingUnmatched: unmatched,
     };
   }, [activeMapping, defaultCcTagToCodes, defaultResolveCcTag]);
-  useEffect(() => {
+useEffect(() => {
     if (!token) return;
+    // Fast path: use cached period from login
+    if (cachedPeriod?.year && cachedPeriod?.month) {
+      setYear(String(cachedPeriod.year));
+      setMonth(String(cachedPeriod.month));
+      setMetaReady(true);
+      return;
+    }
     fetch(`${BASE_URL}/v2/periods`, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
     })
@@ -1876,7 +2028,7 @@ const defaultPlMapping = pgcPlMapping ?? danishPlMapping ?? spIfrsEsPlMapping;
         setMetaReady(true);
       })
       .catch(() => setMetaReady(true));
-  }, [token]);
+  }, [token, cachedPeriod]);
 
 useEffect(() => {
     if (!source || !structure || !company) return;
@@ -1978,20 +2130,51 @@ const dimGroups = useMemo(() => {
     return [...seen].sort();
   }, [rawData]);
 
+const allDimsForGroups = useMemo(() => {
+    if (selGroups.size === 0) return [];
+    const seen = new Set();
+    rawData.forEach(r => {
+      parseDimensions(r.Dimensions).forEach(([grp, code]) => {
+        if (selGroups.has(grp)) seen.add(code);
+      });
+    });
+    const dimNameLookup = new Map();
+    (dimensions || []).forEach(d => {
+      const code = d.code ?? d.Code ?? d.dimensionCode ?? d.DimensionCode ?? "";
+      const name = d.name ?? d.Name ?? d.dimensionName ?? d.DimensionName ?? code;
+      if (code) dimNameLookup.set(String(code), name);
+    });
+    return [...seen].sort().map(code => ({ value: code, label: dimNameLookup.get(code) ?? code }));
+  }, [rawData, selGroups, dimensions]);
+
+const dimDashProgress = useMemo(() => {
+    let pct = 0;
+    if (year && month)                                           pct += 20;
+    if (sources.length > 0 && structures.length > 0)            pct += 15;
+    if (groupAccountsLocal.length > 0)                          pct += 25;
+    if (!loading && rawData.length > 0)                         pct += 40;
+    return Math.min(100, pct);
+  }, [year, month, sources.length, structures.length, groupAccountsLocal.length, loading, rawData.length]);
+
+  const animatedDimProgress = useAnimatedNumber(dimDashProgress, 700);
+  const dimDashReady = dimDashProgress >= 100;
+
   const sourceOpts    = [...new Set(sources.map(s  => typeof s === "object" ? (s.source    ?? s.Source    ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
   const structureOpts = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
-  const companyOpts   = [...new Set(companies.map(c  => typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : String(c)).filter(Boolean))].map(v => ({ value: v, label: v }));
+const companyOpts   = companies.length > 0 && typeof companies[0] === "object"
+    ? (console.log("[companyOpts] sample:", companies[0]), companies.map(c => ({ value: c.companyShortName ?? c.CompanyShortName ?? String(c), label: c.CompanyLegalName ?? c.companyLegalName ?? c.companyShortName ?? c.CompanyShortName ?? String(c)})).filter(o => o.value))
+    : [...new Set(companies.map(c => String(c)).filter(Boolean))].map(v => ({ value: v, label: v }));
 
   return (
     <div className="flex flex-col gap-4 h-full min-h-0">
 
 {/* Header */}
 <PageHeader
-        kicker="Individual"
-        title="Dimensions"
+        kicker="Dimensions"
+        title={statementType === "pl" ? "P&L" : "B.SH."}
         tabs={[
           { id: "pl", label: "P&L",           icon: TrendingUp },
-          { id: "bs", label: "Balance Sheet", icon: Scale },
+          { id: "bs", label: "B.SH.",          icon: BarChart2 },
         ]}
         activeTab={statementType}
         onTabChange={setStatementType}
@@ -2010,29 +2193,31 @@ const dimGroups = useMemo(() => {
           ...(structureOpts.length > 0
             ? [{ label: "Structure", value: structure, onChange: setStructure, options: structureOpts }]
             : []),
-          ...(companyOpts.length > 0
+...(companyOpts.length > 0
             ? [{ label: "Company", value: company, onChange: setCompany, options: companyOpts }]
             : []),
-          ...(dimGroups.length > 0
-            ? [{
-                label: "Dim Group",
-                value: selGroup,
-                onChange: setSelGroup,
-                options: [{ value: "", label: "All" }, ...dimGroups.map(g => ({ value: g, label: g }))],
-              }]
+...(dimGroups.length > 0
+            ? [{ label: "Dim Group", multiselect: true, values: selGroups.size === 0 ? null : [...selGroups], onChange: (next) => {
+                setSelGroups(next ? new Set(next) : new Set());
+                setSelDims(new Set());
+              }, options: dimGroups.map(g => ({ value: g, label: g })) }]
+            : []),
+...(selGroups.size > 0 && allDimsForGroups.length > 0
+            ? [{ label: "Dimension", multiselect: true, values: selDims.size === 0 ? null : [...selDims], onChange: (next) => {
+                setSelDims(next ? new Set(next) : new Set());
+              }, options: allDimsForGroups }]
             : []),
         ]}
+periodToggle={{
+          value: ytdOnly ? "ytd" : "monthly",
+          onChange: (next) => setYtdOnly(next === "ytd"),
+        }}
         compareToggle={{
           active: compareMode,
           onChange: setCompareMode,
         }}
 fabActions={[
-          {
-            id: "views",
-            icon: Library,
-            label: "Views",
-            onClick: () => setViewsModalOpen(true),
-          },
+
           {
             id: "export",
             icon: Download,
@@ -2066,6 +2251,7 @@ fabActions={[
       />
 
 
+
       {activeMapping && (
         <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm flex-shrink-0">
           <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
@@ -2084,34 +2270,52 @@ fabActions={[
         </div>
       )}
 
-      {activeMapping && !warningDismissed && (
-        <div className="flex items-start gap-2 px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-200 shadow-sm flex-shrink-0">
-          <AlertTriangle size={14} className="text-amber-600 mt-0.5 flex-shrink-0" />
-          <div className="flex-1 text-xs text-amber-800 leading-relaxed">
-            <strong className="font-black">Heads up:</strong> los cálculos se han recomputado con el mapping en lo posible.
-            {mappingMatched.length > 0 && (
-              <> <span className="font-black text-amber-900">{mappingMatched.length}</span> sección{mappingMatched.length === 1 ? "" : "es"} emparejada{mappingMatched.length === 1 ? "" : "s"} ({mappingMatched.slice(0, 3).map(m => m.label).join(", ")}{mappingMatched.length > 3 ? "…" : ""}).</>
-            )}
-            {mappingUnmatched.length > 0 && (
-              <> <span className="font-black text-amber-900">{mappingUnmatched.length}</span> sin emparejar — siguen usando la taxonomía por defecto.</>
-            )}
-          </div>
-          <button
-            onClick={() => setWarningDismissed(true)}
-            className="flex-shrink-0 w-6 h-6 rounded-md hover:bg-amber-100 text-amber-600 flex items-center justify-center transition-colors"
-            title="Dismiss"
-          >
-            <X size={11} />
-          </button>
-        </div>
-      )}
+
 
       {/* Content */}
-      {loading ? (
-        <div className="flex items-center justify-center flex-1">
-          <div className="flex flex-col items-center gap-3">
-            <Loader2 size={28} className="animate-spin text-[#1a2f8a]" />
-            <p className="text-xs text-gray-400">Loading data…</p>
+{!dimDashReady ? (
+        <div className="relative flex-1 min-h-0 flex items-center justify-center rounded-2xl"
+          style={{ background: "rgba(255,255,255,0.78)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
+          <div className="relative rounded-3xl bg-white border border-gray-100 p-10 flex flex-col items-center"
+            style={{ width: 380, boxShadow: "0 24px 80px -12px rgba(26,47,138,0.25), 0 8px 24px -8px rgba(0,0,0,0.08)" }}>
+            <div className="relative" style={{ width: 140, height: 140 }}>
+              <svg width="140" height="140" viewBox="0 0 140 140">
+                <circle cx="70" cy="70" r="60" fill="none" stroke="#f3f4f6" strokeWidth="10" />
+                <circle cx="70" cy="70" r="60" fill="none"
+                  stroke="url(#dimProgGrad)"
+                  strokeWidth="10"
+                  strokeLinecap="round"
+                  strokeDasharray={2 * Math.PI * 60}
+                  strokeDashoffset={2 * Math.PI * 60 * (1 - animatedDimProgress / 100)}
+                  style={{ transform: "rotate(-90deg)", transformOrigin: "70px 70px" }}
+                />
+                <defs>
+                  <linearGradient id="dimProgGrad" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0%" stopColor={colors.primary ?? "#1a2f8a"} />
+                    <stop offset="100%" stopColor={colors.secondary ?? "#CF305D"} />
+                  </linearGradient>
+                </defs>
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-3xl font-black tabular-nums" style={{ color: colors.primary }}>
+                  {Math.round(animatedDimProgress)}<span className="text-base text-gray-300">%</span>
+                </span>
+              </div>
+            </div>
+            <p className="text-sm font-black text-gray-800 mt-6 tracking-wide">
+              {!metaReady
+                ? "Finding latest period with data…"
+                : sources.length === 0 || structures.length === 0
+                  ? "Loading filter options…"
+                  : groupAccountsLocal.length === 0
+                    ? "Loading group accounts…"
+                    : loading
+                      ? "Loading dimension data…"
+                      : "Finalizing…"}
+            </p>
+            <p className="text-[10px] text-gray-300 mt-1.5 uppercase tracking-widest font-bold">
+              Setting up dimensions
+            </p>
           </div>
         </div>
       ) : error ? (
@@ -2129,9 +2333,17 @@ fabActions={[
           </div>
         </div>
 ) : (
-<PivotTab data={rawData} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroup={selGroup} dimGroups={dimGroups} compareMode={compareMode} statementType={statementType} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} kpiList={kpiList} ccTagToCodes={ccTagToCodes} resolveCcTag={resolveCcTag} plMapping={plMapping} bsMapping={bsMapping} exportRef={pivotExportRef} />
+<PivotTab data={rawData} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroups={selGroups} selDims={selDims} onSelGroupsChange={setSelGroups} onSelDimsChange={setSelDims} dimGroups={dimGroups}compareMode={compareMode} statementType={statementType} externalViewMode={ytdOnly ? "ytd" : "monthly"} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} kpiList={kpiList} ccTagToCodes={ccTagToCodes} resolveCcTag={resolveCcTag}plMapping={plMapping} bsMapping={bsMapping} exportRef={pivotExportRef} hasCustomMapping={!!activeMapping} />
 
       )}
+
+<ViewsSelector
+  open={viewsOpen}
+  onClose={() => setViewsOpen(false)}
+  activeMapping={activeMapping}
+  onApply={handleApplyMapping}
+  onClear={() => setActiveMapping(null)}
+/>
 
       {showAccounts && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setShowAccounts(false)}>

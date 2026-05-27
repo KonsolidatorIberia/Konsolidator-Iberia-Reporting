@@ -1,12 +1,12 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useTypo, useSettings } from "./SettingsContext";
 import {
   ChevronDown, ChevronRight, Loader2, Maximize2, Minimize2,
-  X, RefreshCw, Filter, TrendingUp, TrendingDown, BookOpen, GitMerge,
-  Download, Scale, Layers, Library,
+X, RefreshCw, Filter, TrendingUp, TrendingDown, GitMerge,
+  Download, BarChart2, Layers,
 } from "lucide-react";
-import PageHeader from "./PageHeader.jsx";
+import PageHeader, { FilterPill as HeaderFilterPill } from "./PageHeader.jsx";
 
 const BASE_URL = "";
 
@@ -787,6 +787,103 @@ function generateContributivePdf({
     .catch(e => alert("Could not load PDF library: " + e.message));
 }
 
+/* ─── useCountUp ─────────────────────────────────────────────────────────── */
+function useCountUp(target, duration = 900) {
+  const [display, setDisplay] = useState(0);
+  const fromRef = useRef(0);
+  const startRef = useRef(null);
+  const rafRef = useRef(null);
+  useEffect(() => {
+    cancelAnimationFrame(rafRef.current);
+    fromRef.current = display;
+    startRef.current = null;
+    const from = Number(fromRef.current) || 0;
+    const to = Number(target) || 0;
+    if (from === to) { setDisplay(to); return; }
+    const tick = (ts) => {
+      if (startRef.current === null) startRef.current = ts;
+      const elapsed = ts - startRef.current;
+      const t = Math.min(1, elapsed / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(from + (to - from) * eased);
+      if (t < 1) rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, duration]);
+  return display;
+}
+
+/* ─── useAnimatedNumber ──────────────────────────────────────────────────── */
+function useAnimatedNumber(target, duration = 700) {
+  const [display, setDisplay] = useState(0);
+  const startRef = useRef(null);
+  const fromRef = useRef(0);
+  const rafRef = useRef(null);
+  useEffect(() => {
+    cancelAnimationFrame(rafRef.current);
+    const from = fromRef.current;
+    const to = Number(target) || 0;
+    startRef.current = null;
+    const tick = (ts) => {
+      if (startRef.current === null) startRef.current = ts;
+      const t = Math.min(1, (ts - startRef.current) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(from + (to - from) * eased);
+      if (t < 1) rafRef.current = requestAnimationFrame(tick);
+      else fromRef.current = to;
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target]);
+  return display;
+}
+
+/* ─── ContributiveLoadingSpinner ─────────────────────────────────────────── */
+function ContributiveLoadingSpinner({ colors, metaReady, probingPeriod }) {
+  const progress = useAnimatedNumber(60, 700);
+  return (
+    <div className="relative flex-1 min-h-0 flex items-center justify-center rounded-2xl"
+      style={{ background: "rgba(255,255,255,0.78)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
+      <div className="relative rounded-3xl bg-white border border-gray-100 p-10 flex flex-col items-center"
+        style={{ width: 380, boxShadow: "0 24px 80px -12px rgba(26,47,138,0.25), 0 8px 24px -8px rgba(0,0,0,0.08)" }}>
+        <div className="relative" style={{ width: 140, height: 140 }}>
+          <svg width="140" height="140" viewBox="0 0 140 140">
+            <circle cx="70" cy="70" r="60" fill="none" stroke="#f3f4f6" strokeWidth="10" />
+            <circle cx="70" cy="70" r="60" fill="none"
+              stroke="url(#contribProgGrad)"
+              strokeWidth="10"
+              strokeLinecap="round"
+              strokeDasharray={2 * Math.PI * 60}
+              strokeDashoffset={2 * Math.PI * 60 * (1 - progress / 100)}
+              style={{ transform: "rotate(-90deg)", transformOrigin: "70px 70px" }}
+            />
+            <defs>
+              <linearGradient id="contribProgGrad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor={colors.primary ?? "#1a2f8a"} />
+                <stop offset="100%" stopColor="#CF305D" />
+              </linearGradient>
+            </defs>
+          </svg>
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <span className="text-3xl font-black tabular-nums" style={{ color: colors.primary }}>
+              {Math.round(progress)}<span className="text-base text-gray-300">%</span>
+            </span>
+          </div>
+        </div>
+        <p className="text-sm font-black text-gray-800 mt-6 tracking-wide">
+          {!metaReady ? "Loading metadata…" : probingPeriod ? "Finding latest period…" : "Building contributive view…"}
+        </p>
+        <p className="text-[10px] text-gray-300 mt-1.5 uppercase tracking-widest font-bold">
+          Contribution
+        </p>
+      </div>
+    </div>
+  );
+}
+
 /* ─── FilterPill ──────────────────────────────────────────────────────────── */
 function CompanyFilterPill({ cols, selected, onChange, filterStyle, colors }) {
   const [open, setOpen] = useState(false);
@@ -1002,14 +1099,34 @@ function DrilldownModal({ accountCode, accountName, company, rows, currency, onC
   );
 }
 
+function AnimatedValueCell({ value, className, style, onClick, isSummary }) {
+  const animated = useCountUp(value ?? 0, 900);
+  const rounded = Math.round(value ?? 0);
+  return (
+    <td className={className} style={style} onClick={onClick}>
+      {rounded === 0 ? <span className="text-gray-200">—</span> : (
+        <span className="flex items-center justify-center gap-1">
+          {!isSummary && (rounded > 0
+            ? <TrendingUp size={9} className="text-emerald-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+            : <TrendingDown size={9} className="text-red-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+          )}
+          {fmtAmt(animated)}
+        </span>
+      )}
+    </td>
+  );
+}
+
 /* ─── Pivot Row ───────────────────────────────────────────────────────────── */
 const INDENT = 14;
+
 
 function PivotRow({
   node, depth, expandedSet, onToggle, cols, pivot, onCellClick,
   expandedColsMap, journalPivot, compareMode, cmpPivot,
-  body1Style, body2Style,
-  perspectiveMode, parentTotalForRow,
+  body1Style, body2Style, colors,
+  perspectiveMode, parentTotalForRow, rowIndex = 0,
+  breakers = {}, totalColSpan = 10, breakerSortOrder = new Map(),
 }) {
   const code        = node.AccountCode;
   const hasChildren = node.children?.length > 0;
@@ -1032,8 +1149,12 @@ function PivotRow({
 
   return (
     <>
-      <tr className={`border-b transition-colors group
-        ${isSummary ? "bg-[#ffffff] border-[#1a2f8a]/5" : "bg-white border-gray-200 hover:bg-[#f8f9ff]"}`}>
+<tr className={`border-b transition-colors group
+        ${isSummary ? "bg-[#ffffff] border-[#1a2f8a]/5" : "bg-white border-gray-200 hover:bg-[#f8f9ff]"}`}
+style={{ animation: depth === 0
+          ? `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 25) * 35 + 50}ms both`
+          : `rowExpandIn 280ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 15) * 25}ms both`,
+          transformOrigin: "top center" }}>
 
         {/* Account — sticky left */}
         <td className={`py-2.5 sticky left-0 z-10 border-r border-gray-100
@@ -1041,9 +1162,9 @@ function PivotRow({
           style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 280 }}>
           <div className={`flex items-center ${hasChildren ? "cursor-pointer" : ""}`}
             onClick={() => hasChildren && onToggle(code)}>
-            {hasChildren
-              ? <span className="flex-shrink-0 mr-2" style={{ color: rowStyle?.color }}>
-                  {isExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
+{hasChildren
+              ? <span className="flex-shrink-0 mr-2" style={{ color: rowStyle?.color, display: "inline-flex", transition: "transform 280ms cubic-bezier(0.34,1.56,0.64,1)", transform: isExpanded ? "rotate(0deg)" : "rotate(-90deg)" }}>
+                  <ChevronDown size={12}/>
                 </span>
               : <span className="inline-block mr-2" style={{ width: 12 }} />}
             <span className="flex-shrink-0 mr-2" style={rowStyle}>
@@ -1076,23 +1197,15 @@ function PivotRow({
             ? (saldo / parentTotal) * 100
             : null;
 
-          const mainTd = (
-            <td key={co}
+const mainTd = (
+            <AnimatedValueCell key={co}
+              value={saldo}
               className={`px-4 py-2.5 text-center whitespace-nowrap transition-colors
                 ${val !== 0 && rows.length > 0 ? "cursor-pointer hover:bg-[#eef1fb]" : ""}`}
               style={{ minWidth: 130, ...cellStyle(saldo) }}
               onClick={() => val !== 0 && rows.length > 0 && onCellClick(node, co, rows)}
-            >
-              {saldo === 0 ? <span className="text-gray-200">—</span> : (
-                <span className="flex items-center justify-center gap-1">
-                  {!isSummary && (saldo > 0
-                    ? <TrendingUp size={9} className="text-emerald-400 opacity-0 group-hover:opacity-100 transition-opacity" />
-                    : <TrendingDown size={9} className="text-red-400 opacity-0 group-hover:opacity-100 transition-opacity" />
-                  )}
-                  {fmtAmt(saldo)}
-                </span>
-              )}
-            </td>
+              isSummary={isSummary}
+            />
           );
 
           // Percentage cell (perspective mode only)
@@ -1110,53 +1223,59 @@ function PivotRow({
             </td>
           ) : null;
 
-          const cmpVal = compareMode ? (cmpPivot?.get(code)?.[co] ?? 0) : 0;
+const cmpVal = compareMode ? (cmpPivot?.get(code)?.[co] ?? 0) : 0;
           const dev = compareMode ? saldo - cmpVal : 0;
-          const devPct = compareMode && cmpVal !== 0 ? ((dev / Math.abs(cmpVal)) * 100).toFixed(1) : null;
+          const devPct = compareMode && cmpVal !== 0 ? (dev / Math.abs(cmpVal)) * 100 : null;
+          const devColor = dev === 0 ? "#D1D5DB" : dev > 0 ? "#059669" : "#EF4444";
           const cmpTd = compareMode ? (
-            <td key={`${co}-cmp`}
-              className="px-4 py-2.5 text-center font-mono text-xs whitespace-nowrap"
-              style={{ minWidth: 150, borderRight: "2px solid rgba(251,191,36,0.25)", backgroundColor: "white" }}>
-              {cmpVal === 0 && dev === 0 ? (
-                <span className="text-gray-600">—</span>
-              ) : (
-                <span className="flex flex-col items-center gap-0.5">
-                  <span className={`${isSummary ? "font-bold" : ""} ${cmpVal === 0 ? "text-gray-500" : "text-black"}`}>
-                    {cmpVal === 0 ? "—" : fmtAmt(cmpVal)}
-                  </span>
-                  {dev !== 0 && (
-                    <span className={`text-11px] font-bold leading-none ${dev > 0 ? "text-emerald-400" : "text-red-400"}`}>
-                      {dev > 0 ? "+" : ""}{fmtAmt(dev)}{devPct !== null ? ` (${devPct}%)` : ""}
-                    </span>
-                  )}
-                </span>
-              )}
+            <AnimatedValueCell key={`${co}-cmp`}
+              value={cmpVal}
+              className="px-4 py-2.5 text-center whitespace-nowrap tabular-nums"
+              style={{ minWidth: 130, ...rowStyle, background: `${colors.primary}08`, animation: "subColIn 380ms cubic-bezier(0.34,1.56,0.64,1) 60ms both", transformOrigin: "left center" }}
+              isSummary={isSummary}
+            />
+          ) : null;
+          const deltaTd = compareMode ? (
+            <td key={`${co}-delta`}
+              className="px-4 py-2.5 text-center whitespace-nowrap tabular-nums"
+              style={{ minWidth: 110, ...rowStyle, color: devColor, background: `${colors.primary}12`, animation: "subColIn 380ms cubic-bezier(0.34,1.56,0.64,1) 120ms both", transformOrigin: "left center" }}>
+              {dev === 0 ? "—" : `${dev > 0 ? "+" : ""}${fmtAmt(dev)}`}
             </td>
           ) : null;
+          const pctDeltaTd = compareMode ? (
+            <td key={`${co}-deltapct`}
+              className="px-3 py-2.5 text-center whitespace-nowrap tabular-nums"
+              style={{ minWidth: 80, ...rowStyle, color: !devPct ? "#D1D5DB" : devPct > 0 ? "#059669" : "#EF4444", background: `${colors.primary}1e`, animation: "subColIn 380ms cubic-bezier(0.34,1.56,0.64,1) 180ms both", transformOrigin: "left center" }}>
+              {devPct !== null ? `${devPct > 0 ? "+" : ""}${devPct.toFixed(1)}%` : "—"}
+            </td>
+          ) : null;
+          if (!isExpanded) return [mainTd, ...(pctTd ? [pctTd] : []), ...(cmpTd ? [cmpTd] : []), ...(deltaTd ? [deltaTd] : []), ...(pctDeltaTd ? [pctDeltaTd] : [])];
 
-          if (!isExpanded) return [mainTd, ...(pctTd ? [pctTd] : []), ...(cmpTd ? [cmpTd] : [])];
-
-          const uploadedTd = (
+const uploadedTd = (
             <td key={`${co}-uploaded`}
-              className="px-3 py-2.5 text-center whitespace-nowrap bg-[#f8f9ff] border-l border-gray-100"
-              style={{ minWidth: 110, ...cellStyle(val) }}
+              className="px-3 py-2.5 text-center whitespace-nowrap border-l border-gray-100"
+              style={{ minWidth: 110, ...cellStyle(val), background: `${colors.primary}06`,
+                transformOrigin: "left center",
+                animation: `subColIn 320ms cubic-bezier(0.34,1.56,0.64,1) 0ms both` }}
               onClick={() => val !== 0 && rows.length > 0 && onCellClick(node, co, rows)}>
               {val === 0 ? "—" : fmtAmt(val)}
             </td>
           );
 
-          const subTds = SUB_COLS.map(sc => {
+const subTds = SUB_COLS.map((sc, idx) => {
             const subVal = jp[sc.key] ?? 0;
             return (
               <td key={`${co}-${sc.key}`}
-                className="px-3 py-2.5 text-center whitespace-nowrap bg-[#f8f9ff] border-l border-gray-100"
-                style={{ minWidth: 100, ...cellStyle(subVal) }}>
+                className="px-3 py-2.5 text-center whitespace-nowrap border-l border-gray-100"
+                style={{ minWidth: 100, ...cellStyle(subVal), background: `${colors.primary}${String(Math.min(4 + (idx+1) * 2, 14)).padStart(2, "0")}`,
+                  transformOrigin: "left center",
+                  animation: `subColIn 320ms cubic-bezier(0.34,1.56,0.64,1) ${(idx+1) * 30}ms both` }}>
                 {subVal === 0 ? "—" : fmtAmt(subVal)}
               </td>
             );
           });
 
-          return [mainTd, ...(pctTd ? [pctTd] : []), ...(cmpTd ? [cmpTd] : []), uploadedTd, ...subTds];
+          return [mainTd, ...(pctTd ? [pctTd] : []), ...(cmpTd ? [cmpTd] : []), ...(deltaTd ? [deltaTd] : []), ...(pctDeltaTd ? [pctDeltaTd] : []), uploadedTd, ...subTds];
         })}
 
 {!perspectiveMode && (
@@ -1167,23 +1286,52 @@ function PivotRow({
 )}
       </tr>
 
-      {isExpanded && hasChildren && node.children.map(child => (
-        <PivotRow key={child.AccountCode} node={child} depth={depth + 1}
-          expandedSet={expandedSet} onToggle={onToggle}
-          cols={cols} pivot={pivot} onCellClick={onCellClick}
-          expandedColsMap={expandedColsMap} journalPivot={journalPivot}
-          compareMode={compareMode} cmpPivot={cmpPivot}
-          body1Style={body1Style} body2Style={body2Style}
-          perspectiveMode={perspectiveMode}
-        />
-      ))}
+{isExpanded && hasChildren && (() => {
+        const inMapping = node.children.filter(c => breakerSortOrder.has(c.AccountCode));
+        const notInMapping = node.children.filter(c => !breakerSortOrder.has(c.AccountCode));
+        const hasAnyMapping = inMapping.length > 0;
+        const sorted = hasAnyMapping
+          ? [
+              ...notInMapping.sort((a, b) => pgcSort(a, b)),
+              ...inMapping.sort((a, b) => (breakerSortOrder.get(a.AccountCode) ?? 9999) - (breakerSortOrder.get(b.AccountCode) ?? 9999)),
+            ]
+          : node.children;
+        return sorted.map((child, ci) => {
+        const breaker = breakers[child.AccountCode] ?? null;
+        return (
+          <React.Fragment key={child.AccountCode}>
+            {breaker && (
+              <tr style={{ animation: `rowExpandIn 280ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(ci, 15) * 25}ms both`, transformOrigin: "top center" }}>
+                <td className="sticky left-0 z-10 px-5 py-1.5"
+                  style={{ paddingLeft: `${16 + (depth + 1) * INDENT}px`, backgroundColor: breaker.color }}>
+                  <span className="text-[9px] font-black uppercase tracking-[0.18em]" style={{ color: "#fff", opacity: 0.92 }}>
+                    {breaker.label}
+                  </span>
+                </td>
+                <td colSpan={totalColSpan - 1} style={{ backgroundColor: breaker.color, opacity: 0.85 }} />
+              </tr>
+            )}
+<PivotRow node={child} depth={depth + 1}
+              expandedSet={expandedSet} onToggle={onToggle}
+              cols={cols} pivot={pivot} onCellClick={onCellClick}
+              expandedColsMap={expandedColsMap} journalPivot={journalPivot}
+              compareMode={compareMode} cmpPivot={cmpPivot}
+              body1Style={body1Style} body2Style={body2Style} colors={colors}
+              perspectiveMode={perspectiveMode} rowIndex={ci}
+              breakers={breakers}
+            breakerSortOrder={breakerSortOrder} totalColSpan={totalColSpan} breakerSortOrder={breakerSortOrder}
+            />
+</React.Fragment>
+        );
+        });
+      })()}
     </>
   );
 }
 
 function SyncedTable({
   cols, tree, expandedSet, expandedColsMap, toggleCol, toggleExpand, pivot, journalPivot, accountMap, companies,
-  groupStructure, hasData, collapseAll, expandAll, setDrilldown, getReportingCurrency, breakers = {},
+  groupStructure, hasData, collapseAll, expandAll, setDrilldown, getReportingCurrency, breakers = {}, breakerSortOrder = new Map(),
   body1Style, body2Style, header2Style, header3Style, underscore1Style, underscore2Style, filterStyle, colors,
   compareMode, onToggleCompare, cmpPivot, cmpLoading,
   cmpYear, setCmpYear, cmpMonth, setCmpMonth, cmpSource, setCmpSource, cmpStructure, setCmpStructure,
@@ -1191,15 +1339,16 @@ function SyncedTable({
   perspectiveMode = false, perspectiveParent = "", reorderCols = () => {},
   onShowJournals = null, journalCount = 0,
 }) {
-  const [dragCol, setDragCol] = useState(null);
+const [dragCol, setDragCol] = useState(null);
   const [dragOverCol, setDragOverCol] = useState(null);
+  const [exitingCols, setExitingCols] = useState(new Set());
   const totalColSpan = useMemo(() => {
     let n = perspectiveMode ? 1 : 2;
     if (perspectiveMode) n += 1; // parent consolidated col
     cols.forEach(co => {
       n += 1;
       if (perspectiveMode) n += 1; // pct col
-      if (compareMode) n += 1;
+     if (compareMode) n += 3;
       if (expandedColsMap[co]) n += 1 + SUB_COLS.length;
     });
     return n;
@@ -1214,7 +1363,7 @@ function SyncedTable({
     cols.forEach(co => {
       widths.push(160);
       if (perspectiveMode) widths.push(80); // pct
-      if (compareMode) widths.push(150);
+      if (compareMode) { widths.push(130); widths.push(110); widths.push(80); }
       if (expandedColsMap[co]) {
         widths.push(140);
         SUB_COLS.forEach(() => widths.push(120));
@@ -1268,51 +1417,72 @@ const isDragging = dragCol === co;
           setDragOverCol(null);
         }}
         onDragEnd={() => { setDragCol(null); setDragOverCol(null); }}
-        className="px-4 py-3 whitespace-nowrap cursor-move hover:bg-white/10 transition-colors select-none"
+className="px-4 select-none cursor-grab"
         style={{
-          backgroundColor: colors.primary,
+          background: isDragOver ? `${colors.primary}15` : "rgba(255,255,255,0.95)",
+          borderLeft: "1px solid #f0f0f0",
           opacity: isDragging ? 0.4 : 1,
-          boxShadow: isDragOver ? "inset 4px 0 0 0 #fbbf24" : undefined,
+          outline: isDragOver ? `2px solid ${colors.primary}` : "none",
+          transition: "background 150ms ease, outline 150ms ease",
         }}
-        onClick={() => toggleCol(co)}>
-       <div className="flex items-center justify-center">
-          
-          <div>
-            <p className="leading-tight" style={underscore1Style}>{legalName}</p>
-            <p className="leading-tight" style={underscore2Style}>{co} · {getReportingCurrency(co, groupStructure, companies)}</p>
-          </div>
+        onClick={() => {
+          const isExp = !!expandedColsMap[co];
+          if (isExp) {
+            setExitingCols(prev => new Set([...prev, co]));
+            setTimeout(() => {
+              toggleCol(co);
+              setExitingCols(prev => { const n = new Set(prev); n.delete(co); return n; });
+            }, 250);
+          } else {
+            toggleCol(co);
+          }
+        }}>
+<div className="flex flex-col items-center gap-0.5 py-4">
+          <span className="font-black tracking-tight truncate max-w-[140px]" style={{ color: colors.primary, fontSize: 13, letterSpacing: "-0.01em" }} title={legalName}>{legalName}</span>
+          <span className="text-[11px] font-bold uppercase tracking-widest" style={{ color: `${colors.primary}60` }}>{getReportingCurrency(co, groupStructure, companies)}</span>
         </div>
       </th>
     );
-    const pctTh = perspectiveMode ? (
+const pctTh = perspectiveMode ? (
       <th key={`${co}-pct`}
-        className="px-2 py-3 whitespace-nowrap"
-        style={{
-          backgroundColor: colors.primary,
-          boxShadow: "inset 0 0 0 9999px rgba(0,0,0,0.08)",
-          borderRight: "1px dashed rgba(255,255,255,0.15)",
-        }}>
-        <div className="flex justify-center" style={underscore2Style}>%</div>
+        className="px-2 whitespace-nowrap"
+        style={{ background: `${colors.primary}08`, borderLeft: "1px dashed #f0f0f0" }}>
+        <div className="flex justify-center py-4 font-black text-[11px]" style={{ color: `${colors.primary}70` }}>%</div>
       </th>
     ) : null;
-    const cmpTh = compareMode ? (
-      <th key={`${co}-cmp`}
-        className="text-right px-4 py-3 whitespace-nowrap text-xs"
-        style={{ backgroundColor: "#0c1d55", borderRight: "2px solid rgba(251,191,36,0.35)" }}>
-        <p className="font-black text-[11px] text-white leading-tight">{cmpPeriodLabel}</p>
-        <p className="font-normal text-white text-[9px]">{co} · Δ</p>
-      </th>
+const cmpTh = compareMode ? (
+      <>
+<th key={`${co}-cmp`} className="text-center px-4 whitespace-nowrap"
+          style={{ background: `${colors.primary}08`, borderLeft: `2px solid ${colors.primary}15` }}>
+          <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>CMP</span>
+        </th>
+        <th key={`${co}-delta`} className="text-center px-3 whitespace-nowrap"
+          style={{ background: `${colors.primary}12` }}>
+          <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>Δ</span>
+        </th>
+        <th key={`${co}-deltapct`} className="text-center px-3 whitespace-nowrap"
+          style={{ background: `${colors.primary}1e` }}>
+          <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>Δ%</span>
+        </th>
+      </>
     ) : null;
-    if (!isExp) return [main, ...(pctTh ? [pctTh] : []), ...(cmpTh ? [cmpTh] : [])];
-    const subColsAll = [{ key: "uploaded", label: "UPLOADED" }, ...SUB_COLS];
+if (!isExp) return [main, ...(pctTh ? [pctTh] : []), ...(cmpTh ? [cmpTh] : [])];
+    const subColsAll = [{ key: "uploaded", label: "Uploaded" }, ...SUB_COLS];
     const subThs = subColsAll.map((sc, idx) => (
       <th key={`${co}-${sc.key}`}
-        className="px-3 py-3 whitespace-nowrap border-l border-white/10"
-        style={{
-          backgroundColor: colors.primary,
-          boxShadow: `inset 0 0 0 9999px rgba(0,0,0,${0.03 * (idx + 1)})`,
+        className="px-3 whitespace-nowrap"
+style={{
+          background: idx === 0 ? `${colors.primary}06` : `${colors.primary}${String(Math.min(4 + idx * 2, 14)).padStart(2, "0")}`,
+          borderLeft: `1px solid ${colors.primary}15`,
+          transformOrigin: "left center",
+          animation: exitingCols.has(co)
+            ? `subColIn 220ms cubic-bezier(0.4,0,0.2,1) reverse both`
+            : `subColIn 320ms cubic-bezier(0.34,1.56,0.64,1) ${idx * 30}ms both`,
         }}>
-        <div className="flex justify-center" style={underscore2Style}>{sc.label}</div>
+        <div className="flex flex-col items-center gap-0.5 py-4">
+          <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 11, opacity: 0.6 + idx * 0.08 }}>{sc.label}</span>
+          <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: `${colors.primary}40` }}>{legalName}</span>
+        </div>
       </th>
     ));
     return [main, ...(pctTh ? [pctTh] : []), ...(cmpTh ? [cmpTh] : []), ...subThs];
@@ -1325,28 +1495,40 @@ const isDragging = dragCol === co;
       style={{ flex: 1, minHeight: 0, overflowX: "auto", overflowY: "auto" }}>
       <table style={{ borderCollapse: "collapse", width: "max-content", minWidth: "100%", tableLayout: "auto", borderSpacing: 0 }}>
         {colgroup}
-        <thead style={{ position: "sticky", top: 0, zIndex: 20 }}>
-          <tr style={{ backgroundColor: colors.primary }}>
-            <th className="sticky left-0 z-30 text-left px-5 py-3 border-r border-white/20"
-              style={{ backgroundColor: colors.primary }}>
+<thead style={{ position: "sticky", top: 0, zIndex: 20 }}>
+          <tr style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)" }}>
+<th className="sticky left-0 z-30 text-left px-6 border-r border-gray-100"
+              style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", height: 64 }}>
               <div className="flex items-center justify-between gap-3">
-                <span style={header2Style}>ACCOUNTS</span>
+                <div className="flex items-baseline gap-2.5">
+                  <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>Accounts</span>
+                  <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>Contribution</span>
+                </div>
                 <div className="flex items-center gap-2">
 {hasData && (
                     <>
-                      <button onClick={() => expandedSet.size > 0 ? collapseAll() : expandAll()}
-                        className="flex items-center gap-1 text-[12px] px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 transition-all font-bold normal-case tracking-normal"
-                        style={{ color: colors.quaternary }}>
-                        {expandedSet.size > 0 ? <Minimize2 size={14}/> : <Maximize2 size={14}/>}
+<button onClick={() => expandedSet.size > 0 ? collapseAll() : expandAll()}
+                        className="flex items-center justify-center w-8 h-8 rounded-lg transition-all relative overflow-hidden"
+                        style={{ color: colors.primary, background: `${colors.primary}10` }}>
+                        <span className="absolute inset-0 flex flex-col items-center justify-center gap-0"
+                          style={{
+                            opacity: expandedSet.size > 0 ? 0 : 1,
+                            transform: expandedSet.size > 0 ? "rotate(90deg) scale(0.5)" : "rotate(0deg) scale(1)",
+                            transition: "all 320ms cubic-bezier(0.34,1.56,0.64,1)",
+                          }}>
+<ChevronDown size={10} strokeWidth={3} style={{ transform: "rotate(180deg)", marginBottom: -2 }} />
+                          <ChevronDown size={10} strokeWidth={3} style={{ marginTop: -2 }} />
+                        </span>
+                        <span className="absolute inset-0 flex items-center justify-center"
+                          style={{
+                            opacity: expandedSet.size > 0 ? 1 : 0,
+                            transform: expandedSet.size > 0 ? "rotate(0deg) scale(1)" : "rotate(-90deg) scale(0.5)",
+                            transition: "all 320ms cubic-bezier(0.34,1.56,0.64,1)",
+                          }}>
+                          <X size={13} strokeWidth={2.5} />
+                        </span>
                       </button>
-                      {onShowJournals && journalCount > 0 && (
-                        <button onClick={onShowJournals}
-                          className="relative flex items-center gap-1 text-[10px] px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 transition-all font-bold normal-case tracking-normal"
-                          style={{ color: colors.quaternary }}>
-                          <BookOpen size={12} />
-                          <span>{journalCount}</span>
-                        </button>
-                      )}
+
 
                     </>
                   )}
@@ -1355,12 +1537,9 @@ const isDragging = dragCol === co;
             </th>
 
             {/* Parent consolidated column header */}
-            {perspectiveMode && (
-              <th className="px-4 py-3 whitespace-nowrap border-l border-white/30"
-                style={{
-                  backgroundColor: colors.primary,
-                  boxShadow: "inset 0 0 0 9999px rgba(0,0,0,0.15)",
-                }}>
+{perspectiveMode && (
+              <th className="px-4 py-3 whitespace-nowrap border-l border-gray-100"
+                style={{ background: "rgba(255,255,255,0.95)" }}>
                 <div className="flex flex-col items-center gap-0.5">
                   <span style={underscore1Style}>{parentLegalName}</span>
                   <span style={underscore2Style}>CONSOLIDATED · {perspectiveParent}</span>
@@ -1370,9 +1549,12 @@ const isDragging = dragCol === co;
 
             {headerCols}
 {!perspectiveMode && (
-  <th className="sticky right-0 z-10 px-4 py-3 whitespace-nowrap border-l border-white/20"
-    style={{ backgroundColor: colors.primary }}>
-    <div className="flex justify-center" style={header2Style}>TOTAL</div>
+  <th className="sticky right-0 z-10 px-4 whitespace-nowrap border-l border-gray-100"
+    style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)" }}>
+    <div className="flex flex-col items-center gap-0.5 py-4">
+      <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 13 }}>Total</span>
+      <span className="text-[11px] font-bold uppercase tracking-widest" style={{ color: `${colors.primary}60` }}>/ Avg</span>
+    </div>
   </th>
 )}
           </tr>
@@ -1380,6 +1562,7 @@ const isDragging = dragCol === co;
         </thead>
         <tbody>
           {tree.map((node, i) => {
+          console.log("TREE NODE:", node.AccountCode, node.AccountType);
             const type = node.AccountType ?? node.accountType ?? "";
             const prevType = i > 0 ? (tree[i-1].AccountType ?? tree[i-1].accountType ?? "") : null;
             const showDivider = type !== prevType;
@@ -1393,6 +1576,18 @@ const isDragging = dragCol === co;
             const divider = showDivider ? (TYPE_LABELS[type] ?? { label: type, color: colors.quaternary }) : null;
             return (
               <>
+              {breakers[node.AccountCode] && (
+                  <tr key={`breaker-${node.AccountCode}`}
+                    style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(i, 25) * 35}ms both` }}>
+                    <td className="sticky left-0 z-10 px-5 py-1.5"
+                      style={{ backgroundColor: breakers[node.AccountCode].color }}>
+                      <span className="text-[9px] font-black uppercase tracking-[0.18em]" style={{ color: "#fff", opacity: 0.92 }}>
+                        {breakers[node.AccountCode].label}
+                      </span>
+                    </td>
+                    <td colSpan={totalColSpan - 1} style={{ backgroundColor: breakers[node.AccountCode].color, opacity: 0.85 }} />
+                  </tr>
+                )}
                 {divider && (
                   <tr key={`divider-${node.AccountCode}`}>
                     <td
@@ -1414,14 +1609,16 @@ const isDragging = dragCol === co;
                     </td>
                   </tr>
                 )}
-                <PivotRow key={node.AccountCode} node={node} depth={0}
+<PivotRow key={node.AccountCode} node={node} depth={0}
                   expandedSet={expandedSet} onToggle={toggleExpand}
                   cols={cols} pivot={pivot}
                   onCellClick={(node, co, rows) => setDrilldown({ node, company: co, rows })}
                   expandedColsMap={expandedColsMap} journalPivot={journalPivot}
                   compareMode={compareMode} cmpPivot={cmpPivot}
-                  body1Style={body1Style} body2Style={body2Style}
-                  perspectiveMode={perspectiveMode}
+                  body1Style={body1Style} body2Style={body2Style} colors={colors}
+                  perspectiveMode={perspectiveMode} rowIndex={i}
+                  breakers={breakers}
+            breakerSortOrder={breakerSortOrder} totalColSpan={totalColSpan} breakerSortOrder={breakerSortOrder}
                 />
               </>
             );
@@ -1467,21 +1664,28 @@ export default function ContributivePage({ token }) {
   const [metaReady,    setMetaReady]    = useState(false);
   const [probingPeriod, setProbingPeriod] = useState(false);
   const autoPeriodDone = useRef(false);
-  const breakersFetchedRef = useRef(false);
-  const [breakers, setBreakers] = useState({});
+const breakersFetchedRef = useRef(false);
+const [breakers, setBreakers] = useState({});
+  const [breakerSortOrder, setBreakerSortOrder] = useState(new Map());
+  const [pgcSections, setPgcSections] = useState({});
   const [expandedSet,setExpandedSet]= useState(new Set());
   const [compareMode, setCompareMode] = useState(false);
   const [cmpYear, setCmpYear] = useState("");
   const [cmpMonth, setCmpMonth] = useState("");
   const [cmpSource, setCmpSource] = useState("");
   const [cmpStructure, setCmpStructure] = useState("");
+const [cfUploadedData, setCfUploadedData] = useState([]);
+  const [cfMapping, setCfMapping] = useState([]);
+  const [cfMetadata, setCfMetadata] = useState(new Map());
+  const [cfGroupToCf, setCfGroupToCf] = useState(new Map());
+  const [cfLoading, setCfLoading] = useState(false);
   const [cmpRawData, setCmpRawData] = useState([]);
   const [cmpLoading, setCmpLoading] = useState(false);
 const [drilldown,       setDrilldown]       = useState(null);
   const [viewsModalOpen,  setViewsModalOpen]  = useState(false);
   const [expandedColsMap, setExpandedColsMap] = useState({});
   const _expandedCols = new Set(Object.keys(expandedColsMap).filter(k => expandedColsMap[k]));
-  const toggleCol = co => setExpandedColsMap(prev => ({ ...prev, [co]: !prev[co] }));
+const toggleCol = co => setExpandedColsMap(prev => ({ ...prev, [co]: !prev[co] }));
 
   const headers = useCallback(() => ({
     Authorization: `Bearer ${token}`,
@@ -1559,41 +1763,67 @@ const [drilldown,       setDrilldown]       = useState(null);
   }, [metaReady, source, structure, headers]);
 
   /* ── Fetch breakers from Supabase ───────────────────────── */
-  useEffect(() => {
+useEffect(() => {
     if (!rawData.length) return;
-    if (breakersFetchedRef.current) return;
+    breakersFetchedRef.current = false;
 
     const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
     const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
     const sbHeaders = { apikey: SUPABASE_APIKEY, Authorization: `Bearer ${SUPABASE_APIKEY}` };
 
-    const isPGC        = rawData.some(n => /[a-zA-Z]/.test(String(n.AccountCode ?? n.accountCode ?? "")) && String(n.AccountCode ?? n.accountCode ?? "").endsWith(".S"));
-    const isSpanishIFRS = !isPGC && rawData.some(n => /^[A-Z]\.\d/.test(String(n.AccountCode ?? n.accountCode ?? "")));
-    const isDanish     = !isPGC && !isSpanishIFRS && rawData.some(n => /^\d{6}$/.test(String(n.AccountCode ?? n.accountCode ?? "")));
+    const isPGC           = rawData.some(n => { const c = String(n.AccountCode ?? n.accountCode ?? ""); return /[a-zA-Z]/.test(c) && c.endsWith(".S"); });
+    const isSpanishIfrsEs = !isPGC && rawData.some(n => /\.PL$/i.test(String(n.AccountCode ?? n.accountCode ?? "").trim()));
+    const isSpanishIFRS   = !isPGC && !isSpanishIfrsEs && rawData.some(n => /^[A-Z]\.\d/.test(String(n.AccountCode ?? n.accountCode ?? "")));
+    const isDanish        = !isPGC && !isSpanishIFRS && !isSpanishIfrsEs && rawData.some(n => /^\d{5,6}$/.test(String(n.AccountCode ?? n.accountCode ?? "")));
 
-    if (!isPGC && !isSpanishIFRS && !isDanish) return;
-    breakersFetchedRef.current = true;
+    if (!isPGC && !isSpanishIFRS && !isSpanishIfrsEs && !isDanish) return;
 
-    const endpoint = isPGC
-      ? `${SUPABASE_URL}/pgc_breakers?select=*`
-      : isSpanishIFRS
-        ? `${SUPABASE_URL}/spanish_ifrs_breakers?select=*`
-        : `${SUPABASE_URL}/danish_breakers?select=*`;
+const rowsTable = isPGC ? "pgc_pl_rows"
+      : isSpanishIfrsEs ? "contributive_pl_rows"
+      : isDanish ? "danish_ifrs_pl_rows"
+      : null;
+    const secsTable = isPGC ? "pgc_pl_sections"
+      : isSpanishIfrsEs ? "contributive_pl_sections"
+      : isDanish ? "danish_ifrs_pl_sections"
+      : null;
 
-    fetch(endpoint, { headers: sbHeaders })
+    if (rowsTable && secsTable) {
+      Promise.all([
+        fetch(`${SUPABASE_URL}/${rowsTable}?select=*&order=sort_order.asc`, { headers: sbHeaders }).then(r => r.json()),
+        fetch(`${SUPABASE_URL}/${secsTable}?select=*&order=sort_order.asc`, { headers: sbHeaders }).then(r => r.json()),
+      ]).then(([rowsArr, secsArr]) => {
+        if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
+        const secByCode = new Map(secsArr.map(s => [s.section_code, { label: s.label, color: s.color }]));
+        const seen = new Set();
+        const out = {};
+const sortOrder = new Map();
+        rowsArr.forEach((r, idx) => {
+          sortOrder.set(r.account_code, idx);
+          if (seen.has(r.section_code)) return;
+          seen.add(r.section_code);
+          const sec = secByCode.get(r.section_code);
+          if (sec) out[r.account_code] = { label: sec.label, color: sec.color };
+        });
+const breakerOrder = new Map();
+        rowsArr.forEach((r, idx) => breakerOrder.set(r.account_code, idx));
+        setBreakers(out);
+        setBreakerSortOrder(breakerOrder);
+        console.log("BREAKERS SET:", out);
+      }).catch(e => console.error("BREAKERS FETCH ERROR:", e));
+      return;
+    }
+
+    // Spanish IFRS non-ES fallback
+    fetch(`${SUPABASE_URL}/spanish_ifrs_breakers?select=*`, { headers: sbHeaders })
       .then(r => r.json())
       .then(rows => {
         if (!Array.isArray(rows)) return;
         const grouped = {};
-        rows.forEach(({ before_code, label, color }) => {
-          grouped[before_code] = { label, color };
-        });
-        console.log("=== BREAKERS LOADED ===", Object.keys(grouped));
+        rows.forEach(({ before_code, label, color }) => { grouped[before_code] = { label, color }; });
         setBreakers(grouped);
       })
-      .catch(() => { breakersFetchedRef.current = false; });
+      .catch(e => console.error("BREAKERS FETCH ERROR:", e));
   }, [rawData]);
-
   /* ── Fetch consolidated-accounts ────────────────────────── */
   useEffect(() => {
     if (!metaReady || !year || !month || !source || !structure) return;
@@ -1613,14 +1843,70 @@ const [drilldown,       setDrilldown]       = useState(null);
       fetch(`${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(filter)}`, { headers: h })
         .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
     ]).then(([consolidated, journals]) => {
-      console.log("CONSOLIDATED COUNT:", consolidated.length);
-      console.log("SAMPLE ROW:", JSON.stringify(consolidated[0], null, 2));
-      console.log("ALL ROLES:", [...new Set(consolidated.map(r => r.CompanyRole ?? r.companyRole ?? ""))]);
+
       setRawData(consolidated);
       setJournalData(journals);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, [year, month, source, structure, metaReady, headers]);
+
+  /* ── Fetch CF mapping + uploaded data ───────────────────── */
+  useEffect(() => {
+    if (!token || !metaReady) return;
+    const h = headers();
+    fetch(`${BASE_URL}/v2/mapped-cashflow-accounts`, { headers: h })
+      .then(r => r.json()).then(d => {
+        const rows = d.value ?? (Array.isArray(d) ? d : []);
+        setCfMapping(rows);
+        // Build metadata and groupToCf maps
+        const meta = new Map();
+        rows.forEach(map => {
+          if (map.enabled === false || map.Enabled === false) return;
+          const code = map.cashFlowAccountCode ?? map.CashFlowAccountCode ?? "";
+          const name = map.cashFlowAccountName ?? map.CashFlowAccountName ?? "";
+          const sumParent = map.cashFlowAccountSumAccountCode ?? map.CashFlowAccountSumAccountCode ?? "";
+          if (!code) return;
+          if (!meta.has(code)) meta.set(code, { name, sumParent });
+        });
+        // Bubble up missing parents
+        let added = true;
+        while (added) {
+          added = false;
+          for (const node of [...meta.values()]) {
+            if (node.sumParent && !meta.has(node.sumParent)) {
+              meta.set(node.sumParent, { name: "", sumParent: "" });
+              added = true;
+            }
+          }
+        }
+        setCfMetadata(meta);
+        // groupToCf
+        const g2cf = new Map();
+        rows.forEach(map => {
+          if (map.enabled === false || map.Enabled === false) return;
+          const ga = map.groupAccountCode ?? map.GroupAccountCode ?? "";
+          const cf = map.cashFlowAccountCode ?? map.CashFlowAccountCode ?? "";
+          if (!ga || !cf) return;
+          if (!g2cf.has(ga)) g2cf.set(ga, []);
+          g2cf.get(ga).push(cf);
+        });
+        setCfGroupToCf(g2cf);
+      }).catch(() => {});
+  }, [token, metaReady, headers]);
+
+  useEffect(() => {
+    if (!token || !metaReady || !year || !month || !source || !structure) return;
+    setCfLoading(true);
+    const h = headers();
+    const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+    fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h })
+      .then(r => r.json()).then(d => {
+        setCfUploadedData(d.value ?? (Array.isArray(d) ? d : []));
+        setCfLoading(false);
+      }).catch(() => setCfLoading(false));
+  }, [token, metaReady, year, month, source, structure, headers]);
+  
+const [cmpCfUploadedData, setCmpCfUploadedData] = useState([]);
 
   /* ── Fetch compare data ─────────────────────────────────── */
   useEffect(() => {
@@ -1628,10 +1914,16 @@ const [drilldown,       setDrilldown]       = useState(null);
     setCmpLoading(true);
     const h = headers();
     const filter = `Year eq ${cmpYear} and Month eq ${cmpMonth} and Source eq '${cmpSource}' and GroupStructure eq '${cmpStructure}'`;
-    fetch(`${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h })
-      .then(r => r.json())
-      .then(d => { setCmpRawData(d.value ?? (Array.isArray(d) ? d : [])); setCmpLoading(false); })
-      .catch(() => { setCmpRawData([]); setCmpLoading(false); });
+    Promise.all([
+      fetch(`${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h })
+        .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
+      fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h })
+        .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
+    ]).then(([cons, uploaded]) => {
+      setCmpRawData(cons);
+      setCmpCfUploadedData(uploaded);
+      setCmpLoading(false);
+    }).catch(() => { setCmpRawData([]); setCmpCfUploadedData([]); setCmpLoading(false); });
   }, [compareMode, cmpYear, cmpMonth, cmpSource, cmpStructure, metaReady, headers]);
 
   /* ── Derive parent options & children-of-perspective from groupStructure ── */
@@ -1690,10 +1982,10 @@ const [drilldown,       setDrilldown]       = useState(null);
     if (!rawData.length) return { accountMap: new Map(), pivot: new Map(), tree: [], cols: [], journalPivot: new Map(), cmpPivot: new Map() };
 
     const accountMap = new Map();
-
-    const filtered = rawData.filter(r => {
+const filtered = rawData.filter(r => {
       const role = r.CompanyRole ?? r.companyRole ?? "";
-      if (role !== "Contribution" && role !== "Contributive" && role !== "Subsidiary") return false;
+      if (role !== "Contribution") return false;
+
       if (typeFilter) {
         const t = r.AccountType ?? r.accountType ?? "";
         const matchesPL = typeFilter === "P/L" && (t === "P/L" || t === "DIS");
@@ -1729,19 +2021,37 @@ const [drilldown,       setDrilldown]       = useState(null);
       if (!pivot.has(code)) pivot.set(code, {});
       const c = pivot.get(code);
       if (!c[co]) c[co] = { total: 0, rows: [] };
-      c[co].total += -(Number(r.ReportingAmountYTD ?? r.reportingAmountYTD ?? r.AmountYTD ?? r.amountYTD) || 0);
+      c[co].total += (Number(r.ReportingAmountYTD ?? r.reportingAmountYTD ?? r.AmountYTD ?? r.amountYTD) || 0);
       c[co].rows.push(r);
     });
+const TYPE_ORDER = { "P/L": 0, "DIS": 0, "B/S": 1, "C/F": 2, "CFS": 2 };
 
-    const rawTree = buildTree([...accountMap.values()]);
-    const TYPE_ORDER = { "P/L": 0, "DIS": 0, "B/S": 1, "C/F": 2, "CFS": 2 };
-
-    const tree = [...rawTree].sort((a, b) => {
-      const tA = TYPE_ORDER[a.AccountType ?? a.accountType ?? ""] ?? 99;
-      const tB = TYPE_ORDER[b.AccountType ?? b.accountType ?? ""] ?? 99;
-      if (tA !== tB) return tA - tB;
-      return pgcSort(a, b);
-    });
+    let tree;
+    if (breakerSortOrder.size > 0) {
+      // Flat list sorted by mapping sort_order — same as AccountsDashboard
+      tree = [...accountMap.values()]
+        .filter(n => {
+          const type = n.AccountType ?? "";
+          return type === "P/L" || type === "DIS" || type === "B/S" || type === "C/F" || type === "CFS";
+        })
+        .sort((a, b) => {
+          const sA = breakerSortOrder.get(a.AccountCode) ?? 9999;
+          const sB = breakerSortOrder.get(b.AccountCode) ?? 9999;
+          if (sA !== sB) return sA - sB;
+          const tA = TYPE_ORDER[a.AccountType ?? ""] ?? 99;
+          const tB = TYPE_ORDER[b.AccountType ?? ""] ?? 99;
+          return tA - tB;
+        })
+        .map(n => ({ ...n, children: [] }));
+    } else {
+      const rawTree = buildTree([...accountMap.values()]);
+      tree = [...rawTree].sort((a, b) => {
+        const tA = TYPE_ORDER[a.AccountType ?? a.accountType ?? ""] ?? 99;
+        const tB = TYPE_ORDER[b.AccountType ?? b.accountType ?? ""] ?? 99;
+        if (tA !== tB) return tA - tB;
+        return pgcSort(a, b);
+      });
+    }
     const cols = [...new Set(filtered.map(r => r.CompanyShortName ?? r.companyShortName ?? "").filter(Boolean))].sort();
 
     const journalPivot = new Map();
@@ -1783,10 +2093,10 @@ const [drilldown,       setDrilldown]       = useState(null);
     };
     tree.forEach(rollUp);
 
-    const cmpPivot = new Map();
+const cmpPivot = new Map();
     cmpRawData.filter(r => {
       const role = r.CompanyRole ?? r.companyRole ?? "";
-      if (role !== "Contribution" && role !== "Contributive" && role !== "Subsidiary") return false;
+      if (role !== "Contribution") return false;
       if (perspectiveMode) {
         const co = r.CompanyShortName ?? r.companyShortName ?? "";
         if (!childrenOfPerspective.includes(co)) return false;
@@ -1799,11 +2109,168 @@ const [drilldown,       setDrilldown]       = useState(null);
       if (!cmpPivot.has(code)) cmpPivot.set(code, {});
       const c = cmpPivot.get(code);
       if (!c[co]) c[co] = 0;
-      c[co] += -(Number(r.ReportingAmountYTD ?? r.reportingAmountYTD ?? r.AmountYTD ?? r.amountYTD) || 0);
+      c[co] += (Number(r.ReportingAmountYTD ?? r.reportingAmountYTD ?? r.AmountYTD ?? r.amountYTD) || 0);
     });
 
-    return { accountMap, pivot, tree, cols, journalPivot: rolled, cmpPivot };
-  }, [rawData, journalData, typeFilter, cmpRawData, perspectiveMode, childrenOfPerspective]);
+return { accountMap, pivot, tree, cols, journalPivot: rolled, cmpPivot };
+}, [rawData, journalData, typeFilter, cmpRawData, perspectiveMode, childrenOfPerspective, breakerSortOrder]);
+
+  // CF-specific pivot from uploaded data
+ const { cfTree, cfPivot, cfCols, cmpCfPivot } = useMemo(() => {
+if (typeFilter !== "C/F" || !cfUploadedData.length || !cfMetadata.size) {
+      return { cfTree: [], cfPivot: new Map(), cfCols: [], cmpCfPivot: new Map() };
+    }
+    const piv = new Map();
+    const filteredUploaded = perspectiveMode
+      ? cfUploadedData.filter(r => childrenOfPerspective.includes(r.CompanyShortName ?? r.companyShortName ?? ""))
+      : cfUploadedData;
+
+    filteredUploaded.forEach(r => {
+      const groupCode = String(r.AccountCode ?? r.accountCode ?? "");
+      const co = r.CompanyShortName ?? r.companyShortName ?? "";
+      if (!groupCode || !co) return;
+      const cfs = cfGroupToCf.get(groupCode);
+      if (!cfs) return;
+      const amt = Number(r.AmountYTD ?? r.amountYTD ?? 0);
+      cfs.forEach(cfCode => {
+        if (!piv.has(cfCode)) piv.set(cfCode, {});
+        const c = piv.get(cfCode);
+        if (!c[co]) c[co] = { total: 0, rows: [] };
+        c[co].total += amt;
+        c[co].rows.push(r);
+      });
+    });
+
+// Bubble up to parents — only from direct children, not all descendants
+    const directChildren = new Map(); // parent -> [child codes]
+    cfMetadata.forEach(({ sumParent }, code) => {
+      if (sumParent && piv.has(code)) {
+        if (!directChildren.has(sumParent)) directChildren.set(sumParent, []);
+        directChildren.get(sumParent).push(code);
+      }
+    });
+
+    // Process bottom-up: find all codes that have no children in piv (leaves)
+    // then sum upward level by level
+    const allCodes = new Set([...piv.keys()]);
+    cfMetadata.forEach(({ sumParent }, code) => {
+      if (sumParent) allCodes.add(sumParent);
+    });
+
+    // Topological sort - process leaves first
+    const processed = new Set();
+    const processCode = (code) => {
+      if (processed.has(code)) return;
+      const children = directChildren.get(code) || [];
+      children.forEach(c => processCode(c));
+      // Sum direct children into this parent
+      if (children.length > 0 && !piv.has(code)) {
+        piv.set(code, {});
+      }
+      if (children.length > 0) {
+        const pp = piv.get(code);
+        children.forEach(childCode => {
+          const cp = piv.get(childCode) || {};
+          Object.entries(cp).forEach(([co, { total, rows }]) => {
+            if (!pp[co]) pp[co] = { total: 0, rows: [] };
+            pp[co].total += total;
+          });
+        });
+      }
+      processed.add(code);
+      // Bubble to parent
+      const meta = cfMetadata.get(code);
+      if (meta?.sumParent) {
+        const parent = meta.sumParent;
+        if (!piv.has(parent)) piv.set(parent, {});
+        const pp = piv.get(parent);
+        const cp = piv.get(code) || {};
+        Object.entries(cp).forEach(([co, { total }]) => {
+          if (!pp[co]) pp[co] = { total: 0, rows: [] };
+          pp[co].total += total;
+        });
+      }
+    };
+
+    // Only process leaf nodes (those with no children in piv)
+    [...piv.keys()].forEach(code => {
+      const hasChildren = directChildren.has(code);
+      if (!hasChildren) processCode(code);
+    });
+
+    // Build tree nodes from cfMetadata
+    const cfAccountMap = new Map();
+// Build a name lookup from the full cfMapping
+const cfNameLookup = new Map();
+    cfMapping.forEach(map => {
+      const code    = map.cashFlowAccountCode            ?? map.CashFlowAccountCode            ?? "";
+      const name    = map.cashFlowAccountName            ?? map.CashFlowAccountName            ?? "";
+      const sumCode = map.cashFlowAccountSumAccountCode  ?? map.CashFlowAccountSumAccountCode  ?? "";
+      const sumName = map.cashFlowAccountSumAccountName  ?? map.CashFlowAccountSumAccountName  ?? "";
+      if (code)    cfNameLookup.set(code, name);
+      if (sumCode && sumName && !cfNameLookup.has(sumCode)) cfNameLookup.set(sumCode, sumName);
+    });
+    // Also grab names from mapped-accounts if available via cfMetadata
+    cfMetadata.forEach(({ name }, code) => {
+      if (name && !cfNameLookup.has(code)) cfNameLookup.set(code, name);
+    });
+
+    cfMetadata.forEach(({ name, sumParent }, code) => {
+      if (piv.has(code)) {
+        cfAccountMap.set(code, {
+          AccountCode: code,
+          AccountName: cfNameLookup.get(code) || name || "",
+          AccountType: "C/F",
+          SumAccountCode: sumParent || "",
+        });
+      }
+    });
+
+    const cfTree = buildTree([...cfAccountMap.values()]);
+    const cfCols = [...new Set(filteredUploaded.map(r => r.CompanyShortName ?? r.companyShortName ?? "").filter(Boolean))].sort();
+
+// Build compare CF pivot
+    const cmpPivCf = new Map();
+    const cmpFiltered = perspectiveMode
+      ? cmpCfUploadedData.filter(r => childrenOfPerspective.includes(r.CompanyShortName ?? r.companyShortName ?? ""))
+      : cmpCfUploadedData;
+
+    cmpFiltered.forEach(r => {
+      const groupCode = String(r.AccountCode ?? r.accountCode ?? "");
+      const co = r.CompanyShortName ?? r.companyShortName ?? "";
+      if (!groupCode || !co) return;
+      const cfs = cfGroupToCf.get(groupCode);
+      if (!cfs) return;
+      const amt = Number(r.AmountYTD ?? r.amountYTD ?? 0);
+      cfs.forEach(cfCode => {
+        if (!cmpPivCf.has(cfCode)) cmpPivCf.set(cfCode, {});
+        const c = cmpPivCf.get(cfCode);
+        if (!c[co]) c[co] = 0;
+        c[co] += amt;
+      });
+    });
+
+    // Bubble up compare pivot
+    [...cmpPivCf.keys()].forEach(leafCode => {
+      const meta = cfMetadata.get(leafCode);
+      if (!meta) return;
+      let parent = meta.sumParent;
+      const seen = new Set([leafCode]);
+      while (parent && !seen.has(parent)) {
+        seen.add(parent);
+        const lp = cmpPivCf.get(leafCode) || {};
+        if (!cmpPivCf.has(parent)) cmpPivCf.set(parent, {});
+        const pp = cmpPivCf.get(parent);
+        Object.entries(lp).forEach(([co, total]) => {
+          pp[co] = (pp[co] ?? 0) + total;
+        });
+        parent = cfMetadata.get(parent)?.sumParent || "";
+      }
+    });
+
+    return { cfTree, cfPivot: piv, cfCols, cmpCfPivot: cmpPivCf };
+  }, [typeFilter, cfUploadedData, cfMetadata, cfGroupToCf, perspectiveMode, childrenOfPerspective, cmpCfUploadedData]);
+
 
 
   const toggleExpand = useCallback(code => {
@@ -1837,7 +2304,7 @@ const [drilldown,       setDrilldown]       = useState(null);
     return String(v);
   }).filter(Boolean))].map(v => ({ value: v, label: v }));
 
-  const hasData = rawData.length > 0 && tree.length > 0;
+  const hasData = rawData.length > 0;
 
   // Effective cols after company filter — always derived from current `cols`,
   // which is already perspective-filtered.
@@ -1868,10 +2335,15 @@ const baseEffectiveCols = selectedCompanies.length === 0
 
   return (
     <div className="flex flex-col gap-4 h-full min-h-0">
-      <style>{`
+<style>{`
         .contributive-body::-webkit-scrollbar { width: 0px; height: 6px; }
         .contributive-body::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
         .contributive-body::-webkit-scrollbar-track { background: transparent; }
+.contributive-body thead { background: rgba(255,255,255,0.95); }
+        .contributive-body thead th { border-color: transparent !important; box-shadow: none !important; }
+@keyframes subColIn    { 0% { opacity:0; transform:translateX(-10px) scaleX(0.85); } 100% { opacity:1; transform:translateX(0) scaleX(1); } }
+        @keyframes plRowSlideIn { 0% { opacity:0; transform:translateY(8px); } 100% { opacity:1; transform:translateY(0); } }
+        @keyframes rowExpandIn  { 0% { opacity:0; transform:translateY(-4px) scaleY(0.92); } 100% { opacity:1; transform:translateY(0) scaleY(1); } }
       `}</style>
       {showJournals && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setShowJournals(false)}>
@@ -1949,8 +2421,8 @@ const baseEffectiveCols = selectedCompanies.length === 0
         tabs={[
           { id: "",    label: "All",           icon: Filter    },
           { id: "P/L", label: "P&L",           icon: TrendingUp },
-          { id: "B/S", label: "Balance Sheet", icon: Scale     },
-          { id: "C/F", label: "Cash Flow",     icon: Layers    },
+{ id: "B/S", label: "B.SH.", icon: BarChart2 },
+          { id: "C/F", label: "C.Fl.", icon: Layers },
         ]}
         activeTab={typeFilter}
         onTabChange={setTypeFilter}
@@ -1997,12 +2469,6 @@ const baseEffectiveCols = selectedCompanies.length === 0
         }}
 fabActions={[
           {
-            id: "views",
-            icon: Library,
-            label: "Views",
-            onClick: () => setViewsModalOpen(true),
-          },
-          {
             id: "export",
             icon: Download,
             label: "Export",
@@ -2038,26 +2504,27 @@ fabActions={[
 
 
 
-      {compareMode && (
-        <div className="flex items-center gap-2 flex-wrap px-4 py-2.5 bg-white rounded-2xl border border-gray-100 shadow-sm flex-shrink-0">
-          <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50 mr-1">Compare with</span>
-          <FilterPill label="Source"   value={cmpSource}    onChange={setCmpSource}    options={sourceOpts}    filterStyle={filterStyle} colors={colors} />
-          <FilterPill label="Year"      value={cmpYear}      onChange={setCmpYear}      options={yearOpts}      filterStyle={filterStyle} colors={colors} />
-          <FilterPill label="Month"     value={cmpMonth}     onChange={setCmpMonth}     options={monthOpts}     filterStyle={filterStyle} colors={colors} />
-          <FilterPill label="Structure" value={cmpStructure} onChange={setCmpStructure} options={structureOpts} filterStyle={filterStyle} colors={colors} />
-          {cmpLoading && <Loader2 size={11} className="animate-spin text-[#1a2f8a] ml-2" />}
+{compareMode && (
+        <div className="flex items-center gap-2 flex-wrap px-5 py-3 bg-white rounded-2xl border border-gray-100 shadow-sm flex-shrink-0">
+          <div className="flex items-center gap-2 mr-2">
+            <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+              style={{ background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)", boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)" }}>
+              <span className="text-white text-[11px] font-black">B</span>
+            </div>
+            <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Compare with</span>
+          </div>
+          <HeaderFilterPill label="Source"    value={cmpSource}    onChange={setCmpSource}    options={sourceOpts} />
+          <HeaderFilterPill label="Year"      value={cmpYear}      onChange={setCmpYear}      options={yearOpts} />
+          <HeaderFilterPill label="Month"     value={cmpMonth}     onChange={setCmpMonth}     options={monthOpts} />
+          <HeaderFilterPill label="Structure" value={cmpStructure} onChange={setCmpStructure} options={structureOpts} />
+          {cmpLoading && <Loader2 size={11} className="animate-spin ml-2" style={{ color: colors.primary }} />}
         </div>
       )}
 
       {/* Table */}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex flex-col flex-1 min-h-0" style={{ overflow: "hidden" }}>
-        {!metaReady || loading || probingPeriod ? (
-          <div className="flex items-center justify-center flex-1">
-            <div className="flex flex-col items-center gap-3">
-              <Loader2 size={28} className="animate-spin text-[#1a2f8a]" />
-              <p className="text-xs text-gray-400">{!metaReady ? "Loading metadata…" : probingPeriod ? "Finding latest period…" : "Building contributive view…"}</p>
-            </div>
-          </div>
+{!metaReady || loading || probingPeriod ? (
+          <ContributiveLoadingSpinner colors={colors} metaReady={metaReady} probingPeriod={probingPeriod} />
         ) : !hasData ? (
           <div className="flex items-center justify-center flex-1">
             <div className="text-center">
@@ -2073,9 +2540,10 @@ fabActions={[
             </div>
           </div>
         ) : (
-          <SyncedTable
-            cols={effectiveCols}
-            tree={tree}
+<SyncedTable
+            cols={typeFilter === "C/F" ? cfCols : effectiveCols}
+            tree={typeFilter === "C/F" ? cfTree : tree}
+            pivot={typeFilter === "C/F" ? cfPivot : undefined}
             body1Style={body1Style}
             body2Style={body2Style}
             header2Style={header2Style}
@@ -2088,7 +2556,7 @@ fabActions={[
             expandedColsMap={expandedColsMap}
             toggleCol={toggleCol}
             toggleExpand={toggleExpand}
-            pivot={pivot}
+            pivot={typeFilter === "C/F" ? cfPivot : pivot}
             journalPivot={journalPivot}
             accountMap={accountMap}
             companies={companies}
@@ -2098,7 +2566,7 @@ fabActions={[
             expandAll={expandAll}
             setDrilldown={setDrilldown}
             getReportingCurrency={getReportingCurrency}
-            breakers={breakers}
+            breakers={Object.keys(pgcSections).length > 0 ? pgcSections : breakers}
             compareMode={compareMode}
             onToggleCompare={() => {
               if (!compareMode) {
@@ -2107,7 +2575,7 @@ fabActions={[
               }
               setCompareMode(c => !c);
             }}
-            cmpPivot={cmpPivot}
+            cmpPivot={typeFilter === "C/F" ? cmpCfPivot : cmpPivot}
             cmpLoading={cmpLoading}
             cmpYear={cmpYear} setCmpYear={setCmpYear}
             cmpMonth={cmpMonth} setCmpMonth={setCmpMonth}

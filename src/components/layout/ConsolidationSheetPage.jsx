@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, useMemo } from "react";
-import { ChevronDown, ChevronRight, Loader2, RefreshCw, Maximize2, Minimize2, GitMerge, Download, Library } from "lucide-react";import PageHeader from "./PageHeader.jsx";
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import { ChevronDown, ChevronRight, X, RefreshCw, Maximize2, Minimize2, GitMerge, Download, Library, Filter, TrendingUp, BarChart2, Layers } from "lucide-react";
+import PageHeader, { FilterPill as HeaderFilterPill } from "./PageHeader.jsx";
 import { useTypo, useSettings } from "./SettingsContext";
 const BASE = "https://api.konsolidator.com/v2";
 
@@ -110,7 +111,8 @@ function SheetRow({
   contributionCompanies, topParent,
   elimExpanded, elimHeaders,
   compareMode, cmpPivot,
-  body1Style, body2Style, subbody1Style,
+  body1Style, body2Style, subbody1Style, colors = { primary: "#1a2f8a" },
+  cmpColsExiting = false, cmpColsVisible = false,
 }) {
 const hasChildren = node.children?.length > 0;
   const isExpanded  = expanded.has(node.AccountCode);
@@ -163,28 +165,28 @@ const elimTotal = consTotal - contribSum;
   const cmpElimTotal  = cmpConsTotal - cmpContribSum;
 
   // Render two cells (compare value + delta) for any given pair (current, compare)
-  const renderCompareCells = (current, compare, key) => {
+const renderCompareCells = (current, compare, key) => {
     const delta = current - compare;
     const pct = compare !== 0 ? (delta / Math.abs(compare)) * 100 : null;
     const baseColor = compare === 0 ? "#D1D5DB" : compare < 0 ? "#EF4444" : "#000000";
     const deltaColor = delta === 0 ? "#D1D5DB" : delta < 0 ? "#EF4444" : "#10B981";
-   return [
+    const pctColor = !pct ? "#D1D5DB" : pct > 0 ? "#059669" : "#EF4444";
+const anim = (delay) => `${cmpColsExiting ? "cmpColOut" : "cmpColIn"} 320ms cubic-bezier(0.34,1.56,0.64,1) ${delay}ms both`;
+    return [
       <td key={`${key}-cmp`}
         className="px-3 py-2.5 text-center whitespace-nowrap"
-        style={{ minWidth: 110, backgroundColor: "#fafafa", borderLeft: "1px solid #e5e7eb", ...rowStyle, color: baseColor }}>
+        style={{ minWidth: 110, ...rowStyle, color: baseColor, background: `${colors.primary}08`, borderLeft: `2px solid ${colors.primary}15`, animation: anim(60), transformOrigin: "left center" }}>
         {fmt(compare)}
       </td>,
       <td key={`${key}-delta`}
         className="px-3 py-2.5 text-center whitespace-nowrap"
-        style={{ minWidth: 130, backgroundColor: "#fafafa", borderRight: "1px solid #e5e7eb", ...rowStyle, color: deltaColor }}>
-        {delta === 0 ? "—" : (
-          <span className="flex flex-col items-center gap-0.5 leading-tight">
-            <span>{(delta > 0 ? "+" : "") + fmt(delta)}</span>
-            {pct !== null && (
-              <span className="text-[9px] opacity-70">{(pct > 0 ? "+" : "") + pct.toFixed(1) + "%"}</span>
-            )}
-          </span>
-        )}
+        style={{ minWidth: 110, ...rowStyle, color: deltaColor, background: `${colors.primary}12`, animation: anim(80), transformOrigin: "left center" }}>
+        {delta === 0 ? "—" : `${delta > 0 ? "+" : ""}${fmt(delta)}`}
+      </td>,
+      <td key={`${key}-pct`}
+        className="px-3 py-2.5 text-center whitespace-nowrap"
+        style={{ minWidth: 80, ...rowStyle, color: pctColor, background: `${colors.primary}1e`, animation: anim(100), transformOrigin: "left center" }}>
+        {pct !== null ? `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%` : "—"}
       </td>,
     ];
   };
@@ -256,16 +258,85 @@ const elimTotal = consTotal - contribSum;
       </tr>
 
 {isExpanded && hasChildren && node.children.map(child => (
-  <SheetRow key={child.AccountCode} node={child} depth={depth + 1}
+<SheetRow key={child.AccountCode} node={child} depth={depth + 1}
     expanded={expanded} onToggle={onToggle}
     pivot={pivot} uploadedPivot={uploadedPivot} elimPivot={elimPivot}
     contributionCompanies={contributionCompanies}
     topParent={topParent}
     elimExpanded={elimExpanded} elimHeaders={elimHeaders}
     compareMode={compareMode} cmpPivot={cmpPivot}
-    body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style} />
+    body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style}
+    colors={colors} cmpColsExiting={cmpColsExiting} cmpColsVisible={cmpColsVisible} />
 ))}
     </>
+  );
+}
+
+// ── Loading Spinner ───────────────────────────────────────────────────────────
+function useAnimatedNumber(target, duration = 700) {
+  const [display, setDisplay] = useState(0);
+  const startRef = useRef(null);
+  const fromRef = useRef(0);
+  const rafRef = useRef(null);
+  useEffect(() => {
+    cancelAnimationFrame(rafRef.current);
+    const from = fromRef.current;
+    const to = Number(target) || 0;
+    startRef.current = null;
+    const tick = (ts) => {
+      if (startRef.current === null) startRef.current = ts;
+      const t = Math.min(1, (ts - startRef.current) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(from + (to - from) * eased);
+      if (t < 1) rafRef.current = requestAnimationFrame(tick);
+      else fromRef.current = to;
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target]);
+  return display;
+}
+
+function SheetLoadingSpinner({ colors, metaReady, done = false }) {
+  const progress = useAnimatedNumber(done ? 100 : 60, 700);
+  return (
+    <div className="relative flex-1 min-h-0 flex items-center justify-center rounded-2xl"
+      style={{ background: "rgba(255,255,255,0.78)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
+      <div className="relative rounded-3xl bg-white border border-gray-100 p-10 flex flex-col items-center"
+        style={{ width: 380, boxShadow: "0 24px 80px -12px rgba(26,47,138,0.25), 0 8px 24px -8px rgba(0,0,0,0.08)" }}>
+        <div className="relative" style={{ width: 140, height: 140 }}>
+          <svg width="140" height="140" viewBox="0 0 140 140">
+            <circle cx="70" cy="70" r="60" fill="none" stroke="#f3f4f6" strokeWidth="10" />
+            <circle cx="70" cy="70" r="60" fill="none"
+              stroke="url(#sheetProgGrad)"
+              strokeWidth="10"
+              strokeLinecap="round"
+              strokeDasharray={2 * Math.PI * 60}
+              strokeDashoffset={2 * Math.PI * 60 * (1 - progress / 100)}
+              style={{ transform: "rotate(-90deg)", transformOrigin: "70px 70px" }}
+            />
+            <defs>
+              <linearGradient id="sheetProgGrad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor={colors?.primary ?? "#1a2f8a"} />
+                <stop offset="100%" stopColor="#CF305D" />
+              </linearGradient>
+            </defs>
+          </svg>
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <span className="text-3xl font-black tabular-nums" style={{ color: colors?.primary }}>
+              {Math.round(progress)}<span className="text-base text-gray-300">%</span>
+            </span>
+          </div>
+        </div>
+        <p className="text-sm font-black text-gray-800 mt-6 tracking-wide">
+          {!metaReady ? "Loading metadata…" : "Building consolidation sheet…"}
+        </p>
+        <p className="text-[10px] text-gray-300 mt-1.5 uppercase tracking-widest font-bold">
+          Consolidated · Sheet
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -300,6 +371,11 @@ const header2Style = useTypo("header2");
   const [metaReady,    setMetaReady]    = useState(false);
 const [expanded,     setExpanded]     = useState(new Set());
 const [elimExpanded, setElimExpanded] = useState(false);
+  const [typeFilter, setTypeFilter] = useState("");
+const [selectedCompanies, setSelectedCompanies] = useState([]);
+  const [colOrder, setColOrder] = useState([]);
+  const [draggingCol, setDraggingCol] = useState(null);
+  const [dragOverCol, setDragOverCol] = useState(null);
 
 const [compareMode, setCompareMode] = useState(false);
 const [cmpYear,      setCmpYear]      = useState("");
@@ -307,10 +383,31 @@ const [cmpMonth,     setCmpMonth]     = useState("");
 const [cmpSource,    setCmpSource]    = useState("");
 const [cmpStructure, setCmpStructure] = useState("");
 const [cmpRawData,   setCmpRawData]   = useState([]);
-  const [cmpLoading,   setCmpLoading]   = useState(false);
+const [cmpLoading,   setCmpLoading]   = useState(false);
+const [cmpVisible,   setCmpVisible]   = useState(false);
+  const [cmpExiting,   setCmpExiting]   = useState(false);
+  const [cmpColsExiting, setCmpColsExiting] = useState(false);
+  const [cmpColsVisible, setCmpColsVisible] = useState(false);
   const [viewsModalOpen, setViewsModalOpen] = useState(false);
 
-  const autoPeriodDone = useRef(false);
+const autoPeriodDone = useRef(false);
+
+useEffect(() => {
+    if (compareMode) {
+      setCmpVisible(true); setCmpExiting(false);
+      setCmpColsVisible(true); setCmpColsExiting(false);
+    } else if (cmpVisible) {
+      setCmpExiting(true);
+      setCmpColsExiting(true);
+      const t = setTimeout(() => {
+        setCmpVisible(false); setCmpExiting(false);
+        setCmpColsVisible(false); setCmpColsExiting(false);
+      }, 350);
+      return () => clearTimeout(t);
+    }
+  }, [compareMode]);
+  const [breakers, setBreakers] = useState({});
+  const [breakerSortOrder, setBreakerSortOrder] = useState(new Map());
 
   useEffect(() => {
     if (!token) return;
@@ -445,10 +542,7 @@ const [cmpRawData,   setCmpRawData]   = useState([]);
   useEffect(() => {
 if (!metaReady || !year || !month || !source || !structure || !topParent) return;
     /* eslint-disable react-hooks/set-state-in-effect */
-    setLoading(true);
-    setRawData([]);
-    setUploadedData([]);
-    setJournalData([]);
+setLoading(true);
     setExpanded(new Set());
     /* eslint-enable react-hooks/set-state-in-effect */
 const consFilter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and GroupShortName eq '${topParent}'`;
@@ -465,8 +559,11 @@ const consFilter = `Year eq ${year} and Month eq ${month} and Source eq '${sourc
         headers: { Authorization: `Bearer ${token}` }
       }).then(r => r.json()).then(d => d.value || []),
 ])
-      .then(([cons, uploaded, journals]) => {
-        // ═══════════════ DIAGNOSTIC LOGS — remove after debugging ═══════════════
+.then(([cons, uploaded, journals]) => {
+        setRawData([]);
+        setUploadedData([]);
+        setJournalData([]);
+        // ═══════════════ DIAGNOSTIC LOGS
         console.group(`🔍 Fetched for perspective = ${topParent}`);
         console.log("Row count:", cons.length);
         if (cons.length > 0) {
@@ -503,6 +600,36 @@ const consFilter = `Year eq ${year} and Month eq ${month} and Source eq '${sourc
       })
       .catch(() => setLoading(false));
   }, [token, metaReady, year, month, source, structure, topParent]);
+
+useEffect(() => {
+    if (!rawData.length) return;
+    const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
+    const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
+    const sbHeaders = { apikey: SUPABASE_APIKEY, Authorization: `Bearer ${SUPABASE_APIKEY}` };
+
+    const isPGC           = rawData.some(n => { const c = String(n.AccountCode ?? ""); return /[a-zA-Z]/.test(c) && c.endsWith(".S"); });
+    const isSpanishIfrsEs = !isPGC && rawData.some(n => /\.PL$/i.test(String(n.AccountCode ?? "").trim()));
+    const isSpanishIFRS   = !isPGC && !isSpanishIfrsEs && rawData.some(n => /^[A-Z]\.\d/.test(String(n.AccountCode ?? "")));
+    const isDanish        = !isPGC && !isSpanishIFRS && !isSpanishIfrsEs && rawData.some(n => /^\d{5,6}$/.test(String(n.AccountCode ?? "")));
+
+    if (!isPGC && !isSpanishIFRS && !isSpanishIfrsEs && !isDanish) return;
+
+    const rowsTable = isPGC ? "pgc_pl_rows"
+      : isSpanishIfrsEs ? "contributive_pl_rows"
+      : isDanish ? "danish_ifrs_pl_rows"
+      : null;
+
+    if (!rowsTable) return;
+
+    fetch(`${SUPABASE_URL}/${rowsTable}?select=*&order=sort_order.asc`, { headers: sbHeaders })
+      .then(r => r.json())
+      .then(rowsArr => {
+        if (!Array.isArray(rowsArr)) return;
+        const breakerOrder = new Map();
+        rowsArr.forEach((r, idx) => breakerOrder.set(r.account_code, idx));
+        setBreakerSortOrder(breakerOrder);
+      }).catch(e => console.error("BREAKERS FETCH ERROR:", e));
+  }, [rawData]);
 
   // ── Fetch compare data ────────────────────────────────────────────────────
 useEffect(() => {
@@ -645,16 +772,49 @@ const cmpPivot = useMemo(() => {
   }, [uploadedData]);
 
   // Account tree
-  const accountMap = new Map();
-  rawData.forEach(r => {
-    if (!accountMap.has(r.AccountCode)) {
-      accountMap.set(r.AccountCode, {
-        AccountCode: r.AccountCode, AccountName: r.AccountName,
-        AccountType: r.AccountType, SumAccountCode: r.SumAccountCode,
-      });
+const TYPE_ORDER = { "P/L": 0, "DIS": 0, "B/S": 1, "C/F": 2, "CFS": 2 };
+const { accountMap, tree } = useMemo(() => {
+    const accountMap = new Map();
+    rawData.forEach(r => {
+      if (!accountMap.has(r.AccountCode)) {
+        accountMap.set(r.AccountCode, {
+          AccountCode: r.AccountCode, AccountName: r.AccountName,
+          AccountType: r.AccountType, SumAccountCode: r.SumAccountCode,
+        });
+      }
+    });
+if (!accountMap.size) return { accountMap, tree: [] };
+
+    const typeFilteredMap = typeFilter
+      ? new Map([...accountMap.entries()].filter(([, v]) => {
+          const t = v.AccountType ?? "";
+          if (typeFilter === "P/L") return t === "P/L" || t === "DIS";
+          if (typeFilter === "B/S") return t === "B/S";
+          if (typeFilter === "C/F") return t === "C/F" || t === "CFS";
+          return true;
+        }))
+      : accountMap;
+
+    if (breakerSortOrder.size > 0) {
+      const tree = [...typeFilteredMap.values()]
+        .sort((a, b) => {
+          const sA = breakerSortOrder.get(a.AccountCode) ?? 9999;
+          const sB = breakerSortOrder.get(b.AccountCode) ?? 9999;
+          if (sA !== sB) return sA - sB;
+          const tA = TYPE_ORDER[a.AccountType ?? ""] ?? 99;
+          const tB = TYPE_ORDER[b.AccountType ?? ""] ?? 99;
+          return tA - tB;
+        })
+        .map(n => ({ ...n, children: [] }));
+      return { accountMap, tree };
     }
-  });
-  const tree = buildTree([...accountMap.values()]);
+    const tree = buildTree([...typeFilteredMap.values()]).sort((a, b) => {
+      const tA = TYPE_ORDER[a.AccountType ?? ""] ?? 99;
+      const tB = TYPE_ORDER[b.AccountType ?? ""] ?? 99;
+      return tA - tB;
+    });
+    return { accountMap, tree };
+  }, [rawData, breakerSortOrder, typeFilter]);
 
   const toggleExpand = code => setExpanded(prev => {
     const next = new Set(prev); next.has(code) ? next.delete(code) : next.add(code); return next;
@@ -664,9 +824,18 @@ const cmpPivot = useMemo(() => {
   const availableMonths = [...new Set(periods.map(p => p.Month))].sort((a,b) => a-b).map(m => ({ value: String(m), label: MONTHS.find(x => x.value === m)?.label ?? String(m) }));
 
   const getLegal = co => companies.find(c => c.CompanyShortName === co)?.CompanyLegalName || co;
+const baseEffectiveCompanies = selectedCompanies.length === 0
+    ? contributionCompanies
+    : contributionCompanies.filter(c => selectedCompanies.includes(c));
 
+  const effectiveCompanies = useMemo(() => {
+    if (colOrder.length === 0) return baseEffectiveCompanies;
+    const ordered = colOrder.filter(c => baseEffectiveCompanies.includes(c));
+    const rest = baseEffectiveCompanies.filter(c => !ordered.includes(c));
+    return [...ordered, ...rest];
+  }, [baseEffectiveCompanies, colOrder]);
 return (
-    <div className="flex flex-col gap-4 h-full min-h-0">
+   <div className="flex flex-col gap-4 h-full min-h-0" style={{ overflow: "visible" }}>
 <style>{`
         /* Outer wrapper clips the vertical scrollbar by being narrower than the inner scroller */
         .consolidation-scroll-outer {
@@ -694,13 +863,29 @@ return (
         .consolidation-scroll::-webkit-scrollbar-thumb:hover {
           background: #64748b;
         }
-        .consolidation-scroll::-webkit-scrollbar-track {
+.consolidation-scroll::-webkit-scrollbar-track {
           background: #f1f5f9;
+        }
+@keyframes cmpColIn  { from { opacity:0; transform:scaleX(0.6); } to { opacity:1; transform:scaleX(1); } }
+        @keyframes cmpColOut { from { opacity:1; transform:scaleX(1); } to { opacity:0; transform:scaleX(0.6); } }
+          0%   { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; margin-bottom: 0; } 
+          100% { opacity: 1; max-height: 80px; padding-top: 12px; padding-bottom: 12px; } 
+        }
+        @keyframes cmpBarOut { 
+          0%   { opacity: 1; max-height: 80px; padding-top: 12px; padding-bottom: 12px; } 
+          100% { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; margin-bottom: 0; } 
         }
       `}</style>
 <PageHeader
         kicker="Consolidated"
         title="Sheet"
+tabs={[
+          { id: "",    label: "All",   icon: Filter    },
+          { id: "P/L", label: "P&L",  icon: TrendingUp },
+          { id: "B/S", label: "B.Sh.", icon: BarChart2 },
+        ]}
+        activeTab={typeFilter}
+        onTabChange={setTypeFilter}
         filters={[
           ...(sources.length > 0
             ? [{ label: "Source", value: source, onChange: setSource,
@@ -716,8 +901,20 @@ return (
             ? [{ label: "Structure", value: structure, onChange: setStructure,
                 options: structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s })) }]
             : []),
-          ...(holdingOptions.length > 1
-            ? [{ label: "Perspective", value: topParent, onChange: setPerspectiveCompany, options: holdingOptions }]
+...(holdingOptions.length > 1
+            ? [{ label: "Perspective", value: topParent, onChange: (v) => { setPerspectiveCompany(v); setSelectedCompanies([]); setColOrder([]); }, options: holdingOptions }]
+            : []),
+          ...(contributionCompanies.length > 1
+            ? [{
+                label: "Companies",
+                multiselect: true,
+                values: selectedCompanies.length === 0 ? null : selectedCompanies,
+                onChange: (v) => setSelectedCompanies(v ?? []),
+                options: contributionCompanies.map(co => ({
+                  value: co,
+                  label: companies.find(c => c.CompanyShortName === co)?.CompanyLegalName || co,
+                })),
+              }]
             : []),
         ]}
         compareToggle={{
@@ -731,12 +928,7 @@ return (
           },
         }}
 fabActions={[
-          {
-            id: "views",
-            icon: Library,
-            label: "Views",
-            onClick: () => setViewsModalOpen(true),
-          },
+
           {
             id: "export",
             icon: Download,
@@ -763,31 +955,33 @@ fabActions={[
 
 
 
-      {compareMode && (
-        <div className="flex items-center gap-2 flex-wrap px-4 py-2.5 bg-white rounded-2xl border border-gray-100 shadow-sm flex-shrink-0">
-          <span className="text-[9px] font-black uppercase tracking-widest text-[#1a2f8a]/50 mr-1">Compare with</span>
-          <FilterPill label="Source"    value={cmpSource}    onChange={setCmpSource}
-            options={sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s }))}
-            filterStyle={filterStyle} colors={colors} />
-          <FilterPill label="Year"      value={cmpYear}      onChange={setCmpYear}
-            options={availableYears} filterStyle={filterStyle} colors={colors} />
-          <FilterPill label="Month"     value={cmpMonth}     onChange={setCmpMonth}
-            options={availableMonths} filterStyle={filterStyle} colors={colors} />
-          <FilterPill label="Structure" value={cmpStructure} onChange={setCmpStructure}
-            options={structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s }))}
-            filterStyle={filterStyle} colors={colors} />
-          {cmpLoading && <Loader2 size={11} className="animate-spin text-[#1a2f8a] ml-2" />}
+{cmpVisible && (
+        <div className="flex items-center gap-2 flex-wrap px-5 py-3 bg-white rounded-2xl border border-gray-100 shadow-sm flex-shrink-0"
+         style={{ overflow: "hidden", animation: cmpExiting ? "cmpBarOut 350ms ease both" : "cmpBarIn 400ms ease both" }}>
+          <div className="flex items-center gap-2 mr-2">
+            <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+              style={{ background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)", boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)" }}>
+              <span className="text-white text-[11px] font-black">B</span>
+            </div>
+            <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Compare with</span>
+          </div>
+<HeaderFilterPill label="Source"    value={cmpSource}    onChange={setCmpSource}
+            options={sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s }))} />
+          <HeaderFilterPill label="Year"      value={cmpYear}      onChange={setCmpYear}
+            options={availableYears} />
+          <HeaderFilterPill label="Month"     value={cmpMonth}     onChange={setCmpMonth}
+            options={availableMonths} />
+          <HeaderFilterPill label="Structure" value={cmpStructure} onChange={setCmpStructure}
+            options={structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s }))} />
+          {cmpLoading && <div className="w-4 h-4 border-2 border-[#1a2f8a] border-t-transparent rounded-full animate-spin ml-2" />}
         </div>
       )}
 
       {/* ── Accounts view ── */}
-      <div className="flex-1 min-h-0 flex flex-col">
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
-            {loading ? (
-              <div className="flex items-center justify-center flex-1 gap-3">
-                <Loader2 size={22} className="animate-spin text-[#1a2f8a]" />
-                <p className="text-xs text-gray-400">Building consolidation sheet…</p>
-              </div>
+<div className="flex-1 min-h-0 flex flex-col">
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 flex flex-col" style={{ overflow: "hidden" }}>
+{!metaReady || loading ? (
+              <SheetLoadingSpinner colors={colors} metaReady={metaReady} done={false} />
             ) : rawData.length === 0 ? (
               <div className="flex items-center justify-center flex-1 text-xs text-gray-300 font-black uppercase tracking-widest">
                 No data for selected filters
@@ -797,165 +991,209 @@ fabActions={[
               <div className="consolidation-scroll" style={{ minWidth: 0 }}>
                 <table className="text-xs border-collapse" style={{ borderSpacing: 0, width: "max-content", minWidth: "100%", tableLayout: "auto" }}>
 <thead className="sticky top-0 z-30">
-                    {/* ── Row 1: overarching group headers ── */}
-                    <tr style={{ backgroundColor: colors.primary }}>
-                      <th className="sticky left-0 z-40 border-r border-white/20 text-left px-4 py-3" style={{ minWidth: 220, width: 220, backgroundColor: colors.primary }} rowSpan={2}>
-                        <div className="flex items-center justify-between gap-2">
-                         <span style={header2Style}>ACCOUNT</span>
-                          <button
-                            onClick={() => {
-                              if (expanded.size > 0) { setExpanded(new Set()); }
-                              else { setExpanded(new Set([...accountMap.keys()])); }
-                            }}
-                            className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white/70 hover:text-white transition-all font-bold normal-case tracking-normal flex-shrink-0">
-                            {expanded.size > 0 ? <Minimize2 size={11}/> : <Maximize2 size={11}/>}
-                          </button>
-                        </div>
-                      </th>
-<th colSpan={(2 + (elimExpanded ? elimHeaders.length : 0)) * (compareMode ? 3 : 1)} className="px-4 py-2 text-center border-l border-white/20"
-  style={{
-    backgroundColor: colors.primary,
-    boxShadow: "inset 0 0 0 9999px rgba(0,0,0,0.1)",
-  }}>
-  <span style={{ ...header2Style, textTransform: "uppercase", position: "relative" }}>
-    Consolidation · {getLegal(topParent)}
-  </span>
-</th>
-<th colSpan={(contributionCompanies.length + 1) * (compareMode ? 3 : 1)} className="px-4 py-2 text-center border-l border-white/20"
-  style={{
-    backgroundColor: colors.primary,
-    boxShadow: "inset 0 0 0 9999px rgba(0,0,0,0.1)",
-  }}>
-  <span style={{ ...header2Style, textTransform: "uppercase", position: "relative" }}>Contribution</span>
-</th>
-                    </tr>
-{/* ── Row 2: individual column headers ── */}
-<tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-<th className="px-4 py-2.5 text-center border-l border-white/20" style={{ minWidth: 100, backgroundColor: colors.primary }}>
-    <div className="flex flex-col items-center gap-0.5">
-      <span style={underscore1Style}>{topParent || "Total"}</span>
-      <span style={underscore2Style}>{isRootView ? "Consolidated" : "Subgroup"}</span>
-    </div>
-  </th>
-  {compareMode && (
-    <>
-      <th className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
-        <div className="flex flex-col items-center gap-0.5">
-          <span style={{ ...underscore1Style, color: "#Ffffff" }}>Compare</span>
-          <span style={underscore2Style}>&nbsp;</span>
+  <tr style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)" }}>
+
+    {/* Account sticky left */}
+    <th className="sticky left-0 z-40 text-left px-6 border-r border-gray-100"
+      style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", height: 64, minWidth: 220, width: 220 }}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-baseline gap-2.5">
+          <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>Account</span>
+          <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>Sheet</span>
         </div>
-      </th>
-      <th className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "1px solid rgba(255,255,255,0.15)" }}>
-        <div className="flex flex-col items-center gap-0.5">
-          <span style={{ ...underscore1Style, color: "#Ffffff" }}>Δ</span>
-          <span style={underscore2Style}>&nbsp;</span>
-        </div>
-      </th>
-    </>
-  )}
-<th className="px-4 py-2.5 text-center border-l border-white/20 cursor-pointer hover:bg-white/10 transition-colors select-none"
-    style={{ minWidth: 100, backgroundColor: colors.primary }}
-    onClick={() => setElimExpanded(e => !e)}>
-    <div className="flex flex-col items-center gap-0.5">
-      <span style={underscore1Style}>
-        Eliminations {elimExpanded ? "▾" : "▸"}
-      </span>
-      <span style={underscore2Style}>&nbsp;</span>
-    </div>
-  </th>
-  {compareMode && (
-    <>
-      <th className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
-        <div className="flex flex-col items-center gap-0.5">
-          <span style={{ ...underscore1Style, color: "#Ffffff" }}>Compare</span>
-          <span style={underscore2Style}>&nbsp;</span>
-        </div>
-      </th>
-      <th className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "1px solid rgba(255,255,255,0.15)" }}>
-        <div className="flex flex-col items-center gap-0.5">
-          <span style={{ ...underscore1Style, color: "#Ffffff" }}>Δ</span>
-          <span style={underscore2Style}>&nbsp;</span>
-        </div>
-      </th>
-    </>
-  )}
-{elimExpanded && elimHeaders.map((h, idx) => (
-    <th key={`elim-head-${h}`}
-      className="px-3 py-2.5 text-center border-l border-white/10"
-      style={{
-        minWidth: 140,
-        backgroundColor: colors.primary,
-        boxShadow: `inset 0 0 0 9999px rgba(0,0,0,${0.03 * (idx + 1)})`,
-      }}>
-      <div className="flex flex-col items-center gap-0.5">
-        <span style={{ ...underscore1Style, position: "relative", textTransform: "none" }}
-          title={h}>
-          {h}
-        </span>
-        <span style={underscore2Style}>&nbsp;</span>
+<button
+          onClick={() => expanded.size > 0 ? setExpanded(new Set()) : setExpanded(new Set([...accountMap.keys()]))}
+          className="flex items-center justify-center w-8 h-8 rounded-lg transition-all relative overflow-hidden"
+          style={{ color: colors.primary, background: `${colors.primary}10` }}>
+          <span className="absolute inset-0 flex flex-col items-center justify-center gap-0"
+            style={{
+              opacity: expanded.size > 0 ? 0 : 1,
+              transform: expanded.size > 0 ? "rotate(90deg) scale(0.5)" : "rotate(0deg) scale(1)",
+              transition: "all 320ms cubic-bezier(0.34,1.56,0.64,1)",
+            }}>
+            <ChevronDown size={10} strokeWidth={3} style={{ transform: "rotate(180deg)", marginBottom: -2 }} />
+            <ChevronDown size={10} strokeWidth={3} style={{ marginTop: -2 }} />
+          </span>
+          <span className="absolute inset-0 flex items-center justify-center"
+            style={{
+              opacity: expanded.size > 0 ? 1 : 0,
+              transform: expanded.size > 0 ? "rotate(0deg) scale(1)" : "rotate(-90deg) scale(0.5)",
+              transition: "all 320ms cubic-bezier(0.34,1.56,0.64,1)",
+            }}>
+            <X size={13} strokeWidth={2.5} />
+          </span>
+        </button>
       </div>
     </th>
-  ))}
-<th className="px-4 py-2.5 text-center border-l border-white/20" style={{ minWidth: 110, backgroundColor: colors.primary }}>
-    <div className="flex flex-col items-center gap-0.5">
-      <span style={underscore1Style}>Contribution</span>
-      <span style={underscore2Style}>Sum</span>
-    </div>
-  </th>
-  {compareMode && (
-    <>
-      <th className="px-3 py-2.5 text-center" style={{ minWidth: 110, backgroundColor: "#0c1d55", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
-        <div className="flex flex-col items-center gap-0.5">
-          <span style={{ ...underscore1Style, color: "#Ffffff" }}>Compare</span>
-          <span style={underscore2Style}>&nbsp;</span>
-        </div>
-      </th>
-      <th className="px-3 py-2.5 text-center" style={{ minWidth: 130, backgroundColor: "#0c1d55", borderRight: "1px solid rgba(255,255,255,0.15)" }}>
-        <div className="flex flex-col items-center gap-0.5">
-          <span style={{ ...underscore1Style, color: "#Ffffff" }}>Δ</span>
-          <span style={underscore2Style}>&nbsp;</span>
-        </div>
-      </th>
-    </>
-  )}
-{contributionCompanies.flatMap(c => [
-    <th key={c} className="px-4 py-2.5 text-center border-l border-white/20" style={{ minWidth: 100, backgroundColor: colors.primary }}>
-      <div className="flex flex-col items-center gap-0.5">
-        <span className="block overflow-hidden text-ellipsis whitespace-nowrap max-w-full" style={underscore1Style} title={getLegal(c)}>
-          {getLegal(c)}
-        </span>
-        <span style={underscore2Style}>{displayCurrency}</span>
-      </div>
-    </th>,
-    ...(compareMode ? [
-<th key={`${c}-cmp`} className="px-3 py-2.5 text-center" style={{ minWidth: 110,backgroundColor: "#0a1547", borderLeft: "1px solid rgba(255,255,255,0.15)" }}>
-        <div className="flex flex-col items-center gap-0.5">
-          <span style={{ ...underscore1Style, opacity: 0.85, position: "relative" }}>Compare</span>
-          <span style={underscore2Style}>&nbsp;</span>
-        </div>
-      </th>,
-      <th key={`${c}-delta`} className="px-3 py-2.5 text-center" style={{ minWidth: 130,backgroundColor: "#0a1547", borderRight: "1px solid rgba(255,255,255,0.15)" }}>
-        <div className="flex flex-col items-center gap-0.5">
-          <span style={{ ...underscore1Style, opacity: 0.85, position: "relative" }}>Δ</span>
-          <span style={underscore2Style}>&nbsp;</span>
-        </div>
-      </th>,
-    ] : []),
-  ])}
-</tr>
 
-                  </thead>
-                  <tbody>
-{tree.map(node => (
-  <SheetRow key={node.AccountCode} node={node} depth={0}
-    expanded={expanded} onToggle={toggleExpand}
-    pivot={pivot} uploadedPivot={uploadedPivot} elimPivot={elimPivot}
-    contributionCompanies={contributionCompanies}
-    topParent={topParent}
-    elimExpanded={elimExpanded} elimHeaders={elimHeaders}
-    compareMode={compareMode} cmpPivot={cmpPivot}
-    body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style} />
-))}
+    {/* Consolidated total */}
+    <th className="text-center px-4" style={{ background: "rgba(255,255,255,0.95)", borderLeft: "2px solid #f0f0f0", minWidth: 130 }}>
+      <div className="flex flex-col items-center gap-0.5 py-4">
+        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 13, letterSpacing: "-0.01em" }}>{getLegal(topParent)}</span>
+        <span className="text-[11px] font-bold uppercase tracking-widest" style={{ color: `${colors.primary}60` }}>{isRootView ? "Consolidated" : "Subgroup"}</span>
+      </div>
+    </th>
+{cmpColsVisible && <>
+      <th className="text-center px-3" style={{ background: `${colors.primary}08`, borderLeft: `2px solid ${colors.primary}15`, minWidth: 110, animation: `${cmpColsExiting ? "cmpColOut" : "cmpColIn"} 320ms cubic-bezier(0.34,1.56,0.64,1) 60ms both`, transformOrigin: "left center" }}>
+        <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>CMP</span>
+      </th>
+      <th className="text-center px-3" style={{ background: `${colors.primary}12`, minWidth: 110, animation: `${cmpColsExiting ? "cmpColOut" : "cmpColIn"} 320ms cubic-bezier(0.34,1.56,0.64,1) 80ms both`, transformOrigin: "left center" }}>
+        <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>Δ</span>
+      </th>
+      <th className="text-center px-3" style={{ background: `${colors.primary}1e`, minWidth: 80, animation: `${cmpColsExiting ? "cmpColOut" : "cmpColIn"} 320ms cubic-bezier(0.34,1.56,0.64,1) 100ms both`, transformOrigin: "left center" }}>
+        <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>Δ%</span>
+      </th>
+    </>}
+
+    {/* Eliminations */}
+    <th className="text-center px-4 cursor-pointer select-none"
+      style={{ background: "rgba(255,255,255,0.95)", borderLeft: "2px solid #f0f0f0", minWidth: 110 }}
+      onClick={() => setElimExpanded(e => !e)}>
+      <div className="flex flex-col items-center gap-0.5 py-4">
+        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 13, letterSpacing: "-0.01em" }}>
+          Elim. {elimExpanded ? "▾" : "▸"}
+        </span>
+        <span className="text-[11px] font-bold uppercase tracking-widest" style={{ color: `${colors.primary}60` }}>Interco</span>
+      </div>
+    </th>
+{compareMode && <>
+      <th className="text-center px-3" style={{ background: `${colors.primary}08`, borderLeft: `2px solid ${colors.primary}15`, minWidth: 110 }}>
+        <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>CMP</span>
+      </th>
+      <th className="text-center px-3" style={{ background: `${colors.primary}12`, minWidth: 110 }}>
+        <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>Δ</span>
+      </th>
+      <th className="text-center px-3" style={{ background: `${colors.primary}1e`, minWidth: 80 }}>
+        <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>Δ%</span>
+      </th>
+    </>}
+    {elimExpanded && elimHeaders.map(h => (
+      <th key={`elim-head-${h}`} className="text-center px-3" style={{ background: "#f8f9ff", borderLeft: "1px solid #e5e7eb", minWidth: 140 }}>
+        <div className="flex flex-col items-center gap-0.5 py-4">
+          <span className="font-black" style={{ color: colors.primary, fontSize: 11 }} title={h}>{h}</span>
+        </div>
+      </th>
+    ))}
+
+    {/* Contribution sum */}
+    <th className="text-center px-4" style={{ background: "rgba(255,255,255,0.95)", borderLeft: "2px solid #f0f0f0", minWidth: 110 }}>
+      <div className="flex flex-col items-center gap-0.5 py-4">
+        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 13, letterSpacing: "-0.01em" }}>Contribution</span>
+        <span className="text-[11px] font-bold uppercase tracking-widest" style={{ color: `${colors.primary}60` }}>Sum</span>
+      </div>
+    </th>
+{compareMode && <>
+      <th className="text-center px-3" style={{ background: `${colors.primary}08`, borderLeft: `2px solid ${colors.primary}15`, minWidth: 110 }}>
+        <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>CMP</span>
+      </th>
+      <th className="text-center px-3" style={{ background: `${colors.primary}12`, minWidth: 110 }}>
+        <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>Δ</span>
+      </th>
+      <th className="text-center px-3" style={{ background: `${colors.primary}1e`, minWidth: 80 }}>
+        <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>Δ%</span>
+      </th>
+    </>}
+
+    {/* Per-company columns */}
+{effectiveCompanies.map(c => {
+      const isDragging = draggingCol === c;
+      const isDragOver = dragOverCol === c && draggingCol !== c;
+      return (
+        <th key={c}
+          draggable
+          onDragStart={() => setDraggingCol(c)}
+          onDragOver={e => { e.preventDefault(); setDragOverCol(c); }}
+          onDragLeave={() => { if (dragOverCol === c) setDragOverCol(null); }}
+          onDrop={e => {
+            e.preventDefault();
+            if (!draggingCol || draggingCol === c) { setDraggingCol(null); setDragOverCol(null); return; }
+            const cols = colOrder.length > 0 ? [...colOrder] : [...effectiveCompanies];
+            const from = cols.indexOf(draggingCol);
+            const to = cols.indexOf(c);
+            if (from === -1 || to === -1) { setDraggingCol(null); setDragOverCol(null); return; }
+            const next = [...cols];
+            next.splice(from, 1);
+            next.splice(to, 0, draggingCol);
+            setColOrder(next);
+            setDraggingCol(null);
+            setDragOverCol(null);
+          }}
+          onDragEnd={() => { setDraggingCol(null); setDragOverCol(null); }}
+          className="text-center px-4 select-none cursor-grab"
+          style={{
+            background: isDragOver ? `${colors.primary}15` : "rgba(255,255,255,0.95)",
+            borderLeft: "1px solid #f0f0f0",
+            minWidth: 120,
+            opacity: isDragging ? 0.4 : 1,
+            outline: isDragOver ? `2px solid ${colors.primary}` : "none",
+            transition: "background 150ms ease, outline 150ms ease",
+          }}>
+          <div className="flex flex-col items-center gap-0.5 py-4">
+            <span className="font-black tracking-tight truncate max-w-[140px]" style={{ color: colors.primary, fontSize: 13, letterSpacing: "-0.01em" }} title={getLegal(c)}>{getLegal(c)}</span>
+            <span className="text-[11px] font-bold uppercase tracking-widest" style={{ color: `${colors.primary}60` }}>{displayCurrency}</span>
+          </div>
+        </th>
+      );
+    })}
+{cmpColsVisible && effectiveCompanies.map(c => (
+      <React.Fragment key={`${c}-cmp-headers`}>
+        <th className="text-center px-3" style={{ background: `${colors.primary}08`, borderLeft: `2px solid ${colors.primary}15`, minWidth: 110, animation: `${cmpColsExiting ? "cmpColOut" : "cmpColIn"} 320ms cubic-bezier(0.34,1.56,0.64,1) 60ms both`, transformOrigin: "left center" }}>
+          <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>CMP</span>
+        </th>
+        <th className="text-center px-3" style={{ background: `${colors.primary}12`, minWidth: 110, animation: `${cmpColsExiting ? "cmpColOut" : "cmpColIn"} 320ms cubic-bezier(0.34,1.56,0.64,1) 80ms both`, transformOrigin: "left center" }}>
+          <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>Δ</span>
+        </th>
+        <th className="text-center px-3" style={{ background: `${colors.primary}1e`, minWidth: 80, animation: `${cmpColsExiting ? "cmpColOut" : "cmpColIn"} 320ms cubic-bezier(0.34,1.56,0.64,1) 100ms both`, transformOrigin: "left center" }}>
+          <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>Δ%</span>
+        </th>
+      </React.Fragment>
+    ))}
+  </tr>
+</thead>
+<tbody>
+{tree.map((node, i) => {
+  const type = node.AccountType ?? "";
+  const prevType = i > 0 ? (tree[i-1].AccountType ?? "") : null;
+  const typeChanged = type !== prevType;
+  const TYPE_LABELS = {
+    "P/L": { label: "Profit & Loss",          color: colors.primary },
+    "DIS": { label: "Distribution of Result", color: colors.primary },
+    "B/S": { label: "Balance Sheet",          color: "#CF305D"      },
+    "C/F": { label: "Cash Flow",              color: "#374151"      },
+    "CFS": { label: "Cash Flow",              color: "#374151"      },
+  };
+  const breaker = typeChanged && TYPE_LABELS[type] ? TYPE_LABELS[type] : null;
+const totalCols = 1 // account col
+    + 1 + (compareMode ? 3 : 0) // consolidated
+    + 1 + (compareMode ? 3 : 0) // eliminations
+    + (elimExpanded ? elimHeaders.length : 0) // elim sub-cols
+    + 1 + (compareMode ? 3 : 0) // contribution sum
+    + effectiveCompanies.length * (compareMode ? 4 : 1); // per-company
+  return (
+    <React.Fragment key={node.AccountCode}>
+      {breaker && (
+        <tr>
+          <td className="sticky left-0 z-10 px-5 py-1.5"
+            style={{ backgroundColor: breaker.color }}>
+            <span className="text-[9px] font-black uppercase tracking-[0.18em]" style={{ color: "#fff", opacity: 0.92 }}>
+              {breaker.label}
+            </span>
+          </td>
+          <td colSpan={totalCols - 1} style={{ backgroundColor: breaker.color, minWidth: 0 }} />
+        </tr>
+      )}
+<SheetRow node={node} depth={0}
+        expanded={expanded} onToggle={toggleExpand}
+        pivot={pivot} uploadedPivot={uploadedPivot} elimPivot={elimPivot}
+        contributionCompanies={effectiveCompanies}
+        topParent={topParent}
+        elimExpanded={elimExpanded} elimHeaders={elimHeaders}
+        compareMode={cmpColsVisible} cmpPivot={cmpPivot}
+        body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style}
+        colors={colors} cmpColsExiting={cmpColsExiting} cmpColsVisible={cmpColsVisible} />
+    </React.Fragment>
+  );
+})}
 </tbody>
                 </table>
               </div>
