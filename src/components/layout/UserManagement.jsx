@@ -1,32 +1,33 @@
-import { useState, useEffect, useMemo } from "react";
-import { Shield, Loader2, ChevronRight, ChevronLeft, Check, Minus, Building2, Network, Database, Library, Users as UsersIcon } from "lucide-react";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { Loader2, X, Check, Search, Shield, Building2, Network, Library, Database, LayoutGrid } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
-import { listPermissions, upsertPermission } from "../../lib/permissionsApi";
-import { listResourceAccess, upsertResourceAccess } from "../../lib/resourceAccessApi";
-import { listMappings, getActiveCompanyId } from "../../lib/mappingsApi";
+import { getActiveCompanyId, listMappings } from "../../lib/mappingsApi";
 import { listMappings as listReportMappings } from "../../lib/reportMappingsApi";
+import { listUserPermissions, upsertUserPermissions, listUserResourceAccess, upsertUserResourceAccess } from "../../lib/userPermissionsApi";
 
-const PERMISSION_TREE = [
+const BASE = "https://api.konsolidator.com/v2";
+
+const PAGE_TREE = [
   { key: "home", label: "Home" },
   { key: "individual", label: "Individual", children: [
-    { key: "individual-data", label: "Data" },
-    { key: "individual-kpis", label: "KPIs" },
-    { key: "individual-dimensiones", label: "Dimensions" },
-    { key: "individual-cashflow", label: "Cashflow" },
+    { key: "individual-data",         label: "Data" },
+    { key: "individual-kpis",         label: "KPIs" },
+    { key: "individual-dimensiones",  label: "Dimensions" },
+    { key: "individual-cashflow",     label: "Cash Flow" },
     { key: "individual-memory-notes", label: "Memory Notes" },
   ]},
   { key: "consolidated", label: "Consolidated", children: [
-    { key: "individual-contributive", label: "Contributive" },
-    { key: "consolidated-sheet", label: "Sheet" },
-    { key: "consolidated-kpis", label: "KPIs" },
-    { key: "consolidated-dimensiones", label: "Dimensions" },
-    { key: "consolidated-cashflow", label: "Cashflow" },
-    { key: "consolidated-notes", label: "Memory Notes" },
+    { key: "individual-contributive",    label: "Contributive" },
+    { key: "consolidated-sheet",         label: "Sheet" },
+    { key: "consolidated-kpis",          label: "KPIs" },
+    { key: "consolidated-dimensiones",   label: "Dimensions" },
+    { key: "consolidated-cashflow",      label: "Cash Flow" },
+    { key: "consolidated-notes",         label: "Memory Notes" },
   ]},
   { key: "controlling", label: "Controlling", children: [
-    { key: "controlling-forecast", label: "Forecasting" },
+    { key: "controlling-forecast",    label: "Forecasting" },
     { key: "controlling-adjustments", label: "Adjustments" },
-    { key: "controlling-kpis", label: "KPIs" },
+    { key: "controlling-kpis",        label: "KPIs" },
   ]},
   { key: "views", label: "Views", children: [
     { key: "mappings", label: "Mappings" },
@@ -36,816 +37,373 @@ const PERMISSION_TREE = [
   ]},
   { key: "settings", label: "Settings", children: [
     { key: "settings-personalization", label: "Personalization" },
-    { key: "settings-security", label: "Security" },
+    { key: "settings-security",        label: "Security" },
   ]},
 ];
 
-const PERMISSION_ROLES = [
-  { key: "admin", label: "Admin", color: "#1a2f8a", bgSoft: "#eef1fb", desc: "Full access" },
-  { key: "base",  label: "Base",  color: "#57aa78", bgSoft: "#dcfce7", desc: "Standard user" },
-  { key: "low",   label: "Low",   color: "#94a3b8", bgSoft: "#f1f5f9", desc: "Restricted" },
+// Collect all leaf page keys
+const ALL_PAGE_KEYS = [];
+const collectLeaves = (nodes) => nodes.forEach(n => {
+  if (n.children) collectLeaves(n.children);
+  else ALL_PAGE_KEYS.push(n.key);
+});
+collectLeaves(PAGE_TREE);
+
+const CATEGORY_BUTTONS = [
+  { key: "pages",      label: "Pages",      icon: Shield,    color: "#1a2f8a", kind: null },
+  { key: "companies",  label: "Companies",  icon: Building2, color: "#dc7533", kind: "company" },
+  { key: "structures", label: "Structures", icon: LayoutGrid,color: "#7c3aed", kind: "structure" },
+  { key: "sources",    label: "Sources",    icon: Network,   color: "#57aa78", kind: "source" },
+  { key: "dimensions", label: "Dims",       icon: Database,  color: "#0891b2", kind: "dimension" },
+  { key: "mappings",   label: "Mappings",   icon: Library,   color: "#CF305D", kind: "mapping" },
 ];
 
-const CARDS = [
-  { key: "pages",            label: "Pages",                    desc: "Sidebar pages by role",                  icon: Shield,    color: "#1a2f8a", bgSoft: "#eef1fb" },
-  { key: "companies",        label: "Companies & Structures",   desc: "Konsolidator companies & group structures", icon: Building2, color: "#dc7533", bgSoft: "#fef3c7" },
-  { key: "sources",          label: "Sources & Dimensions",     desc: "Data sources & dimension filters",       icon: Network,   color: "#57aa78", bgSoft: "#dcfce7" },
-  { key: "mappings",         label: "Mappings",                 desc: "Structure & report mappings",            icon: Library,   color: "#CF305D", bgSoft: "#fef1f5" },
-{ key: "users",            label: "Users",                    desc: "Members of your company",                icon: UsersIcon, color: "#7c3aed", bgSoft: "#ede9fe" },
-  { key: "data",             label: "Data",                     desc: "Coming soon",                            icon: Database,  color: "#0891b2", bgSoft: "#cffafe" },
-];
-
-// ─── Toggle ───────────────────────────────────────────────
-function Toggle({ checked, indeterminate, color, onClick }) {
+/* ─── Toggle ─── */
+function Toggle({ checked, onChange, color = "#1a2f8a", size = "md" }) {
+  const w = size === "sm" ? 32 : 36, h = size === "sm" ? 18 : 20, knob = size === "sm" ? 14 : 16;
   return (
-    <button onClick={onClick}
-      className="relative inline-flex items-center w-9 h-5 rounded-full transition-all flex-shrink-0"
-      style={{
-        background: checked || indeterminate ? color : "#e5e7eb",
-        boxShadow: checked || indeterminate ? `0 2px 8px -2px ${color}80` : "inset 0 1px 2px rgba(0,0,0,0.05)",
-      }}>
-      <span className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-md flex items-center justify-center transition-all"
-        style={{ left: checked || indeterminate ? "18px" : "2px" }}>
-        {indeterminate && <Minus size={8} strokeWidth={4} style={{ color }} />}
-        {checked && !indeterminate && <Check size={8} strokeWidth={4} style={{ color }} />}
-      </span>
+    <button onClick={onChange} style={{
+      width: w, height: h, borderRadius: h, flexShrink: 0, position: "relative", display: "inline-flex", alignItems: "center",
+      background: checked ? color : "#e5e7eb",
+      boxShadow: checked ? `0 2px 8px -2px ${color}80` : "inset 0 1px 2px rgba(0,0,0,0.06)",
+      transition: "background 200ms ease", border: "none", cursor: "pointer",
+    }}>
+      <span style={{
+        position: "absolute", width: knob, height: knob, borderRadius: "50%", background: "#fff",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+        left: checked ? w - knob - 2 : 2,
+        transition: "left 200ms cubic-bezier(0.34,1.56,0.64,1)",
+      }} />
     </button>
   );
 }
 
-// ─── Pages drill-in (existing matrix) ───────────────────────────────────
-function PagesView({ companyId, userId, onDirtyChange, saveSignal, discardSignal }) {
-  const [perms, setPerms] = useState(new Map());      // server snapshot
-  const [pending, setPending] = useState(new Map());  // local edits
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [collapsed, setCollapsed] = useState(new Set());
+/* ─── Category pill ─── */
+function CatButton({ cat, count, total, onClick }) {
+  const pct = total > 0 ? count / total : 0;
+  const noneOn = count === 0;
+  const allOn = total > 0 && count === total;
+  const iconColor = noneOn ? "#d1d5db" : allOn ? "#fff" : cat.color;
 
-useEffect(() => {
-    if (!companyId) return;
-    setLoading(true);
-    listPermissions({ companyId })
-      .then(rows => {
-        const map = new Map();
-        rows.forEach(r => map.set(`${r.role}:${r.page_key}`, r.allowed));
-        setPerms(map);
+  return (
+<div
+      title={`${cat.label}: ${count}/${total}`}
+      onClick={onClick}
+      style={{
+        width: 40, height: 40, flexShrink: 0, cursor: "pointer",
+        transition: "transform 150ms ease",
+        transform: "translateZ(0)", willChange: "transform",
+      }}
+      onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.08) translateZ(0)"; }}
+      onMouseLeave={e => { e.currentTarget.style.transform = "translateZ(0)"; }}>
 
-        // If no rows exist for a role, prepopulate `pending` with role defaults
-        // so the next save writes them all.
-        const allKeys = [];
-        const collect = (nodes) => nodes.forEach(n => {
-          allKeys.push(n.key);
-          if (n.children) collect(n.children);
-        });
-        collect(PERMISSION_TREE);
+      {/* Inner handles clip + visuals — no transform */}
+      <div style={{
+        position: "relative", width: "100%", height: "100%", borderRadius: 11,
+        border: `1.5px solid ${noneOn ? "#e9eaf0" : allOn ? `${cat.color}cc` : `${cat.color}35`}`,
+        background: "rgba(255,255,255,0.7)",
+        backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
+        overflow: "hidden",
+        boxShadow: noneOn ? "inset 0 1px 2px rgba(0,0,0,0.04)" : `inset 0 1px 0 rgba(255,255,255,0.6), 0 1px 4px ${cat.color}20`,
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}>
+        {/* Fill */}
+        <div style={{
+          position: "absolute", bottom: 0, left: 0, right: 0,
+          height: `${pct * 100}%`,
+          background: allOn
+            ? `linear-gradient(180deg, ${cat.color}cc 0%, ${cat.color} 100%)`
+            : `linear-gradient(180deg, ${cat.color}18 0%, ${cat.color}40 100%)`,
+          transition: "height 500ms cubic-bezier(0.34,1.56,0.64,1)",
+        }} />
+        {/* Shine */}
+        <div style={{
+          position: "absolute", top: 0, left: 0, right: 0, height: "50%",
+          background: "linear-gradient(180deg, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0) 100%)",
+          pointerEvents: "none", zIndex: 2,
+        }} />
+        {/* Icon */}
+        <cat.icon size={15} style={{ position: "relative", zIndex: 3, color: iconColor, transition: "color 300ms ease" }} />
+      </div>
+    </div>
+  );
+}
 
-        const newPending = new Map();
-        PERMISSION_ROLES.forEach(r => {
-          const hasAny = rows.some(row => row.role === r.key);
-          if (!hasAny) {
-            const def = r.key === "low" ? false : true;
-            allKeys.forEach(k => newPending.set(`${r.key}:${k}`, def));
-          }
-        });
-        setPending(newPending);
-      })
-      .catch(() => setPerms(new Map()))
-      .finally(() => setLoading(false));
-  }, [companyId]);
+/* ─── Modal shell ─── */
+function Modal({ title, icon: Icon, color, onClose, children }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 80, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}
+      onClick={onClose}>
+      <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.45)", backdropFilter: "blur(8px)" }} />
+      <div style={{ position: "relative", background: "#fff", borderRadius: 20, width: "100%", maxWidth: 520,
+        maxHeight: "80vh", display: "flex", flexDirection: "column", overflow: "hidden",
+        boxShadow: "0 32px 80px -12px rgba(0,0,0,0.3)" }}
+        onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 20px",
+          borderBottom: "1px solid #f0f0f0", flexShrink: 0 }}>
+          <div style={{ width: 34, height: 34, borderRadius: 10, background: `${color}15`,
+            display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Icon size={16} style={{ color }} />
+          </div>
+          <span style={{ fontWeight: 900, fontSize: 14, color: "#1a1a2e", letterSpacing: "-0.02em" }}>{title}</span>
+          <button onClick={onClose} style={{ marginLeft: "auto", width: 28, height: 28, borderRadius: 8,
+            background: "#f5f5f5", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <X size={13} style={{ color: "#666" }} />
+          </button>
+        </div>
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>{children}</div>
+      </div>
+    </div>
+  );
+}
 
-  const dirtyCount = pending.size;
-  useEffect(() => { onDirtyChange?.(dirtyCount); }, [dirtyCount, onDirtyChange]);
+/* ─── Pages modal ─── */
+function PagesModal({ user, pagePerms, onChange, onClose }) {
+  const isOn = (key) => pagePerms[key] !== false; // default true
 
-  const isAllowed = (role, key) => {
-    const k = `${role}:${key}`;
-    if (pending.has(k)) return pending.get(k);
-    if (perms.has(k)) return perms.get(k);
-    if (role === "admin") return true;
-    if (role === "base") return true;
-    return false;
-  };
-
-  const parentState = (role, parent) => {
-    if (!parent.children) return isAllowed(role, parent.key) ? "all" : "none";
-    const states = parent.children.map(c => isAllowed(role, c.key));
-    if (states.every(s => s)) return "all";
+  const parentState = (parent) => {
+    if (!parent.children) return isOn(parent.key) ? "all" : "none";
+    const states = parent.children.map(c => isOn(c.key));
+    if (states.every(Boolean)) return "all";
     if (states.every(s => !s)) return "none";
     return "some";
   };
 
-const stage = (role, key, next) => {
-    setPending(prev => {
-      const m = new Map(prev);
-      const k = `${role}:${key}`;
-      // Server value: explicit row, else default (admin=true, base=true, low=false)
-      const serverVal = perms.has(k) ? perms.get(k) : (role === "admin" || role === "base");
-      if (next === serverVal && perms.has(k)) {
-        // Only drop from pending if both equal AND a server row exists.
-        // If no server row exists, ALWAYS stage so we persist the default.
-        m.delete(k);
-      } else {
-        m.set(k, next);
-      }
-      return m;
-    });
-  };
-  const toggleSingle = (role, key) => {
-    const next = !isAllowed(role, key);
-    stage(role, key, next);
+  const toggleSingle = (key) => onChange({ ...pagePerms, [key]: !isOn(key) });
+
+  const toggleParent = (parent) => {
+    const next = parentState(parent) !== "all";
+    const keys = parent.children ? [...parent.children.map(c => c.key), parent.key] : [parent.key];
+    const updated = { ...pagePerms };
+    keys.forEach(k => { updated[k] = next; });
+    onChange(updated);
   };
 
-  const toggleParent = (role, parent) => {
-    const next = parentState(role, parent) !== "all";
-    const keys = parent.children ? parent.children.map(c => c.key) : [parent.key];
-    if (parent.children) keys.push(parent.key);
-    keys.forEach(k => stage(role, k, next));
-  };
-
-  useEffect(() => {
-    if (!saveSignal) return;
-    (async () => {
-      if (pending.size === 0) { saveSignal.done?.(); return; }
-      setSaving(true);
-      const updates = [...pending.entries()];
-      try {
-        await Promise.all(updates.map(([k, val]) => {
-          const [role, ...keyParts] = k.split(":");
-          const pageKey = keyParts.join(":");
-          return upsertPermission({ companyId, role, pageKey, allowed: val, userId });
-        }));
-        setPerms(prev => {
-          const m = new Map(prev);
-          updates.forEach(([k, v]) => m.set(k, v));
-          return m;
-        });
-        setPending(new Map());
-        saveSignal.done?.();
-      } catch (e) {
-        alert("Failed to save: " + e.message);
-        saveSignal.failed?.(e);
-      } finally { setSaving(false); }
-    })();
-  }, [saveSignal]);
-
-  useEffect(() => {
-    if (!discardSignal) return;
-    setPending(new Map());
-    discardSignal.done?.();
-  }, [discardSignal]);
-
-  const toggleCollapse = (k) => setCollapsed(prev => { const s = new Set(prev); s.has(k) ? s.delete(k) : s.add(k); return s; });
-
-if (loading) return <div className="flex items-center justify-center py-20 gap-2 text-xs text-gray-400"><Loader2 size={12} className="animate-spin" /> Loading…</div>;
+  const enabledCount = ALL_PAGE_KEYS.filter(k => isOn(k)).length;
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col gap-3 overflow-hidden">
-      {dirtyCount > 0 && (
-        <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs font-bold flex-shrink-0">
-          <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
-          {dirtyCount} unsaved {dirtyCount === 1 ? "change" : "changes"}
-          {saving && <Loader2 size={11} className="animate-spin ml-1" />}
+    <Modal title={`Pages — ${user.username ?? user.email}`} icon={Shield} color="#1a2f8a" onClose={onClose}>
+      <div style={{ padding: "8px 0" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "8px 20px 12px", borderBottom: "1px solid #f5f5f5" }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8" }}>
+            {enabledCount}/{ALL_PAGE_KEYS.length} pages enabled
+          </span>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => { const u = {}; ALL_PAGE_KEYS.forEach(k => u[k] = true); onChange(u); }}
+              style={{ fontSize: 10, fontWeight: 900, color: "#1a2f8a", background: "#eef1fb", border: "none", borderRadius: 6, padding: "3px 10px", cursor: "pointer" }}>
+              All on
+            </button>
+            <button onClick={() => { const u = {}; ALL_PAGE_KEYS.forEach(k => u[k] = false); onChange(u); }}
+              style={{ fontSize: 10, fontWeight: 900, color: "#94a3b8", background: "#f5f5f5", border: "none", borderRadius: 6, padding: "3px 10px", cursor: "pointer" }}>
+              All off
+            </button>
+          </div>
         </div>
-      )}
-      <div className="flex-1 min-h-0 flex flex-col bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-      <header className="px-5 py-3.5 border-b border-gray-50 bg-gray-50/40 flex items-center gap-2 flex-shrink-0">
-        <Shield size={13} className="text-[#1a2f8a]/60" />
-        <h2 className="text-xs font-black uppercase tracking-widest text-[#1a2f8a]">Page access matrix</h2>
-      </header>
-      <div className="grid items-center px-5 py-3 border-b border-gray-100 bg-white flex-shrink-0"
-        style={{ gridTemplateColumns: "1fr 110px 110px 110px" }}>
-        <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">Page</span>
-        {PERMISSION_ROLES.map(r => (
-          <div key={r.key} className="flex flex-col items-center gap-0.5">
-            <span className="text-[10px] font-black uppercase tracking-widest" style={{ color: r.color }}>{r.label}</span>
-            <span className="w-6 h-0.5 rounded-full" style={{ background: r.color, opacity: 0.4 }} />
+        {PAGE_TREE.map(parent => (
+          <div key={parent.key}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+              padding: "10px 20px", background: "#fafafa", borderBottom: "1px solid #f0f0f0" }}>
+              <span style={{ fontSize: 12, fontWeight: 900, color: "#1a1a2e" }}>{parent.label}</span>
+              <Toggle checked={parentState(parent) === "all"} onChange={() => toggleParent(parent)} color="#1a2f8a" size="sm" />
+            </div>
+            {parent.children?.map(child => (
+              <div key={child.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "9px 20px 9px 36px", borderBottom: "1px solid #f9f9f9" }}>
+                <span style={{ fontSize: 12, color: "#374151", fontWeight: 500 }}>{child.label}</span>
+                <Toggle checked={isOn(child.key)} onChange={() => toggleSingle(child.key)} color="#1a2f8a" size="sm" />
+              </div>
+            ))}
           </div>
         ))}
       </div>
-      <div className="divide-y divide-gray-50 flex-1 min-h-0 overflow-y-auto">
-        {PERMISSION_TREE.map(parent => {
-          const isCollapsed = collapsed.has(parent.key);
-          const hasChildren = !!parent.children;
-          return (
-            <div key={parent.key}>
-              <div onClick={hasChildren ? () => toggleCollapse(parent.key) : undefined}
-                className={`grid items-center px-5 py-3 hover:bg-gray-50/60 transition-colors ${hasChildren ? "cursor-pointer" : ""}`}
-                style={{ gridTemplateColumns: "1fr 110px 110px 110px" }}>
-                <div className="flex items-center gap-2">
-                  {hasChildren
-                    ? <ChevronRight size={12} className="text-gray-400 transition-transform flex-shrink-0" style={{ transform: isCollapsed ? "rotate(0deg)" : "rotate(90deg)" }} />
-                    : <span className="w-3 flex-shrink-0" />}
-                  <span className="text-sm font-black text-gray-800">{parent.label}</span>
-                </div>
-                {PERMISSION_ROLES.map(r => {
-                  const state = parentState(r.key, parent);
-                  return (
-                    <div key={r.key} className="flex justify-center" onClick={e => e.stopPropagation()}>
-                      <Toggle checked={state === "all"} indeterminate={state === "some"} color={r.color}
-                        onClick={() => toggleParent(r.key, parent)} />
-                    </div>
-                  );
-                })}
-              </div>
-              {hasChildren && (
-                <div className="overflow-hidden transition-all"
-                  style={{ maxHeight: isCollapsed ? 0 : `${parent.children.length * 44}px` }}>
-                  {parent.children.map(child => (
-                    <div key={child.key} className="grid items-center px-5 py-2 hover:bg-gray-50/40"
-                      style={{ gridTemplateColumns: "1fr 110px 110px 110px" }}>
-                      <div className="flex items-center gap-2 pl-5">
-                        <span className="w-1 h-1 rounded-full bg-gray-300 flex-shrink-0" />
-                        <span className="text-[12px] text-gray-500 font-medium">{child.label}</span>
-                      </div>
-                      {PERMISSION_ROLES.map(r => (
-                        <div key={r.key} className="flex justify-center">
-                          <Toggle checked={isAllowed(r.key, child.key)} color={r.color}
-                            onClick={() => toggleSingle(r.key, child.key)} />
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-})}
-      </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
-// ─── Generic resource list view (Companies / Structures+Sources / Mappings) ───
-function ResourceListView({ companyId, userId, sections, loadingData, onDirtyChange, saveSignal, discardSignal }) {
-  const [access, setAccess] = useState(new Map());      // server snapshot
-  const [pending, setPending] = useState(new Map());    // local edits
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [collapsed, setCollapsed] = useState(new Set());
-  const toggleCollapse = (k) => setCollapsed(prev => { const s = new Set(prev); s.has(k) ? s.delete(k) : s.add(k); return s; });
+/* ─── List modal ─── */
+function ListModal({ title, icon, color, items, selected, onChange, onClose }) {
+  const [q, setQ] = useState("");
+  const filtered = items.filter(i => !q || i.label.toLowerCase().includes(q.toLowerCase()));
+  const allOn = items.length > 0 && items.every(i => selected.includes(i.id));
 
-  useEffect(() => {
-    if (!companyId) return;
-    setLoading(true);
-    listResourceAccess({ companyId })
-      .then(rows => {
-        const m = new Map();
-        rows.forEach(r => m.set(`${r.resource_kind}:${r.role}:${r.resource_id}`, r.allowed));
-        setAccess(m);
-        setPending(new Map());
-      })
-      .catch(() => setAccess(new Map()))
-      .finally(() => setLoading(false));
-  }, [companyId]);
-
-  const dirtyCount = pending.size;
-  useEffect(() => { onDirtyChange?.(dirtyCount); }, [dirtyCount, onDirtyChange]);
-
-  const isAllowed = (kind, role, id) => {
-    const k = `${kind}:${role}:${id}`;
-    if (pending.has(k)) return pending.get(k);
-    if (access.has(k)) return access.get(k);
-    if (role === "admin") return true;
-    if (role === "base") return true;
-    return false;
-  };
-
-  const toggle = (kind, role, id) => {
-    const current = isAllowed(kind, role, id);
-    const next = !current;
-    const k = `${kind}:${role}:${id}`;
-    // Compare against server value: if next === server, drop from pending
-    const serverVal = access.has(k) ? access.get(k) : (role === "admin" || role === "base");
-    setPending(prev => {
-      const m = new Map(prev);
-      if (next === serverVal) m.delete(k);
-      else m.set(k, next);
-      return m;
-    });
-  };
-
-  // Save signal from parent
-  useEffect(() => {
-    if (!saveSignal) return;
-    (async () => {
-      if (pending.size === 0) { saveSignal.done?.(); return; }
-      setSaving(true);
-      const updates = [...pending.entries()];
-      try {
-        await Promise.all(updates.map(([k, val]) => {
-          const [kind, role, ...idParts] = k.split(":");
-          const id = idParts.join(":");
-          return upsertResourceAccess({ companyId, role, resourceKind: kind, resourceId: id, allowed: val, userId });
-        }));
-        setAccess(prev => {
-          const m = new Map(prev);
-          updates.forEach(([k, v]) => m.set(k, v));
-          return m;
-        });
-        setPending(new Map());
-        saveSignal.done?.();
-      } catch (e) {
-        alert("Failed to save: " + e.message);
-        saveSignal.failed?.(e);
-      } finally { setSaving(false); }
-    })();
-  }, [saveSignal]);
-
-  // Discard signal from parent
-  useEffect(() => {
-    if (!discardSignal) return;
-    setPending(new Map());
-    discardSignal.done?.();
-  }, [discardSignal]);
-
-  if (loading || loadingData) return <div className="flex items-center justify-center py-20 gap-2 text-xs text-gray-400"><Loader2 size={12} className="animate-spin" /> Loading…</div>;
-
-return (
-    <div className="flex-1 min-h-0 flex flex-col gap-3 overflow-y-auto pr-1">
-      {dirtyCount > 0 && (
-        <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs font-bold flex-shrink-0">
-          <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
-          {dirtyCount} unsaved {dirtyCount === 1 ? "change" : "changes"}
-          {saving && <Loader2 size={11} className="animate-spin ml-1" />}
-        </div>
-      )}
-      {sections.map(sec => {
-        const isCollapsed = collapsed.has(sec.kind);
-        return (
-          <section key={sec.kind} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden flex-shrink-0">
-            <header onClick={() => toggleCollapse(sec.kind)}
-              className="px-5 py-3.5 border-b border-gray-50 bg-gray-50/40 flex items-center gap-2 cursor-pointer hover:bg-gray-100/40 transition-colors">
-              <ChevronRight size={12} className="text-gray-400 transition-transform flex-shrink-0"
-                style={{ transform: isCollapsed ? "rotate(0deg)" : "rotate(90deg)" }} />
-              <h2 className="text-xs font-black uppercase tracking-widest text-[#1a2f8a]">{sec.label}</h2>
-              <span className="text-[10px] text-gray-400 ml-1">{sec.items.length}</span>
-            </header>
-            {!isCollapsed && (
-              <>
-                <div className="grid items-center px-5 py-3 border-b border-gray-100 bg-white"
-                  style={{ gridTemplateColumns: "1fr 110px 110px 110px" }}>
-                  <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">Name</span>
-                  {PERMISSION_ROLES.map(r => (
-                    <div key={r.key} className="flex flex-col items-center gap-0.5">
-                      <span className="text-[10px] font-black uppercase tracking-widest" style={{ color: r.color }}>{r.label}</span>
-                      <span className="w-6 h-0.5 rounded-full" style={{ background: r.color, opacity: 0.4 }} />
-                    </div>
-                  ))}
-                </div>
-                <div className="divide-y divide-gray-50">
-                  {sec.items.length === 0 ? (
-                    <div className="px-5 py-8 text-center text-xs text-gray-400">No items</div>
-                  ) : sec.items.map(item => (
-                    <div key={item.id} className="grid items-center px-5 py-2.5 hover:bg-gray-50/40 transition-colors"
-                      style={{ gridTemplateColumns: "1fr 110px 110px 110px" }}>
-                      <div className="min-w-0">
-                        <p className="text-sm font-bold text-gray-800 truncate">{item.label}</p>
-                        {item.meta && <p className="text-[10px] text-gray-400 truncate">{item.meta}</p>}
-                      </div>
-                      {PERMISSION_ROLES.map(r => {
-                        const k = `${sec.kind}:${r.key}:${item.id}`;
-                        const isPending = pending.has(k);
-                        return (
-                          <div key={r.key} className="flex justify-center relative">
-                            {isPending && <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-400 ring-2 ring-white z-10" />}
-                            <Toggle checked={isAllowed(sec.kind, r.key, item.id)} color={r.color}
-                              onClick={() => toggle(sec.kind, r.key, item.id)} />
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </section>
-        );
-      })}
-    </div>
-  );
-}
-
-// ─── Users view ─────────────────────────────────────────────
-const ROLE_META = {
-  admin: { label: "Admin", color: "#1a2f8a", bg: "#eef1fb" },
-  base:  { label: "Base",  color: "#57aa78", bg: "#dcfce7" },
-  low:   { label: "Low",   color: "#94a3b8", bg: "#f1f5f9" },
-};
-const ROLE_ORDER = ["admin", "base", "low"];
-
-function UsersView({ companyId, userId, onDirtyChange, saveSignal, discardSignal }) {
-  const [users, setUsers] = useState([]);          // server snapshot
-  const [pending, setPending] = useState(new Map()); // userId → { role?, is_active?, is_default? }
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState(null);
-  const [roleConfirm, setRoleConfirm] = useState(null); // { userId, nextRole } for self-demotion
-
-  useEffect(() => {
-    if (!companyId) return;
-    setLoading(true);
-    (async () => {
-      try {
-        const { data: ucRows, error: ucErr } = await supabase
-          .schema("accounts")
-          .from("user_companies")
-          .select("user_id, role, is_default, is_active, created_at")
-          .eq("company_id", companyId);
-        if (ucErr) throw ucErr;
-
-        const userIds = [...new Set((ucRows ?? []).map(r => r.user_id))];
-        if (userIds.length === 0) { setUsers([]); return; }
-
-        const { data: usersRows, error: usersErr } = await supabase
-          .schema("accounts")
-          .from("users")
-          .select("id, username, email, is_super_admin, is_active, created_at")
-          .in("id", userIds);
-        if (usersErr) throw usersErr;
-
-        const byId = new Map((usersRows ?? []).map(u => [u.id, u]));
-        const combined = (ucRows ?? []).map(uc => ({
-          ...byId.get(uc.user_id),
-          role: uc.role,
-          is_default: uc.is_default,
-          uc_is_active: uc.is_active,
-          joined_at: uc.created_at,
-        })).filter(u => u.id);
-        combined.sort((a, b) => {
-          const rank = r => ROLE_ORDER.indexOf(r);
-          const d = rank(a.role) - rank(b.role);
-          if (d !== 0) return d;
-          return String(a.username ?? a.email ?? "").localeCompare(String(b.username ?? b.email ?? ""));
-        });
-        setUsers(combined);
-        setPending(new Map());
-      } catch (e) {
-        setError(e.message ?? "Failed to load users");
-      } finally { setLoading(false); }
-    })();
-  }, [companyId]);
-
-  const dirtyCount = pending.size;
-  useEffect(() => { onDirtyChange?.(dirtyCount); }, [dirtyCount, onDirtyChange]);
-
-  const effective = (u) => {
-    const p = pending.get(u.id) ?? {};
-    return {
-      ...u,
-      ...p,
-      // If is_active is pending, override both flags
-      ...(p.is_active !== undefined ? { is_active: p.is_active, uc_is_active: p.is_active } : {}),
-    };
-  };
-
-const stage = (uid, field, value) => {
-    const server = users.find(u => u.id === uid);
-    if (!server) return;
-    setPending(prev => {
-      const m = new Map(prev);
-      const cur = { ...(m.get(uid) ?? {}) };
-      cur[field] = value;
-      Object.keys(cur).forEach(k => {
-        const serverField = k === "is_active" ? (server.uc_is_active === true && server.is_active === true) : server[k];
-        if (cur[k] === serverField) delete cur[k];
-      });
-      if (Object.keys(cur).length === 0) m.delete(uid);
-      else m.set(uid, cur);
-      return m;
-    });
-  };
-
-  const onRoleChange = (uid, nextRole) => {
-    if (uid === userId) {
-      setRoleConfirm({ userId: uid, nextRole });
-      return;
-    }
-    stage(uid, "role", nextRole);
-  };
-
-  const confirmSelfRoleChange = () => {
-    if (!roleConfirm) return;
-    stage(roleConfirm.userId, "role", roleConfirm.nextRole);
-    setRoleConfirm(null);
-  };
-
-  // Save signal
-  useEffect(() => {
-    if (!saveSignal) return;
-    (async () => {
-      if (pending.size === 0) { saveSignal.done?.(); return; }
-      setSaving(true);
-      const entries = [...pending.entries()];
-      try {
-        // Split: changes to user_companies (role, is_default, is_active) vs users (none for now)
-const results = await Promise.all(entries.map(async ([uid, changes]) => {
-          const ucPatch = {};
-          if (changes.role !== undefined)       ucPatch.role = changes.role;
-          if (changes.is_default !== undefined) ucPatch.is_default = changes.is_default;
-          if (changes.is_active !== undefined)  ucPatch.is_active = changes.is_active;
-          const ops = [];
-          if (Object.keys(ucPatch).length > 0) {
-            ops.push(supabase.schema("accounts").from("user_companies")
-              .update(ucPatch).eq("user_id", uid).eq("company_id", companyId).select());
-          }
-          if (changes.is_active !== undefined) {
-            ops.push(supabase.schema("accounts").from("users")
-              .update({ is_active: changes.is_active }).eq("id", uid).select());
-          }
-          if (ops.length === 0) return { uid, skipped: true };
-          const settled = await Promise.all(ops);
-          for (const { data, error, status } of settled) {
-            if (error) throw new Error(`User ${uid}: ${error.message} (status ${status})`);
-            if (!data || data.length === 0) throw new Error(`User ${uid}: update affected 0 rows — RLS likely blocking.`);
-          }
-          return { uid, data: settled };
-        }));
-        console.log("[UsersView] save results:", results);
-        // Re-fetch
-setUsers(prev => {
-          const next = prev.map(u => {
-            const c = pending.get(u.id);
-            if (!c) return u;
-            return {
-              ...u,
-              role: c.role ?? u.role,
-              is_default: c.is_default ?? u.is_default,
-              uc_is_active: c.is_active ?? u.uc_is_active,
-              is_active: c.is_active ?? u.is_active,
-            };
-          });
-          console.log("[UsersView] after save, users:", next.map(x => ({ id: x.id, is_active: x.is_active, uc_is_active: x.uc_is_active })));
-          return next;
-        });
-        setPending(new Map());
-        saveSignal.done?.();
-      } catch (e) {
-        alert("Failed to save user changes: " + (e.message ?? e));
-        saveSignal.failed?.(e);
-      } finally { setSaving(false); }
-    })();
-  }, [saveSignal]);
-
-  // Discard signal
-  useEffect(() => {
-    if (!discardSignal) return;
-    setPending(new Map());
-    discardSignal.done?.();
-  }, [discardSignal]);
-
-  if (loading) return <div className="flex items-center justify-center py-20 gap-2 text-xs text-gray-400"><Loader2 size={12} className="animate-spin" /> Loading users…</div>;
-  if (error) return <div className="flex items-center justify-center py-20 text-xs text-red-400">⚠ {error}</div>;
-
-  // Counts use effective state so the summary reacts to pending changes
-  const effList = users.map(effective);
+  const toggle = (id) => selected.includes(id)
+    ? onChange(selected.filter(x => x !== id))
+    : onChange([...selected, id]);
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col gap-3 overflow-hidden">
-<div className="grid grid-cols-3 gap-3 flex-shrink-0">
-        {ROLE_ORDER.map(r => {
-          const count = effList.filter(u => u.role === r).length;
-          const meta = ROLE_META[r];
+    <Modal title={title} icon={icon} color={color} onClose={onClose}>
+      {items.length > 6 && (
+        <div style={{ padding: "12px 20px 0" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#f5f5f5", borderRadius: 10, padding: "7px 12px" }}>
+            <Search size={12} style={{ color: "#94a3b8", flexShrink: 0 }} />
+            <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search…"
+              style={{ border: "none", background: "transparent", outline: "none", fontSize: 12, color: "#374151", width: "100%" }} />
+          </div>
+          <div style={{ height: 12 }} />
+        </div>
+      )}
+      <div style={{ padding: "8px 0" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "6px 20px 10px", borderBottom: "1px solid #f5f5f5" }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8" }}>{selected.length}/{items.length} selected</span>
+          <button onClick={() => onChange(allOn ? [] : items.map(i => i.id))}
+            style={{ fontSize: 10, fontWeight: 900, border: "none", borderRadius: 6, padding: "3px 10px", cursor: "pointer",
+              color: allOn ? "#94a3b8" : color, background: allOn ? "#f5f5f5" : `${color}15` }}>
+            {allOn ? "Deselect all" : "Select all"}
+          </button>
+        </div>
+        {filtered.length === 0 && (
+          <div style={{ padding: "32px 20px", textAlign: "center", fontSize: 12, color: "#94a3b8" }}>No items found</div>
+        )}
+        {filtered.map(item => {
+          const on = selected.includes(item.id);
           return (
-            <div key={r} className="rounded-2xl border border-gray-100 p-4"
-              style={{ background: `linear-gradient(135deg, #ffffff 0%, ${meta.bg} 100%)` }}>
-              <p className="text-[10px] font-black uppercase tracking-widest mb-1" style={{ color: meta.color, opacity: 0.7 }}>{meta.label}</p>
-              <div className="flex items-baseline gap-1.5">
-                <span className="font-black text-2xl" style={{ color: meta.color }}>{count}</span>
-                <span className="text-[11px] text-gray-400">{count === 1 ? "user" : "users"}</span>
+            <div key={item.id} onClick={() => toggle(item.id)}
+              style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 20px",
+                borderBottom: "1px solid #f9f9f9", cursor: "pointer",
+                background: on ? `${color}06` : "transparent" }}
+              onMouseEnter={e => e.currentTarget.style.background = `${color}0d`}
+              onMouseLeave={e => e.currentTarget.style.background = on ? `${color}06` : "transparent"}>
+              <div style={{ width: 18, height: 18, borderRadius: 5, flexShrink: 0,
+                border: `2px solid ${on ? color : "#d1d5db"}`, background: on ? color : "transparent",
+                display: "flex", alignItems: "center", justifyContent: "center", transition: "all 150ms ease" }}>
+                {on && <Check size={10} style={{ color: "#fff" }} strokeWidth={3} />}
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#1a1a2e" }}>{item.label}</div>
+                {item.meta && <div style={{ fontSize: 10, color: "#94a3b8" }}>{item.meta}</div>}
               </div>
             </div>
           );
         })}
       </div>
-
-      <section className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden flex-1 min-h-0 flex flex-col">
-        <header className="px-5 py-3.5 border-b border-gray-50 bg-gray-50/40 flex items-center gap-2 flex-shrink-0">
-          <UsersIcon size={13} className="text-[#7c3aed]" />
-          <h2 className="text-xs font-black uppercase tracking-widest text-[#7c3aed]">Members</h2>
-          <span className="text-[10px] text-gray-400 ml-1">{users.length}</span>
-        </header>
-        <div className="grid items-center px-5 py-3 border-b border-gray-100 bg-white flex-shrink-0"
-          style={{ gridTemplateColumns: "2fr 2fr 220px 90px 90px" }}>
-          <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">User</span>
-          <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">Email</span>
-          <span className="text-[10px] font-black uppercase tracking-widest text-gray-400 text-center">Role</span>
-          <span className="text-[10px] font-black uppercase tracking-widest text-gray-400 text-center">Active</span>
-          <span className="text-[10px] font-black uppercase tracking-widest text-gray-400 text-center">Default</span>
-        </div>
-        <div className="divide-y divide-gray-50 flex-1 min-h-0 overflow-y-auto">
-          {users.length === 0 ? (
-            <div className="px-5 py-12 text-center text-xs text-gray-400">No users found</div>
-          ) : users.map(serverU => {
-            const u = effective(serverU);
-            const isDirty = pending.has(u.id);
-            const meta = ROLE_META[u.role] ?? ROLE_META.low;
-            const initials = String(u.username ?? u.email ?? "U").slice(0, 1).toUpperCase();
-           const isActive = u.is_active === true && u.uc_is_active === true;
-            return (
-              <div key={u.id} className="grid items-center px-5 py-3 hover:bg-gray-50/40 transition-colors relative"
-                style={{ gridTemplateColumns: "2fr 2fr 220px 90px 90px" }}>
-                {isDirty && <span className="absolute left-1 top-1/2 -translate-y-1/2 w-1 h-6 rounded-full bg-amber-400" />}
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-black text-white flex-shrink-0"
-                    style={{ background: `linear-gradient(135deg, ${meta.color} 0%, ${meta.color}cc 100%)` }}>
-                    {initials}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-sm font-bold text-gray-800 truncate">{u.username ?? "—"}{u.id === userId && <span className="ml-1 text-[9px] font-black uppercase tracking-widest text-gray-300">(you)</span>}</p>
-                    {u.is_super_admin && <p className="text-[9px] font-black uppercase tracking-widest text-amber-500">Super admin</p>}
-                  </div>
-                </div>
-                <p className="text-xs text-gray-500 truncate">{u.email ?? "—"}</p>
-                {/* Role segmented control */}
-                <div className="flex items-center gap-1 justify-center">
-                  {ROLE_ORDER.map(r => {
-                    const m = ROLE_META[r];
-                    const isSel = u.role === r;
-                    return (
-                      <button key={r} onClick={() => onRoleChange(u.id, r)}
-                        className="px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-widest transition-all"
-                        style={{
-                          background: isSel ? m.color : m.bg,
-                          color: isSel ? "white" : m.color,
-                          opacity: isSel ? 1 : 0.7,
-                        }}>
-                        {m.label}
-                      </button>
-                    );
-                  })}
-                </div>
-                {/* Active toggle */}
-                <div className="flex justify-center">
-                  <Toggle checked={isActive} color="#10b981"
-                    onClick={() => stage(u.id, "is_active", !isActive)} />
-                </div>
-                {/* Default toggle */}
-                <div className="flex justify-center">
-                  <Toggle checked={!!u.is_default} color="#f59e0b"
-                    onClick={() => stage(u.id, "is_default", !u.is_default)} />
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      {roleConfirm && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" onClick={() => setRoleConfirm(null)}>
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-md" />
-          <div className="relative bg-white rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
-            <div className="px-6 pt-6 pb-5" style={{ background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)" }}>
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-3" style={{ background: "rgba(255,255,255,0.2)" }}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-              </div>
-              <p className="text-white font-black text-lg leading-tight">Change your own role?</p>
-              <p className="text-white/70 text-[11px] mt-0.5">You're about to change your role to <strong className="text-white">{ROLE_META[roleConfirm.nextRole]?.label}</strong>. If you remove your admin access, you may lose the ability to manage user permissions.</p>
-            </div>
-            <div className="p-5 space-y-2">
-              <button onClick={confirmSelfRoleChange}
-                className="w-full text-left px-4 py-3 rounded-xl border-2 border-gray-100 hover:border-amber-500 hover:bg-amber-50/40 transition-all group">
-                <p className="text-xs font-black text-gray-800 group-hover:text-amber-600">Yes, change my role</p>
-                <p className="text-[10px] text-gray-400 mt-0.5">Stages the change — confirm by saving</p>
-              </button>
-              <button onClick={() => setRoleConfirm(null)}
-                className="w-full py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all mt-2">
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+    </Modal>
   );
 }
 
-// ─── Unsaved changes dialog ──────────────────────────────
-function UnsavedChangesDialog({ count, onSave, onDiscard, onCancel }) {
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-6" onClick={onCancel}>
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-md" />
-      <div className="relative bg-white rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="px-6 pt-6 pb-5" style={{ background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)" }}>
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-3" style={{ background: "rgba(255,255,255,0.2)" }}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          </div>
-          <p className="text-white font-black text-lg leading-tight">Unsaved changes</p>
-          <p className="text-white/70 text-[11px] mt-0.5">You have {count} unsaved {count === 1 ? "change" : "changes"}</p>
-        </div>
-        <div className="p-5 space-y-2">
-          <button onClick={onSave}
-            className="w-full text-left px-4 py-3 rounded-xl border-2 border-gray-100 hover:border-emerald-500 hover:bg-emerald-50/40 transition-all group">
-            <p className="text-xs font-black text-gray-800 group-hover:text-emerald-600">Save and continue</p>
-            <p className="text-[10px] text-gray-400 mt-0.5">Persist your changes before leaving</p>
-          </button>
-          <button onClick={onDiscard}
-            className="w-full text-left px-4 py-3 rounded-xl border-2 border-gray-100 hover:border-red-400 hover:bg-red-50/40 transition-all group">
-            <p className="text-xs font-black text-gray-800 group-hover:text-red-500">Discard changes</p>
-            <p className="text-[10px] text-gray-400 mt-0.5">Throw away unsaved edits</p>
-          </button>
-          <button onClick={onCancel}
-            className="w-full py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all mt-2">
-            Stay on this page
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Main ─────────────────────────────────────────────────
-export default function UserManagement({ token, preloadedData = {}, activeCard, setActiveCard, navGuardRef }) {
+/* ═══════════════════════════════════════════════════════
+   MAIN
+═══════════════════════════════════════════════════════ */
+export default function UserManagement({ token, preloadedData = {} }) {
   const [companyId, setCompanyId] = useState(null);
-  const [userId, setUserId] = useState(null);
-  const [dirtyCount, setDirtyCount] = useState(0);
-  const [pendingNavigation, setPendingNavigation] = useState(null);
-  const [saveSignal, setSaveSignal] = useState(null);
-  const [discardSignal, setDiscardSignal] = useState(null);
+  const [myUserId, setMyUserId]   = useState(null);
+  const [users, setUsers]         = useState([]);
+  const [loadingUsers, setLoadingUsers] = useState(true);
 
-  // Expose a guard to the parent so its "back" button can be intercepted
-  useEffect(() => {
-    if (!navGuardRef) return;
-    navGuardRef.current = (proceedFn) => {
-      if (dirtyCount > 0) setPendingNavigation(() => proceedFn);
-      else proceedFn();
-    };
-  }, [navGuardRef, dirtyCount]);
-
-  const requestNavigate = (target) => {
-    if (dirtyCount > 0) setPendingNavigation(() => () => setActiveCard(target));
-    else setActiveCard(target);
-  };
-
-// Browser tab close / reload warning
-  useEffect(() => {
-    if (dirtyCount === 0) return;
-    const handler = (e) => { e.preventDefault(); e.returnValue = ""; };
-    window.addEventListener("beforeunload", handler);
-    return () => window.removeEventListener("beforeunload", handler);
-  }, [dirtyCount]);
-
-  // Global nav guard — sidebar/elsewhere can call window.__navGuard?.(fn)
-  // to ask permission before navigating.
-  useEffect(() => {
-    if (dirtyCount === 0) {
-      if (window.__navGuard) delete window.__navGuard;
-      return;
-    }
-    window.__navGuard = (proceedFn) => {
-      setPendingNavigation(() => proceedFn);
-    };
-    return () => {
-      if (window.__navGuard) delete window.__navGuard;
-    };
-  }, [dirtyCount]);
-
-// Resource lists
-  const [companies, setCompanies] = useState([]);
-  const [structures, setStructures] = useState([]);
-  const [sources, setSources] = useState([]);
-  const [dimensions, setDimensions] = useState([]);
-  const [mappings, setMappings] = useState([]);
+  const [companies,      setCompanies]      = useState([]);
+  const [structures,     setStructures]     = useState([]);
+  const [sources,        setSources]        = useState([]);
+  const [dimensions,     setDimensions]     = useState([]);
+  const [mappings,       setMappings]       = useState([]);
   const [reportMappings, setReportMappings] = useState([]);
-  const [loadingLists, setLoadingLists] = useState(false);
 
+  // Map<userId, { pages: {pageKey: bool}, companies: string[]|null, structures: string[]|null, ... }>
+  // null = no restrictions = all allowed
+  const [userPerms, setUserPerms] = useState(new Map());
+  const [pending,   setPending]   = useState(new Map());
+  const [saving,    setSaving]    = useState(false);
+  const [modal,     setModal]     = useState(null);
+const [search,     setSearch]     = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchRef = useRef(null);
+
+  useEffect(() => {
+    if (searchOpen) searchRef.current?.focus();
+  }, [searchOpen]);
+
+  /* ── Bootstrap ── */
   useEffect(() => {
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
       const uid = session?.user?.id ?? null;
-      setUserId(uid);
-      if (uid) {
-        const cid = await getActiveCompanyId(uid);
-        setCompanyId(cid);
-      }
+      setMyUserId(uid);
+      if (uid) setCompanyId(await getActiveCompanyId(uid));
     })();
   }, []);
 
-  // Preferred: use preloadedData if available, else fetch
-useEffect(() => {
-    if (preloadedData.companies?.length) setCompanies(preloadedData.companies);
+  /* ── Load users + permissions ── */
+  useEffect(() => {
+    if (!companyId) return;
+    setLoadingUsers(true);
+    (async () => {
+      try {
+        // Users
+        const { data: ucRows, error: ucErr } = await supabase.schema("accounts")
+          .from("user_companies").select("user_id, is_active").eq("company_id", companyId);
+        if (ucErr) throw ucErr;
+
+        const userIds = (ucRows ?? []).map(r => r.user_id);
+        if (!userIds.length) { setUsers([]); setLoadingUsers(false); return; }
+
+        const { data: usersRows, error: uErr } = await supabase.schema("accounts")
+          .from("users").select("id, username, email, is_active").in("id", userIds);
+        if (uErr) throw uErr;
+
+        const ucMap = new Map((ucRows ?? []).map(r => [r.user_id, r]));
+        const combined = (usersRows ?? [])
+          .map(u => ({ ...u, uc_is_active: ucMap.get(u.id)?.is_active ?? true }))
+          .sort((a, b) => String(a.username ?? a.email ?? "").localeCompare(String(b.username ?? b.email ?? "")));
+        setUsers(combined);
+
+        // Permissions — from public schema (no .schema("accounts"))
+        const [pageRows, resourceRows] = await Promise.all([
+          listUserPermissions({ companyId }).catch(() => []),
+          listUserResourceAccess({ companyId }).catch(() => []),
+        ]);
+
+        const permsMap = new Map();
+        combined.forEach(u => {
+          // Pages: default true when no row
+          const pages = {};
+          (pageRows ?? []).filter(r => r.user_id === u.id).forEach(r => { pages[r.page_key] = r.allowed; });
+
+          // Resources: null = no rows yet = all allowed
+          const res = (resourceRows ?? []).filter(r => r.user_id === u.id);
+          const hasKind = (kind) => res.some(r => r.resource_kind === kind);
+          const pick    = (kind) => res.filter(r => r.resource_kind === kind && r.allowed).map(r => r.resource_id);
+
+          permsMap.set(u.id, {
+            pages,
+            companies:  hasKind("company")   ? pick("company")   : null,
+            structures: hasKind("structure")  ? pick("structure") : null,
+            sources:    hasKind("source")     ? pick("source")    : null,
+            dimensions: hasKind("dimension")  ? pick("dimension") : null,
+            mappings:   hasKind("mapping")    ? pick("mapping")   : null,
+          });
+        });
+        setUserPerms(permsMap);
+      } catch (e) {
+        console.error("Error loading users:", e);
+      } finally {
+        setLoadingUsers(false);
+      }
+    })();
+  }, [companyId]);
+
+  /* ── Load resources ── */
+  useEffect(() => {
+    if (preloadedData.companies?.length)  setCompanies(preloadedData.companies);
     if (preloadedData.structures?.length) setStructures(preloadedData.structures);
-    if (preloadedData.sources?.length) setSources(preloadedData.sources);
+    if (preloadedData.sources?.length)    setSources(preloadedData.sources);
     if (preloadedData.dimensions?.length) setDimensions(preloadedData.dimensions);
   }, [preloadedData]);
 
-useEffect(() => {
+  useEffect(() => {
     if (!token) return;
     if (companies.length && structures.length && sources.length && dimensions.length) return;
-    setLoadingLists(true);
     const h = { Authorization: `Bearer ${token}`, Accept: "application/json" };
     Promise.all([
-      fetch(`/v2/companies`, { headers: h }).then(r => r.json()).catch(() => ({ value: [] })),
-      fetch(`/v2/structures`, { headers: h }).then(r => r.json()).catch(() => ({ value: [] })),
-      fetch(`/v2/sources`, { headers: h }).then(r => r.json()).catch(() => ({ value: [] })),
-      fetch(`/v2/dimensions`, { headers: h }).then(r => r.json()).catch(() => ({ value: [] })),
-    ])
-      .then(([cos, strs, srcs, dims]) => {
-        if (!companies.length)  setCompanies((cos.value ?? cos) ?? []);
-        if (!structures.length) setStructures((strs.value ?? strs) ?? []);
-        if (!sources.length)    setSources((srcs.value ?? srcs) ?? []);
-        if (!dimensions.length) setDimensions((dims.value ?? dims) ?? []);
-      })
-      .finally(() => setLoadingLists(false));
+      fetch(`${BASE}/companies`,  { headers: h }).then(r => r.json()).catch(() => ({})),
+      fetch(`${BASE}/structures`, { headers: h }).then(r => r.json()).catch(() => ({})),
+      fetch(`${BASE}/sources`,    { headers: h }).then(r => r.json()).catch(() => ({})),
+      fetch(`${BASE}/dimensions`, { headers: h }).then(r => r.json()).catch(() => ({})),
+    ]).then(([cos, strs, srcs, dims]) => {
+      if (!companies.length)  setCompanies(cos.value  ?? []);
+      if (!structures.length) setStructures(strs.value ?? []);
+      if (!sources.length)    setSources(srcs.value    ?? []);
+      if (!dimensions.length) setDimensions(dims.value ?? []);
+    });
   }, [token]);
 
   useEffect(() => {
@@ -856,144 +414,266 @@ useEffect(() => {
     ]).then(([sm, rm]) => { setMappings(sm); setReportMappings(rm); });
   }, [companyId]);
 
-// Build sections for resource view
-// Build sections for resource view
-  const companiesStructuresSections = useMemo(() => ([
-    { kind: "company", label: "Companies", items: companies.map(c => {
-        const code = c.CompanyShortName ?? c.companyShortName ?? "";
-        const full = c.CompanyLegalName ?? c.companyLegalName ?? "";
-        return {
-          id:    String(code || full || c),
-          label: String(full || code || c),
-          meta:  code && full ? `Code: ${code}` : null,
-        };
-      })
-    },
-    { kind: "structure", label: "Structures", items: structures.map(s => ({
-        id: String(s.groupStructure ?? s.GroupStructure ?? s.id ?? s),
-        label: String(s.groupStructure ?? s.GroupStructure ?? s.id ?? s),
-      }))
-    },
-  ]), [companies, structures]);
+  /* ── Item lists ── */
+  const companyItems   = useMemo(() => companies.map(c => ({ id: String(c.CompanyShortName ?? c), label: String(c.CompanyLegalName ?? c.CompanyShortName ?? c), meta: c.CompanyShortName ?? null })), [companies]);
+  const structureItems = useMemo(() => structures.map(s => ({ id: String(s.GroupStructure ?? s), label: String(s.GroupStructure ?? s) })), [structures]);
+  const sourceItems    = useMemo(() => sources.map(s => ({ id: String(s.Source ?? s), label: String(s.Source ?? s) })), [sources]);
+ const dimensionItems = useMemo(() => dimensions.map(d => {
+    const code = String(d.DimensionCode ?? d.dimensionCode ?? d.code ?? d.Code ?? "");
+    const name = String(d.DimensionName ?? d.dimensionName ?? d.name ?? d.Name ?? code);
+    return { id: code || name, label: name, meta: code && code !== name ? code : null };
+  }), [dimensions]);
+  const mappingItems   = useMemo(() => [
+    ...mappings.map(m => ({ id: `sm:${m.mapping_id}`, label: m.name ?? "Untitled", meta: "Structure" })),
+    ...reportMappings.map(m => ({ id: `rm:${m.mapping_id}`, label: m.name ?? "Untitled", meta: "Report" })),
+  ], [mappings, reportMappings]);
 
-  const sourcesDimensionsSections = useMemo(() => ([
-    { kind: "source", label: "Sources", items: sources.map(s => ({
-        id: String(s.source ?? s.Source ?? s.id ?? s),
-        label: String(s.source ?? s.Source ?? s.id ?? s),
-      }))
-    },
-    { kind: "dimension", label: "Dimensions", items: dimensions.map(d => {
-        const code = String(d.dimensionCode ?? d.DimensionCode ?? d.code ?? "");
-        const name = String(d.dimensionName ?? d.DimensionName ?? d.name ?? code);
-        return {
-          id: code || name,
-          label: name,
-          meta: code && code !== name ? `Code: ${code}` : null,
-        };
-      })
-    },
-  ]), [sources, dimensions]);
+  const itemsForCategory = (cat) => ({
+    companies: companyItems, structures: structureItems, sources: sourceItems,
+    dimensions: dimensionItems, mappings: mappingItems,
+  }[cat] ?? []);
 
-const mappingSections = useMemo(() => {
-    const dedupe = (arr) => {
-      const seen = new Set();
-      const out = [];
-      for (const m of arr) {
-        if (!m?.mapping_id || seen.has(m.mapping_id)) continue;
-        seen.add(m.mapping_id);
-        out.push(m);
+  /* ── Perms helpers ── */
+  const getPerms = (uid) => userPerms.get(uid) ?? { pages: {}, companies: null, structures: null, sources: null, dimensions: null, mappings: null };
+
+  const patchPerms = (uid, patch) => {
+    setUserPerms(prev => { const m = new Map(prev); m.set(uid, { ...getPerms(uid), ...patch }); return m; });
+    setPending(prev => { const m = new Map(prev); m.set(uid, { ...(m.get(uid) ?? {}), ...patch }); return m; });
+  };
+
+  const toggleActive = async (u) => {
+    const next = !(u.is_active && u.uc_is_active);
+    setUsers(prev => prev.map(x => x.id === u.id ? { ...x, is_active: next, uc_is_active: next } : x));
+    await supabase.schema("accounts").from("user_companies")
+      .update({ is_active: next }).eq("user_id", u.id).eq("company_id", companyId);
+  };
+
+  /* ── Save ── */
+  const save = async () => {
+    if (pending.size === 0 || !companyId) return;
+    setSaving(true);
+    const kindMap = { companies: "company", structures: "structure", sources: "source", dimensions: "dimension", mappings: "mapping" };
+    const pageRows = [], resourceRows = [];
+    const now = new Date().toISOString();
+
+    for (const [uid, patch] of pending.entries()) {
+      if (patch.pages) {
+        Object.entries(patch.pages).forEach(([page_key, allowed]) => {
+          pageRows.push({ company_id: companyId, user_id: uid, page_key, allowed, updated_by: myUserId, updated_at: now });
+        });
       }
-      return out;
-    };
-    return [
-      { kind: "mapping", label: "Structure mappings", items: dedupe(mappings).map(m => ({
-          id: m.mapping_id,
-          label: m.name ?? "Untitled",
-          meta: m.standard,
-        }))
-      },
-      { kind: "report_mapping", label: "Report mappings", items: dedupe(reportMappings).map(m => ({
-          id: m.mapping_id,
-          label: m.name ?? "Untitled",
-          meta: m.standard,
-        }))
-      },
-    ];
-  }, [mappings, reportMappings]);
-// ── Drill-in views ──
-// ── Drill-in views ──
-  if (activeCard) {
-    const commonProps = {
-      companyId, userId,
-      onDirtyChange: setDirtyCount,
-      saveSignal, discardSignal,
-    };
-    return (
-      <>
-        <div className="flex flex-col h-full min-h-0">
-          {activeCard === "pages"     && <PagesView {...commonProps} />}
-          {activeCard === "companies" && <ResourceListView {...commonProps} sections={companiesStructuresSections} loadingData={loadingLists} />}
-          {activeCard === "sources"   && <ResourceListView {...commonProps} sections={sourcesDimensionsSections}   loadingData={loadingLists} />}
-{activeCard === "mappings"  && <ResourceListView {...commonProps} sections={mappingSections}             loadingData={false} />}
-          {activeCard === "users"     && <UsersView companyId={companyId} userId={userId} onDirtyChange={setDirtyCount} saveSignal={saveSignal} discardSignal={discardSignal} />}
-        </div>
-        {pendingNavigation && (
-          <UnsavedChangesDialog
-            count={dirtyCount}
-            onSave={() => {
-              const sig = {
-                done: () => { setSaveSignal(null); pendingNavigation(); setPendingNavigation(null); },
-                failed: () => { setSaveSignal(null); },
-              };
-              setSaveSignal(sig);
-            }}
-            onDiscard={() => {
-              const sig = { done: () => { setDiscardSignal(null); pendingNavigation(); setPendingNavigation(null); } };
-              setDiscardSignal(sig);
-            }}
-            onCancel={() => setPendingNavigation(null)}
-          />
-        )}
-      </>
-    );
-  }
+      for (const [cat, kind] of Object.entries(kindMap)) {
+        if (patch[cat] !== undefined) {
+          const items = itemsForCategory(cat);
+          // null means all allowed — write every item as allowed=true
+          const selectedIds = patch[cat] === null ? items.map(i => i.id) : patch[cat];
+          items.forEach(item => {
+            resourceRows.push({
+              company_id: companyId, user_id: uid,
+              resource_kind: kind, resource_id: item.id,
+              allowed: selectedIds.includes(item.id),
+              updated_by: myUserId, updated_at: now,
+            });
+          });
+        }
+      }
+    }
 
-// ── Landing: 4 cards ──
+    try {
+      await Promise.all([
+        pageRows.length     ? upsertUserPermissions(pageRows)       : Promise.resolve(),
+        resourceRows.length ? upsertUserResourceAccess(resourceRows) : Promise.resolve(),
+      ]);
+      setPending(new Map());
+    } catch (e) {
+      alert("Save failed: " + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /* ── Counts ── */
+  const countFor = (uid, cat) => {
+    const perms = getPerms(uid);
+    if (cat === "pages") return ALL_PAGE_KEYS.filter(k => perms.pages[k] !== false).length;
+    const list = perms[cat];
+    if (list === null) return itemsForCategory(cat).length; // all allowed
+    return (list ?? []).length;
+  };
+  const totalFor = (cat) => cat === "pages" ? ALL_PAGE_KEYS.length : itemsForCategory(cat).length;
+
+  /* ── Filtered users ── */
+  const filteredUsers = useMemo(() =>
+    users.filter(u => !search || [u.username, u.email].some(v => v?.toLowerCase().includes(search.toLowerCase()))),
+    [users, search]);
+
+  /* ── Modal ── */
+  const modalUser = modal ? users.find(u => u.id === modal.userId) : null;
+  const modalCat  = modal ? CATEGORY_BUTTONS.find(c => c.key === modal.category) : null;
+
   return (
-    <div className="flex-1 min-h-0 grid grid-cols-2 grid-rows-2 gap-4 p-1">
-      {CARDS.map(card => (
-        <button key={card.key} onClick={() => setActiveCard(card.key)}
-          className="relative text-left rounded-2xl border-2 border-gray-100 overflow-hidden transition-colors group flex flex-col"
-          style={{
-            background: `linear-gradient(135deg, #ffffff 0%, ${card.bgSoft} 100%)`,
-            boxShadow: `0 8px 32px -8px ${card.color}30, 0 2px 8px -2px rgba(0,0,0,0.06)`,
-          }}
-          onMouseEnter={e => e.currentTarget.style.borderColor = card.color}
-          onMouseLeave={e => e.currentTarget.style.borderColor = "#f3f4f6"}>
-          <div className="relative z-10 flex flex-col h-full p-8">
-            <div className="mb-auto">
-              <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-5 transition-transform group-hover:scale-105"
-                style={{ background: `linear-gradient(145deg, ${card.color} 0%, ${card.color}cc 100%)`, boxShadow: `0 8px 20px -4px ${card.color}50` }}>
-                <card.icon size={26} className="text-white" strokeWidth={1.8} />
-              </div>
-              <p className="font-black text-xl text-gray-800 mb-2">{card.label}</p>
-              <p className="text-xs text-gray-500 leading-relaxed max-w-xs">{card.desc}</p>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, gap: 0 }}>
+      <style>{`.um-search-input::placeholder { color: #c8ccdb; font-weight: 900; letter-spacing: 0.12em; text-transform: uppercase; font-size: 11px; }`}</style>
+
+
+
+      {/* Table */}
+<div style={{ flex: 1, minHeight: 0, background: "#fff", borderRadius: "0 0 20px 20px", border: "1px solid rgba(26,47,138,0.08)",
+        boxShadow: "0 8px 40px -12px rgba(26,47,138,0.15), 0 2px 8px -2px rgba(0,0,0,0.04)",
+        overflow: "hidden", display: "flex", flexDirection: "column" }}>
+<div style={{ display: "grid", gridTemplateColumns: "2fr 64px repeat(6, 1fr) auto", alignItems: "center",
+          padding: "12px 24px", borderBottom: "1px solid #f0f0f0",
+          background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", flexShrink: 0,
+          boxShadow: "0 4px 24px -8px rgba(26,47,138,0.08)" }}>
+<div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
+            <button onClick={() => setSearchOpen(o => !o)}
+              style={{ border: "none", background: "none", cursor: "pointer", padding: 0, flexShrink: 0,
+                color: searchOpen ? "#1a2f8a" : "#94a3b8", transition: "color 200ms ease", display: "flex" }}>
+              <Search size={13} />
+            </button>
+            <div style={{
+              maxWidth: searchOpen ? 180 : 0,
+              opacity: searchOpen ? 1 : 0,
+              overflow: "hidden",
+              transition: "max-width 300ms cubic-bezier(0.34,1.56,0.64,1), opacity 200ms ease",
+            }}>
+<input
+                ref={searchRef}
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                onBlur={() => { if (!search) setSearchOpen(false); }}
+                placeholder="User"
+                className="um-search-input"
+                style={{
+                  border: "none", background: "transparent", outline: "none",
+                  fontSize: 11, fontWeight: 900, color: "#1a2f8a",
+                  letterSpacing: "0.12em", textTransform: "uppercase",
+                  width: 180, display: "block",
+                  "::placeholder": { color: "#c8ccdb" },
+                }}
+              />
             </div>
-            <div className="mt-6 flex items-center justify-between">
-<span className="px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest" style={{ background: `${card.color}15`, color: card.color }}>
-                {card.key === "pages" ? "Sidebar pages" :
-                 card.key === "companies" ? `${companies.length + structures.length} items` :
-                 card.key === "sources" ? `${sources.length + dimensions.length} items` :
-                 card.key === "mappings" ? `${mappings.length + reportMappings.length} mappings` :
-                 "Members & roles"}
+{!searchOpen && (
+              <span onClick={() => { setSearchOpen(true); setTimeout(() => searchRef.current?.focus(), 0); }} style={{ fontSize: 11, fontWeight: 900, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.12em", cursor: "pointer" }}>
+                User
               </span>
-              <span className="text-xs font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1.5" style={{ color: card.color }}>
-                Open <ChevronRight size={12} />
-              </span>
-            </div>
+            )}
           </div>
-        </button>
-      ))}
+          <span style={{ fontSize: 11, fontWeight: 900, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.12em", textAlign: "center" }}>Active</span>
+          {CATEGORY_BUTTONS.map(cat => (
+            <span key={cat.key} style={{ fontSize: 11, fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.12em", textAlign: "center", color: `${cat.color}99`, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+              <cat.icon size={10} style={{ color: `${cat.color}99` }} />
+              {cat.label}
+            </span>
+))}
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            {pending.size > 0 && (
+              <button onClick={save} disabled={saving} style={{
+                display: "flex", alignItems: "center", gap: 6, padding: "6px 14px", borderRadius: 10, border: "none",
+                background: saving ? "#94a3b8" : "linear-gradient(135deg, #1a2f8a 0%, #3a5fd9 100%)",
+                color: "#fff", cursor: saving ? "default" : "pointer",
+                fontSize: 11, fontWeight: 900, letterSpacing: "0.04em", flexShrink: 0,
+                boxShadow: saving ? "none" : "0 4px 16px -4px rgba(26,47,138,0.5)",
+              }}>
+                {saving ? <Loader2 size={10} className="animate-spin" /> : <Check size={10} />}
+                {saving ? "Saving…" : `Save ${pending.size}`}
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+          {loadingUsers ? (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 60, gap: 10, color: "#94a3b8", fontSize: 12 }}>
+              <Loader2 size={14} className="animate-spin" /> Loading users…
+            </div>
+          ) : filteredUsers.length === 0 ? (
+            <div style={{ padding: 60, textAlign: "center", fontSize: 12, color: "#94a3b8" }}>No users found</div>
+          ) : filteredUsers.map(u => {
+            const isActive = u.is_active && u.uc_is_active;
+            const isDirty  = pending.has(u.id);
+            const initials = String(u.username ?? u.email ?? "U").slice(0, 2).toUpperCase();
+            return (
+<div key={u.id} style={{
+                display: "grid", gridTemplateColumns: "2fr 64px repeat(6, 1fr)",
+                alignItems: "center", padding: "12px 24px", borderBottom: "1px solid #f5f5f7",
+                background: isDirty ? "linear-gradient(90deg, #fffdf0 0%, #ffffff 100%)" : "transparent",
+                transition: "background 200ms",
+              }}
+                onMouseEnter={e => { if (!isDirty) e.currentTarget.style.background = "#f8f9ff"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = isDirty ? "linear-gradient(90deg, #fffdf0 0%, #ffffff 100%)" : "transparent"; }}>
+                {/* User */}
+                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                  {isDirty && <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#f59e0b", flexShrink: 0, boxShadow: "0 0 6px #f59e0b" }} />}
+<div style={{ width: 36, height: 36, borderRadius: 12, flexShrink: 0,
+                    background: `linear-gradient(135deg, #1a2f8a 0%, #3a5fd9 100%)`,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    boxShadow: "0 4px 12px -4px rgba(26,47,138,0.4)" }}>
+                    <span style={{ fontSize: 12, fontWeight: 900, color: "#fff", letterSpacing: "0.02em" }}>{initials}</span>
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#1a1a2e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {u.username ?? "—"}
+                      {u.id === myUserId && <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 900, color: "#94a3b8", textTransform: "uppercase" }}>(you)</span>}
+                    </div>
+                    <div style={{ fontSize: 10, color: "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.email}</div>
+                  </div>
+                </div>
+
+                {/* Active */}
+                <div style={{ display: "flex", justifyContent: "center" }}>
+                  <Toggle checked={isActive} onChange={() => toggleActive(u)} color="#10b981" size="sm" />
+                </div>
+
+                {/* Category buttons */}
+{CATEGORY_BUTTONS.map(cat => (
+                  <div key={cat.key} style={{ display: "flex", justifyContent: "center", alignItems: "center" }}>
+                    <CatButton
+                      cat={cat}
+                      count={countFor(u.id, cat.key)}
+                      total={totalFor(cat.key)}
+                      onClick={() => setModal({ userId: u.id, category: cat.key })}
+                    />
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Modal */}
+      {modal && modalUser && modalCat && (() => {
+        const perms = getPerms(modalUser.id);
+
+        if (modal.category === "pages") {
+          return (
+            <PagesModal
+              user={modalUser}
+              pagePerms={perms.pages}
+              onChange={(newPages) => patchPerms(modalUser.id, { pages: newPages })}
+              onClose={() => setModal(null)}
+            />
+          );
+        }
+
+        const items = itemsForCategory(modal.category);
+        const raw = perms[modal.category];
+        // null = all allowed, show all selected
+        const selected = raw === null ? items.map(i => i.id) : (raw ?? items.map(i => i.id));
+
+        return (
+          <ListModal
+            title={`${modalCat.label} — ${modalUser.username ?? modalUser.email}`}
+            icon={modalCat.icon}
+            color={modalCat.color}
+            items={items}
+            selected={selected}
+            onChange={(sel) => patchPerms(modalUser.id, { [modal.category]: sel })}
+            onClose={() => setModal(null)}
+          />
+        );
+      })()}
     </div>
   );
 }

@@ -5,9 +5,7 @@ import {
  Eye, Filter, Settings, Database, Library,
 } from "lucide-react";
 import { useTypo, useSettings, useT } from "./SettingsContext";
-import { supabase } from "../../lib/supabaseClient";
-import { listPermissions } from "../../lib/permissionsApi";
-import { getActiveCompanyId } from "../../lib/mappingsApi";
+import { useCurrentUserPermissions } from "../../lib/userPermissionsApi";
 
 const NAV_KEYS = [
   { key: "home",      labelKey: "nav_home",         icon: Home },
@@ -54,44 +52,6 @@ const NAV_KEYS = [
   },
 ];
 
-export function useCurrentUserPermissions() {
-  const [role, setRole] = useState(null);
-  const [perms, setPerms] = useState(new Map()); // page_key → allowed
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const uid = session?.user?.id;
-        if (!uid) { if (!cancelled) setLoaded(true); return; }
-        const cid = await getActiveCompanyId(uid);
-        if (!cid) { if (!cancelled) setLoaded(true); return; }
-        const { data: ucRow } = await supabase.schema("accounts").from("user_companies")
-          .select("role").eq("user_id", uid).eq("company_id", cid).eq("is_active", true).maybeSingle();
-        if (cancelled) return;
-        setRole(ucRow?.role ?? null);
-        const rows = await listPermissions({ companyId: cid });
-        if (cancelled) return;
-        const m = new Map();
-        rows.forEach(r => { if (r.role === ucRow?.role) m.set(r.page_key, r.allowed); });
-        setPerms(m);
-      } catch (e) {
-        console.warn("[Sidebar] permissions load failed:", e?.message);
-      } finally { if (!cancelled) setLoaded(true); }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-const can = (pageKey) => {
-    if (perms.has(pageKey)) return perms.get(pageKey);
-    // Admin always allowed by default. Base/low: only what's explicitly allowed.
-    if (role === "admin") return true;
-    return false;
-  };
-  return { role, can, loaded };
-}
 
 const W_OPEN     = "10vw";
 const W_CLOSED   = "4.5vw";

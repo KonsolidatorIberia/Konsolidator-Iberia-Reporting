@@ -162,14 +162,39 @@ function AnimCell({ v, style, className }) {
   );
 }
 
+function PctCell({ pct, colors, rowStyle, exiting }) {
+  const animated = useAnimatedNumber(pct ?? 0, 900);
+  const isEmpty = pct === null || pct === 0;
+  const color = isEmpty ? "#D1D5DB" : Math.abs(pct) >= 50 ? colors.primary : `${colors.primary}99`;
+  return (
+    <td style={{
+        background: `${colors.primary}06`,
+        borderLeft: exiting ? "none" : "1px dashed #e5e7eb",
+        overflow: "hidden",
+        whiteSpace: "nowrap",
+        textAlign: "center",
+        ...rowStyle, color,
+        animation: exiting
+          ? "pctColOut 180ms ease both"
+          : "pctColIn 380ms cubic-bezier(0.34,1.56,0.64,1) both",
+      }}>
+      <span style={{ display: "inline-block", padding: "0 8px" }}>
+        {isEmpty ? "—" : `${animated.toFixed(1)}%`}
+      </span>
+    </td>
+  );
+}
+
 /* ─── SheetRow (consolidated only) ──────────────────────────────────────── */
 function SheetRow({
   node, depth, expanded, onToggle,
   pivot, elimPivot,
   contributionCompanies, allContributionCompanies, topParent,
   elimExpanded, elimHeaders,
-  compareMode, cmpPivot,
+  pctExpanded, pctExiting,
+  compareMode, cmpExiting, cmpPivot,
   body1Style, body2Style, subbody1Style,
+  colors,
   rowIndex = 0,
 }) {
   const hasChildren = node.children?.length > 0;
@@ -220,24 +245,27 @@ const renderCompareCells = (current, compare, key) => {
     const pct = compare !== 0 ? (delta / Math.abs(compare)) * 100 : null;
     const devColor = delta === 0 ? "#D1D5DB" : delta > 0 ? "#059669" : "#EF4444";
     const cmpColor = compare === 0 ? "#D1D5DB" : compare < 0 ? "#EF4444" : "#CF305D";
+    const hidden = !compareMode && !cmpExiting;
+    const cls = `cmp-col${hidden ? " cmp-col-hidden" : ""}`;
     return [
       <AnimCell key={`${key}-cmp`} v={compare}
-        className="px-4 py-2.5 text-center whitespace-nowrap tabular-nums border-l border-gray-100"
-        style={{ minWidth: 110, ...rowStyle, color: cmpColor, background: `rgba(207,48,93,0.05)`,
-          animation: "cmpColIn 380ms cubic-bezier(0.34,1.56,0.64,1) 60ms both", transformOrigin: "left center" }} />,
+        className={`${cls} text-center whitespace-nowrap tabular-nums px-4 py-2.5 border-l border-gray-100`}
+       style={{ ...rowStyle, color: cmpColor, background: `${colors.primary}08` }} />,
       <td key={`${key}-delta`}
-        className="px-3 py-2.5 text-center whitespace-nowrap tabular-nums"
-        style={{ minWidth: 100, ...rowStyle, color: devColor, background: `rgba(207,48,93,0.08)`,
-          animation: "cmpColIn 380ms cubic-bezier(0.34,1.56,0.64,1) 120ms both", transformOrigin: "left center" }}>
-        {delta === 0 ? "—" : delta < 0
-          ? `(${Math.abs(delta).toLocaleString("de-DE", { maximumFractionDigits: 0 })})`
-          : delta.toLocaleString("de-DE", { maximumFractionDigits: 0 })}
+        className={`${cls} text-center whitespace-nowrap tabular-nums`}
+        style={{ ...rowStyle, color: devColor, background: `${colors.primary}12` }}>
+        <span style={{ display: "inline-block", padding: "10px 12px" }}>
+          {delta === 0 ? "—" : delta < 0
+            ? `(${Math.abs(delta).toLocaleString("de-DE", { maximumFractionDigits: 0 })})`
+            : delta.toLocaleString("de-DE", { maximumFractionDigits: 0 })}
+        </span>
       </td>,
       <td key={`${key}-pct`}
-        className="px-3 py-2.5 text-center whitespace-nowrap tabular-nums"
-        style={{ minWidth: 80, ...rowStyle, color: devColor, background: `rgba(207,48,93,0.12)`,
-          animation: "cmpColIn 380ms cubic-bezier(0.34,1.56,0.64,1) 180ms both", transformOrigin: "left center" }}>
-        {pct === null ? "—" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}
+        className={`${cls} text-center whitespace-nowrap tabular-nums`}
+       style={{ ...rowStyle, color: devColor, background: `${colors.primary}1e` }}>
+        <span style={{ display: "inline-block", padding: "10px 12px" }}>
+          {pct === null ? "—" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}
+        </span>
       </td>,
     ];
   };
@@ -248,7 +276,8 @@ return (
     <>
       <tr className="group border-b border-gray-100 transition-colors hover:bg-gray-50/50"
         style={{ animation: `cfRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 25) * 35 + 50}ms both` }}>
-        <td className="sticky left-0 z-10 py-2.5 pr-4 border-r border-gray-100 bg-white group-hover:bg-gray-50/50"
+<td className="sticky left-0 z-10 py-2.5 pr-4 border-r border-gray-100 bg-white group-hover:bg-gray-50"
+          style={{ boxShadow: "2px 0 8px -2px rgba(0,0,0,0.06)" }}
           style={{ paddingLeft: `${14 + depth * 16}px`, minWidth: 220, width: 220 }}>
           <div className="flex items-center gap-1.5 cursor-pointer select-none" onClick={() => hasChildren && onToggle(node.AccountCode)}>
             {hasChildren
@@ -262,10 +291,10 @@ return (
         </td>
 
 <AnimCell v={consTotal} className="px-4 py-2.5 text-center whitespace-nowrap border-l border-gray-100" style={{ minWidth: 130, ...rowStyle }} />
-        {compareMode && renderCompareCells(consTotal, cmpConsTotal, "cons")}
+        {renderCompareCells(consTotal, cmpConsTotal, "cons")}
 
         <AnimCell v={elimTotal} className="px-4 py-2.5 text-center whitespace-nowrap border-l border-gray-100" style={{ minWidth: 110, ...rowStyle }} />
-        {compareMode && renderCompareCells(elimTotal, cmpElimTotal, "elim")}
+       {renderCompareCells(elimTotal, cmpElimTotal, "elim")}
 
         {elimExpanded && elimHeaders.map((h) => {
           const subVal = (elimPivot.get(node.AccountCode) ?? {})[h] ?? 0;
@@ -279,19 +308,19 @@ return (
         })}
 
 <AnimCell v={contribSum} className="px-4 py-2.5 text-center whitespace-nowrap border-l border-gray-200" style={{ minWidth: 110, ...rowStyle }} />
-        {compareMode && renderCompareCells(contribSum, cmpContribSum, "contribsum")}
+        {renderCompareCells(contribSum, cmpContribSum, "contribsum")}
 
-        {contributionCompanies.flatMap(c => {
+{contributionCompanies.flatMap((c, ci) => {
           const val = getContrib(c);
           const cmpVal = cmpGetContrib(c);
-          const magnitudeTotal = contributionCompanies.reduce((s, co) => s + Math.abs(getContrib(co)), 0);
-          const showPct = magnitudeTotal !== 0 && val !== 0;
-          const pct = showPct ? (val / magnitudeTotal) * 100 : null;
+          const absTotal = contributionCompanies.reduce((s, co) => s + Math.abs(getContrib(co)), 0);
+          const pct = absTotal !== 0 && val !== 0 ? (val / absTotal) * 100 : null;
           return [
-<AnimCell key={c} v={val}
+            <AnimCell key={`col-${ci}`} v={val}
               className="px-4 py-2.5 text-center whitespace-nowrap border-l border-gray-100"
               style={{ minWidth: 120, ...rowStyle }} />,
-            ...(compareMode ? renderCompareCells(val, cmpVal, `contrib-${c}`) : []),
+            ...((pctExpanded || pctExiting) ? [<PctCell key={`pct-${ci}`} pct={pct} colors={colors} rowStyle={rowStyle} exiting={pctExiting} />] : []),
+            ...((compareMode || cmpExiting) ? renderCompareCells(val, cmpVal, `contrib-${ci}`) : []),
           ];
         })}
       </tr>
@@ -304,8 +333,10 @@ return (
           allContributionCompanies={allContributionCompanies}
           topParent={topParent}
           elimExpanded={elimExpanded} elimHeaders={elimHeaders}
+pctExpanded={pctExpanded}
+          pctExiting={pctExiting}
           compareMode={compareMode} cmpPivot={cmpPivot}
-          body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style} />
+          body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style} colors={colors} />
       ))}
     </>
   );
@@ -353,15 +384,33 @@ const [loading,      setLoading]      = useState(true);
   const [metaReady,    setMetaReady]    = useState(false);
   const [probeReady,   setProbeReady]   = useState(false);
   const [expanded,     setExpanded]     = useState(new Set());
-  const [elimExpanded, setElimExpanded] = useState(false);
+const [elimExpanded, setElimExpanded] = useState(false);
+  const [pctExpanded,  setPctExpanded]  = useState(false);
+  const [pctExiting,   setPctExiting]   = useState(false);
 
-  const [compareMode,  setCompareMode]  = useState(false);
+const [compareMode,  setCompareMode]  = useState(false);
+  const [cmpVisible,   setCmpVisible]   = useState(false);
+  const [cmpExiting,   setCmpExiting]   = useState(false);
+
+  useEffect(() => {
+    if (compareMode) {
+      setCmpExiting(false);
+      setCmpVisible(true);
+    } else if (cmpVisible) {
+      setCmpExiting(true);
+      const t = setTimeout(() => { setCmpVisible(false); setCmpExiting(false); }, 200);
+      return () => clearTimeout(t);
+    }
+  }, [compareMode]);
   const [cmpYear,      setCmpYear]      = useState("");
   const [cmpMonth,     setCmpMonth]     = useState("");
   const [cmpSource,    setCmpSource]    = useState("");
   const [cmpStructure, setCmpStructure] = useState("");
-const [cmpRawData,   setCmpRawData]   = useState([]);
-  const [cmpLoading,   setCmpLoading]   = useState(false);
+const [cmpRawData,      setCmpRawData]      = useState([]);
+  const [cmpAllRawData,   setCmpAllRawData]   = useState([]);
+  const [cmpLoading,      setCmpLoading]      = useState(false);
+  const [cmpUpDimGroups,  setCmpUpDimGroups]  = useState(null);
+  const [cmpUpDimensions, setCmpUpDimensions] = useState(null);
 const [viewsModalOpen, setViewsModalOpen] = useState(false);
 
   const [fakeProgress, setFakeProgress] = useState(0);
@@ -578,6 +627,42 @@ if ((d.value ?? []).length > 0) {
     return () => { cancelled = true; };
   }, [token, metaReady, source, structure, topParent]);
 
+const cmpDimGroups = useMemo(() => {
+    const seen = new Set();
+    cmpAllRawData.forEach(r => {
+      parseDimensionsField(r.Dimensions ?? r.dimensions ?? "").forEach(d => {
+        if (d.group) seen.add(d.group);
+      });
+    });
+    return [...seen].sort();
+  }, [cmpAllRawData]);
+
+const cmpDimNameMap = useMemo(() => {
+    const m = new Map();
+    cmpAllRawData.forEach(r => {
+      const raw = r.Dimensions ?? r.dimensions ?? "";
+      const name = r.DimensionName ?? r.dimensionName ?? "";
+      parseDimensionsField(raw).forEach(d => {
+        if (!m.has(d.code) && name) m.set(d.code, name);
+      });
+    });
+    return m;
+}, [cmpAllRawData]);
+
+const cmpFilteredDims = useMemo(() => {
+    const seen = new Set();
+    const dims = [];
+    cmpAllRawData.forEach(r => {
+      parseDimensionsField(r.Dimensions ?? r.dimensions ?? "").forEach(d => {
+        if (!cmpUpDimGroups || cmpUpDimGroups.includes(d.group)) {
+          const key = `${d.group}:${d.code}`;
+          if (!seen.has(key)) { seen.add(key); dims.push({ group: d.group, code: d.code }); }
+        }
+      });
+    });
+    return dims.sort((a, b) => a.code.localeCompare(b.code));
+  }, [cmpAllRawData, cmpUpDimGroups]);
+
 const dimGroups = useMemo(() => {
     const seen = new Set();
     allRawData.forEach(r => {
@@ -614,9 +699,26 @@ const dimNameMap = useMemo(() => {
     return dims.sort((a, b) => a.code.localeCompare(b.code));
   }, [allRawData, upDimGroups]);
 
-  const effectiveCompanies = selectedCompanies.length === 0
-    ? contributionCompanies
-    : contributionCompanies.filter(c => selectedCompanies.includes(c));
+const effectiveCompanies = useMemo(() =>
+    selectedCompanies.length === 0
+      ? contributionCompanies
+      : contributionCompanies.filter(c => selectedCompanies.includes(c)),
+  [contributionCompanies, selectedCompanies]);
+
+  const [colOrder, setColOrder] = useState(null);
+  const [draggingCol, setDraggingCol] = useState(null);
+  const [dragOverCol, setDragOverCol] = useState(null);
+
+const orderedEffectiveCompanies = colOrder
+    ? (() => {
+        const set = new Set(effectiveCompanies);
+        const ordered = colOrder.filter(c => set.has(c));
+        const rest = effectiveCompanies.filter(c => !colOrder.includes(c));
+        return [...ordered, ...rest];
+      })()
+    : effectiveCompanies;
+  const effectiveKey = effectiveCompanies.join(",");
+  useEffect(() => { setColOrder(null); }, [effectiveKey]);
 
   // ─── Fetch consolidated data ────────────────────────────────────
 useEffect(() => {
@@ -669,13 +771,15 @@ useEffect(() => {
       headers: { Authorization: `Bearer ${token}` }
     })
       .then(r => r.json())
-      .then(d => {
+.then(d => {
         if (cancelled) return;
-        const cfRows = (d.value || []).filter(r => {
+        const allRows = d.value || [];
+        const cfRows = allRows.filter(r => {
           const t = r.AccountType ?? r.accountType ?? "";
           return t === "C/F" || t === "CFS";
         });
         setCmpRawData(cfRows);
+        setCmpAllRawData(allRows);
         setCmpLoading(false);
       })
       .catch(() => { if (!cancelled) { setCmpRawData([]); setCmpLoading(false); } });
@@ -709,15 +813,16 @@ const consolidatedPivot = useMemo(() => {
 const cmpConsolidatedPivot = useMemo(() => {
     const m = new Map();
     cmpRawData.forEach(r => {
+      const role = r.CompanyRole ?? r.companyRole ?? "";
+      if (role !== "Group" && !rowMatchesDimMulti(r, cmpUpDimGroups, cmpUpDimensions)) return;
       if (!m.has(r.AccountCode)) m.set(r.AccountCode, {});
       const c = m.get(r.AccountCode);
-      const role = r.CompanyRole ?? r.companyRole ?? "";
       const key = role === "Group" ? topParent : (r.CompanyShortName ?? "");
       if (!c[key]) c[key] = [];
       c[key].push(r);
     });
     return m;
-  }, [cmpRawData, topParent]);
+  }, [cmpRawData, topParent, cmpUpDimGroups, cmpUpDimensions]);
 
 const accountMap = useMemo(() => {
     const m = new Map();
@@ -809,9 +914,17 @@ const { elimPivot, elimHeaders } = useMemo(() => {
         .cf-scroll::-webkit-scrollbar { display: none; }
         .cf-scroll thead { background: rgba(255,255,255,0.95); }
         .cf-scroll thead th { border-color: transparent !important; box-shadow: none !important; }
-        @keyframes cfRowSlideIn { 0% { opacity:0; transform:translateY(8px); } 100% { opacity:1; transform:translateY(0); } }
+@keyframes cfRowSlideIn { 0% { opacity:0; transform:translateY(8px); } 100% { opacity:1; transform:translateY(0); } }
         @keyframes cmpColIn { 0% { opacity:0; transform:scaleX(0.4) translateX(-12px); } 60% { opacity:1; } 100% { opacity:1; transform:scaleX(1) translateX(0); } }
-        @keyframes cmpColOut { 0% { opacity:1; transform:scaleX(1) translateX(0); } 100% { opacity:0; transform:scaleX(0.3) translateX(-8px); } }
+       @keyframes cmpColOut { 0% { opacity:1; } 100% { opacity:0; } }
+.cmp-col { transition: opacity 180ms ease, min-width 180ms ease, max-width 180ms ease, padding 180ms ease; min-width: fit-content; }
+        .cmp-col-hidden { opacity:0 !important; min-width:0 !important; max-width:0 !important; padding-left:0 !important; padding-right:0 !important; overflow:hidden !important; }
+@keyframes pctColOut { 0% { opacity:1; } 60% { opacity:0; } 100% { opacity:0; } }
+        @keyframes pctColIn  { 0% { opacity:0; transform:scaleX(0.2); } 100% { opacity:1; transform:scaleX(1); } }
+        @keyframes cmpBarIn { 0% { opacity:0; max-height:0; padding-top:0; padding-bottom:0; margin-bottom:0; } 100% { opacity:1; max-height:80px; padding-top:12px; padding-bottom:12px; } }
+       @keyframes cmpBarOut { 0% { opacity:1; max-height:80px; } 100% { opacity:0; max-height:0; padding-top:0; padding-bottom:0; } }
+.cf-breaker-row { background-color: var(--breaker-color); }
+        .cf-breaker-row td { background-color: var(--breaker-color) !important; }
       `}</style>
 
 <PageHeader
@@ -896,9 +1009,9 @@ const { elimPivot, elimHeaders } = useMemo(() => {
 
 
 
-{compareMode && (
+{cmpVisible && (
         <div className="flex items-center gap-2 flex-wrap px-5 py-3 bg-white rounded-2xl border border-gray-100 shadow-sm flex-shrink-0"
-          style={{ overflow: "visible", position: "relative", zIndex: 45 }}>
+          style={{ overflow: "visible", position: "relative", zIndex: 45, animation: cmpExiting ? "cmpBarOut 350ms ease both" : "cmpBarIn 400ms cubic-bezier(0.34,1.56,0.64,1) both" }}>
           <div className="flex items-center gap-2 mr-2">
             <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
               style={{ background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)", boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)" }}>
@@ -906,7 +1019,7 @@ const { elimPivot, elimHeaders } = useMemo(() => {
             </div>
             <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Compare with</span>
           </div>
-          <HeaderFilterPill label="Source"    value={cmpSource}    onChange={setCmpSource}
+<HeaderFilterPill label="Source"    value={cmpSource}    onChange={setCmpSource}
             options={sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s }))} />
           <HeaderFilterPill label="Year"      value={cmpYear}      onChange={setCmpYear}
             options={availableYears} />
@@ -914,6 +1027,16 @@ const { elimPivot, elimHeaders } = useMemo(() => {
             options={availableMonths} />
           <HeaderFilterPill label="Structure" value={cmpStructure} onChange={setCmpStructure}
             options={structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s }))} />
+          {cmpDimGroups.length > 0 && (
+            <MultiFilterPill label="Dim Group" values={cmpUpDimGroups}
+              onChange={vs => { setCmpUpDimGroups(vs); setCmpUpDimensions(null); }}
+              options={cmpDimGroups.map(g => ({ value: g, label: g }))} />
+          )}
+          {cmpFilteredDims.length > 0 && (
+            <MultiFilterPill label="Dims" values={cmpUpDimensions}
+              onChange={setCmpUpDimensions}
+              options={cmpFilteredDims.map(d => ({ value: d.code, label: cmpDimNameMap.get(d.code) ?? d.code }))} />
+          )}
           {cmpLoading && <Loader2 size={11} className="animate-spin ml-2" style={{ color: "#CF305D" }} />}
         </div>
       )}
@@ -960,7 +1083,7 @@ const { elimPivot, elimHeaders } = useMemo(() => {
           ) : (
             <div className="cf-scroll-outer flex-1 min-h-0" style={{ minWidth: 0 }}>
               <div className="cf-scroll" style={{ minWidth: 0 }}>
-                <table className="text-xs border-collapse" style={{ borderSpacing: 0, width: "100%", minWidth: "max-content", tableLayout: "auto" }}>
+                <table className="text-xs border-collapse" style={{ borderSpacing: 0, width: "max-content", minWidth: "100%", tableLayout: "auto" }}>
 <thead className="sticky top-0 z-30">
 <tr style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)" }}>
                       <th className="sticky left-0 z-40 text-left px-6" style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", height: "64px", minWidth: 220, width: 220 }}>
@@ -985,11 +1108,9 @@ const { elimPivot, elimHeaders } = useMemo(() => {
                           <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: `${colors.primary}60` }}>{isRootView ? "Consolidated" : "Subgroup"}</span>
                         </div>
                       </th>
-{compareMode && <>
-                        <th className="text-center px-3" style={{ background: `rgba(207,48,93,0.05)`, minWidth: 90, animation: "cmpColIn 420ms cubic-bezier(0.34,1.56,0.64,1) 60ms both", transformOrigin: "left center" }}><span className="font-black" style={{ color: "#CF305D", fontSize: 11, opacity: 0.8 }}>CMP</span></th>
-                        <th className="text-center px-3" style={{ background: `rgba(207,48,93,0.08)`, minWidth: 100, animation: "cmpColIn 420ms cubic-bezier(0.34,1.56,0.64,1) 120ms both", transformOrigin: "left center" }}><span className="font-black" style={{ color: "#CF305D", fontSize: 11, opacity: 0.8 }}>Δ AMT</span></th>
-                        <th className="text-center px-3" style={{ background: `rgba(207,48,93,0.12)`, minWidth: 80, animation: "cmpColIn 420ms cubic-bezier(0.34,1.56,0.64,1) 180ms both", transformOrigin: "left center" }}><span className="font-black" style={{ color: "#CF305D", fontSize: 11, opacity: 0.8 }}>Δ %</span></th>
-                      </>}
+<th className={`cmp-col${!compareMode && !cmpExiting ? " cmp-col-hidden" : ""}`} style={{ background: `${colors.primary}08`, textAlign: "center" }}><span style={{ display: "inline-block", padding: "0 12px", fontWeight: 900, color: "#CF305D", fontSize: 11, opacity: 0.8 }}>CMP</span></th>
+<th className={`cmp-col${!compareMode && !cmpExiting ? " cmp-col-hidden" : ""}`} style={{ background: `${colors.primary}12`, minWidth: 100, textAlign: "center" }}><span style={{ display: "inline-block", padding: "0 12px", fontWeight: 900, color: "#CF305D", fontSize: 11, opacity: 0.8 }}>Δ AMT</span></th>
+<th className={`cmp-col${!compareMode && !cmpExiting ? " cmp-col-hidden" : ""}`} style={{ background: `${colors.primary}1e`, minWidth: 80, textAlign: "center" }}><span style={{ display: "inline-block", padding: "0 12px", fontWeight: 900, color: "#CF305D", fontSize: 11, opacity: 0.8 }}>Δ %</span></th>
 
                       <th className="text-center px-4 cursor-pointer select-none" style={{ background: "rgba(255,255,255,0.95)", borderLeft: "2px solid #f0f0f0", minWidth: 110 }}
                         onClick={() => setElimExpanded(e => !e)}>
@@ -998,40 +1119,78 @@ const { elimPivot, elimHeaders } = useMemo(() => {
                           <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: `${colors.primary}60` }}>Interco</span>
                         </div>
                       </th>
-{compareMode && <>
-                        <th className="text-center px-3" style={{ background: `rgba(207,48,93,0.05)`, minWidth: 90, animation: "cmpColIn 420ms cubic-bezier(0.34,1.56,0.64,1) 60ms both", transformOrigin: "left center" }}><span className="font-black" style={{ color: "#CF305D", fontSize: 11, opacity: 0.8 }}>CMP</span></th>
-                        <th className="text-center px-3" style={{ background: `rgba(207,48,93,0.08)`, minWidth: 100, animation: "cmpColIn 420ms cubic-bezier(0.34,1.56,0.64,1) 120ms both", transformOrigin: "left center" }}><span className="font-black" style={{ color: "#CF305D", fontSize: 11, opacity: 0.8 }}>Δ AMT</span></th>
-                        <th className="text-center px-3" style={{ background: `rgba(207,48,93,0.12)`, minWidth: 80, animation: "cmpColIn 420ms cubic-bezier(0.34,1.56,0.64,1) 180ms both", transformOrigin: "left center" }}><span className="font-black" style={{ color: "#CF305D", fontSize: 11, opacity: 0.8 }}>Δ %</span></th>
-                      </>}
-                      {elimExpanded && elimHeaders.map(h => (
+<th className={`cmp-col${!compareMode && !cmpExiting ? " cmp-col-hidden" : ""}`} style={{ background: `${colors.primary}12`, textAlign: "center" }}><span style={{ display: "inline-block", padding: "0 12px", fontWeight: 900, color: "#CF305D", fontSize: 11, opacity: 0.8 }}>CMP</span></th>
+<th className={`cmp-col${!compareMode && !cmpExiting ? " cmp-col-hidden" : ""}`} style={{ background: `${colors.primary}12`, minWidth: 100, textAlign: "center" }}><span style={{ display: "inline-block", padding: "0 12px", fontWeight: 900, color: "#CF305D", fontSize: 11, opacity: 0.8 }}>Δ AMT</span></th>
+<th className={`cmp-col${!compareMode && !cmpExiting ? " cmp-col-hidden" : ""}`} style={{ background: `${colors.primary}1e`, minWidth: 80, textAlign: "center" }}><span style={{ display: "inline-block", padding: "0 12px", fontWeight: 900, color: "#CF305D", fontSize: 11, opacity: 0.8 }}>Δ %</span></th>
+                      {elimExpanded && elimHeaders.map(h => ( 
                         <th key={`elim-head-${h}`} className="text-center px-3" style={{ background: `${colors.primary}06`, borderLeft: "1px solid #e5e7eb", minWidth: 140 }}>
                           <span className="font-black" style={{ color: colors.primary, fontSize: 11 }} title={h}>{h}</span>
                         </th>
                       ))}
-
-                      <th className="text-center px-4" style={{ background: "rgba(255,255,255,0.95)", borderLeft: "2px solid #f0f0f0", minWidth: 110 }}>
+<th className="text-center px-4 cursor-pointer select-none" style={{ background: "rgba(255,255,255,0.95)", borderLeft: "2px solid #f0f0f0", minWidth: 110 }}
+                       onClick={() => {
+                          if (pctExpanded) {
+setPctExiting(true);
+            setTimeout(() => { setPctExpanded(false); setPctExiting(false); }, 200);
+                          } else {
+                            setPctExiting(false);
+                            setPctExpanded(true);
+                          }
+                        }}>
                         <div className="flex flex-col items-center gap-0.5 py-4">
-                          <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>Contribution</span>
+                          <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>Contribution {pctExpanded ? "▾" : "▸"}</span>
                           <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: `${colors.primary}60` }}>Sum</span>
                         </div>
                       </th>
-{compareMode && <>
-                        <th className="text-center px-3" style={{ background: `rgba(207,48,93,0.05)`, minWidth: 90, animation: "cmpColIn 420ms cubic-bezier(0.34,1.56,0.64,1) 60ms both", transformOrigin: "left center" }}><span className="font-black" style={{ color: "#CF305D", fontSize: 11, opacity: 0.8 }}>CMP</span></th>
-                        <th className="text-center px-3" style={{ background: `rgba(207,48,93,0.08)`, minWidth: 100, animation: "cmpColIn 420ms cubic-bezier(0.34,1.56,0.64,1) 120ms both", transformOrigin: "left center" }}><span className="font-black" style={{ color: "#CF305D", fontSize: 11, opacity: 0.8 }}>Δ AMT</span></th>
-                        <th className="text-center px-3" style={{ background: `rgba(207,48,93,0.12)`, minWidth: 80, animation: "cmpColIn 420ms cubic-bezier(0.34,1.56,0.64,1) 180ms both", transformOrigin: "left center" }}><span className="font-black" style={{ color: "#CF305D", fontSize: 11, opacity: 0.8 }}>Δ %</span></th>
-                      </>}
+<th className={`cmp-col${!compareMode && !cmpExiting ? " cmp-col-hidden" : ""}`} style={{ background: `${colors.primary}1e`, textAlign: "center" }}><span style={{ display: "inline-block", padding: "0 12px", fontWeight: 900, color: "#CF305D", fontSize: 11, opacity: 0.8 }}>CMP</span></th>
+<th className={`cmp-col${!compareMode && !cmpExiting ? " cmp-col-hidden" : ""}`} style={{ background: `${colors.primary}12`, minWidth: 100, textAlign: "center" }}><span style={{ display: "inline-block", padding: "0 12px", fontWeight: 900, color: "#CF305D", fontSize: 11, opacity: 0.8 }}>Δ AMT</span></th>
+<th className={`cmp-col${!compareMode && !cmpExiting ? " cmp-col-hidden" : ""}`} style={{ background: `${colors.primary}1e`, minWidth: 80, textAlign: "center" }}><span style={{ display: "inline-block", padding: "0 12px", fontWeight: 900, color: "#CF305D", fontSize: 11, opacity: 0.8 }}>Δ %</span></th>
 
-                      {effectiveCompanies.map(c => (
+{orderedEffectiveCompanies.map(c => (
                         <React.Fragment key={c}>
-                          <th className="text-center px-4" style={{ background: "rgba(255,255,255,0.95)", borderLeft: "1px solid #f0f0f0", minWidth: 130 }}>
+                          <th className="text-center px-4 select-none"
+                            draggable
+                            onDragStart={() => setDraggingCol(c)}
+                            onDragOver={e => { e.preventDefault(); setDragOverCol(c); }}
+                            onDragLeave={() => setDragOverCol(null)}
+onDrop={e => {
+                              e.preventDefault();
+                              if (!draggingCol || draggingCol === c) { setDraggingCol(null); setDragOverCol(null); return; }
+                              const cols = [...orderedEffectiveCompanies];
+                              const from = cols.indexOf(draggingCol);
+                              const to = cols.indexOf(c);
+                              if (from === -1 || to === -1) { setDraggingCol(null); setDragOverCol(null); return; }
+                              const next = [...cols]; next.splice(from, 1); next.splice(to, 0, draggingCol);
+                              setColOrder(next); setDraggingCol(null); setDragOverCol(null);
+                            }}
+                            onDragEnd={() => { setDraggingCol(null); setDragOverCol(null); }}
+                            style={{
+                              background: dragOverCol === c ? `${colors.primary}15` : "rgba(255,255,255,0.95)",
+                              borderLeft: "1px solid #f0f0f0", minWidth: 130, cursor: "grab",
+                              outline: dragOverCol === c ? `2px solid ${colors.primary}` : "none",
+                              opacity: draggingCol === c ? 0.4 : 1,
+                            }}>
                             <div className="flex flex-col items-center gap-0.5 py-4">
                               <span className="font-black tracking-tight truncate max-w-[140px]" style={{ color: colors.primary, fontSize: 13, letterSpacing: "-0.01em" }} title={getLegal(c)}>{getLegal(c)}</span>
                               <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: `${colors.primary}60` }}>{displayCurrency || "—"}</span>
                             </div>
                           </th>
-                          {compareMode && <>
+{(pctExpanded || pctExiting) && <th style={{
+                              background: `${colors.primary}06`,
+                              borderLeft: pctExiting ? "none" : "1px dashed #e5e7eb",
+                              overflow: "hidden",
+                              whiteSpace: "nowrap",
+                              textAlign: "center",
+                              animation: pctExiting
+                                ? "pctColOut 180ms ease both"
+                                : "pctColIn 380ms cubic-bezier(0.34,1.56,0.64,1) both",
+                            }}>
+                            <span style={{ display: "inline-block", padding: "0 8px", fontWeight: 900, color: `${colors.primary}80`, fontSize: 11 }}>%</span>
+                          </th>}
+{compareMode && <>
                             <th className="text-center px-3" style={{ background: `${colors.primary}08`, minWidth: 90 }}><span className="font-black" style={{ color: "#CF305D", fontSize: 11, opacity: 0.8 }}>CMP</span></th>
-                            <th className="text-center px-3" style={{ background: `${colors.primary}12`, minWidth: 110 }}><span className="font-black" style={{ color: "#CF305D", fontSize: 11, opacity: 0.8 }}>Δ</span></th>
+                            <th className="text-center px-3" style={{ background: `${colors.primary}12`, minWidth: 100 }}><span className="font-black" style={{ color: "#CF305D", fontSize: 11, opacity: 0.8 }}>Δ AMT</span></th>
+                            <th className="text-center px-3" style={{ background: `${colors.primary}1e`, minWidth: 80 }}><span className="font-black" style={{ color: "#CF305D", fontSize: 11, opacity: 0.8 }}>Δ %</span></th>
                           </>}
                         </React.Fragment>
                       ))}
@@ -1042,16 +1201,18 @@ const { elimPivot, elimHeaders } = useMemo(() => {
                     {(() => {
                       if (!activeCfMapping?.rows) {
 return tree.map((node, ri) => (
-                          <SheetRow key={node.AccountCode} node={node} depth={0}
+<SheetRow key={node.AccountCode} node={node} depth={0}
                             expanded={expanded} onToggle={toggleExpand}
                             pivot={consolidatedPivot} elimPivot={elimPivot}
-contributionCompanies={effectiveCompanies}
+                            contributionCompanies={orderedEffectiveCompanies}
                             allContributionCompanies={contributionCompanies}
                             topParent={topParent}
                             elimExpanded={elimExpanded} elimHeaders={elimHeaders}
+pctExpanded={pctExpanded}
+                            pctExiting={pctExiting}
                             compareMode={compareMode} cmpPivot={cmpConsolidatedPivot}
                             body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style}
-                            rowIndex={ri} />
+                            colors={colors} rowIndex={ri} />
                         ));
                       }
                       const nodesByCode = new Map();
@@ -1100,13 +1261,14 @@ contributionCompanies={effectiveCompanies}
                         })
                         .filter(({ node }) => hasValue(node));
                       const seenSections = new Set();
-const totalColsCons =
+const activeCmp = compareMode || cmpExiting;
+                      const totalColsCons =
                         1
-                        + (1 + (compareMode ? 3 : 0)
-                          + 1 + (compareMode ? 3 : 0)
+                        + (1 + (activeCmp ? 3 : 0)
+                          + 1 + (activeCmp ? 3 : 0)
                           + (elimExpanded ? elimHeaders.length : 0)
-                          + 1 + (compareMode ? 3 : 0))
-                        + effectiveCompanies.length * (compareMode ? 4 : 1);
+                          + 1 + (activeCmp ? 3 : 0))
+                        + orderedEffectiveCompanies.length * (activeCmp ? 5 : (pctExpanded || pctExiting ? 2 : 1));
                       const rowsOut = [];
                       ordered.forEach(({ node, info }) => {
                         if (!seenSections.has(info.section)) {
@@ -1114,28 +1276,29 @@ const totalColsCons =
                           const sec = activeCfMapping.sections.get(info.section);
                           if (sec) {
 rowsOut.push(
-                              <tr key={`section-${info.section}`}
-                                style={{ animation: `cfRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowsOut.length, 25) * 35 + 50}ms both` }}>
-                                <td colSpan={totalColsCons}
-                                  style={{ backgroundColor: sec.color, color: "#fff", padding: "8px 16px",
-                                           fontSize: 11, fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+<tr key={`section-${info.section}`}
+                                style={{ '--breaker-color': sec.color, animation: `cfRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowsOut.length, 25) * 35 + 50}ms both`, backgroundColor: sec.color }}>
+                                <td className="sticky left-0 z-10" style={{ backgroundColor: sec.color, color: "#fff", padding: "8px 16px", fontSize: 11, fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase", whiteSpace: "nowrap" }}>
                                   {sec.label}
                                 </td>
+                                <td colSpan={9999} style={{ backgroundColor: sec.color }} />
                               </tr>
                             );
                           }
                         }
 rowsOut.push(
-                          <SheetRow key={node.AccountCode} node={node} depth={0}
+                         <SheetRow key={node.AccountCode} node={node} depth={0}
                             expanded={expanded} onToggle={toggleExpand}
                             pivot={consolidatedPivot} elimPivot={elimPivot}
-contributionCompanies={effectiveCompanies}
+                            contributionCompanies={orderedEffectiveCompanies}
                             allContributionCompanies={contributionCompanies}
                             topParent={topParent}
                             elimExpanded={elimExpanded} elimHeaders={elimHeaders}
+pctExpanded={pctExpanded}
+                            pctExiting={pctExiting}
                             compareMode={compareMode} cmpPivot={cmpConsolidatedPivot}
                             body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style}
-                            rowIndex={rowsOut.length} />
+                            colors={colors} rowIndex={rowsOut.length} />
                         );
                       });
                       return rowsOut;

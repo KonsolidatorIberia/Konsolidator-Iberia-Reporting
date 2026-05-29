@@ -3,36 +3,7 @@ import { useSettingsControls, DEFAULT_SETTINGS } from "./SettingsContext.jsx";
 import { LOCALES } from "../../lib/i18n";
 import PageHeader from "./PageHeader.jsx";
 import UserManagement from "./UserManagement.jsx";
-import { supabase } from "../../lib/supabaseClient";
-import { listPermissions } from "../../lib/permissionsApi";
-import { getActiveCompanyId } from "../../lib/mappingsApi";
-
-function useCurrentUserPermissions() {
-  const [role, setRole] = useState(null);
-  const [perms, setPerms] = useState(new Map());
-  useEffect(() => {
-    (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      const uid = session?.user?.id;
-      if (!uid) return;
-      const cid = await getActiveCompanyId(uid);
-      if (!cid) return;
-      const { data: ucRow } = await supabase.schema("accounts").from("user_companies")
-        .select("role").eq("user_id", uid).eq("company_id", cid).eq("is_active", true).maybeSingle();
-      setRole(ucRow?.role ?? null);
-      const rows = await listPermissions({ companyId: cid });
-      const m = new Map();
-      rows.forEach(r => { if (r.role === ucRow?.role) m.set(r.page_key, r.allowed); });
-      setPerms(m);
-    })();
-  }, []);
-  const can = (pageKey) => {
-    if (perms.has(pageKey)) return perms.get(pageKey);
-    if (role === "admin" || role === "base") return true;
-    return false;
-  };
-  return { role, can };
-}
+import { useCurrentUserPermissions } from "../../lib/userPermissionsApi";
 
 import {
   Type, Palette, RotateCcw, Check, ChevronDown,
@@ -490,7 +461,6 @@ export default function SettingsPage({ token, preloadedData = {} }) {
 
 const [activeTab, setActiveTab] = useState("typography");
 const [userMgmtCard, setUserMgmtCard] = useState(null);
-const userMgmtGuardRef = useRef(null);
 const { can } = useCurrentUserPermissions();
 
   useEffect(() => {
@@ -556,10 +526,7 @@ return (
 <PageHeader
         kicker="Workspace"
         title="Settings"
-        onBack={activeTab === "permissions" && userMgmtCard ? () => {
-          if (userMgmtGuardRef.current) userMgmtGuardRef.current(() => setUserMgmtCard(null));
-          else setUserMgmtCard(null);
-        } : undefined}
+onBack={undefined}
 tabs={[
           ...(can("settings-personalization") ? [
             { id: "typography", label: "Typography", icon: Type },
@@ -571,13 +538,7 @@ tabs={[
           ] : []),
         ]}
 activeTab={activeTab}
-        onTabChange={(next) => {
-          if (activeTab === "permissions" && userMgmtGuardRef.current) {
-            userMgmtGuardRef.current(() => setActiveTab(next));
-          } else {
-            setActiveTab(next);
-          }
-        }}
+onTabChange={setActiveTab}
         filters={[]}
 headerExtra={activeTab !== "permissions" ? (
           <>
@@ -674,7 +635,7 @@ headerExtra={activeTab !== "permissions" ? (
 
 {activeTab === "permissions" && (
             <div className="flex-1 min-h-0 flex flex-col">
-              <UserManagement token={token} preloadedData={preloadedData} activeCard={userMgmtCard} setActiveCard={setUserMgmtCard} navGuardRef={userMgmtGuardRef} />
+            <UserManagement token={token} preloadedData={preloadedData} />
             </div>
           )}
 

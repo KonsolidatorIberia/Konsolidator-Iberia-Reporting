@@ -13,9 +13,7 @@ import ConsolidatedDimensionesPage    from "../components/layout/ConsolidatedDim
 import ConsolidatedMemoryNotesPage    from "../components/layout/ConsolidatedMemoryNotesPage.jsx";
 import ConsolidatedKpiPage            from "../components/layout/ConsolidatedKpiPage.jsx";
 import MappingsPage                   from "../components/layout/MappingsPage.jsx";
-
-import { useCurrentUserPermissions } from "../components/layout/Sidebar.jsx";
-
+import { useCurrentUserPermissions } from "../lib/userPermissionsApi";
 function AccessDenied({ pageKey }) {
   return (
     <div className="flex items-center justify-center h-full p-8">
