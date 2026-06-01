@@ -916,7 +916,7 @@ nav_home:          "Inicio",
     btn_signing_in:     "Iniciando sesión…",
 
     // ── Period modes ─────────────────────────────
-    mode_ytd:           "AcAño",
+    mode_ytd:           "YTD",
     mode_monthly:       "Mensual",
     mode_mtd:           "AcMes",
 

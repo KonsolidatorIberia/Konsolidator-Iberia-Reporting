@@ -52,7 +52,7 @@ const [settings, setSettings]           = useState(DEFAULT_SETTINGS);
   const [detectedLocale, setDetectedLocale] = useState(null); // set by EpicLoader
   const lastFetchedUserRef = useRef(null);
 
-// Track auth — initial session + auth-state changes (login / logout / refresh)
+// Track auth — initial session + auth-state changes (login / logout)
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -60,8 +60,17 @@ const [settings, setSettings]           = useState(DEFAULT_SETTINGS);
       if (cancelled) return;
       setUserId(session?.user?.id ?? null);
     })();
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUserId(session?.user?.id ?? null);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      // TOKEN_REFRESHED just rotates the JWT — userId hasn't changed.
+      // Calling setUserId here would re-render every consumer and re-trigger
+      // all data-fetch effects across the app. Skip it entirely.
+      if (event === "TOKEN_REFRESHED") return;
+      // For all other events use functional update so React bails out
+      // if the value hasn't actually changed (same UUID string).
+      setUserId(prev => {
+        const next = session?.user?.id ?? null;
+        return prev === next ? prev : next;
+      });
     });
     return () => {
       cancelled = true;
@@ -69,15 +78,14 @@ const [settings, setSettings]           = useState(DEFAULT_SETTINGS);
     };
   }, []);
 
-  // Periodic active-status recheck — boots user if they've been deactivated
-  // while their session is live.
+  // Periodic active-status recheck — boots user if deactivated mid-session.
+  // First run is delayed 60 s so it doesn't duplicate work done at login.
   useEffect(() => {
     if (!userId) return;
     let cancelled = false;
 
     const check = async () => {
       try {
-        // 1. Global user-level active flag
         const { data: u } = await supabase.schema("accounts").from("users")
           .select("is_active").eq("id", userId).maybeSingle();
         if (cancelled) return;
@@ -86,7 +94,6 @@ const [settings, setSettings]           = useState(DEFAULT_SETTINGS);
           await supabase.auth.signOut();
           return;
         }
-        // 2. Any active company memberships?
         const { data: links } = await supabase.schema("accounts").from("user_companies")
           .select("user_id").eq("user_id", userId).eq("is_active", true).limit(1);
         if (cancelled) return;
@@ -94,14 +101,13 @@ const [settings, setSettings]           = useState(DEFAULT_SETTINGS);
           alert("Your access to all companies has been revoked. You'll be signed out.");
           await supabase.auth.signOut();
         }
-      } catch {
-        // Network blip — ignore, try again next tick
-      }
+      } catch { /* network blip — try again next tick */ }
     };
 
-    check(); // run immediately
-    const interval = setInterval(check, 60_000); // every 60s
-    return () => { cancelled = true; clearInterval(interval); };
+    // 60 s initial delay — login already verified status, no need to recheck immediately
+    const first    = setTimeout(check, 60_000);
+    const interval = setInterval(check, 60_000);
+    return () => { cancelled = true; clearTimeout(first); clearInterval(interval); };
   }, [userId]);
 
   // Fetch the user's settings from Supabase whenever the user changes

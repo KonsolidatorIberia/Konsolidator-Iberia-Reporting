@@ -76,64 +76,18 @@ async function prefetchHomeData(token, sources, structures, companies) {
     }
     if (!latestPeriod) return null;
 
-const { year, month } = latestPeriod;
-// Trailing 12 months — fast (12 calls), finishes well within EpicLoader's
-    // time budget. Gives trendRows its initial data so loadProgress credits 20%
-    // immediately on HomePage mount. The Jan-anchored re-fetch happens in
-    // background after the overlay is already gone.
-    const trendMonths = [];
-    for (let i = 11; i >= 0; i--) {
-      let m = month - i, y = year;
-      while (m < 1) { m += 12; y -= 1; }
-      trendMonths.push({ year: y, month: m });
-    }
-    const prevM = month === 1 ? 12 : month - 1;
-    const prevY = month === 1 ? year - 1 : year;
-
-    const fetchOne = async (y, m) => {
-      const filter = `Year eq ${y} and Month eq ${m} and Source eq '${src}' and GroupStructure eq '${str}' and CompanyShortName eq '${co}'`;
-      const url = `/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`;
-      try {
-        const r = await fetch(url, {
-          headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Cache-Control": "no-cache" }
-        });
-        if (!r.ok) return [];
-        const j = await r.json();
-        return j.value ?? (Array.isArray(j) ? j : []);
-      } catch { return []; }
-    };
-
-// All-companies fetch (no CompanyShortName filter) — feeds HomePage's
-    // allCoCurrentRows state (15% of loadProgress) without a second network call.
-    const fetchAllCo = async () => {
-      try {
-        const allCoFilter = `Year eq ${year} and Month eq ${month} and Source eq '${src}' and GroupStructure eq '${str}'`;
-        const r = await fetch(
-          `/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(allCoFilter)}`,
-          { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }
-        );
-        if (!r.ok) return [];
-        const j = await r.json();
-        return j.value ?? (Array.isArray(j) ? j : []);
-      } catch { return []; }
-    };
-
-    const [trendResults, prevRows, allCoCurrentRows] = await Promise.all([
-      Promise.all(trendMonths.map(({ year: y, month: m }) =>
-        fetchOne(y, m).then(rows => ({ year: y, month: m, rows }))
-      )),
-      fetchOne(prevY, prevM),
-      fetchAllCo(),
-    ]);
-    const currentRows = trendResults.find(t => t.year === year && t.month === month)?.rows ?? [];
+// Return period only — no data fetches here.
+    // Homepage fetches current / prev / trend / allCo on mount independently.
+    // This keeps prefetchHomeData under 500 ms (cache hit) or ~1 s (cold probe),
+    // so homePrefetchDone fires well before MIN_ANIM_MS and EpicLoader exits fast.
     return {
       latestPeriod,
-      year: latestPeriod.year,
-      month: latestPeriod.month,
-      current: currentRows,
-      prev: prevRows,
-      trend: trendResults,
-      allCoCurrentRows,
+      year:             latestPeriod.year,
+      month:            latestPeriod.month,
+      current:          [],
+      prev:             [],
+      trend:            [],
+      allCoCurrentRows: [],
     };
 } catch {
     return null;
@@ -162,7 +116,8 @@ export default function EpicLoader({ token, onReady, onDataLoaded }) {
   useEffect(() => { onDataLoadedRef.current = onDataLoaded; }, [onDataLoaded]);
 const [phase, setPhase] = useState(PHASE.LOGO_IN.id);
   const [completedKeys, setCompletedKeys] = useState({});
-  const [silentDone, setSilentDone] = useState(false);
+const [silentDone, setSilentDone] = useState(false);
+  const [homePrefetchDone, setHomePrefetchDone] = useState(false);
   const [allDone, setAllDone] = useState(false);
  const startTimeRef = useRef(null);
   const dataRef = useRef({});
@@ -232,7 +187,7 @@ const silentFetches = SILENT_ENDPOINTS.map(async ({ key, endpoint }) => {
         Promise.all(silentFetches),
       ]);
 if (cancelled) return;
-      if (homePrefetch) {
+if (homePrefetch) {
         dataRef.current.__homePrefetch = homePrefetch;
         try {
           const srcArr = dataRef.current.sources    ?? [];
@@ -248,6 +203,9 @@ if (cancelled) return;
           // LatestPeriodContext remains unpopulated; pages will probe on demand
         }
       }
+      // Signal that home prefetch has settled — whether it returned data or null.
+      // The completedKeys effect waits for this before calling onDataLoaded.
+      if (!cancelled) setHomePrefetchDone(true);
     })();
 
     return () => { cancelled = true; };
@@ -262,7 +220,7 @@ if (cancelled) return;
 
 useEffect(() => {
     const allFetchesDone = Object.keys(completedKeys).length === ENDPOINTS.length;
-    if (!allFetchesDone || !silentDone) return;
+    if (!allFetchesDone || !silentDone || !homePrefetchDone) return;
 
 const elapsed = Date.now() - startTimeRef.current;
     const wait = Math.max(0, MIN_ANIM_MS - elapsed);
@@ -278,7 +236,7 @@ setTimeout(() => {
     }, wait);
 
     return () => clearTimeout(t);
-}, [completedKeys, silentDone]);
+}, [completedKeys, silentDone, homePrefetchDone]);
 
   useEffect(() => {
     const t = setTimeout(() => {
