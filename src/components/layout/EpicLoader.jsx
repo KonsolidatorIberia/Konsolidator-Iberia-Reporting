@@ -76,7 +76,11 @@ async function prefetchHomeData(token, sources, structures, companies) {
     }
     if (!latestPeriod) return null;
 
-    const { year, month } = latestPeriod;
+const { year, month } = latestPeriod;
+// Trailing 12 months — fast (12 calls), finishes well within EpicLoader's
+    // time budget. Gives trendRows its initial data so loadProgress credits 20%
+    // immediately on HomePage mount. The Jan-anchored re-fetch happens in
+    // background after the overlay is already gone.
     const trendMonths = [];
     for (let i = 11; i >= 0; i--) {
       let m = month - i, y = year;
@@ -99,13 +103,29 @@ async function prefetchHomeData(token, sources, structures, companies) {
       } catch { return []; }
     };
 
-    const [trendResults, prevRows] = await Promise.all([
+// All-companies fetch (no CompanyShortName filter) — feeds HomePage's
+    // allCoCurrentRows state (15% of loadProgress) without a second network call.
+    const fetchAllCo = async () => {
+      try {
+        const allCoFilter = `Year eq ${year} and Month eq ${month} and Source eq '${src}' and GroupStructure eq '${str}'`;
+        const r = await fetch(
+          `/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(allCoFilter)}`,
+          { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }
+        );
+        if (!r.ok) return [];
+        const j = await r.json();
+        return j.value ?? (Array.isArray(j) ? j : []);
+      } catch { return []; }
+    };
+
+    const [trendResults, prevRows, allCoCurrentRows] = await Promise.all([
       Promise.all(trendMonths.map(({ year: y, month: m }) =>
         fetchOne(y, m).then(rows => ({ year: y, month: m, rows }))
       )),
       fetchOne(prevY, prevM),
+      fetchAllCo(),
     ]);
-    const currentRows = trendResults[trendResults.length - 1]?.rows ?? [];
+    const currentRows = trendResults.find(t => t.year === year && t.month === month)?.rows ?? [];
     return {
       latestPeriod,
       year: latestPeriod.year,
@@ -113,37 +133,43 @@ async function prefetchHomeData(token, sources, structures, companies) {
       current: currentRows,
       prev: prevRows,
       trend: trendResults,
+      allCoCurrentRows,
     };
-  } catch (e) {
-    console.error("[PREFETCH] failed:", e);
+} catch {
     return null;
   }
 }
 
 const PHASE = {
-  LOGO_IN:        { id: 0, duration: 400  },
-  ORBIT_LABELS:   { id: 1, duration: 350  },
+  LOGO_IN:        { id: 0, duration: 400 },
+  ORBIT_LABELS:   { id: 1, duration: 350 },
   FETCH_LINES:    { id: 2, duration: 1100 },
-  CONSOLIDATE:    { id: 3, duration: 500  },
-  ZOOM_OUT:       { id: 4, duration: 450  },
+  CONSOLIDATE:    { id: 3, duration: 400 },
+  ZOOM_OUT:       { id: 4, duration: 350 },
 };
 
-const TOTAL_MAX = 5500;
+const MIN_ANIM_MS = 1200; // minimum ms before exit animation — enough to see logo + labels + lines
+const TOTAL_MAX   = 4000; // hard ceiling for slow networks
 
 export default function EpicLoader({ token, onReady, onDataLoaded }) {
-  console.log("[EpicLoader] COMPONENT MOUNTED");
   const { colors } = useSettings();
   const { settings, setDetectedLocale } = useSettingsControls();
   const { setLatestPeriod } = useLatestPeriod();
-  console.log("[EpicLoader] setLatestPeriod is:", typeof setLatestPeriod);
-  const [phase, setPhase] = useState(PHASE.LOGO_IN.id);
+  // Stable refs — effects don't restart if parent re-renders with new fn references
+  const onReadyRef = useRef(onReady);
+  const onDataLoadedRef = useRef(onDataLoaded);
+  useEffect(() => { onReadyRef.current = onReady; }, [onReady]);
+  useEffect(() => { onDataLoadedRef.current = onDataLoaded; }, [onDataLoaded]);
+const [phase, setPhase] = useState(PHASE.LOGO_IN.id);
   const [completedKeys, setCompletedKeys] = useState({});
+  const [silentDone, setSilentDone] = useState(false);
   const [allDone, setAllDone] = useState(false);
-  const startTimeRef = useRef(Date.now());
+ const startTimeRef = useRef(null);
   const dataRef = useRef({});
 
-  useEffect(() => {
+useEffect(() => {
     if (!token) return;
+    startTimeRef.current = Date.now();
     let cancelled = false;
 
     (async () => {
@@ -173,7 +199,7 @@ export default function EpicLoader({ token, onReady, onDataLoaded }) {
         }
       });
 
-      const silentFetches = SILENT_ENDPOINTS.map(async ({ key, endpoint }) => {
+const silentFetches = SILENT_ENDPOINTS.map(async ({ key, endpoint }) => {
         try {
           const res = await fetch(endpoint, {
             headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Cache-Control": "no-cache" },
@@ -183,13 +209,16 @@ export default function EpicLoader({ token, onReady, onDataLoaded }) {
           const rows = json.value ?? (Array.isArray(json) ? json : [json]);
           if (cancelled) return;
           dataRef.current[key] = rows;
-          console.log(`[EpicLoader] fetched ${key}:`, rows.length);
-        } catch (e) {
+        } catch {
           if (cancelled) return;
           dataRef.current[key] = [];
-          console.error(`[EpicLoader] ${key} fetch failed:`, e);
         }
       });
+
+      // Signal completion so the completedKeys effect waits for groupAccounts
+      // before calling onDataLoaded — prevents the 40% stall caused by
+      // initialData.groupAccounts being empty when KPI resolver first runs.
+      Promise.all(silentFetches).then(() => { if (!cancelled) setSilentDone(true); });
 
       const homePromise = (async () => {
         const [s, st, co] = await Promise.all([promises.sources, promises.structures, promises.companies]);
@@ -203,11 +232,8 @@ export default function EpicLoader({ token, onReady, onDataLoaded }) {
         Promise.all(silentFetches),
       ]);
 if (cancelled) return;
-      console.log("[EpicLoader] post-prefetch. homePrefetch:", homePrefetch);
       if (homePrefetch) {
         dataRef.current.__homePrefetch = homePrefetch;
-        // Populate LatestPeriodContext so other pages (AccountsDashboard, etc.)
-        // can skip their own probe loop and load instantly.
         try {
           const srcArr = dataRef.current.sources    ?? [];
           const strArr = dataRef.current.structures ?? [];
@@ -215,26 +241,17 @@ if (cancelled) return;
           const src = srcArr[0] ? (srcArr[0].source ?? srcArr[0].Source ?? srcArr[0]) : "";
           const str = strArr[0] ? (strArr[0].groupStructure ?? strArr[0].GroupStructure ?? strArr[0]) : "";
           const co  = coArr[0]  ? (coArr[0].companyShortName ?? coArr[0].CompanyShortName ?? coArr[0]) : "";
-          console.log("[EpicLoader] writing cache attempt:", { src, str, co, year: homePrefetch.year, month: homePrefetch.month });
           if (src && str && co && homePrefetch.year && homePrefetch.month) {
             setLatestPeriod(src, str, co, homePrefetch.year, homePrefetch.month);
-            console.log("[EpicLoader] cache written ✓");
-          } else {
-            console.warn("[EpicLoader] cache NOT written - missing values");
           }
-        } catch (e) {
-          console.warn("[EpicLoader] could not populate LatestPeriodContext:", e);
+        } catch {
+          // LatestPeriodContext remains unpopulated; pages will probe on demand
         }
-      } else {
-        console.warn("[EpicLoader] homePrefetch is null - cache NOT populated");
       }
-      console.log("[EpicLoader] all done. dataRef keys:", Object.keys(dataRef.current),
-        "groupAccounts:", dataRef.current.groupAccounts?.length,
-        "__homePrefetch?", !!dataRef.current.__homePrefetch);
     })();
 
     return () => { cancelled = true; };
-  }, [token]);
+ }, [token, setLatestPeriod]);
 
   useEffect(() => {
     const t1 = setTimeout(() => setPhase(PHASE.ORBIT_LABELS.id), PHASE.LOGO_IN.duration);
@@ -243,26 +260,25 @@ if (cancelled) return;
     return () => { clearTimeout(t1); clearTimeout(t2); };
   }, []);
 
-  useEffect(() => {
+useEffect(() => {
     const allFetchesDone = Object.keys(completedKeys).length === ENDPOINTS.length;
-    if (!allFetchesDone) return;
+    if (!allFetchesDone || !silentDone) return;
 
-    const elapsed = Date.now() - startTimeRef.current;
-    const baseTime = PHASE.LOGO_IN.duration + PHASE.ORBIT_LABELS.duration + PHASE.FETCH_LINES.duration;
-    const wait = Math.max(0, baseTime - elapsed);
+const elapsed = Date.now() - startTimeRef.current;
+    const wait = Math.max(0, MIN_ANIM_MS - elapsed);
 
     const t = setTimeout(() => {
       setPhase(PHASE.CONSOLIDATE.id);
       setTimeout(() => setPhase(PHASE.ZOOM_OUT.id), PHASE.CONSOLIDATE.duration);
-      setTimeout(() => {
+setTimeout(() => {
         setAllDone(true);
-        if (onDataLoaded) onDataLoaded(dataRef.current);
-        if (onReady) onReady();
+        if (onDataLoadedRef.current) onDataLoadedRef.current(dataRef.current);
+        if (onReadyRef.current) onReadyRef.current();
       }, PHASE.CONSOLIDATE.duration + PHASE.ZOOM_OUT.duration);
     }, wait);
 
     return () => clearTimeout(t);
-  }, [completedKeys, onReady, onDataLoaded]);
+}, [completedKeys, silentDone]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -281,13 +297,13 @@ if (cancelled) return;
             const isPGC    = codes.some(c => c.endsWith(".S"));
             setDetectedLocale(isDanish ? "da" : isPGC ? "es" : "en");
           }
-          if (onDataLoaded) onDataLoaded(dataRef.current);
-          if (onReady) onReady();
+if (onDataLoadedRef.current) onDataLoadedRef.current(dataRef.current);
+          if (onReadyRef.current) onReadyRef.current();
         }, PHASE.ZOOM_OUT.duration);
       }
     }, TOTAL_MAX);
-    return () => clearTimeout(t);
-  }, [allDone, onReady, onDataLoaded]);
+return () => clearTimeout(t);
+  }, [allDone, setDetectedLocale, settings?.locale]);
 
   if (allDone) return null;
 

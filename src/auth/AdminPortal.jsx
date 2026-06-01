@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import {
   Building2, Users, Activity, LogOut, Search, Plus, X,
@@ -7,6 +8,7 @@ import {
   ShieldCheck, Zap, Minus, Filter, ChevronRight, Database,
 } from "lucide-react";
 import { supabase, sbAccounts } from "../lib/supabaseClient";
+import { LOCALES, t } from "../lib/i18n";
 
 // ════════════════════════════════════════════════════════════════
 // PALETTE
@@ -33,12 +35,7 @@ const TIERS = [
 ];
 const tierConfig = (id) => TIERS.find(t => t.id === id) ?? TIERS[1];
 
-const ROLES = [
-  { id: "low",   label: "Low",   color: "#94a3b8" },
-  { id: "base",  label: "Base",  color: "#60a5fa" },
-  { id: "admin", label: "Admin", color: "#fbbf24" },
-];
-const roleConfig = (id) => ROLES.find(r => r.id === id) ?? ROLES[1];
+
 
 // ════════════════════════════════════════════════════════════════
 // HELPERS
@@ -293,6 +290,7 @@ function Toast({ type, message, onClose }) {
 // ════════════════════════════════════════════════════════════════
 // HERO STAT CARD (cinematic)
 // ════════════════════════════════════════════════════════════════
+// eslint-disable-next-line no-unused-vars
 function HeroStat({ label, value, icon: Icon, color, accent, delay = 0 }) {
   return (
     <div
@@ -327,7 +325,7 @@ function HeroStat({ label, value, icon: Icon, color, accent, delay = 0 }) {
 // ════════════════════════════════════════════════════════════════
 // COMPANY MODAL
 // ════════════════════════════════════════════════════════════════
-function CompanyModal({ company, onClose, onSaved, showToast }) {
+function CompanyModal({ company, onClose, onSaved, showToast, onEditUser, locale }) {
   const isEdit = !!company;
   const [form, setForm] = useState({
     name: company?.name ?? "",
@@ -337,10 +335,31 @@ function CompanyModal({ company, onClose, onSaved, showToast }) {
     trial_started_at: company?.trial_started_at?.slice(0, 10) ?? "",
     trial_ends_at:    company?.trial_ends_at?.slice(0, 10) ?? "",
   });
-  const [saving, setSaving] = useState(false);
+
+const [saving, setSaving] = useState(false);
   const [slugDirty, setSlugDirty] = useState(isEdit);
+  const [companyUsers, setCompanyUsers] = useState([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
 
   const handleNameChange = (v) => setForm(f => ({ ...f, name: v, slug: slugDirty ? f.slug : slugify(v) }));
+
+useEffect(() => {
+    if (!company?.id) return;
+    let cancelled = false;
+    (async () => {
+      if (!cancelled) setLoadingUsers(true);
+      const { data: links } = await sbAccounts.from("user_companies").select("user_id, is_active").eq("company_id", company.id);
+      const userIds = (links ?? []).map(l => l.user_id);
+      if (!userIds.length) { setLoadingUsers(false); return; }
+      const { data: users } = await sbAccounts.from("users").select("id, username, email, is_active").in("id", userIds);
+      const ucMap = new Map((links ?? []).map(l => [l.user_id, l]));
+if (!cancelled) {
+        setCompanyUsers((users ?? []).map(u => ({ ...u, uc_is_active: ucMap.get(u.id)?.is_active ?? true })));
+        setLoadingUsers(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [company?.id]);
 
 const handleSave = async () => {
     if (!form.name.trim() || !form.slug.trim()) {
@@ -364,7 +383,7 @@ const handleSave = async () => {
       showToast("error", error.message);
       return;
     }
-    showToast("success", isEdit ? "Empresa actualizada" : "Empresa creada");
+   showToast("success", isEdit ? t(locale, "adm_save") : t(locale, "adm_new_company"));
     onSaved();
     onClose();
   };
@@ -400,11 +419,11 @@ const handleSave = async () => {
                 <Building2 size={20} className="text-white" />
               </div>
               <div>
-                <p className="text-[10px] font-black uppercase tracking-[0.22em] text-blue-300">
-                  {isEdit ? "Edit · Company" : "Create · Company"}
+<p className="text-[10px] font-black uppercase tracking-[0.22em] text-blue-300">
+                  {isEdit ? `${t(locale, "adm_save")} · ${t(locale, "adm_companies")}` : `${t(locale, "adm_create")} · ${t(locale, "adm_companies")}`}
                 </p>
                 <h3 className="text-white font-black text-2xl leading-tight mt-0.5">
-                  {isEdit ? form.name || "Empresa" : "Nueva empresa"}
+                  {isEdit ? form.name || t(locale, "adm_companies") : t(locale, "adm_new_company")}
                 </h3>
               </div>
             </div>
@@ -418,8 +437,8 @@ const handleSave = async () => {
         <div className="p-7 space-y-5 overflow-y-auto flex-1">
           {/* Name */}
           <div>
-            <label className="block text-[11px] font-black uppercase tracking-[0.16em] mb-2 text-gray-400">
-              Nombre de la empresa
+<label className="block text-[11px] font-black uppercase tracking-[0.16em] mb-2 text-gray-400">
+              {t(locale, "adm_stat_companies")}
             </label>
             <input type="text" value={form.name}
               onChange={(e) => handleNameChange(e.target.value)}
@@ -429,8 +448,8 @@ const handleSave = async () => {
 
           {/* Slug */}
           <div>
-            <label className="block text-[11px] font-black uppercase tracking-[0.16em] mb-2 text-gray-400">
-              Identificador
+<label className="block text-[11px] font-black uppercase tracking-[0.16em] mb-2 text-gray-400">
+              ID · Slug
             </label>
             <input type="text" value={form.slug}
               onChange={(e) => { setSlugDirty(true); setForm(f => ({ ...f, slug: slugify(e.target.value) })); }}
@@ -440,8 +459,8 @@ const handleSave = async () => {
 
           {/* Tier */}
           <div>
-            <label className="block text-[11px] font-black uppercase tracking-[0.16em] mb-2 text-gray-400">
-              Tier · Plan
+<label className="block text-[11px] font-black uppercase tracking-[0.16em] mb-2 text-gray-400">
+              Tier · {t(locale, "col_standard")}
             </label>
             <div className="grid grid-cols-4 gap-2">
               {TIERS.map(t => {
@@ -487,23 +506,23 @@ const handleSave = async () => {
                 {form.is_trial ? <Calendar size={15} /> : <Check size={15} />}
               </div>
               <div>
-                <p className="text-sm font-black text-gray-800">
-                  {form.is_trial ? "Cliente de prueba" : "Cliente pagado"}
+<p className="text-sm font-black text-gray-800">
+                  {form.is_trial ? t(locale, "adm_trial_only") : t(locale, "adm_paid")}
                 </p>
                 <p className="text-[11px] font-medium text-gray-600">
-                  {form.is_trial ? "Define el periodo de prueba abajo" : "Suscripción activa, sin trial"}
+                  {form.is_trial ? t(locale, "picker_monthly") : t(locale, "active")}
                 </p>
               </div>
             </div>
             <Toggle checked={form.is_trial} onChange={(v) => setForm(f => ({ ...f, is_trial: v }))} accent={C.amber} />
           </div>
 
-          {/* Trial dates */}
+{/* Trial dates */}
           {form.is_trial && (
             <div className="grid grid-cols-2 gap-3" style={{ animation: "adminSlideDown 0.3s ease-out both" }}>
               {[
-                { key: "trial_started_at", label: "Inicio" },
-                { key: "trial_ends_at",    label: "Fin" },
+              { key: "trial_started_at", label: t(locale, "start_m") },
+              { key: "trial_ends_at",    label: t(locale, "end_m") },
               ].map(d => (
                 <div key={d.key}>
                   <label className="block text-[11px] font-black uppercase tracking-[0.14em] mb-1.5 text-gray-400">
@@ -516,13 +535,63 @@ const handleSave = async () => {
               ))}
             </div>
           )}
+
+          {/* Users */}
+          {isEdit && (
+            <div>
+              <div className="flex items-center justify-between mb-3">
+<p className="text-[11px] font-black uppercase tracking-[0.16em] text-gray-400">
+                  {t(locale, "adm_users")}
+                </p>
+                <span className="text-[10px] font-bold text-gray-300">{companyUsers.length} total</span>
+              </div>
+              {loadingUsers ? (
+                <div className="flex items-center justify-center py-6 gap-2 text-gray-300">
+                  <Loader2 size={14} className="animate-spin" />
+                <span className="text-xs">{t(locale, "loading_data")}</span>
+                </div>
+              ) : companyUsers.length === 0 ? (
+                <div className="text-center py-6 rounded-2xl" style={{ background: "#fafafa", border: "2px dashed #e5e7eb" }}>
+                  <Users size={20} className="mx-auto mb-1.5 text-gray-300" />
+                <p className="text-xs font-bold text-gray-400">{t(locale, "adm_no_users")}</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {companyUsers.map(u => {
+                    const active = u.is_active && u.uc_is_active;
+                    return (
+<div key={u.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all cursor-pointer group/urow"
+                        style={{ background: "#fafafa", border: "1px solid #f0f0f0" }}
+                        onMouseEnter={e => { e.currentTarget.style.background = "#eef1fb"; e.currentTarget.style.borderColor = `${C.navy}30`; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = "#fafafa"; e.currentTarget.style.borderColor = "#f0f0f0"; }}
+                        onClick={() => onEditUser(u)}>
+                        <div className="w-8 h-8 rounded-xl flex items-center justify-center text-[10px] font-black text-white flex-shrink-0"
+                          style={{ background: `linear-gradient(135deg, ${C.navy} 0%, ${C.navyDark} 100%)` }}>
+                          {initials(u.username || u.email)}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-black text-gray-800 truncate">{u.username ?? "—"}</p>
+                          <p className="text-[10px] text-gray-400 truncate">{u.email}</p>
+                        </div>
+<span className="flex-shrink-0 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider"
+                          style={{ background: active ? "#d1fae5" : "#f3f4f6", color: active ? "#047857" : "#9ca3af" }}>
+                         {active ? t(locale, "adm_active") : t(locale, "adm_inactive")}
+                        </span>
+                        <ChevronRight size={12} className="flex-shrink-0 text-gray-300 group-hover/urow:text-[#1a2f8a] transition-colors" />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Footer */}
         <div className="px-7 py-4 flex items-center justify-end gap-2 shrink-0 bg-gray-50 border-t border-gray-100">
-          <button onClick={onClose} disabled={saving}
+<button onClick={onClose} disabled={saving}
             className="px-5 py-2.5 text-xs font-black rounded-xl text-gray-500 hover:bg-gray-100 transition-colors">
-            Cancelar
+            {t(locale, "adm_cancel")}
           </button>
           <button onClick={handleSave} disabled={saving}
             className="px-6 py-2.5 text-xs font-black text-white rounded-xl transition-all disabled:opacity-50 flex items-center gap-2 shadow-lg hover:shadow-xl hover:scale-[1.02]"
@@ -531,7 +600,7 @@ const handleSave = async () => {
               boxShadow: `0 8px 20px -4px ${C.navy}80`,
             }}>
             {saving && <Loader2 size={12} className="animate-spin" />}
-            {isEdit ? "Guardar cambios" : "Crear empresa"}
+            {isEdit ? t(locale, "adm_save") : t(locale, "adm_new_company")}
           </button>
         </div>
       </div>
@@ -542,7 +611,7 @@ const handleSave = async () => {
 // ════════════════════════════════════════════════════════════════
 // USER MODAL
 // ════════════════════════════════════════════════════════════════
-function UserModal({ user, companies, onClose, onSaved, showToast }) {
+function UserModal({ user, companies, onClose, onSaved, showToast, locale }) {
   const isEdit = !!user;
   const [form, setForm] = useState({
     email:    user?.email    ?? "",
@@ -552,17 +621,26 @@ function UserModal({ user, companies, onClose, onSaved, showToast }) {
     is_active:      user?.is_active      ?? true,
   });
   const [companyLinks, setCompanyLinks] = useState(user?._company_links ?? []);
-  const [saving, setSaving] = useState(false);
+const [saving, setSaving] = useState(false);
+  const [openLinkDropdown, setOpenLinkDropdown] = useState(null);
+  const [dropdownPos, setDropdownPos] = useState(null);
 
-  const handleGenerate = () => setForm(f => ({ ...f, password: generatePassword() }));
+const handleGenerate = () => setForm(f => ({ ...f, password: generatePassword() }));
+
+  useEffect(() => {
+    if (openLinkDropdown === null) return;
+    const handler = () => setOpenLinkDropdown(null);
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [openLinkDropdown]);
 
   const addLink = () => {
+    if (companyLinks.length >= 1) return;
     const remaining = companies.filter(c => !companyLinks.find(l => l.company_id === c.id));
     if (remaining.length === 0) return;
     setCompanyLinks([...companyLinks, {
       company_id: remaining[0].id,
-      role: "base",
-      is_default: companyLinks.length === 0,
+      is_default: true,
       is_active: true,
     }]);
   };
@@ -585,10 +663,7 @@ const handleSave = async () => {
       showToast("error", "Email y username son obligatorios");
       return;
     }
-    if (!isEdit && !form.password) {
-      showToast("error", "Define una contraseña inicial");
-      return;
-    }
+
     setSaving(true);
 
     let userId = user?.id;
@@ -607,14 +682,13 @@ const handleSave = async () => {
         return;
       }
 
-const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
+const tempPassword = form.password || `Tmp_${Math.random().toString(36).slice(2, 10)}!Kx9`;
+      const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
         email: form.email.trim(),
-        password: form.password,
+        password: tempPassword,
         options: { data: { username: form.username.trim() } },
       });
 
-      console.log("[signUp] data:", JSON.stringify(signUpData));
-      console.log("[signUp] error:", JSON.stringify(signUpErr));
 
       if (signUpErr || !signUpData?.user) {
         await supabase.auth.setSession({
@@ -624,7 +698,6 @@ const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
         setSaving(false);
         const msg = signUpErr?.message ?? signUpErr?.status ?? JSON.stringify(signUpErr) ?? "No se pudo crear el usuario";
         showToast("error", msg);
-        console.error("[signUp] full error object:", signUpErr);
         return;
       }
       userId = signUpData.user.id;
@@ -648,6 +721,8 @@ const userPayload = {
       email:          form.email.trim(),
       is_super_admin: form.is_super_admin,
       is_active:      form.is_active,
+      has_password:   !!form.password,
+      admin_created:  true,
     };
 
     // Retry upsert up to 5 times — the DB trigger that creates the users row
@@ -659,7 +734,6 @@ const userPayload = {
         .upsert(userPayload, { onConflict: "id" });
       userErr = error;
       if (!error) break;
-      console.warn(`[UserModal] upsert attempt ${attempt + 1} failed:`, error.message);
     }
 
     if (userErr) {
@@ -670,10 +744,10 @@ const userPayload = {
 
     if (isEdit) await sbAccounts.from("user_companies").delete().eq("user_id", userId);
     if (companyLinks.length > 0) {
-      const linksPayload = companyLinks.map(l => ({
+const linksPayload = companyLinks.map(l => ({
         user_id:    userId,
         company_id: l.company_id,
-        role:       l.role,
+        role:       "admin",
         is_default: l.is_default,
         is_active:  l.is_active,
       }));
@@ -686,239 +760,196 @@ const userPayload = {
     }
 
     setSaving(false);
-    showToast("success", isEdit ? "Usuario actualizado" : "Usuario creado");
+    showToast("success", isEdit ? t(locale, "adm_save") : t(locale, "adm_new_user"));
     onSaved();
     onClose();
   };
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{
-        background: "rgba(9, 21, 72, 0.7)",
-        backdropFilter: "blur(12px)",
-        animation: "adminFadeIn 0.25s ease-out both",
-      }}
+return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(9,21,72,0.75)", backdropFilter: "blur(16px)", animation: "adminFadeIn 0.25s ease-out both" }}
       onClick={onClose}>
-      <div
-        className="w-full max-w-2xl rounded-[32px] overflow-hidden flex flex-col max-h-[92vh] bg-white"
-        style={{
-          boxShadow: "0 40px 80px -20px rgba(0,0,0,0.5), 0 0 60px rgba(232,57,74,0.2)",
-          animation: "adminModalEntry 0.45s cubic-bezier(0.34,1.56,0.64,1) both",
-        }}
-        onClick={(e) => e.stopPropagation()}>
+      <div className="w-full max-w-lg rounded-[28px] overflow-hidden flex flex-col max-h-[92vh]"
+        style={{ boxShadow: "0 48px 100px -20px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.08)", animation: "adminModalEntry 0.45s cubic-bezier(0.34,1.56,0.64,1) both", background: "#fff" }}
+        onClick={e => e.stopPropagation()}>
 
-        {/* Cinematic Header */}
-        <div className="relative px-8 py-6 overflow-hidden shrink-0"
-          style={{ background: `linear-gradient(135deg, ${C.red} 0%, ${C.redDark} 100%)` }}>
-          <div className="absolute -top-10 -right-10 w-40 h-40 rounded-full bg-white opacity-[0.1] blur-2xl" />
-          <div className="absolute -bottom-20 -left-10 w-40 h-40 rounded-full opacity-[0.1] blur-2xl"
-            style={{ background: "#fff" }} />
+        {/* Header */}
+        <div className="relative overflow-hidden px-7 py-5 flex items-center justify-between flex-shrink-0"
+          style={{ background: `linear-gradient(135deg, ${C.red} 0%, ${C.redDark} 50%, #8b1a28 100%)` }}>
+          {/* Decorative circles */}
+          <div className="absolute -top-12 -right-12 w-40 h-40 rounded-full" style={{ background: "rgba(255,255,255,0.07)" }} />
+          <div className="absolute -bottom-8 -left-8 w-32 h-32 rounded-full" style={{ background: "rgba(255,255,255,0.05)" }} />
+          <div className="absolute top-0 left-0 right-0 h-px" style={{ background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent)" }} />
 
-          <div className="relative z-10 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-11 h-11 rounded-2xl flex items-center justify-center"
-                style={{ background: "rgba(255,255,255,0.18)", backdropFilter: "blur(8px)", border: "1px solid rgba(255,255,255,0.25)" }}>
-                <Users size={20} className="text-white" />
-              </div>
-              <div>
-                <p className="text-[10px] font-black uppercase tracking-[0.22em] text-red-100">
-                  {isEdit ? "Edit · User" : "Create · User"}
-                </p>
-                <h3 className="text-white font-black text-2xl leading-tight mt-0.5">
-                  {isEdit ? form.username || "Usuario" : "Nuevo usuario"}
-                </h3>
-              </div>
+          <div className="relative flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-base font-black text-white flex-shrink-0"
+              style={{ background: "rgba(255,255,255,0.15)", backdropFilter: "blur(8px)", border: "1px solid rgba(255,255,255,0.25)", boxShadow: "0 4px 12px rgba(0,0,0,0.2)" }}>
+              {form.username ? initials(form.username) : <Users size={18} />}
             </div>
-            <button onClick={onClose}
-              className="w-9 h-9 rounded-xl flex items-center justify-center text-white/70 hover:text-white hover:bg-white/15 transition-all">
-              <X size={18} />
-            </button>
+            <div>
+<p className="text-[10px] font-black uppercase tracking-[0.22em] text-red-200">{isEdit ? `${t(locale, "adm_save")} · ${t(locale, "adm_users")}` : `${t(locale, "adm_create")} · ${t(locale, "adm_users")}`}</p>
+              <h3 className="text-white font-black text-xl leading-tight mt-0.5">{isEdit ? form.username || t(locale, "adm_users") : t(locale, "adm_new_user")}</h3>
+            </div>
           </div>
+          <button onClick={onClose} className="relative w-8 h-8 rounded-xl flex items-center justify-center transition-all hover:bg-white/15" style={{ color: "rgba(255,255,255,0.7)" }}><X size={16} /></button>
         </div>
 
-        <div className="p-7 space-y-5 overflow-y-auto flex-1">
+        {/* Body */}
+      <div className="overflow-y-auto flex-1 p-6 space-y-4" style={{ overflowX: "visible" }}>
+
           {/* Email + Username */}
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-[11px] font-black uppercase tracking-[0.16em] mb-2 text-gray-400">Email</label>
-              <input type="email" value={form.email} disabled={isEdit}
-                onChange={(e) => setForm(f => ({ ...f, email: e.target.value }))}
-                placeholder="user@empresa.com"
-                className="w-full rounded-2xl px-4 py-3.5 text-sm font-medium outline-none transition-all bg-gray-50 border-2 border-gray-100 focus:border-[#e8394a] focus:bg-white disabled:opacity-60 text-gray-800" />
-            </div>
-            <div>
-              <label className="block text-[11px] font-black uppercase tracking-[0.16em] mb-2 text-gray-400">Username</label>
-              <input type="text" value={form.username}
-                onChange={(e) => setForm(f => ({ ...f, username: e.target.value }))}
-                placeholder="juan.perez"
-                className="w-full rounded-2xl px-4 py-3.5 text-sm font-medium outline-none transition-all bg-gray-50 border-2 border-gray-100 focus:border-[#e8394a] focus:bg-white text-gray-800" />
-            </div>
+            {[
+              { key: "email",    label: "Email",    type: "email",    placeholder: "user@empresa.com", disabled: isEdit },
+              { key: "username", label: "Username", type: "text",     placeholder: "Juan Vidal",       disabled: false  },
+            ].map(f => (
+              <div key={f.key}>
+                <label className="block text-[10px] font-black uppercase tracking-[0.18em] mb-1.5 text-gray-400">{f.label}</label>
+                <input type={f.type} value={form[f.key]} disabled={f.disabled}
+                  onChange={e => setForm(p => ({ ...p, [f.key]: e.target.value }))}
+                  placeholder={f.placeholder}
+                  className="w-full rounded-xl px-3.5 py-3 text-sm font-medium outline-none transition-all bg-gray-50 border border-gray-200 focus:border-red-400 focus:bg-white disabled:opacity-50 text-gray-800" />
+              </div>
+            ))}
           </div>
 
           {/* Password */}
           {!isEdit && (
             <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="block text-[11px] font-black uppercase tracking-[0.16em] text-gray-400">Contraseña inicial</label>
-                <button type="button" onClick={handleGenerate}
-                  className="text-[11px] font-black flex items-center gap-1 transition-all hover:scale-105"
-                  style={{ color: C.red }}>
-                  <RefreshCw size={11} /> Generar segura
+              <div className="flex items-center justify-between mb-1.5">
+<label className="text-[10px] font-black uppercase tracking-[0.18em] text-gray-400">{t(locale, "login_password")} <span className="text-gray-300 normal-case font-medium">(opcional)</span></label>
+                <button type="button" onClick={handleGenerate} className="text-[10px] font-black flex items-center gap-1 transition-all hover:scale-105" style={{ color: C.red }}>
+                  <RefreshCw size={10} /> {t(locale, "btn_reset")}
                 </button>
               </div>
-              <input type="text" value={form.password}
-                onChange={(e) => setForm(f => ({ ...f, password: e.target.value }))}
+              <input type="text" value={form.password} onChange={e => setForm(p => ({ ...p, password: e.target.value }))}
                 placeholder="Mínimo 6 caracteres"
-                className="w-full rounded-2xl px-4 py-3.5 text-sm font-mono outline-none transition-all bg-gray-50 border-2 border-gray-100 focus:border-[#e8394a] focus:bg-white text-gray-800" />
+                className="w-full rounded-xl px-3.5 py-3 text-sm font-mono outline-none transition-all bg-gray-50 border border-gray-200 focus:border-red-400 focus:bg-white text-gray-800" />
             </div>
           )}
 
-          {/* Permissions */}
+          {/* Toggles */}
           <div className="grid grid-cols-2 gap-3">
-            <div className="flex items-center justify-between p-4 rounded-2xl transition-all"
-              style={{
-                background: form.is_super_admin ? "linear-gradient(135deg, #fef3c7, #fde68a)" : "#fafbfc",
-                border: `1px solid ${form.is_super_admin ? "#fcd34d" : "#f3f4f6"}`,
-              }}>
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center shadow-lg"
-                  style={{
-                    background: form.is_super_admin ? C.amber : "#fff",
-                    color: form.is_super_admin ? "#fff" : "#94a3b8",
-                    border: form.is_super_admin ? "none" : "1px solid #e5e7eb",
-                  }}>
-                  <Crown size={15} />
+            {[
+{ key: "is_super_admin", label: "Super-Admin",                  sub: t(locale, "adm_settings_sub"), icon: Crown,       activeColor: C.amber,   activeBg: "linear-gradient(135deg,#fef3c7,#fde68a)", activeBorder: "#fcd34d" },
+              { key: "is_active",      label: t(locale, "adm_active"),        sub: t(locale, "login_subtitle"),   icon: ShieldCheck,  activeColor: "#10b981",  activeBg: "linear-gradient(135deg,#d1fae5,#a7f3d0)", activeBorder: "#6ee7b7" },
+].map(item => {
+              const on = form[item.key];
+              return (
+                <div key={item.key} className="flex items-center justify-between p-3.5 rounded-2xl transition-all cursor-pointer"
+                  style={{ background: on ? item.activeBg : "#fafafa", border: `1.5px solid ${on ? item.activeBorder : "#e5e7eb"}`, boxShadow: on ? `0 4px 16px -4px ${item.activeColor}40` : "none" }}
+                  onClick={() => setForm(p => ({ ...p, [item.key]: !p[item.key] }))}>
+                  <div className="flex items-center gap-3">
+<div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all"
+                      style={{ background: on ? item.activeColor : "#f3f4f6", color: on ? "#fff" : "#9ca3af", boxShadow: on ? `0 4px 10px -2px ${item.activeColor}60` : "none" }}>
+                      <item.icon size={14} />
+                    </div>
+                    <div>
+                      <p className="text-xs font-black text-gray-800">{item.label}</p>
+                      <p className="text-[10px] text-gray-400">{item.sub}</p>
+                    </div>
+                  </div>
+                  <Toggle checked={on} onChange={v => setForm(p => ({ ...p, [item.key]: v }))} accent={item.activeColor} />
                 </div>
-                <div>
-                  <p className="text-xs font-black text-gray-800">Super-Admin</p>
-                  <p className="text-[10px] font-medium text-gray-500">Acceso total</p>
-                </div>
-              </div>
-              <Toggle checked={form.is_super_admin} onChange={(v) => setForm(f => ({ ...f, is_super_admin: v }))} accent={C.amber} />
-            </div>
-
-            <div className="flex items-center justify-between p-4 rounded-2xl transition-all"
-              style={{
-                background: form.is_active ? "linear-gradient(135deg, #d1fae5, #a7f3d0)" : "#fafbfc",
-                border: `1px solid ${form.is_active ? "#6ee7b7" : "#f3f4f6"}`,
-              }}>
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center shadow-lg"
-                  style={{
-                    background: form.is_active ? "#10b981" : "#fff",
-                    color: form.is_active ? "#fff" : "#94a3b8",
-                    border: form.is_active ? "none" : "1px solid #e5e7eb",
-                  }}>
-                  <ShieldCheck size={15} />
-                </div>
-                <div>
-                  <p className="text-xs font-black text-gray-800">Activo</p>
-                  <p className="text-[10px] font-medium text-gray-500">Puede iniciar sesión</p>
-                </div>
-              </div>
-              <Toggle checked={form.is_active} onChange={(v) => setForm(f => ({ ...f, is_active: v }))} accent="#10b981" />
-            </div>
+              );
+            })}
           </div>
 
           {/* Companies */}
           <div>
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center justify-between mb-2">
               <div>
-                <p className="text-[11px] font-black uppercase tracking-[0.16em] text-gray-400">
-                  Empresas asignadas
-                </p>
-                <p className="text-[10px] font-medium mt-0.5 text-gray-400">
-                  La marcada con ★ se abre por defecto al hacer login
-                </p>
+<p className="text-[10px] font-black uppercase tracking-[0.18em] text-gray-400">{t(locale, "adm_companies")}</p>
+                <p className="text-[10px] text-gray-300 mt-0.5">★ {t(locale, "adm_settings_sub")}</p>
               </div>
-              <button type="button" onClick={addLink}
-                disabled={companyLinks.length >= companies.length}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[11px] font-black transition-all disabled:opacity-30 hover:scale-105 text-white shadow-md"
-                style={{ background: `linear-gradient(135deg, ${C.red} 0%, ${C.redDark} 100%)` }}>
-                <Plus size={11} /> Añadir
-              </button>
+
             </div>
-
-            <div className="space-y-2">
-              {companyLinks.length === 0 && (
-                <div className="text-center py-10 rounded-2xl"
-                  style={{ background: "#fafbfc", border: "2px dashed #e5e7eb" }}>
-                  <Building2 size={24} className="mx-auto mb-2 text-gray-300" />
-                  <p className="text-xs font-bold text-gray-400">Sin empresas asignadas</p>
-                  <p className="text-[11px] mt-0.5 text-gray-300">Click en "Añadir" para empezar</p>
-                </div>
-              )}
-
-              {companyLinks.map((l, idx) => {
-                const co = companies.find(c => c.id === l.company_id);
-                const rc = roleConfig(l.role);
-                return (
-                  <div key={idx}
-                    className="rounded-2xl overflow-hidden transition-all"
-                    style={{
-                      background: l.is_default ? "linear-gradient(135deg, #fef3c7 0%, #fff 60%)" : "#fafbfc",
-                      border: `2px solid ${l.is_default ? "#fcd34d" : "#f3f4f6"}`,
-                      boxShadow: l.is_default ? "0 4px 16px -4px rgba(251, 191, 36, 0.4)" : "none",
-                    }}>
-                    <div className="p-3 flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl flex items-center justify-center text-[11px] font-black text-white shrink-0 shadow-md"
+{companyLinks.length === 0 ? (
+              <div className="text-center py-8 rounded-2xl cursor-pointer transition-all hover:border-red-300 hover:bg-red-50 group"
+                style={{ background: "#fafafa", border: "2px dashed #e5e7eb" }}
+                onClick={addLink}>
+                <Building2 size={22} className="mx-auto mb-1.5 text-gray-300 group-hover:text-red-400 transition-colors" />
+                <p className="text-xs font-bold text-gray-400 group-hover:text-red-500 transition-colors">Sin empresas asignadas</p>
+                <p className="text-[10px] text-gray-300 mt-0.5 group-hover:text-red-400 transition-colors">Click para añadir</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {companyLinks.map((l, idx) => {
+                  const co = companies.find(c => c.id === l.company_id);
+                  return (
+                    <div key={idx} className="flex items-center gap-3 p-3 rounded-2xl transition-all"
+                      style={{ background: l.is_default ? "linear-gradient(135deg,#fffbeb,#fef9ee)" : "#fafafa", border: `1.5px solid ${l.is_default ? "#fcd34d" : "#e5e7eb"}`, boxShadow: l.is_default ? "0 4px 12px -4px rgba(251,191,36,0.3)" : "none" }}>
+                      <div className="w-9 h-9 rounded-xl flex items-center justify-center text-[11px] font-black text-white flex-shrink-0"
                         style={{ background: `linear-gradient(135deg, ${C.navy} 0%, ${C.navyDark} 100%)` }}>
                         {initials(co?.name)}
                       </div>
-
-                      <select value={l.company_id}
-                        onChange={(e) => updateLink(idx, { company_id: e.target.value })}
-                        className="flex-1 bg-transparent text-sm font-black outline-none cursor-pointer text-gray-800">
-                        {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                      </select>
-
-                      <select value={l.role}
-                        onChange={(e) => updateLink(idx, { role: e.target.value })}
-                        className="rounded-lg px-2.5 py-1.5 text-[10px] font-black uppercase tracking-wider outline-none cursor-pointer"
-                        style={{ background: `${rc.color}18`, color: rc.color, border: `1px solid ${rc.color}40` }}>
-                        {ROLES.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
-                      </select>
-
-                      <button type="button"
-                        onClick={() => updateLink(idx, { is_default: !l.is_default })}
-                        title={l.is_default ? "Empresa por defecto" : "Marcar como por defecto"}
-                        className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 transition-all text-[10px] font-black uppercase tracking-wider"
-                        style={{
-                          background: l.is_default ? C.amber : "transparent",
-                          color: l.is_default ? "#fff" : "#94a3b8",
-                          boxShadow: l.is_default ? `0 4px 12px ${C.amber}60` : "none",
-                        }}>
-                        <Star size={11} fill={l.is_default ? "#fff" : "none"} />
-                        {l.is_default ? "Default" : "Marcar"}
-                      </button>
-
-                      <button type="button" onClick={() => removeLink(idx)}
-                        className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:bg-red-50 hover:text-red-600 transition-all">
-                        <Trash2 size={13} />
+<div className="flex-1 relative min-w-0">
+<button type="button"
+onMouseDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            const r = e.currentTarget.getBoundingClientRect();
+                            setDropdownPos({ top: r.bottom + 6, left: r.left, width: r.width });
+                            setOpenLinkDropdown(openLinkDropdown === idx ? null : idx);
+                          }}
+                          className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl text-sm font-bold text-gray-700 transition-all text-left"
+                          style={{ background: l.is_default ? "rgba(251,191,36,0.08)" : "#f0f0f0" }}>
+                          <span className="truncate">{companies.find(c => c.id === l.company_id)?.name ?? "Seleccionar…"}</span>
+                          <ChevronRight size={12} className="flex-shrink-0 text-gray-400 transition-transform" style={{ transform: openLinkDropdown === idx ? "rotate(90deg)" : "rotate(0deg)" }} />
+                        </button>
+{openLinkDropdown === idx && dropdownPos && createPortal(
+                          <div className="fixed z-[9999] rounded-2xl overflow-hidden"
+                            onMouseDown={(e) => e.stopPropagation()}
+                            style={{ top: dropdownPos.top, left: dropdownPos.left, minWidth: dropdownPos.width,
+                            background: "rgba(255,255,255,0.98)", backdropFilter: "blur(20px)", border: "1px solid rgba(26,47,138,0.1)", boxShadow: "0 20px 50px -12px rgba(26,47,138,0.25)", animation: "adminSlideDown 0.2s cubic-bezier(0.34,1.56,0.64,1) both" }}>
+                            <div className="p-1.5">
+                              {companies.map((c, ci) => {
+                                const active = c.id === l.company_id;
+                                return (
+                                  <button key={c.id} type="button"
+                                    onClick={() => { updateLink(idx, { company_id: c.id }); setOpenLinkDropdown(null); }}
+                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-all"
+                                    style={{ background: active ? `linear-gradient(135deg, ${C.navy} 0%, ${C.navyDark} 100%)` : "transparent", animation: `adminSlideDown 0.15s ease-out ${ci * 0.03}s both` }}
+                                    onMouseEnter={e => { if (!active) e.currentTarget.style.background = "#eef1fb"; }}
+                                    onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}>
+                                    <div className="w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-black flex-shrink-0"
+                                      style={{ background: active ? "rgba(255,255,255,0.2)" : `${C.navy}15`, color: active ? "#fff" : C.navy }}>
+                                      {initials(c.name)}
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                      <p className="text-xs font-black truncate" style={{ color: active ? "#fff" : "#1a1a2e" }}>{c.name}</p>
+                                      <p className="text-[9px] font-mono truncate" style={{ color: active ? "rgba(255,255,255,0.6)" : "#94a3b8" }}>{c.slug}</p>
+                                    </div>
+                                    {active && <Check size={12} className="flex-shrink-0 text-white" />}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>,
+                          document.body
+                        )}
+                      </div>
+<button type="button" onClick={() => removeLink(idx)}
+                        className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-300 hover:bg-red-50 hover:text-red-500 transition-all flex-shrink-0">
+                        <Trash2 size={12} />
                       </button>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="px-7 py-4 flex items-center justify-end gap-2 shrink-0 bg-gray-50 border-t border-gray-100">
-          <button onClick={onClose} disabled={saving}
-            className="px-5 py-2.5 text-xs font-black rounded-xl text-gray-500 hover:bg-gray-100 transition-colors">
-            Cancelar
+{/* Footer */}
+        <div className="px-6 py-4 flex items-center justify-end gap-2 flex-shrink-0 border-t border-gray-100" style={{ background: "#fafafa" }}>
+<button onClick={onClose} disabled={saving} className="px-5 py-2.5 text-xs font-black rounded-xl text-gray-500 hover:bg-gray-100 transition-colors">
+            {t(locale, "adm_cancel")}
           </button>
           <button onClick={handleSave} disabled={saving}
             className="px-6 py-2.5 text-xs font-black text-white rounded-xl transition-all disabled:opacity-50 flex items-center gap-2 hover:scale-[1.02]"
-            style={{
-              background: `linear-gradient(135deg, ${C.red} 0%, ${C.redDark} 100%)`,
-              boxShadow: `0 8px 20px -4px ${C.red}80`,
-            }}>
+            style={{ background: `linear-gradient(135deg, ${C.red} 0%, ${C.redDark} 100%)`, boxShadow: `0 8px 20px -4px ${C.red}70` }}>
             {saving && <Loader2 size={12} className="animate-spin" />}
-            {isEdit ? "Guardar" : "Crear usuario"}
+            {isEdit ? t(locale, "adm_save") : t(locale, "adm_new_user")}
           </button>
         </div>
       </div>
@@ -943,15 +974,20 @@ export default function AdminPortal() {
   const [filterTrial, setFilterTrial] = useState("all");
 
   const [searchUser, setSearchUser] = useState("");
-  const [filterSuper, setFilterSuper] = useState("all");
+const [filterActive, setFilterActive] = useState("all");
 
   const [editingCompany, setEditingCompany] = useState(null);
   const [editingUser, setEditingUser] = useState(null);
   const [showCompanyModal, setShowCompanyModal] = useState(false);
   const [showUserModal, setShowUserModal] = useState(false);
 
-  const [toast, setToast] = useState(null);
+const [toast, setToast] = useState(null);
   const showToast = (type, message) => setToast({ type, message });
+  const [adminLocale, setAdminLocale] = useState(() => localStorage.getItem("admin_locale") ?? "en");
+
+  useEffect(() => {
+    localStorage.setItem("admin_locale", adminLocale);
+  }, [adminLocale]);
 
   useEffect(() => {
     (async () => {
@@ -997,19 +1033,14 @@ export default function AdminPortal() {
   const handleLogout = async () => { await supabase.auth.signOut(); navigate("/"); };
 
   const handleDeleteCompany = async (id) => {
-    if (!window.confirm("¿Eliminar empresa? Esta acción no se puede deshacer.")) return;
+   if (!window.confirm(t(adminLocale, "adm_delete_company_confirm"))) return;
     const { error } = await sbAccounts.from("companies").delete().eq("id", id);
     if (error) { showToast("error", error.message); return; }
-    showToast("success", "Empresa eliminada"); reload();
+   showToast("success", t(adminLocale, "adm_company_deleted")); reload();
   };
 
 const handleDeleteUser = async (id) => {
-  const confirmed = window.confirm(
-    "¿Eliminar usuario completamente?\n\n" +
-    "Esto borrará al usuario de Supabase Auth, de la tabla accounts.users, " +
-    "y de todas sus empresas asignadas. Esta acción NO se puede deshacer.\n\n" +
-    "¿Continuar?"
-  );
+const confirmed = window.confirm(t(adminLocale, "adm_delete_user_confirm"));
   if (!confirmed) return;
 
   // Hard delete via Edge Function (uses service_role on server side):
@@ -1017,7 +1048,7 @@ const handleDeleteUser = async (id) => {
   // 2. Deletes from auth.users → ON DELETE CASCADE removes accounts.users + user_companies
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) {
-    showToast("error", "Sesión expirada, vuelve a iniciar sesión");
+   showToast("error", t(adminLocale, "adm_session_expired"));
     return;
   }
 
@@ -1041,10 +1072,10 @@ const res = await fetch(
       return;
     }
 
-    showToast("success", "Usuario eliminado completamente");
+   showToast("success", t(adminLocale, "adm_user_deleted"));
     reload();
-  } catch (e) {
-    showToast("error", `Error de red: ${e.message}`);
+} catch (e) {
+    showToast("error", `${t(adminLocale, "adm_network_error")}: ${e.message}`);
   }
 };
 
@@ -1069,15 +1100,16 @@ const res = await fetch(
     return true;
   }), [companies, searchCo, filterTier, filterTrial]);
 
-  const usersFiltered = useMemo(() => usersEnriched.filter(u => {
+const usersFiltered = useMemo(() => usersEnriched.filter(u => {
     if (searchUser) {
       const s = searchUser.toLowerCase();
       if (!u.email.toLowerCase().includes(s) && !u.username.toLowerCase().includes(s)) return false;
     }
-    if (filterSuper === "super" && !u.is_super_admin) return false;
-    if (filterSuper === "regular" && u.is_super_admin) return false;
+    if (filterActive === "active"   && !u.is_active)      return false;
+    if (filterActive === "inactive" &&  u.is_active)       return false;
+    if (filterActive === "super"    && !u.is_super_admin)  return false;
     return true;
-  }), [usersEnriched, searchUser, filterSuper]);
+  }), [usersEnriched, searchUser, filterActive]);
 
   const stats = useMemo(() => ({
     totalCompanies: companies.length,
@@ -1094,12 +1126,13 @@ const res = await fetch(
     );
   }
 
-  const tabConfig = tab === "companies"
-    ? { title: "Empresas", subtitle: "Gestión de cuentas cliente", color: C.navy, accent: "#2d4ab8" }
-    : { title: "Usuarios",  subtitle: "Gestión de accesos", color: C.red, accent: C.redDark };
-
+const tabConfig = tab === "companies"
+    ? { title: t(adminLocale, "adm_companies"), subtitle: t(adminLocale, "adm_companies_sub"), color: C.navy,    accent: "#2d4ab8",  showKpis: true  }
+    : tab === "users"
+    ? { title: t(adminLocale, "adm_users"),     subtitle: t(adminLocale, "adm_users_sub"),     color: C.red,     accent: C.redDark,  showKpis: true  }
+    : { title: t(adminLocale, "adm_settings"),  subtitle: t(adminLocale, "adm_settings_sub"),  color: "#7c3aed", accent: "#6d28d9",  showKpis: false };
   return (
-    <div className="min-h-screen relative overflow-hidden" style={{ background: C.navy }}>
+   <div className="fixed inset-0 overflow-hidden" style={{ background: C.navy }}>
       <style>{`
         @keyframes adminFadeIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes adminSlideDown {
@@ -1174,10 +1207,10 @@ const res = await fetch(
 
       <CinematicBackground />
 
-      <div className="relative z-10 min-h-screen flex">
+     <div className="relative z-10 h-full flex">
 
         {/* SIDEBAR */}
-        <aside className="w-[260px] shrink-0 flex flex-col p-6 relative"
+        <aside className="w-[260px] shrink-0 flex flex-col p-6 relative overflow-hidden"
           style={{ animation: "adminSlideInLeft 0.7s ease-out both" }}>
 
           {/* Brand */}
@@ -1188,26 +1221,27 @@ const res = await fetch(
           </div>
 
           {/* Tag */}
-          <p className="text-blue-300 text-[10px] font-black tracking-[0.22em] uppercase mb-3">Control Center</p>
+<p className="text-blue-300 text-[10px] font-black tracking-[0.22em] uppercase mb-3">{t(adminLocale, "adm_control_center")}</p>
           <h2 className="text-3xl font-black text-white leading-tight mb-1">
             Manage<br />Your<br /><span style={{ color: C.red }}>Accounts.</span>
           </h2>
           <p className="text-blue-200/70 text-xs leading-relaxed mb-8 max-w-[200px]">
-            Empresas, usuarios y accesos en tiempo real.
+            {t(adminLocale, "adm_tagline")}
           </p>
 
           {/* Nav */}
           <nav className="space-y-1.5 mb-auto">
-            {[
-              { id: "companies", label: "Empresas",  icon: Building2 },
-              { id: "users",     label: "Usuarios",  icon: Users },
-              { id: "activity",  label: "Actividad", icon: Activity, disabled: true },
-            ].map((t, i) => {
-              const active = tab === t.id;
+{[
+              { id: "companies", label: t(adminLocale, "adm_companies"), icon: Building2 },
+              { id: "users",     label: t(adminLocale, "adm_users"),     icon: Users },
+              { id: "activity",  label: t(adminLocale, "adm_activity"),  icon: Activity, disabled: true },
+              { id: "settings",  label: t(adminLocale, "adm_settings"),  icon: Database },
+].map((navItem, i) => {
+              const active = tab === navItem.id;
               return (
-                <button key={t.id}
-                  onClick={() => !t.disabled && setTab(t.id)}
-                  disabled={t.disabled}
+                <button key={navItem.id}
+                  onClick={() => !navItem.disabled && setTab(navItem.id)}
+                  disabled={navItem.disabled}
                   className="w-full flex items-center gap-3 px-3.5 py-3 rounded-2xl text-[13px] font-black transition-all duration-300"
                   style={{
                     background: active
@@ -1234,10 +1268,10 @@ const res = await fetch(
                       e.currentTarget.style.color = "rgba(255,255,255,0.7)";
                     }
                   }}>
-                  <t.icon size={15} />
-                  {t.label}
+<navItem.icon size={15} />
+                  {navItem.label}
                   {active && <ChevronRight size={14} className="ml-auto" />}
-                  {t.disabled && <span className="ml-auto text-[8px] opacity-60 font-bold">SOON</span>}
+                  {navItem.disabled && <span className="ml-auto text-[8px] opacity-60 font-bold">{t(adminLocale, "adm_soon")}</span>}
                 </button>
               );
             })}
@@ -1264,7 +1298,7 @@ const res = await fetch(
             <button onClick={handleLogout}
               className="w-full flex items-center gap-2 px-3.5 py-2.5 rounded-2xl text-[11px] font-black text-blue-200/70 hover:text-white hover:bg-white/5 transition-all">
               <LogOut size={12} />
-              Cerrar sesión
+              {t(adminLocale, "adm_logout")}
             </button>
           </div>
         </aside>
@@ -1289,60 +1323,64 @@ const res = await fetch(
               </h1>
             </div>
 
-            <button
-              onClick={() => {
-                if (tab === "companies") { setEditingCompany(null); setShowCompanyModal(true); }
-                else { setEditingUser(null); setShowUserModal(true); }
-              }}
-              className="flex items-center gap-2 px-6 py-3.5 rounded-2xl text-[12px] font-black text-white transition-all hover:scale-[1.04] shadow-xl"
-              style={{
-                background: `linear-gradient(135deg, ${tabConfig.color} 0%, ${tabConfig.accent} 100%)`,
-                boxShadow: `0 12px 28px -8px ${tabConfig.color}90`,
-              }}>
-              <Plus size={14} />
-              {tab === "companies" ? "Nueva empresa" : "Nuevo usuario"}
-            </button>
+{tab !== "settings" && (
+              <button
+                onClick={() => {
+                  if (tab === "companies") { setEditingCompany(null); setShowCompanyModal(true); }
+                  else { setEditingUser(null); setShowUserModal(true); }
+                }}
+                className="flex items-center gap-2 px-6 py-3.5 rounded-2xl text-[12px] font-black text-white transition-all hover:scale-[1.04] shadow-xl"
+                style={{
+                  background: `linear-gradient(135deg, ${tabConfig.color} 0%, ${tabConfig.accent} 100%)`,
+                  boxShadow: `0 12px 28px -8px ${tabConfig.color}90`,
+                }}>
+                <Plus size={14} />
+                {tab === "companies" ? t(adminLocale, "adm_new_company") : t(adminLocale, "adm_new_user")}
+              </button>
+            )}
           </div>
 
           {/* Content */}
-          <div className="flex-1 overflow-y-auto admin-scroll px-10 py-7 space-y-6">
+          <div className="flex-1 min-h-0 flex flex-col px-10 py-7 gap-6 overflow-hidden">
             {/* Hero stats */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              <HeroStat label="Empresas"      value={stats.totalCompanies} icon={Building2} color={C.navy}    accent="#2d4ab8" delay={0} />
-              <HeroStat label="Usuarios"      value={stats.totalUsers}     icon={Users}     color={C.red}     accent={C.redDark} delay={0.08} />
-              <HeroStat label="Super-Admins"  value={stats.superAdmins}    icon={Crown}     color="#d97706"   accent={C.amber} delay={0.16} />
-              <HeroStat label="Trials"        value={stats.activeTrials}   icon={Zap}       color="#10b981"   accent={C.green} delay={0.24} />
-            </div>
+{tabConfig.showKpis && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 flex-shrink-0">
+<HeroStat label={t(adminLocale, "adm_stat_companies")}  value={stats.totalCompanies} icon={Building2} color={C.navy}   accent="#2d4ab8" delay={0} />
+                <HeroStat label={t(adminLocale, "adm_stat_users")}      value={stats.totalUsers}     icon={Users}     color={C.red}    accent={C.redDark} delay={0.08} />
+                <HeroStat label={t(adminLocale, "adm_stat_superadmins")}value={stats.superAdmins}    icon={Crown}     color="#d97706"  accent={C.amber} delay={0.16} />
+                <HeroStat label={t(adminLocale, "adm_stat_trials")}     value={stats.activeTrials}   icon={Zap}       color="#10b981"  accent={C.green} delay={0.24} />
+              </div>
+            )}
 
             {/* COMPANIES */}
             {tab === "companies" && (
-              <div style={{ animation: "adminCardEntry 0.5s ease-out 0.3s both" }}>
-                {/* Filters */}
-                <div className="flex flex-wrap items-center gap-2 p-3 rounded-2xl mb-4 bg-gray-50 border border-gray-100">
+<div style={{ animation: "adminCardEntry 0.5s ease-out 0.3s both" }} className="flex-1 min-h-0 flex flex-col gap-4 overflow-hidden">
+                <div className="flex flex-wrap items-center gap-2 p-3 rounded-2xl bg-gray-50 border border-gray-100 flex-shrink-0">
                   <div className="relative flex-1 min-w-[200px]">
                     <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300" />
-                    <input type="text" placeholder="Buscar por nombre o slug..."
+                    <input type="text" placeholder={t(adminLocale, "adm_search_company")}
                       value={searchCo} onChange={(e) => setSearchCo(e.target.value)}
                       className="w-full pl-9 pr-3 py-2.5 text-xs font-medium rounded-xl outline-none bg-white border border-gray-100 focus:border-[#1a2f8a] text-gray-800 transition-colors" />
                   </div>
                   <select value={filterTier} onChange={(e) => setFilterTier(e.target.value)}
                     className="px-3 py-2.5 text-xs font-black rounded-xl outline-none cursor-pointer bg-white border border-gray-100 text-gray-700">
-                    <option value="all">Todos los tiers</option>
+                    <option value="all">{t(adminLocale, "adm_all_tiers")}</option>
                     {TIERS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
                   </select>
                   <select value={filterTrial} onChange={(e) => setFilterTrial(e.target.value)}
                     className="px-3 py-2.5 text-xs font-black rounded-xl outline-none cursor-pointer bg-white border border-gray-100 text-gray-700">
-                    <option value="all">Todos</option>
-                    <option value="trial">Solo trial</option>
-                    <option value="paid">Solo pagados</option>
+<option value="all">{t(adminLocale, "adm_all")}</option>
+                    <option value="trial">{t(adminLocale, "adm_trial_only")}</option>
+                    <option value="paid">{t(adminLocale, "adm_paid_only")}</option>
                   </select>
                   <div className="ml-auto flex items-center gap-1.5 px-3 py-2 rounded-xl text-[10px] font-black bg-white border border-gray-100 text-gray-500">
                     <Filter size={10} />
-                    {companiesFiltered.length} de {companies.length}
+                    {companiesFiltered.length} {t(adminLocale, "adm_of")} {companies.length}
                   </div>
                 </div>
 
                 {/* Companies grid as cards */}
+<div className="flex-1 min-h-0 overflow-y-auto admin-scroll">
                 {loading ? (
                   <div className="text-center py-20">
                     <Loader2 size={24} className="animate-spin mx-auto text-gray-300" />
@@ -1350,8 +1388,8 @@ const res = await fetch(
                 ) : companiesFiltered.length === 0 ? (
                   <div className="text-center py-20 rounded-3xl bg-gray-50 border-2 border-dashed border-gray-100">
                     <Building2 size={32} className="mx-auto mb-3 text-gray-300" />
-                    <p className="text-sm font-black text-gray-400">Sin empresas</p>
-                    <p className="text-[11px] text-gray-300 mt-0.5">Crea la primera para empezar</p>
+<p className="text-sm font-black text-gray-400">{t(adminLocale, "adm_no_companies")}</p>
+                    <p className="text-[11px] text-gray-300 mt-0.5">{t(adminLocale, "adm_no_companies_hint")}</p>
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -1403,14 +1441,14 @@ const res = await fetch(
                             ) : (
                               <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-wider"
                                 style={{ background: "#d1fae5", color: "#047857" }}>
-                                <Check size={9} /> Pagado
+                               <Check size={9} /> {t(adminLocale, "adm_paid")}
                               </span>
                             )}
                           </div>
 
                           <div className="flex items-center justify-between mt-4 pt-3 border-t border-gray-100">
                             <div>
-                              <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Usuarios</p>
+                             <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">{t(adminLocale, "adm_users_label")}</p>
                               <p className="text-base font-black text-gray-800 mt-0.5">
                                 {c.active_user_count ?? 0}
                                 {c.total_user_count > c.active_user_count && (
@@ -1419,7 +1457,7 @@ const res = await fetch(
                               </p>
                             </div>
                             <div className="text-right">
-                              <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Creado</p>
+                             <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">{t(adminLocale, "adm_created")}</p>
                               <p className="text-[10px] font-bold text-gray-500 mt-0.5">{fmtDate(c.created_at)}</p>
                             </div>
                           </div>
@@ -1427,32 +1465,35 @@ const res = await fetch(
                       );
                     })}
                   </div>
-                )}
+)}
+                </div>
               </div>
             )}
 
             {/* USERS */}
             {tab === "users" && (
-              <div style={{ animation: "adminCardEntry 0.5s ease-out 0.3s both" }}>
-                <div className="flex flex-wrap items-center gap-2 p-3 rounded-2xl mb-4 bg-gray-50 border border-gray-100">
+<div style={{ animation: "adminCardEntry 0.5s ease-out 0.3s both" }} className="flex-1 min-h-0 flex flex-col gap-4 overflow-hidden">
+                <div className="flex flex-wrap items-center gap-2 p-3 rounded-2xl bg-gray-50 border border-gray-100 flex-shrink-0">
                   <div className="relative flex-1 min-w-[200px]">
                     <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300" />
-                    <input type="text" placeholder="Buscar por email o username..."
+                   <input type="text" placeholder={t(adminLocale, "adm_search_user")}
                       value={searchUser} onChange={(e) => setSearchUser(e.target.value)}
                       className="w-full pl-9 pr-3 py-2.5 text-xs font-medium rounded-xl outline-none bg-white border border-gray-100 focus:border-[#e8394a] text-gray-800 transition-colors" />
                   </div>
-                  <select value={filterSuper} onChange={(e) => setFilterSuper(e.target.value)}
+<select value={filterActive} onChange={(e) => setFilterActive(e.target.value)}
                     className="px-3 py-2.5 text-xs font-black rounded-xl outline-none cursor-pointer bg-white border border-gray-100 text-gray-700">
-                    <option value="all">Todos los usuarios</option>
-                    <option value="super">Solo super-admins</option>
-                    <option value="regular">Solo regulares</option>
+<option value="all">{t(adminLocale, "adm_all")}</option>
+                    <option value="active">{t(adminLocale, "adm_active_only")}</option>
+                    <option value="inactive">{t(adminLocale, "adm_inactive_only")}</option>
+                    <option value="super">{t(adminLocale, "adm_super_only")}</option>
                   </select>
                   <div className="ml-auto flex items-center gap-1.5 px-3 py-2 rounded-xl text-[10px] font-black bg-white border border-gray-100 text-gray-500">
                     <Filter size={10} />
-                    {usersFiltered.length} de {users.length}
+                   {usersFiltered.length} {t(adminLocale, "adm_of")} {users.length}
                   </div>
                 </div>
 
+<div className="flex-1 min-h-0 overflow-y-auto admin-scroll">
                 {loading ? (
                   <div className="text-center py-20">
                     <Loader2 size={24} className="animate-spin mx-auto text-gray-300" />
@@ -1460,8 +1501,8 @@ const res = await fetch(
                 ) : usersFiltered.length === 0 ? (
                   <div className="text-center py-20 rounded-3xl bg-gray-50 border-2 border-dashed border-gray-100">
                     <Users size={32} className="mx-auto mb-3 text-gray-300" />
-                    <p className="text-sm font-black text-gray-400">Sin usuarios</p>
-                    <p className="text-[11px] text-gray-300 mt-0.5">Crea el primero para empezar</p>
+<p className="text-sm font-black text-gray-400">{t(adminLocale, "adm_no_users")}</p>
+                    <p className="text-[11px] text-gray-300 mt-0.5">{t(adminLocale, "adm_no_users_hint")}</p>
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1509,30 +1550,20 @@ const res = await fetch(
                             <p className="text-[11px] font-medium text-gray-500 truncate">{u.email}</p>
 
                             <div className="flex items-center gap-1 mt-2.5 flex-wrap">
-                              {u.is_super_admin ? (
+{u.is_super_admin && (
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider"
                                   style={{ background: "#fef3c7", color: "#d97706" }}>
                                   <Crown size={9} /> Super-Admin
                                 </span>
-                              ) : (
-                                [...new Set(u._company_links.map(l => l.role))].slice(0, 2).map(r => {
-                                  const rc = roleConfig(r);
-                                  return (
-                                    <span key={r} className="inline-flex items-center px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider"
-                                      style={{ background: `${rc.color}18`, color: rc.color }}>
-                                      {rc.label}
-                                    </span>
-                                  );
-                                })
                               )}
                               {u.is_active ? (
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider"
                                   style={{ background: "#d1fae5", color: "#047857" }}>
-                                  <Check size={9} /> Activo
+                               <Check size={9} /> {t(adminLocale, "adm_active")}
                                 </span>
                               ) : (
-                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider bg-gray-100 text-gray-500">
-                                  Inactivo
+<span className="inline-flex items-center px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider bg-gray-100 text-gray-500">
+                                  {t(adminLocale, "adm_inactive")}
                                 </span>
                               )}
                             </div>
@@ -1556,7 +1587,78 @@ const res = await fetch(
                       </div>
                     ))}
                   </div>
-                )}
+)} 
+                </div>
+              </div>
+)}
+{/* SETTINGS */}
+            {tab === "settings" && (
+              <div style={{ animation: "adminCardEntry 0.5s ease-out 0.3s both" }} className="flex-1 min-h-0 flex flex-col gap-6 overflow-hidden">
+                {/* Section label */}
+                <div className="flex-shrink-0">
+<p className="text-[10px] font-black uppercase tracking-[0.22em] text-gray-400 mb-0.5">{t(adminLocale, "adm_lang_title")}</p>
+                  <p className="text-xs text-gray-400">{t(adminLocale, "adm_lang_subtitle")}</p>
+                </div>
+
+                {/* Language cards — fill space */}
+                <div className="flex-1 min-h-0 grid grid-cols-2 gap-4">
+                  {Object.entries(LOCALES).map(([code, { label, flag }], i) => {
+                    const active = (adminLocale ?? "en") === code;
+                    return (
+                      <button key={code} type="button"
+                        onClick={() => setAdminLocale(code)}
+                        className="relative overflow-hidden rounded-3xl flex flex-col items-center justify-center gap-4 transition-all duration-300 hover:scale-[1.02] group"
+                        style={{
+                          background: active
+                            ? `linear-gradient(135deg, ${C.navy} 0%, ${C.navyDark} 60%, ${C.navyDeep} 100%)`
+                            : "rgba(250,250,252,1)",
+                          border: `2px solid ${active ? C.navy : "#e5e7eb"}`,
+                          boxShadow: active
+                            ? `0 20px 50px -12px ${C.navy}60, inset 0 1px 0 rgba(255,255,255,0.12)`
+                            : "0 4px 12px -2px rgba(0,0,0,0.04)",
+                          animation: `adminCardEntry 0.5s ease-out ${0.1 + i * 0.08}s both`,
+                        }}>
+
+                        {/* Decorative bg circle */}
+                        <div className="absolute -top-8 -right-8 w-32 h-32 rounded-full transition-all duration-300"
+                          style={{ background: active ? "rgba(255,255,255,0.06)" : "rgba(26,47,138,0.03)" }} />
+
+                        {/* Active check */}
+                        {active && (
+                          <div className="absolute top-4 right-4 w-6 h-6 rounded-full flex items-center justify-center"
+                            style={{ background: "rgba(255,255,255,0.2)", border: "1px solid rgba(255,255,255,0.3)" }}>
+                            <Check size={12} className="text-white" />
+                          </div>
+                        )}
+
+                        {/* Flag */}
+                        <span style={{ fontSize: 52, lineHeight: 1, filter: active ? "none" : "grayscale(20%)" }}>
+                          {flag}
+                        </span>
+
+                        {/* Labels */}
+                        <div className="text-center">
+                          <p className="font-black text-lg leading-tight"
+                            style={{ color: active ? "#fff" : "#0f172a" }}>
+                            {label}
+                          </p>
+                          <p className="text-[11px] font-mono mt-0.5 uppercase tracking-widest"
+                            style={{ color: active ? "rgba(255,255,255,0.5)" : "#94a3b8" }}>
+                            {code}
+                          </p>
+                        </div>
+
+                        {/* Active pill */}
+                        {active && (
+                          <div className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest"
+                            style={{ background: "rgba(255,255,255,0.15)", color: "rgba(255,255,255,0.9)", border: "1px solid rgba(255,255,255,0.2)" }}>
+                            {t(adminLocale, "adm_lang_active")}
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
@@ -1564,15 +1666,22 @@ const res = await fetch(
       </div>
 
       {/* MODALS */}
-      {showCompanyModal && (
+{showCompanyModal && (
         <CompanyModal company={editingCompany}
           onClose={() => setShowCompanyModal(false)}
-          onSaved={reload} showToast={showToast} />
+          onSaved={reload} showToast={showToast} locale={adminLocale}
+          onEditUser={(u) => {
+            setShowCompanyModal(false);
+            setTimeout(() => {
+              setEditingUser({ ...u, _company_links: allLinks.filter(l => l.user_id === u.id), _company_names: [] });
+              setShowUserModal(true);
+            }, 200);
+          }} />
       )}
-      {showUserModal && (
+{showUserModal && (
         <UserModal user={editingUser} companies={companies}
           onClose={() => setShowUserModal(false)}
-          onSaved={reload} showToast={showToast} />
+          onSaved={reload} showToast={showToast} locale={adminLocale} />
       )}
 
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}

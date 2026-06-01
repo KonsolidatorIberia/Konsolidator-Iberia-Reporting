@@ -1,20 +1,22 @@
-import HomePage                       from "../components/layout/HomePage.jsx";
-import IndividualesPage               from "../components/layout/IndividualesPage.jsx";
-import KpiIndividualesPage            from "../components/layout/KpiIndividualesPage";
-import ContributivePage               from "../components/layout/ContributivePage.jsx";
-import DimensionesPage                from "../components/layout/DimensionesPage.jsx";
-import ConsolidationSheetPage         from "../components/layout/ConsolidationSheetPage.jsx";
-import StructurePage                  from "../components/layout/StructurePage.jsx";
-import SettingsPage                   from "../components/layout/SettingsPage.jsx";
-import CashFlowPage                   from "../components/layout/CashFlowPage.jsx";
-import IndividualCashFlowPage         from "../components/layout/IndividualCashFlowPage.jsx";
-import MemoryNotesPage                from "../components/layout/MemoryNotesPage.jsx";
-import ConsolidatedDimensionesPage    from "../components/layout/ConsolidatedDimensionesPage.jsx";
-import ConsolidatedMemoryNotesPage    from "../components/layout/ConsolidatedMemoryNotesPage.jsx";
-import ConsolidatedKpiPage            from "../components/layout/ConsolidatedKpiPage.jsx";
-import MappingsPage                   from "../components/layout/MappingsPage.jsx";
+import { lazy, Suspense } from "react";
+
+const HomePage                    = lazy(() => import("../components/layout/HomePage.jsx"));
+const IndividualesPage            = lazy(() => import("../components/layout/IndividualesPage.jsx"));
+const KpiIndividualesPage         = lazy(() => import("../components/layout/KpiIndividualesPage"));
+const ContributivePage            = lazy(() => import("../components/layout/ContributivePage.jsx"));
+const DimensionesPage             = lazy(() => import("../components/layout/DimensionesPage.jsx"));
+const ConsolidationSheetPage      = lazy(() => import("../components/layout/ConsolidationSheetPage.jsx"));
+const StructurePage               = lazy(() => import("../components/layout/StructurePage.jsx"));
+const SettingsPage                = lazy(() => import("../components/layout/SettingsPage.jsx"));
+const CashFlowPage                = lazy(() => import("../components/layout/CashFlowPage.jsx"));
+const IndividualCashFlowPage      = lazy(() => import("../components/layout/IndividualCashFlowPage.jsx"));
+const MemoryNotesPage             = lazy(() => import("../components/layout/MemoryNotesPage.jsx"));
+const ConsolidatedDimensionesPage = lazy(() => import("../components/layout/ConsolidatedDimensionesPage.jsx"));
+const ConsolidatedMemoryNotesPage = lazy(() => import("../components/layout/ConsolidatedMemoryNotesPage.jsx"));
+const ConsolidatedKpiPage         = lazy(() => import("../components/layout/ConsolidatedKpiPage.jsx"));
+const MappingsPage                = lazy(() => import("../components/layout/MappingsPage.jsx"));
 import { useCurrentUserPermissions } from "../lib/userPermissionsApi";
-function AccessDenied({ pageKey }) {
+function AccessDenied() {
   return (
     <div className="flex items-center justify-center h-full p-8">
       <div className="text-center max-w-sm">
@@ -28,7 +30,15 @@ function AccessDenied({ pageKey }) {
   );
 }
 
-export default function AppRoutes({ token, user, activePage, preloadedData }) {
+function PageFallback() {
+  return (
+    <div className="flex items-center justify-center h-full">
+      <div className="w-6 h-6 rounded-full border-2 border-gray-200 border-t-[#1a2f8a] animate-spin" />
+    </div>
+  );
+}
+
+function AppRoutesInner({ token, user, activePage, preloadedData }) {
   const sharedData = preloadedData ?? {};
   const { can, loaded } = useCurrentUserPermissions();
 
@@ -130,12 +140,20 @@ if (activePage === "mappings") return (
     <MappingsPage token={token} preloadedData={sharedData} />
   );
 
-  return (
+return (
     <div className="flex items-center justify-center h-full">
       <div className="text-center">
         <p className="text-6xl mb-4">🚧</p>
         <p className="text-xl font-black text-gray-300">Coming soon</p>
       </div>
     </div>
+  );
+}
+
+export default function AppRoutes(props) {
+  return (
+    <Suspense fallback={<PageFallback />}>
+      <AppRoutesInner {...props} />
+    </Suspense>
   );
 }

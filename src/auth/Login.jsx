@@ -226,8 +226,42 @@ const navigate = useNavigate();
 
 const handleLogin = async () => {
   if (!username || !password) { setError("Enter your credentials"); return; }
-  setLoading(true);
+setLoading(true);
   setError("");
+
+  // ════════════════════════════════════════════════════════
+  // PASO 0: Disparamos en paralelo las llamadas independientes.
+  //   • Token B2C        → no depende de Supabase
+  //   • get_user_by_email → RPC pública, no depende de la sesión
+  // Corren a la vez que el probe de super-admin (PASO 1) en lugar
+  // de en cascada. Cada una atrapa su propio error para no dejar
+  // promesas rechazadas si salimos antes (caso super-admin).
+  // ════════════════════════════════════════════════════════
+  const b2cPromise = (async () => {
+    try {
+      const params = new URLSearchParams();
+      params.append("grant_type", "password");
+      params.append("client_id", CLIENT_ID);
+      params.append("scope", SCOPE);
+      params.append("username", username);
+      params.append("password", password);
+      const res = await fetch(TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: params,
+      });
+      const data = await res.json();
+      if (!res.ok) return null;
+      return data.access_token;
+    } catch {
+      return null;
+    }
+  })();
+
+  const rpcPromise = supabase
+    .rpc("get_user_by_email", { p_email: username.trim().toLowerCase() })
+    .then(({ data }) => (Array.isArray(data) ? data[0] : null))
+    .catch(() => null);
 
   // ════════════════════════════════════════════════════════
   // PASO 1: Probar Supabase Auth para super-admin
@@ -257,41 +291,107 @@ const handleLogin = async () => {
     // Ignoramos
   }
 
-  // ════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════
   // PASO 2: Login Konsolidator B2C
+  // (ya está en vuelo desde PASO 0 — aquí solo esperamos)
   // ════════════════════════════════════════════════════════
-  let b2cToken = null;
-  try {
-    const params = new URLSearchParams();
-    params.append("grant_type", "password");
-    params.append("client_id", CLIENT_ID);
-    params.append("scope", SCOPE);
-    params.append("username", username);
-    params.append("password", password);
-    const res = await fetch(TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: params,
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error_description || data.error);
-    b2cToken = data.access_token;
-  } catch {
+  const b2cToken = await b2cPromise;
+  if (!b2cToken) {
     setError("Invalid credentials. Please try again.");
     setLoading(false);
     return;
   }
 
-  // ════════════════════════════════════════════════════════
-  // PASO 3: Comprobar estado de reporting en Supabase
-  // ════════════════════════════════════════════════════════
-  const reporting = await getReportingStatus(username, password);
+// ════════════════════════════════════════════════════════════════════════════
+  // PASO 3: Always clear any stale session first
+  // ════════════════════════════════════════════════════════════════════════════
+  await supabase.auth.signOut();
 
-  setLoading(false);
+  // ════════════════════════════════════════════════════════════════════════════
+  // PASO 4: Check if admin-created user via public RPC
+  // ════════════════════════════════════════════════════════════════════════════
+let reporting;
+  // get_user_by_email ya está en vuelo desde PASO 0 — solo esperamos.
+const acctUser = await rpcPromise;
 
-  // Pasamos a App el token B2C + el estado de reporting
-  // App.jsx decide qué renderizar.
-  onLogin(b2cToken, { username }, { username, password }, reporting);
+  if (acctUser?.admin_created) {
+    if (!acctUser.is_active) {
+      reporting = { status: "inactive", email: username };
+    } else {
+      // Get company info
+try {
+        const { data: links } = await supabase
+          .rpc("get_user_company_links", { p_user_id: acctUser.id });
+
+        const defaultLink = links?.find(l => l.is_default) ?? links?.[0];
+        const company = defaultLink ? {
+          name: defaultLink.company_name,
+          slug: defaultLink.company_slug,
+          is_trial: defaultLink.is_trial,
+          trial_ends_at: defaultLink.trial_ends_at,
+        } : null;
+
+        if (!links || links.length === 0) {
+          reporting = { status: "inactive", email: username };
+        } else if (company?.is_trial && company?.trial_ends_at && new Date(company.trial_ends_at) < new Date()) {
+          reporting = { status: "trial_expired", email: username, company };
+        } else {
+          reporting = { status: "active", user: acctUser, company };
+        }
+      } catch {
+        reporting = { status: "active", user: acctUser, company: null };
+      }
+    }
+  } else {
+    // Normal user — standard flow
+    reporting = await getReportingStatus(username, password);
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // PASO 5: If admin_created and no real password, update it via edge function
+  // ════════════════════════════════════════════════════════════════════════════
+if (acctUser?.admin_created && acctUser?.has_password === false) {
+    try {
+      const res = await fetch(
+        "https://gmcawsapzkzmgrtiqebv.supabase.co/functions/v1/set-user-password",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            apikey: "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA",
+            Authorization: `Bearer ${b2cToken}`,
+          },
+          body: JSON.stringify({ user_id: acctUser.id, password }),
+        }
+      );
+if (res.ok) {
+        await supabase.rpc("mark_user_has_password", { p_user_id: acctUser.id });
+        // Establish the Supabase session. THIS is what RLS uses (auth.uid())
+        // to authorize admin actions like deactivating other company users.
+        // If it fails silently the user ends up with a B2C token but no
+        // Supabase identity, so every RLS-gated write is denied.
+await supabase.auth.signInWithPassword({
+          email: username.trim().toLowerCase(),
+          password,
+        });
+}
+    } catch {
+      // sign-in failed silently — session won't be available
+    }
+  }
+
+// For admin_created users with an existing password, also ensure the session
+  // exists — same reasoning: without a live Supabase session, RLS-gated admin
+  // actions (manage/deactivate other company users) are denied.
+  if (acctUser?.admin_created && acctUser?.has_password === true) {
+await supabase.auth.signInWithPassword({
+      email: username.trim().toLowerCase(),
+      password,
+    });
+  }
+
+setLoading(false);
+onLogin(b2cToken, { username, displayName: acctUser?.username ?? null }, { username, password }, reporting);
 };
 
   return (

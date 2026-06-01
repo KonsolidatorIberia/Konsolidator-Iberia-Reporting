@@ -28,20 +28,41 @@ function MainApp() {
   const [preloadedData, setPreloadedData] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  const handleLogin = (accessToken, userData, credentials, reporting) => {
+const handleLogin = (accessToken, userData, credentials, reporting) => {
     setToken(accessToken);
-    setUser(userData);
+    setUser(userData); // set immediately, enrich below
     setCreds(credentials);
     setReportingStatus(reporting);
 
-    // Solo arrancamos el loader si el usuario tiene acceso "active".
-    // Para los demás casos (needs_activation, inactive, trial_expired)
-    // mostramos el panel correspondiente sin cargar datos pesados.
+// If Login already resolved the display name, use it immediately
+    if (userData?.displayName) {
+      setUser({ ...userData, username: userData.displayName });
+    }
+    // Also try to enrich from Supabase session if available
+    (async () => {
+      try {
+        const { supabase } = await import("../lib/supabaseClient");
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (uid) {
+          const { data: accountUser } = await supabase.schema("accounts").from("users")
+            .select("username").eq("id", uid).maybeSingle();
+          if (accountUser?.username) {
+            setUser(prev => ({ ...prev, username: accountUser.username }));
+          }
+        }
+      } catch (e) {
+        console.warn("Could not fetch username:", e);
+      }
+    })();
+
     if (reporting?.status === "active") {
       setLoaderActive(true);
       setShellReady(false);
     }
   };
+
+
 
   const handleLogout = () => {
     setToken(null);

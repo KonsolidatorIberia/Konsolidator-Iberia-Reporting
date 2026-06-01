@@ -279,11 +279,11 @@ const handleNavigate = (key) => {
 
         {/* ── User ── */}
 <div
-          className="bg-white rounded-2xl shadow-xl border border-gray-100 p-3 overflow-hidden flex items-center"
-          style={{ minHeight: "6vh", justifyContent: isOpen ? "flex-start" : "center", transition: `justify-content ${TRANSITION}` }}
+          className="bg-white rounded-2xl shadow-xl border border-gray-100 p-3 overflow-hidden flex items-center justify-center"
+          style={{ minHeight: "6vh" }}
           onClick={() => handleNavigate("user")}
         >
-          <div className="flex items-center cursor-pointer">
+<div className="flex items-center cursor-pointer w-full" style={{ justifyContent: isOpen ? "flex-start" : "center" }}>
             <div
               className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-black flex-shrink-0"
               style={{ backgroundColor: colors.primary }}
@@ -299,7 +299,7 @@ const handleNavigate = (key) => {
                 transition: `max-width ${TRANSITION}, opacity ${TRANSITION}, margin-left ${TRANSITION}`,
               }}
             >
-              {user?.username}
+              {user?.username ?? user?.email?.split("@")[0] ?? "—"}
             </p>
           </div>
         </div>

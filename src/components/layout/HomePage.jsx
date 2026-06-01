@@ -11,6 +11,11 @@ import {
 import { useSettings, useTypo, useSettingsControls, useT } from "./SettingsContext.jsx";
 import AiPanel from "./AiPanel.jsx";
 import { supabase } from "../../lib/supabaseClient";
+import {
+  listBreakdownStructures, createBreakdownStructure,
+  updateBreakdownStructure, archiveBreakdownStructure,
+  getBreakdownPreference, saveBreakdownPreference,
+} from "../../lib/breakdownApi";
 const BASE_URL = "";
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -70,7 +75,16 @@ const STANDARD_TO_SECTION_TABLE = {
 async function loadStandardMapping(standard, groupAccounts) {
   const plTable = STANDARD_TO_PL_TABLE[standard];
   const bsTable = STANDARD_TO_BS_TABLE[standard];
-  if (!plTable) return null;
+if (!plTable) return null;
+
+  const cacheKey = `resolver_mapping_${standard}_${(groupAccounts || []).length}`;
+  try {
+    const cached = sessionStorage.getItem(cacheKey);
+    if (cached) {
+      const { cc, sc } = JSON.parse(cached);
+      return { ccTagToCodes: new Map(cc), sectionCodes: new Map(sc) };
+    }
+  } catch { /* re-fetch */ }
 
   const [plRows, bsRows] = await Promise.all([
     sbGet(`${plTable}?select=account_code,account_name,section_code,parent_code,is_sum,cc_tag`),
@@ -101,9 +115,6 @@ const parentOf = new Map();
 
   const ccTagToCodes = new Map();
   const sectionCodes = new Map();
-  let taggedCount = 0;
-  const totalAccounts = (groupAccounts || []).length;
-
   for (const ga of (groupAccounts || [])) {
     const code = String(ga.AccountCode);
     let cur = code;
@@ -117,8 +128,7 @@ const parentOf = new Map();
       cur = parentOf.get(cur);
       hops++;
     }
-    if (foundTag) {
-      taggedCount++;
+if (foundTag) {
       if (!ccTagToCodes.has(foundTag)) ccTagToCodes.set(foundTag, []);
       ccTagToCodes.get(foundTag).push(code);
       if (foundSection) {
@@ -129,12 +139,23 @@ const parentOf = new Map();
     }
   }
 
-  console.log(`[HomeResolver] ${standard} mapping loaded: ${ccTagToCodes.size} cc_tags, ${sectionCodes.size} sections, ${taggedCount}/${totalAccounts} accounts tagged via inheritance`);
 
+try {
+    sessionStorage.setItem(cacheKey, JSON.stringify({
+      cc: [...ccTagToCodes.entries()],
+      sc: [...sectionCodes.entries()],
+    }));
+  } catch { /* storage full or unavailable */ }
   return { ccTagToCodes, sectionCodes };
 }
 
 async function loadKpiLibrary(standard, companyId) {
+  const cacheKey = `resolver_library_${standard}_${companyId ?? "none"}`;
+  try {
+    const cached = sessionStorage.getItem(cacheKey);
+    if (cached) return JSON.parse(cached);
+  } catch { /* re-fetch */ }
+
   const [defs, overrides, custom] = await Promise.all([
     sbGet("kpi_definitions?select=*&order=sort_order.asc"),
     standard
@@ -145,10 +166,7 @@ async function loadKpiLibrary(standard, companyId) {
       : Promise.resolve([]),
   ]);
 
-  if (!Array.isArray(defs)) {
-    console.error("[HomeResolver] kpi_definitions returned non-array:", defs);
-    return [];
-  }
+if (!Array.isArray(defs)) return [];
 
   const overrideByKpi = new Map();
   if (Array.isArray(overrides)) {
@@ -179,8 +197,10 @@ async function loadKpiLibrary(standard, companyId) {
     isCustom:    true,
   })) : [];
 
-  console.log(`[HomeResolver] loaded ${standardKpis.length} standard + ${customKpis.length} custom KPIs`);
-  return [...standardKpis, ...customKpis];
+
+const result = [...standardKpis, ...customKpis];
+  try { sessionStorage.setItem(cacheKey, JSON.stringify(result)); } catch { /* ignore */ }
+  return result;
 }
 
 function useResolvedKpiList(groupAccounts, companyId) {
@@ -197,11 +217,12 @@ function useResolvedKpiList(groupAccounts, companyId) {
 
   useEffect(() => {
     let cancelled = false;
-    if (!standard) {
+if (!standard) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setState(s => ({ ...s, ready: true, kpiList: [], standard: null }));
       return;
     }
-    setState(s => ({ ...s, ready: false, error: null }));
+setState(s => ({ ...s, ready: false, error: null }));
 
     Promise.all([loadStandardMapping(standard, groupAccounts), loadKpiLibrary(standard, companyId)])
       .then(([{ ccTagToCodes, sectionCodes }, fullKpiList]) => {
@@ -215,9 +236,8 @@ function useResolvedKpiList(groupAccounts, companyId) {
           error:         null,
         });
       })
-      .catch(e => {
+.catch(e => {
         if (cancelled) return;
-        console.error("[HomeResolver] load failed:", e);
         setState(s => ({ ...s, ready: true, error: String(e?.message ?? e) }));
       });
 
@@ -318,6 +338,11 @@ const MONTHS_ABBR_EN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","O
 const NI_COLOR = "#7c3aed";
 const NI_ACCENT = "#a855f7";
 
+const INCOME_TAGS = new Set([
+  "CC_01-Revenue", "CC_03-Other Operating Income",
+  "CC_13-Interest Income", "CC_14-Other financial income",
+]);
+
 function parseAmt(val) {
   if (val == null) return 0;
   if (typeof val === "number") return isNaN(val) ? 0 : val;
@@ -353,26 +378,6 @@ function detectReportingCurrency(rows) {
   let best = null, bestCount = -1;
   counts.forEach((n, cc) => { if (n > bestCount) { best = cc; bestCount = n; } });
   return best;
-}
-
-// Convert an amount in `from` currency to `to` currency using the rate map
-// (Map<currency, rate>). Convention discovered empirically below; we try
-// `amount * rate` first ("1 unit of from = rate units of to") and assume
-// that's correct. If the API uses the opposite convention we flip it.
-//
-// CONVENTION: We will configure this once we know the API. For now:
-//   amountInTo = amountInFrom * (rateFrom / rateTo)
-// Where rate is "1 currency_X = rateX units of base". This is the standard
-// "rate against base" convention. If `from === to`, return as-is.
-function convertAmount(amount, fromCurrency, toCurrency, rateMap) {
-  if (!amount) return 0;
-  if (!fromCurrency || !toCurrency) return amount;
-  if (fromCurrency === toCurrency) return amount;
-  const rateFrom = rateMap.get(fromCurrency);
-  const rateTo   = rateMap.get(toCurrency);
-  if (rateFrom == null || rateTo == null) return amount; // best effort
-  if (rateTo === 0) return amount;
-  return amount * (rateFrom / rateTo);
 }
 
 // Build pivot the SAME way KpiIndividualesPage does:
@@ -463,7 +468,7 @@ function ConsolidationBackground({ primary }) {
 /* ═══════════════════════════════════════════════════════════════
    KPI HERO CARD
 ═══════════════════════════════════════════════════════════════ */
-function HeroKPI({ label, code, value, prevValue, trend, color, accent, icon: Icon, delay = 0, loading }) {
+function HeroKPI({ label, value, prevValue, trend, color, accent, icon: Icon, delay = 0, loading }) {
   const change = prevValue && prevValue !== 0 ? ((value - prevValue) / Math.abs(prevValue)) * 100 : null;
   const isPositive = change != null ? change >= 0 : null;
   const sparklineData = useMemo(() => (trend ?? []).map((v, i) => ({ x: i, y: v })), [trend]);
@@ -540,6 +545,7 @@ style={{
   );
 }
 
+// eslint-disable-next-line no-unused-vars
 function MiniTile({ label, value, icon: Icon, color, delay = 0, onClick }) {
   return (
     <button
@@ -623,6 +629,7 @@ function useAnimatedNumber(target, duration = 700) {
   return display;
 }
 
+// eslint-disable-next-line no-unused-vars
 function DetailPopup({ title, items, icon: Icon, color, onClose, renderItem }) {
   const t = useT();
   const ref = useRef(null);
@@ -767,8 +774,7 @@ function PeriodPicker({
   year, month, onSelectPeriod,
   viewScope, onScopeChange,
   valueMode, onValueModeChange,
-  structures, companies, holdings = [],
-  selectedStructure, onStructureChange,
+  companies, holdings = [],
   selectedCompany, onCompanyChange,
   compareYear, compareMonth, onSelectCompare,
   colors, onClose,
@@ -788,7 +794,7 @@ function PeriodPicker({
         backdropFilter: "blur(24px)",
         border: "1px solid rgba(26,47,138,0.1)",
         boxShadow: "0 24px 60px -12px rgba(26,47,138,0.25), 0 0 0 1px rgba(255,255,255,0.5) inset",
-        animation: "dropdownIn 220ms cubic-bezier(0.34,1.56,0.64,1)",
+animation: "pickerFoldDown 280ms cubic-bezier(0.4, 0, 0.2, 1) 280ms both",
       }}
       onClick={e => e.stopPropagation()}
     >
@@ -1056,6 +1062,223 @@ function KpiSelectorPopover({ kpiList, currentId, onSelect, onClose }) {
   );
 }
 
+function BreakdownBuilderModal({ structure, ccTagToCodes, tagLabels, colors, onSave, onDelete, onClose }) {
+  const [name, setName] = useState(structure?.name ?? "");
+  const [description, setDescription] = useState(structure?.description ?? "");
+  const [items, setItems] = useState(() =>
+    (structure?.items ?? []).map(i => ({ ...i, _key: i.id ?? Math.random().toString(36).slice(2) }))
+  );
+  const [addingTag, setAddingTag] = useState(false);
+  const [tagSearch, setTagSearch] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const availableTags = useMemo(() => {
+    const used = new Set(items.map(i => i.cc_tag));
+    return [...(ccTagToCodes?.keys() ?? [])]
+      .filter(tag => !used.has(tag))
+      .filter(tag => !tagSearch || tag.toLowerCase().includes(tagSearch.toLowerCase()) ||
+        (tagLabels[tag] ?? "").toLowerCase().includes(tagSearch.toLowerCase()))
+      .sort();
+  }, [ccTagToCodes, items, tagSearch, tagLabels]);
+
+  const addItem = (ccTag) => {
+    const id = Math.random().toString(36).slice(2);
+    setItems(prev => [...prev, {
+      id, _key: id,
+      label: tagLabels[ccTag] ?? ccTag,
+      cc_tag: ccTag,
+      sign: "+",
+      order: prev.length,
+    }]);
+    setAddingTag(false);
+    setTagSearch("");
+  };
+
+  const updateItem = (key, patch) =>
+    setItems(prev => prev.map(i => i._key === key ? { ...i, ...patch } : i));
+
+  const removeItem = (key) =>
+    setItems(prev => prev.filter(i => i._key !== key).map((i, idx) => ({ ...i, order: idx })));
+
+  const moveItem = (key, dir) => {
+    setItems(prev => {
+      const idx = prev.findIndex(i => i._key === key);
+      if (idx < 0) return prev;
+      const next = [...prev];
+      const target = idx + dir;
+      if (target < 0 || target >= next.length) return prev;
+      [next[idx], next[target]] = [next[target], next[idx]];
+      return next.map((i, o) => ({ ...i, order: o }));
+    });
+  };
+
+  const handleSave = () => {
+    if (!name.trim()) return;
+    const cleanItems = items.map(({ _key, ...rest }, idx) => ({ ...rest, order: idx }));
+    onSave({ name: name.trim(), description: description.trim() || null, items: cleanItems });
+  };
+
+  return (
+    <div className="fixed inset-0 z-[500] flex items-center justify-center p-6"
+      style={{ background: "rgba(15,23,42,0.45)", backdropFilter: "blur(8px)" }}>
+      <div className="relative bg-white rounded-3xl flex flex-col"
+        style={{ width: 520, maxHeight: "85vh", boxShadow: "0 24px 80px -12px rgba(26,47,138,0.3)", animation: "hpPopIn 320ms cubic-bezier(0.34,1.56,0.64,1)" }}>
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
+          <div>
+            <p className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 mb-0.5">
+              {structure ? "Edit breakdown" : "New breakdown"}
+            </p>
+            <p className="text-base font-black text-gray-800">Custom Account Breakdown</p>
+          </div>
+          <button onClick={onClose}
+            className="w-8 h-8 rounded-xl flex items-center justify-center hover:bg-gray-100 transition-colors text-gray-400">
+            ✕
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-5 hide-scrollbar">
+          {/* Name + description */}
+          <div className="space-y-3">
+            <div>
+              <label className="text-[9px] font-black uppercase tracking-[0.18em] text-gray-400 block mb-1.5">Name *</label>
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. My P&L Structure"
+                className="w-full rounded-xl px-3 py-2.5 text-sm font-semibold text-gray-800 outline-none border transition-all"
+                style={{ borderColor: "#e5e7eb" }}
+                onFocus={e => e.target.style.borderColor = colors.primary + "60"}
+                onBlur={e => e.target.style.borderColor = "#e5e7eb"} />
+            </div>
+            <div>
+              <label className="text-[9px] font-black uppercase tracking-[0.18em] text-gray-400 block mb-1.5">Description</label>
+              <input value={description} onChange={e => setDescription(e.target.value)} placeholder="Optional description"
+                className="w-full rounded-xl px-3 py-2.5 text-sm font-semibold text-gray-800 outline-none border transition-all"
+                style={{ borderColor: "#e5e7eb" }}
+                onFocus={e => e.target.style.borderColor = colors.primary + "60"}
+                onBlur={e => e.target.style.borderColor = "#e5e7eb"} />
+            </div>
+          </div>
+
+          {/* Items */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-[9px] font-black uppercase tracking-[0.18em] text-gray-400">Account Groups</label>
+              <span className="text-[9px] font-bold text-gray-300">{items.length} added</span>
+            </div>
+
+            <div className="space-y-1.5">
+              {items.map((item, idx) => (
+                <div key={item._key}
+                  className="flex items-center gap-2 p-2.5 rounded-xl border border-gray-100 bg-gray-50/50 group">
+                  {/* Reorder */}
+                  <div className="flex flex-col gap-0.5 flex-shrink-0">
+                    <button onClick={() => moveItem(item._key, -1)} disabled={idx === 0}
+                      className="w-4 h-4 rounded flex items-center justify-center text-gray-300 hover:text-gray-500 disabled:opacity-20 transition-colors text-[10px]">▲</button>
+                    <button onClick={() => moveItem(item._key, 1)} disabled={idx === items.length - 1}
+                      className="w-4 h-4 rounded flex items-center justify-center text-gray-300 hover:text-gray-500 disabled:opacity-20 transition-colors text-[10px]">▼</button>
+                  </div>
+
+                  {/* Sign toggle */}
+                  <button
+                    onClick={() => updateItem(item._key, { sign: item.sign === "+" ? "-" : "+" })}
+                    className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 text-xs font-black transition-all"
+                    style={{
+                      background: item.sign === "+" ? "#dcfce7" : "#fee2e2",
+                      color: item.sign === "+" ? "#16a34a" : "#dc2626",
+                    }}
+                    title={item.sign === "+" ? "Income (click to switch to expense)" : "Expense (click to switch to income)"}>
+                    {item.sign}
+                  </button>
+
+                  {/* Label */}
+                  <div className="flex-1 min-w-0">
+                    <input
+                      value={item.label}
+                      onChange={e => updateItem(item._key, { label: e.target.value })}
+                      className="w-full text-xs font-bold text-gray-700 outline-none bg-transparent border-b border-transparent focus:border-gray-200 transition-all pb-0.5"
+                      placeholder="Label…"
+                    />
+                    <p className="text-[9px] font-mono text-gray-300 mt-0.5 truncate">{item.cc_tag}</p>
+                  </div>
+
+                  {/* Remove */}
+                  <button onClick={() => removeItem(item._key)}
+                    className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all"
+                    style={{ background: "#fee2e2", color: "#dc2626" }}>
+                    <Settings size={9} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            {/* Add item */}
+            {addingTag ? (
+              <div className="mt-2 rounded-xl border border-gray-100 overflow-hidden">
+                <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-100">
+                  <Search size={11} className="text-gray-300 flex-shrink-0" />
+                  <input autoFocus value={tagSearch} onChange={e => setTagSearch(e.target.value)}
+                    placeholder="Search account groups…"
+                    className="flex-1 text-xs outline-none text-gray-700 bg-transparent" />
+                  <button onClick={() => { setAddingTag(false); setTagSearch(""); }}
+                    className="text-gray-300 hover:text-gray-500 text-xs">✕</button>
+                </div>
+                <div className="max-h-48 overflow-y-auto hide-scrollbar">
+                  {availableTags.length === 0 ? (
+                    <p className="text-xs text-gray-300 text-center py-4">All available groups added</p>
+                  ) : availableTags.map(tag => (
+                    <button key={tag} onClick={() => addItem(tag)}
+                      className="w-full text-left px-3 py-2 text-xs hover:bg-gray-50 transition-colors border-b border-gray-50 last:border-0">
+                      <span className="font-bold text-gray-700">{tagLabels[tag] ?? tag}</span>
+                      <span className="text-[9px] font-mono text-gray-300 ml-2">{tag}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => setAddingTag(true)}
+                className="mt-2 w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border transition-all hover:bg-gray-50"
+                style={{ borderColor: `${colors.primary}25`, borderStyle: "dashed" }}>
+                <span className="text-xs font-black" style={{ color: colors.primary, opacity: 0.6 }}>+ Add account group</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex-shrink-0 px-6 py-4 border-t border-gray-100 flex items-center gap-2">
+          {onDelete && !confirmDelete && (
+            <button onClick={() => setConfirmDelete(true)}
+              className="px-3 py-2 rounded-xl text-xs font-black transition-all"
+              style={{ background: "#fee2e2", color: "#dc2626" }}>
+              Delete
+            </button>
+          )}
+          {confirmDelete && (
+            <>
+              <button onClick={() => setConfirmDelete(false)}
+                className="px-3 py-2 rounded-xl text-xs font-black bg-gray-100 text-gray-500 transition-all">Cancel</button>
+              <button onClick={onDelete}
+                className="px-3 py-2 rounded-xl text-xs font-black text-white transition-all"
+                style={{ background: "#dc2626" }}>Confirm delete</button>
+            </>
+          )}
+          <div className="flex-1" />
+          <button onClick={onClose}
+            className="px-4 py-2 rounded-xl text-xs font-black bg-gray-100 text-gray-500 transition-all">
+            Cancel
+          </button>
+          <button onClick={handleSave} disabled={!name.trim()}
+            className="px-4 py-2 rounded-xl text-xs font-black text-white transition-all disabled:opacity-40"
+            style={{ background: `linear-gradient(135deg, ${colors.primary} 0%, #3b54b8 100%)` }}>
+            {structure ? "Save changes" : "Create breakdown"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ═══════════════════════════════════════════════════════════════
    MAIN
 ═══════════════════════════════════════════════════════════════ */
@@ -1120,22 +1343,21 @@ const displayName = useMemo(() => {
     t("month_9"), t("month_10"), t("month_11"), t("month_12"),
   ].map(m => m.slice(0, 3));
 
-const sources    = initialData.sources ?? [];
-  const structures = initialData.structures ?? [];
-  const companies  = initialData.companies ?? [];
-  const dimensions = initialData.dimensions ?? [];
-  const groupAccountsProp = initialData.groupAccounts ?? [];
+const sources    = useMemo(() => initialData.sources    ?? [], [initialData]);
+  const structures = useMemo(() => initialData.structures ?? [], [initialData]);
+  const companies  = useMemo(() => initialData.companies  ?? [], [initialData]);
+  const dimensions = useMemo(() => initialData.dimensions ?? [], [initialData]);
+  const groupAccountsProp = useMemo(() => initialData.groupAccounts ?? [], [initialData]);
 
 // Current user's role + resource-access whitelist for this company
-  const [userRole, setUserRole] = useState(null);
-  const [allowedCompanyShortNames, setAllowedCompanyShortNames] = useState(null); // null = not loaded yet; Set = whitelist
+const [allowedCompanyShortNames, setAllowedCompanyShortNames] = useState(null);
 useEffect(() => {
     if (!userId) return;
     let cancelled = false;
     (async () => {
       // Resolve user's active company directly (don't rely on settings context)
       const { data: ucRow } = await supabase.schema("accounts").from("user_companies")
-        .select("company_id, role")
+       .select("company_id")
         .eq("user_id", userId)
         .eq("is_active", true)
         .order("is_default", { ascending: false })
@@ -1143,21 +1365,18 @@ useEffect(() => {
         .maybeSingle();
       if (cancelled) return;
       const cid = ucRow?.company_id;
-      const role = ucRow?.role ?? null;
-      console.log("[ACCESS] resolved cid=", cid, "role=", role);
-      setUserRole(role);
       if (!cid) return;
-      if (role === "admin") { setAllowedCompanyShortNames(null); return; }
-      const { data: rows } = await supabase
-        .from("role_resource_access")
+const { data: rows } = await supabase
+        .from("user_resource_access")
         .select("resource_id, allowed")
         .eq("company_id", cid)
-        .eq("role", role)
+        .eq("user_id", userId)
         .eq("resource_kind", "company");
       if (cancelled) return;
+      // If no rows exist → null means all allowed (default)
+      if (!rows || rows.length === 0) { setAllowedCompanyShortNames(null); return; }
       const allowed = new Set();
-      (rows ?? []).forEach(r => { if (r.allowed) allowed.add(String(r.resource_id)); });
-      console.log("[ACCESS] allowed companies:", [...allowed]);
+      rows.forEach(r => { if (r.allowed) allowed.add(String(r.resource_id)); });
       setAllowedCompanyShortNames(allowed);
     })();
     return () => { cancelled = true; };
@@ -1298,33 +1517,19 @@ const { setDetectedLocale } = useSettingsControls();
 
   // Cost breakdown rows from PL table — fetched independently to avoid
   // touching the resolver. Same standard detection.
-  const [plRowsForCosts, setPlRowsForCosts] = useState([]);
-  const [sectionsForCosts, setSectionsForCosts] = useState([]);
-  useEffect(() => {
-    if (!detectedStandard) return;
-    const plTable  = STANDARD_TO_PL_TABLE[detectedStandard];
-    const secTable = STANDARD_TO_SECTION_TABLE[detectedStandard];
-    if (!plTable || !secTable) return;
-    Promise.all([
-      sbGet(`${plTable}?select=*&order=sort_order.asc`),
-      sbGet(`${secTable}?select=*&order=sort_order.asc`),
-    ]).then(([rows, secs]) => {
-      setPlRowsForCosts(Array.isArray(rows) ? rows : []);
-      setSectionsForCosts(Array.isArray(secs) ? secs : []);
-    }).catch(() => {});
-  }, [detectedStandard]);
 
   const prefetch = useMemo(() => {
     const raw = initialData.__homePrefetch ?? null;
     if (!raw) return null;
     const period = extractPeriod(raw) ?? extractPeriod(raw.latestPeriod);
     if (!period) return null;
-    return {
-      year: period.year,
-      month: period.month,
-      current: raw.current ?? raw.currentRows ?? [],
-      prev:    raw.prev    ?? raw.prevRows    ?? [],
-      trend:   raw.trend   ?? raw.trendRows   ?? [],
+return {
+      year:             period.year,
+      month:            period.month,
+      current:          raw.current          ?? raw.currentRows    ?? [],
+      prev:             raw.prev             ?? raw.prevRows       ?? [],
+      trend:            raw.trend            ?? raw.trendRows      ?? [],
+      allCoCurrentRows: raw.allCoCurrentRows ?? [],
     };
   }, [initialData]);
 
@@ -1333,7 +1538,6 @@ const [year, setYear]     = useState(prefetch?.year  ? String(prefetch.year)  : 
   const [viewScope, setViewScope]           = useState("consolidated"); // "consolidated" | "individual"
   const [valueMode, setValueMode]           = useState("monthly"); // "monthly" | "ytd"
   const [pickerOpen, setPickerOpen]         = useState(false);
-  const [pickerYear, setPickerYear]         = useState(null); // year being browsed in picker
   const pickerRef = useRef(null);
 
   useEffect(() => {
@@ -1345,10 +1549,6 @@ const [year, setYear]     = useState(prefetch?.year  ? String(prefetch.year)  : 
     return () => document.removeEventListener("mousedown", handler);
   }, [pickerOpen]);
 
-  // Sync pickerYear to current year when opening
-  useEffect(() => {
-    if (pickerOpen && year) setPickerYear(Number(year));
-  }, [pickerOpen]);
 const source = useMemo(() => {
     const s = sources[0];
     return typeof s === "object" ? (s.source ?? s.Source ?? "") : (s ?? "");
@@ -1373,60 +1573,11 @@ const source = useMemo(() => {
     return typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : (c ?? "");
   }, [visibleCompanies]);
 
-const [structureOverride, setStructureOverride] = useState(null);
+const [structureOverride] = useState(null);
   // Two independent overrides — one per scope. Switching scope clears the other.
   const [consolidatedCompanyOverride, setConsolidatedCompanyOverride] = useState(null);
   const [individualCompanyOverride,   setIndividualCompanyOverride]   = useState(null);
   const structure = structureOverride ?? defaultStructure;
-
-// Set of "leaf" companies (no children) — these are the real individual entities
-  const leafCompanies = useMemo(() => {
-    const set = new Set();
-    groupStructure
-      .map(g => ({
-        company:  g.companyShortName ?? g.CompanyShortName ?? "",
-        structure: g.groupStructure  ?? g.GroupStructure   ?? "",
-        hasChild: g.hasChild         ?? g.HasChild         ?? false,
-        detached: g.detached         ?? g.Detached         ?? false,
-      }))
-      .filter(r => !r.detached && (!r.structure || r.structure === structure))
-      .forEach(r => { if (!r.hasChild && r.company) set.add(r.company); });
-    return set;
-  }, [groupStructure, structure]);
-
-// Map: holding shortName → Set of all descendant company shortNames (for consolidated ranking)
-  const holdingDescendants = useMemo(() => {
-    const rows = groupStructure
-      .map(g => ({
-        company:  g.companyShortName ?? g.CompanyShortName ?? "",
-        parent:   g.parentShortName  ?? g.ParentShortName  ?? "",
-        structure: g.groupStructure  ?? g.GroupStructure   ?? "",
-        detached: g.detached         ?? g.Detached         ?? false,
-      }))
-      .filter(r => !r.detached && (!r.structure || r.structure === structure));
-
-    // Build parent → direct children map
-    const childrenOf = new Map();
-    rows.forEach(r => {
-      if (!r.parent) return;
-      if (!childrenOf.has(r.parent)) childrenOf.set(r.parent, []);
-      childrenOf.get(r.parent).push(r.company);
-    });
-
-    // For each company, recursively collect all descendants (incl. itself)
-    const out = new Map();
-    const collect = (co, acc) => {
-      acc.add(co);
-      const kids = childrenOf.get(co) ?? [];
-      kids.forEach(k => collect(k, acc));
-    };
-    rows.forEach(r => {
-      const set = new Set();
-      collect(r.company, set);
-      out.set(r.company, set);
-    });
-    return out;
-  }, [groupStructure, structure]);
 
   // Holdings: companies that act as parent (have children) plus the root.
   // Source: /v2/group-structure, filtered by current structure, non-detached.
@@ -1469,8 +1620,6 @@ return shortNames
   const company = viewScope === "consolidated"
     ? (consolidatedCompanyOverride ?? defaultConsolidatedCompany)
     : (individualCompanyOverride   ?? defaultIndividualCompany);
-    console.log("[SCOPE-DEBUG]", { viewScope, company, defaultConsolidatedCompany, defaultIndividualCompany, consolidatedCompanyOverride, individualCompanyOverride, holdingsCount: holdings.length, holdings, firstCompany: companies[0] });
-// Compare period — defaults to month-before-current; user can pick any.
   const [compareYear, setCompareYear]   = useState("");
   const [compareMonth, setCompareMonth] = useState("");
   const [compareTouched, setCompareTouched] = useState(false);
@@ -1480,8 +1629,9 @@ return shortNames
     const y = Number(year), m = Number(month);
     let pm = m - 1, py = y;
     if (pm < 1) { pm = 12; py -= 1; }
+// eslint-disable-next-line react-hooks/set-state-in-effect
     setCompareYear(String(py));
-    setCompareMonth(String(pm));
+setCompareMonth(String(pm));
   }, [year, month, compareTouched]);
   const compareLabel = useMemo(() => {
     if (!compareYear || !compareMonth) return "—";
@@ -1493,22 +1643,20 @@ return shortNames
   const [currentRows, setCurrentRows]     = useState(prefetch?.current ?? []);
   const [prevRows, setPrevRows]           = useState(prefetch?.prev ?? []);
   const [trendRows, setTrendRows]         = useState(prefetch?.trend ?? []);
-const [allCoCurrentRows, setAllCoCurrentRows] = useState([]);
-  const [allCoPrevRows,    setAllCoPrevRows]    = useState([]);
+const [allCoCurrentRows, setAllCoCurrentRows] = useState(prefetch?.allCoCurrentRows ?? []);
   const [loading, setLoading]             = useState(false);
   const [trendLoading, setTrendLoading]   = useState(false);
   const [allCoLoading, setAllCoLoading]   = useState(false);
   const [probing, setProbing]             = useState(false);
 
-  // FX rates indexed by `${year}-${month}-${currencyCode}` → endRate
-  // Used only to convert the multi-company ranking to the group's reporting
-  // currency. Rest of the dashboard runs in parent currency natively.
-  const [fxRates, setFxRates] = useState(new Map());
-  const [fxLoading, setFxLoading] = useState(false);
 
-  const trendCacheRef = useRef(new Map());
+const trendCacheRef = useRef(new Map());
   const allCoCacheRef = useRef(new Map());
-  const fxFetchedRef = useRef(false);
+
+  // Seed in-component caches from the EpicLoader prefetch so the trend and
+  // all-companies effects find their keys on first run and skip the re-fetch.
+  // Mutating a ref during render is safe here — it is idempotent and has no
+  // visible effect on other components.
 
   const headers = useCallback(() => ({
     Authorization: `Bearer ${token}`,
@@ -1547,66 +1695,6 @@ const [allCoCurrentRows, setAllCoCurrentRows] = useState([]);
     } catch { return []; }
   }, [headers]);
 
-// Fetch all exchange rates once. The endpoint is small (one row per source ×
-  // year × month × currency) so we pull everything and index in memory.
-  useEffect(() => {
-    if (fxFetchedRef.current) return;
-    if (!token || !source) return;
-    fxFetchedRef.current = true;
-    setFxLoading(true);
-    (async () => {
-      try {
-        const res = await fetch(`${BASE_URL}/v2/exchange-rates`, { headers: headers() });
-        if (!res.ok) { setFxLoading(false); return; }
-        const json = await res.json();
-const rows = json.value ?? (Array.isArray(json) ? json : []);
-        if (rows.length > 0) {
-          const vndRow = rows.find(r => {
-            const cc = String(r.currencyCode ?? r.CurrencyCode ?? "").toUpperCase();
-            return cc === "VND";
-          });
-          console.log("[FX-RAW] sample VND row:", vndRow);
-          console.log("[FX-RAW] all field names of first row:", Object.keys(rows[0]));
-          console.log("[FX-RAW] first row full:", rows[0]);
-        }
-        const map = new Map();
-        rows.forEach(r => {
-          const src = String(r.source ?? r.Source ?? "").trim();
-          if (src && src !== source) return; // only rates for the active source
-          const y = Number(r.year ?? r.Year);
-          const m = Number(r.month ?? r.Month);
-          const cc = String(r.currencyCode ?? r.CurrencyCode ?? "").trim().toUpperCase();
-          if (!Number.isFinite(y) || !Number.isFinite(m) || !cc) return;
-// Closing rate (end of month). Custom override wins if present and non-zero.
-          const customRate = r.customEndRate ?? r.CustomEndRate;
-          const defaultRate = r.defaultEndRate ?? r.DefaultEndRate;
-          const rate = (customRate != null && customRate !== 0)
-                       ? customRate
-                       : defaultRate;
-          if (rate == null || rate === 0) return;
-          map.set(`${y}-${m}-${cc}`, Number(rate));
-        });
-        console.log(`[FX] loaded ${map.size} rates for source=${source}`);
-        // Quick sanity print: rates for VND and EUR for a recent month, to
-        // confirm convention. A "1 EUR = 26000 VND" world means VND > EUR;
-        // a "1 VND = 0.000038 EUR" world means VND < EUR.
-const vndKeys = [...map.keys()].filter(k => k.endsWith("-VND")).slice(0, 5);
-        const sampleVnd = vndKeys.map(k => [k, map.get(k)]);
-        const eurKeys = [...map.keys()].filter(k => k.endsWith("-EUR")).slice(0, 5);
-        const sampleEur = eurKeys.map(k => [k, map.get(k)]);
-        const allCurrencies = new Set([...map.keys()].map(k => k.split("-").pop()));
-        console.log(`[FX] sample VND keys+rates:`, sampleVnd);
-        console.log(`[FX] sample EUR keys+rates:`, sampleEur);
-        console.log(`[FX] all currencies in map:`, [...allCurrencies]);
-        console.log(`[FX] looking for: 2025-12-VND, exists?`, map.has("2025-12-VND"));
-        setFxRates(map);
-      } catch (e) {
-        console.error("[FX] fetch failed:", e);
-      } finally {
-        setFxLoading(false);
-      }
-    })();
-  }, [token, source, headers]);
 
   // Probe latest period
   const probedRef = useRef(false);
@@ -1621,6 +1709,7 @@ const vndKeys = [...map.keys()].filter(k => k.endsWith("-VND")).slice(0, 5);
     if (cached) {
       try {
         const p = extractPeriod(JSON.parse(cached));
+       // eslint-disable-next-line react-hooks/set-state-in-effect
         if (p) { setYear(String(p.year)); setMonth(String(p.month)); return; }
         sessionStorage.removeItem(cacheKey);
       } catch { sessionStorage.removeItem(cacheKey); }
@@ -1651,7 +1740,7 @@ const vndKeys = [...map.keys()].filter(k => k.endsWith("-VND")).slice(0, 5);
         const found = probes.find(Boolean);
         if (found) {
           setYear(String(found.y)); setMonth(String(found.m));
-          try { sessionStorage.setItem(cacheKey, JSON.stringify({ year: found.y, month: found.m })); } catch {}
+          try { sessionStorage.setItem(cacheKey, JSON.stringify({ year: found.y, month: found.m })); } catch { /* storage unavailable */ }
           setProbing(false); return;
         }
       }
@@ -1675,9 +1764,14 @@ const vndKeys = [...map.keys()].filter(k => k.endsWith("-VND")).slice(0, 5);
     return () => { cancelled = true; };
   }, [year, month, source, structure, company, fetchPeriod]);
 
-  // Fetch compare period (drives KPI deltas + cost-structure deltas)
+// Fetch compare period (drives KPI deltas + cost-structure deltas).
+  // Skip the first run if EpicLoader already prefetched prevRows — the
+  // compareYear/compareMonth auto-setter fires immediately and would otherwise
+  // trigger a redundant fetch for data we already have.
+  const initialCompareFetchSkippedRef = useRef(!!(prefetch?.prev?.length));
   useEffect(() => {
     if (!compareYear || !compareMonth || !source || !structure || !company) return;
+    if (initialCompareFetchSkippedRef.current) { initialCompareFetchSkippedRef.current = false; return; }
     let cancelled = false;
     (async () => {
       const cmp = await fetchPeriod(compareYear, compareMonth, source, structure, company);
@@ -1750,23 +1844,6 @@ const anchorY = Number(year), anchorM = Number(month);
     })();
   }, [year, month, source, structure, fetchPeriodAllCompanies]);
 
-  // Fetch all-companies prev month YTD (only needed for Monthly mode)
-  useEffect(() => {
-    if (valueMode !== "monthly") { setAllCoPrevRows([]); return; }
-    const m = Number(month);
-    if (!year || !m || m <= 1 || !source || !structure) { setAllCoPrevRows([]); return; }
-    const prevM = m - 1;
-    const cacheKey = `${source}|${structure}|${year}|${prevM}|ytd-allco-prev`;
-    const cached = allCoCacheRef.current.get(cacheKey);
-    if (cached) { setAllCoPrevRows(cached); return; }
-    let cancelled = false;
-    (async () => {
-      const rows = await fetchPeriodAllCompanies(year, String(prevM), source, structure);
-      if (cancelled) return;
-      allCoCacheRef.current.set(cacheKey, rows);
-      setAllCoPrevRows(rows);
-    })();
-  }, [year, month, source, structure, valueMode, fetchPeriodAllCompanies]);
 
 // Resolve the 4 configured slot KPIs from the library
   const slottedKpis = useMemo(() => {
@@ -1798,6 +1875,7 @@ const anchorY = Number(year), anchorM = Number(month);
   useEffect(() => {
     if (!year || !month || !source || !structure || !company) return;
     const m = Number(month);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (m === 1 || valueMode === "ytd") { setMonthBeforeAnchorRows([]); return; }
     const beforeM = m - 1;
     const beforeY = Number(year);
@@ -1922,7 +2000,7 @@ const entry = {
       out.push(entry);
     }
     return out;
-}, [trendRows, kpiSlots, kpiList, ccTagToCodes, sectionCodes, sumAccountCodes, valueMode]);
+}, [trendRows, kpiSlots, kpiList, ccTagToCodes, sectionCodes, sumAccountCodes, valueMode, MONTHS_ABBR, heroKpis]);
 
 const trendFromYear = useMemo(() => {
     if (!year) return null;
@@ -2039,22 +2117,6 @@ const trendFromYear = useMemo(() => {
 
 // SAME as hero: currentYtdPivot
       const curYtdPivot = buildPivotFromRows(data.curRows, sumAccountCodes);
-      if (entity === company) {
-        // Compare raw rows for accountCode 600000
-        const rankingRowsFor600 = data.curRows.filter(r => (r.AccountCode ?? r.accountCode) === "600000");
-        const heroRowsFor600    = currentRows.filter(r => (r.AccountCode ?? r.accountCode) === "600000");
-        console.log(`[RAW-CMP] ranking 600000 rows=${rankingRowsFor600.length} hero 600000 rows=${heroRowsFor600.length}`);
-        console.log(`[RAW-CMP] ranking 600000 sample:`, rankingRowsFor600.slice(0, 2));
-        console.log(`[RAW-CMP] hero 600000 sample:`, heroRowsFor600.slice(0, 2));
-        const rankingSum = rankingRowsFor600.reduce((s, r) => s + parseAmt(r.AmountYTD ?? r.amountYTD ?? 0), 0);
-        const heroSum    = heroRowsFor600.reduce((s, r) => s + parseAmt(r.AmountYTD ?? r.amountYTD ?? 0), 0);
-        console.log(`[RAW-CMP] ranking sum=${rankingSum} hero sum=${heroSum}`);
-        // Check if rows differ in dimension values
-        const rankingDims = new Set(rankingRowsFor600.map(r => JSON.stringify({d1: r.D1 ?? r.d1, d2: r.D2 ?? r.d2, d3: r.D3 ?? r.d3, d4: r.D4 ?? r.d4})));
-        const heroDims    = new Set(heroRowsFor600.map(r => JSON.stringify({d1: r.D1 ?? r.d1, d2: r.D2 ?? r.d2, d3: r.D3 ?? r.d3, d4: r.D4 ?? r.d4})));
-        console.log(`[RAW-CMP] ranking dim combos:`, [...rankingDims].slice(0, 5));
-        console.log(`[RAW-CMP] hero dim combos:`, [...heroDims].slice(0, 5));
-      }
 
       // SAME as hero: currentMonthlyPivot
       let monthlyPivot;
@@ -2074,21 +2136,6 @@ const trendFromYear = useMemo(() => {
 // SAME as hero: computeKpiById on monthlyPivot
       const cache = new Map();
       let v = computeKpiById(rankingKpiId, monthlyPivot, kpiList, ccTagToCodes, sectionCodes, cache);
-      if (entity === company) {
-        console.log(`[RANK-FINAL] entity=${entity} viewScope=${viewScope} valueMode=${valueMode}`);
-        console.log(`[RANK-FINAL] curRows=${data.curRows.length} monthBefore=${data.monthBeforeCurRows?.length ?? 0}`);
-        console.log(`[RANK-FINAL] HERO currentRows=${currentRows.length} HERO trendRows count=${trendRows.length}`);
-        console.log(`[RANK-FINAL] curYtdPivot size=${curYtdPivot.size} HERO currentYtdPivot size=${currentYtdPivot.size}`);
-        console.log(`[RANK-FINAL] monthlyPivot size=${monthlyPivot.size} HERO currentMonthlyPivot size=${currentMonthlyPivot.size}`);
-        // Compare values for a few specific codes
-        const sampleCodes = [...monthlyPivot.keys()].slice(0, 5);
-        sampleCodes.forEach(c => {
-          console.log(`[RANK-FINAL] code=${c} ranking=${monthlyPivot.get(c)} hero=${currentMonthlyPivot.get(c)}`);
-        });
-        const heroCache = new Map();
-        const heroV = computeKpiById(rankingKpiId, currentMonthlyPivot, kpiList, ccTagToCodes, sectionCodes, heroCache);
-        console.log(`[RANK-FINAL] ranking=${v} hero=${heroV}`);
-      }
       if (v === null || isNaN(v)) return;
 
 // NO FX conversion. The API returns each holding's data already
@@ -2107,8 +2154,8 @@ const trendFromYear = useMemo(() => {
    if (!year || !month) return probing ? t("loading_searching") : "—";
     const mNum = Number(month);
     if (!Number.isFinite(mNum) || mNum < 1 || mNum > 12) return "—";
-    return `${MONTHS_ABBR[mNum - 1]} ${year}`;
-  }, [year, month, probing, t]);
+return `${MONTHS_ABBR[mNum - 1]} ${year}`;
+  }, [year, month, probing, t, MONTHS_ABBR]);
 
 const anyLoading = loading || trendLoading || probing || allCoLoading || !resolverReady;
 
@@ -2126,17 +2173,6 @@ const anyLoading = loading || trendLoading || probing || allCoLoading || !resolv
   // Smoothly animate the displayed value between progress changes
   const animatedLoadProgress = useAnimatedNumber(loadProgress, 700);
 
-  // Track progress history to estimate time remaining
-  const loadStartRef = useRef(Date.now());
-  const [etaSeconds, setEtaSeconds] = useState(null);
-  useEffect(() => {
-    if (loadProgress >= 100) { setEtaSeconds(0); return; }
-    if (loadProgress <= 0)   { setEtaSeconds(null); return; }
-    const elapsed = (Date.now() - loadStartRef.current) / 1000;
-    const totalEstimate = (elapsed / loadProgress) * 100;
-    const remaining = Math.max(0, totalEstimate - elapsed);
-    setEtaSeconds(Math.ceil(remaining));
-  }, [loadProgress]);
 
 // ── Breakdown views ─────────────────────────────────────────────
   const BREAKDOWN_VIEWS = useMemo(() => [
@@ -2177,10 +2213,11 @@ const anyLoading = loading || trendLoading || probing || allCoLoading || !resolv
     },
   ], [t]);
 
-  const INCOME_TAGS = new Set(["CC_01-Revenue","CC_03-Other Operating Income","CC_13-Interest Income","CC_14-Other financial income"]);
 
-  const [activeBreakdownView, setActiveBreakdownView] = useState("cost_structure");
+const [activeBreakdownView, setActiveBreakdownView] = useState("cost_structure");
 const [breakdownSettingsOpen, setBreakdownSettingsOpen] = useState(false);
+const [customStructures, setCustomStructures] = useState([]);
+const [editingStructure, setEditingStructure] = useState(null); // null | "new" | structure object
   const breakdownSettingsRef = useRef(null);
 const [aiPanelOpen, setAiPanelOpen] = useState(false);
 const [openDetail, setOpenDetail] = useState(null); // "companies" | "structures" | "dimensions" | "sources" | null
@@ -2209,6 +2246,36 @@ const [middleCardView, setMiddleCardView] = useState("trend"); // "trend" | "ran
     return () => document.removeEventListener("mousedown", handler);
   }, [breakdownSettingsOpen]);
 
+// Load company-wide custom structures + restore user's last active view
+  useEffect(() => {
+    if (!settingsCompanyId) return;
+    let cancelled = false;
+    (async () => {
+      const [structures, pref] = await Promise.all([
+        listBreakdownStructures({ companyId: settingsCompanyId }),
+        userId ? getBreakdownPreference({ userId, companyId: settingsCompanyId }) : Promise.resolve(null),
+      ]);
+      if (cancelled) return;
+      setCustomStructures(structures ?? []);
+      if (pref?.active_view_id) setActiveBreakdownView(pref.active_view_id);
+    })();
+    return () => { cancelled = true; };
+  }, [settingsCompanyId, userId]);
+
+  // Persist user's active view whenever it changes
+  const prevActiveViewRef = useRef(null);
+  useEffect(() => {
+    if (!userId || !settingsCompanyId) return;
+    if (prevActiveViewRef.current === activeBreakdownView) return;
+    prevActiveViewRef.current = activeBreakdownView;
+    saveBreakdownPreference({ userId, companyId: settingsCompanyId, activeViewId: activeBreakdownView });
+  }, [activeBreakdownView, userId, settingsCompanyId]);
+
+  const activeCustomStructure = useMemo(
+    () => customStructures.find(s => s.id === activeBreakdownView) ?? null,
+    [customStructures, activeBreakdownView]
+  );
+
   const activeView = BREAKDOWN_VIEWS.find(v => v.id === activeBreakdownView) ?? BREAKDOWN_VIEWS[0];
 
 const TAG_LABELS = useMemo(() => ({
@@ -2230,9 +2297,30 @@ const TAG_LABELS = useMemo(() => ({
     "CC_18-Income Tax":                             t("income_tax"),
   }), [t]);
 
-  const costBreakdown = useMemo(() => {
+const costBreakdown = useMemo(() => {
     if (!ccTagToCodes || ccTagToCodes.size === 0) return [];
     if (!currentMonthlyPivot || currentMonthlyPivot.size === 0) return [];
+
+    // Custom structure path
+    if (activeCustomStructure) {
+      return [...(activeCustomStructure.items ?? [])]
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+        .map(item => {
+          const rawCurr = pivotSum(currentMonthlyPivot, ccTagToCodes.get(item.cc_tag) ?? []);
+          const rawPrev = pivotSum(prevMonthlyPivot,    ccTagToCodes.get(item.cc_tag) ?? []);
+          const isInc = item.sign === "+";
+          const curr = isInc ? -rawCurr : Math.abs(rawCurr);
+          const prev = isInc ? -rawPrev : Math.abs(rawPrev);
+          let change = null;
+          if (Math.abs(prev) > 0.005) change = ((curr - prev) / Math.abs(prev)) * 100;
+          return { tag: item.cc_tag, name: item.label, value: curr, prevValue: prev, change, isIncome: isInc };
+        })
+        .filter(r => Math.abs(r.value) > 0.005)
+        .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+        .slice(0, 10);
+    }
+
+    // Preset structure path (unchanged)
     const isIncome = (tag) => INCOME_TAGS.has(tag);
     return activeView.tags
       .map(tag => {
@@ -2255,7 +2343,7 @@ const totalCosts = useMemo(
   );
 
 // ── TAG DRILL-DOWN: data when a cost-structure row is clicked ───────────
-  const drillAccountBreakdown = useMemo(() => { // eslint-disable-line
+const drillAccountBreakdown = useMemo(() => {
     if (!drillTag || !ccTagToCodes || !currentMonthlyPivot) return [];
     const codes = ccTagToCodes.get(drillTag) ?? [];
     const isIncome = INCOME_TAGS.has(drillTag);
@@ -2436,6 +2524,10 @@ return (
       <ConsolidationBackground primary={colors.primary ?? "#1a2f8a"} />
 
       <style>{`
+@keyframes pickerFoldDown {
+          0%   { opacity: 0; clip-path: inset(0 0 100% 0 round 16px); }
+          100% { opacity: 1; clip-path: inset(0 0 0% 0 round 16px); }
+        }
         @keyframes kBgRotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes kBgPulse  { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
         @keyframes kBgFloat  { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-20px); } }
@@ -2499,7 +2591,7 @@ return (
           to   { opacity: 1; transform: translateY(0); }
         }
       `}</style>
-<div className="relative z-10 flex flex-col flex-1 min-h-0 px-5 gap-3">
+<div className="relative z-10 flex flex-col flex-1 min-h-0 pl-2 pr-5 gap-3">
   {/* HEADER — same height/style as PageHeader so it aligns with sidebar logo card */}
 <div
           className="relative flex-shrink-0 bg-white rounded-2xl border border-gray-100 flex items-center justify-between px-5"
@@ -2577,25 +2669,19 @@ return (
 
 {/* RIGHT — period + standard + loading */}
           <div className="flex items-center gap-2" style={{ animation: "kPeriodSlide 0.4s cubic-bezier(0.4,0,0.2,1) 0.12s both" }}>
-            {anyLoading && (
-              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl"
-                style={{ background: "#fffbeb", border: "1px solid #fde68a" }}>
-                <Loader2 size={10} className="animate-spin" style={{ color: "#d97706" }} />
-                <span className="text-[9px] font-black uppercase tracking-wider" style={{ color: "#d97706" }}>
-                  {probing ? t("home_probing_short") : !resolverReady ? t("home_mapping") : trendLoading ? t("home_trend") : allCoLoading ? t("home_multico") : t("loading_data")}
-                </span>
-              </div>
-            )}
-
 {/* Clickable period chip */}
             <div className="relative" ref={pickerRef}>
-              <button
+<button
                 onClick={() => setPickerOpen(o => !o)}
-                className="flex items-center gap-2 px-3.5 py-2 rounded-xl border transition-all duration-200"
+                className="flex items-center gap-2 px-3.5 py-2 rounded-xl border hover:shadow-md"
                 style={{
                   background: pickerOpen ? colors.primary : "#f9fafb",
                   borderColor: pickerOpen ? colors.primary : "#f3f4f6",
+                 minWidth: pickerOpen ? 340 : 0,
+                  transition: "min-width 300ms cubic-bezier(0.4, 0, 0.2, 1)",
                 }}
+                onMouseEnter={e => { if (!pickerOpen) { e.currentTarget.style.background = "#f0f4ff"; e.currentTarget.style.borderColor = "#e0e7ff"; }}}
+                onMouseLeave={e => { if (!pickerOpen) { e.currentTarget.style.background = "#f9fafb"; e.currentTarget.style.borderColor = "#f3f4f6"; }}}
               >
                 <div className="w-1.5 h-1.5 rounded-full flex-shrink-0"
                   style={{ background: pickerOpen ? "rgba(255,255,255,0.8)" : colors.primary }} />
@@ -2616,16 +2702,8 @@ return (
                     </span>
                   </>
                 )}
-                {detectedStandard && (
-                  <>
-                    <div style={{ width: 1, height: 14, background: pickerOpen ? "rgba(255,255,255,0.3)" : "rgba(26,47,138,0.1)", flexShrink: 0 }} />
-                    <span className="text-[10px] font-black" style={{ color: pickerOpen ? "rgba(255,255,255,0.7)" : "#9ca3af" }}>
-                      {detectedStandard}
-                    </span>
-                  </>
-                )}
-                <ChevronDown size={10} style={{ color: pickerOpen ? "rgba(255,255,255,0.7)" : "#9ca3af", marginLeft: 2 }} />
-              </button>
+<ChevronDown size={10} style={{ color: pickerOpen ? "rgba(255,255,255,0.7)" : "#9ca3af", marginLeft: 2 }} />
+</button>
 
 {pickerOpen && (
                 <PeriodPicker
@@ -2639,9 +2717,8 @@ return (
                     setViewScope(scope);
                   }}
                   valueMode={valueMode} onValueModeChange={setValueMode}
-structures={structures} companies={visibleCompanies}
+companies={visibleCompanies}
 holdings={holdings}
-                  selectedStructure={structure} onStructureChange={v => { setStructureOverride(v); }}
 selectedCompany={company}
                   onCompanyChange={(v) => {
                     if (viewScope === "consolidated") setConsolidatedCompanyOverride(v);
@@ -2654,6 +2731,20 @@ selectedCompany={company}
                 />
               )}
 </div>
+
+{/* Accounting standard — read-only, not part of the picker */}
+            {detectedStandard && (
+<div
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border"
+                style={{ background: "#f9fafb", borderColor: "#f3f4f6" }}
+              >
+                <div className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                  style={{ background: `${colors.primary}50` }} />
+                <span className="text-[10px] font-black uppercase tracking-wider text-gray-400">
+                  {detectedStandard}
+                </span>
+              </div>
+            )}
 
             {/* AI Assistant button */}
             <button
@@ -2708,9 +2799,8 @@ selectedCompany={company}
               const sc   = SLOT_COLORS[idx];
               return (
                 <div key={`slot-${idx}`} className="relative group/kpislot h-full">
-                  <HeroKPI
+<HeroKPI
                     label={kpi?.label ?? slotId}
-                    code={kpi?.id}
                     value={vals?.current ?? 0}
                     prevValue={vals?.prev ?? 0}
                     trend={sparklines[idx] ?? []}
@@ -3237,8 +3327,12 @@ return (
             {/* Header */}
             <div className="mb-3 flex-shrink-0 flex items-start justify-between gap-2">
 <div>
-                <p className="text-[12px] font-black uppercase tracking-widest text-gray-400">{activeView.label}</p>
-                <p className="text-[11px] text-gray-400 mt-0.5">{activeView.description}</p>
+<p className="text-[12px] font-black uppercase tracking-widest text-gray-400">
+                  {activeCustomStructure ? activeCustomStructure.name : activeView.label}
+                </p>
+                <p className="text-[11px] text-gray-400 mt-0.5">
+                  {activeCustomStructure ? (activeCustomStructure.description || "Custom breakdown") : activeView.description}
+                </p>
               </div>
            <div className="relative flex-shrink-0" ref={breakdownSettingsRef} style={{ overflow: "visible", zIndex: 10 }}>
 <button
@@ -3261,23 +3355,20 @@ className="absolute right-0 top-full mt-2 z-[500] rounded-2xl p-2 flex flex-col 
                       backdropFilter: "blur(24px)",
                       border: "1px solid rgba(26,47,138,0.08)",
                       boxShadow: "0 20px 50px -12px rgba(26,47,138,0.22)",
-                      animation: "dropdownIn 220ms cubic-bezier(0.34,1.56,0.64,1)",
+                     animation: "pickerFoldDown 320ms cubic-bezier(0.34,1.56,0.64,1)",
+        transformOrigin: "top center",
                     }}
 
                     onClick={e => e.stopPropagation()}
                   >
-                   <p className="text-[8px] font-black uppercase tracking-[0.2em] text-gray-400 px-2 pt-1 pb-0.5">{t("breakdown_view_label")}</p>
+<p className="text-[8px] font-black uppercase tracking-[0.2em] text-gray-400 px-2 pt-1 pb-0.5">{t("breakdown_view_label")}</p>
                     {BREAKDOWN_VIEWS.map((v, vi) => {
                       const active = v.id === activeBreakdownView;
                       return (
                         <button key={v.id}
                           onClick={() => { setActiveBreakdownView(v.id); setBreakdownSettingsOpen(false); }}
                           className="flex items-center gap-3 px-2.5 py-2 rounded-xl text-left transition-all duration-150 w-full"
-                          style={{
-                            background: active ? colors.primary : "transparent",
-                            animation: `kCardEntry 0.3s ease-out ${vi * 0.05}s both`,
-                          }}
-                        >
+                          style={{ background: active ? colors.primary : "transparent", animation: `kCardEntry 0.3s ease-out ${vi * 0.05}s both` }}>
                           <span className="text-base leading-none">{v.icon}</span>
                           <div className="min-w-0">
                             <p className="text-xs font-black truncate" style={{ color: active ? "#fff" : "#374151" }}>{v.label}</p>
@@ -3287,6 +3378,53 @@ className="absolute right-0 top-full mt-2 z-[500] rounded-2xl p-2 flex flex-col 
                         </button>
                       );
                     })}
+
+                    {/* Custom structures */}
+                    {customStructures.length > 0 && (
+                      <div className="mt-1 pt-1 border-t border-gray-100">
+                        <p className="text-[8px] font-black uppercase tracking-[0.2em] text-gray-400 px-2 py-1">Custom</p>
+                        {customStructures.map((s, si) => {
+                          const active = s.id === activeBreakdownView;
+                          return (
+                            <div key={s.id} className="flex items-center gap-1 group/cbs"
+                              style={{ animation: `kCardEntry 0.3s ease-out ${si * 0.05}s both` }}>
+                              <button
+                                onClick={() => { setActiveBreakdownView(s.id); setBreakdownSettingsOpen(false); }}
+                                className="flex-1 flex items-center gap-3 px-2.5 py-2 rounded-xl text-left transition-all duration-150"
+                                style={{ background: active ? colors.primary : "transparent" }}>
+                                <span className="text-base leading-none">📐</span>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-xs font-black truncate" style={{ color: active ? "#fff" : "#374151" }}>{s.name}</p>
+                                  <p className="text-[9px] truncate mt-0.5" style={{ color: active ? "rgba(255,255,255,0.65)" : "#9ca3af" }}>
+                                    {s.items?.length ?? 0} groups
+                                  </p>
+                                </div>
+                                {active && <div className="w-1.5 h-1.5 rounded-full bg-white/70 flex-shrink-0" />}
+                              </button>
+                              <button
+                                onClick={e => { e.stopPropagation(); setEditingStructure(s); setBreakdownSettingsOpen(false); }}
+                                className="flex-shrink-0 w-6 h-6 rounded-lg flex items-center justify-center opacity-0 group-hover/cbs:opacity-100 transition-all"
+                                style={{ background: `${colors.primary}15`, color: colors.primary }}>
+                                <Settings size={10} />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* Create new */}
+                    <div className="mt-1 pt-1 border-t border-gray-100">
+                      <button
+                        onClick={() => { setEditingStructure("new"); setBreakdownSettingsOpen(false); }}
+                        className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl transition-all hover:bg-gray-50">
+                        <div className="w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0"
+                          style={{ background: `${colors.primary}15`, color: colors.primary }}>
+                          <Settings size={10} />
+                        </div>
+                        <p className="text-xs font-black" style={{ color: colors.primary }}>New custom breakdown</p>
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -3386,7 +3524,7 @@ className="absolute right-0 top-full mt-2 z-[500] rounded-2xl p-2 flex flex-col 
                   </p>
                 </div>
 <div className="flex items-center gap-2 flex-shrink-0">
-                  {(allCoLoading || fxLoading) && <Loader2 size={12} className="animate-spin text-gray-300" />}
+                 {allCoLoading && <Loader2 size={12} className="animate-spin text-gray-300" />}
                   <button
                     onClick={(e) => { e.stopPropagation(); setRankingSelectorOpen(true); }}
                     className="w-7 h-7 rounded-xl flex items-center justify-center transition-all duration-200 opacity-0 group-hover/ranking:opacity-100"
@@ -3478,7 +3616,7 @@ className="absolute right-0 top-full mt-2 z-[500] rounded-2xl p-2 flex flex-col 
               </div>
             ) : (
 <div className="flex-1 min-h-0 flex flex-col justify-around gap-1.5 pb-1">
-                {(() => { console.log("[RANK-RENDER] topByRevenue array being painted:", topByRevenue); return null; })()}
+               
                 {topByRevenue.length > 0 ? (
                   topByRevenue.slice(0, 3).map((c, i) => {
                     const max = topByRevenue[0].value;
@@ -3584,6 +3722,38 @@ className="absolute right-0 top-full mt-2 z-[500] rounded-2xl p-2 flex flex-col 
             const name = typeof s === "object" ? (s.source ?? s.Source ?? String(s)) : String(s);
             return <p className="text-sm font-bold text-gray-800">{name}</p>;
           }}
+        />
+      )}
+
+{editingStructure !== null && (
+        <BreakdownBuilderModal
+          structure={editingStructure === "new" ? null : editingStructure}
+          ccTagToCodes={ccTagToCodes}
+          tagLabels={TAG_LABELS}
+          colors={colors}
+          onSave={async (data) => {
+            if (!settingsCompanyId || !userId) return;
+            try {
+              if (editingStructure === "new") {
+                const created = await createBreakdownStructure({ companyId: settingsCompanyId, userId, ...data });
+                setCustomStructures(prev => [...prev, created]);
+                setActiveBreakdownView(created.id);
+              } else {
+                const updated = await updateBreakdownStructure({ id: editingStructure.id, userId, ...data });
+                setCustomStructures(prev => prev.map(s => s.id === updated.id ? updated : s));
+              }
+              setEditingStructure(null);
+            } catch (e) { alert(`Could not save: ${e.message}`); }
+          }}
+          onDelete={editingStructure === "new" ? null : async () => {
+            try {
+              await archiveBreakdownStructure({ id: editingStructure.id, userId });
+              setCustomStructures(prev => prev.filter(s => s.id !== editingStructure.id));
+              if (activeBreakdownView === editingStructure.id) setActiveBreakdownView("cost_structure");
+              setEditingStructure(null);
+            } catch (e) { alert(`Could not delete: ${e.message}`); }
+          }}
+          onClose={() => setEditingStructure(null)}
         />
       )}
 

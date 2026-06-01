@@ -511,14 +511,14 @@ const [search,     setSearch]     = useState("");
   const modalUser = modal ? users.find(u => u.id === modal.userId) : null;
   const modalCat  = modal ? CATEGORY_BUTTONS.find(c => c.key === modal.category) : null;
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, gap: 0 }}>
+return (
+  <div className="flex flex-col flex-1 min-h-0 gap-4">
       <style>{`.um-search-input::placeholder { color: #c8ccdb; font-weight: 900; letter-spacing: 0.12em; text-transform: uppercase; font-size: 11px; }`}</style>
 
 
 
       {/* Table */}
-<div style={{ flex: 1, minHeight: 0, background: "#fff", borderRadius: "0 0 20px 20px", border: "1px solid rgba(26,47,138,0.08)",
+<div style={{ flex: 1, minHeight: 0, background: "#fff", borderRadius: 20, border: "1px solid rgba(26,47,138,0.08)",
         boxShadow: "0 8px 40px -12px rgba(26,47,138,0.15), 0 2px 8px -2px rgba(0,0,0,0.04)",
         overflow: "hidden", display: "flex", flexDirection: "column" }}>
 <div style={{ display: "grid", gridTemplateColumns: "2fr 64px repeat(6, 1fr) auto", alignItems: "center",
