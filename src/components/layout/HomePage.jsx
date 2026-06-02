@@ -3,7 +3,7 @@ import {
   TrendingUp, DollarSign, Target, Activity,
   Building2, Layers, Database, Network, Loader2, ArrowUp, ArrowDown,
   Sparkles, ChevronRight, Wallet, Settings, Search, ChevronDown, GitCompare,
-  Edit3, Trash2,
+Edit3, Trash2, AlertTriangle,
 } from "lucide-react";
 import {
   AreaChart, Area, BarChart, Bar,
@@ -12,6 +12,7 @@ import {
 import { useSettings, useTypo, useSettingsControls, useT } from "./SettingsContext.jsx";
 import AiPanel from "./AiPanel.jsx";
 import { supabase } from "../../lib/supabaseClient";
+import { MappingsModal } from "./MappingsPage.jsx";
 import {
   listBreakdownStructures, createBreakdownStructure,
   updateBreakdownStructure, archiveBreakdownStructure,
@@ -186,17 +187,23 @@ if (!Array.isArray(defs)) return [];
     isCustom:    false,
   }));
 
-  const customKpis = Array.isArray(custom) ? custom.map(d => ({
-    id:          d.kpi_id,
-    label:       d.label,
-    description: d.description ?? "",
-    category:    d.category ?? "Custom",
-    format:      d.format ?? "currency",
-    tag:         d.tag ?? "",
-    benchmark:   d.benchmark ?? null,
-    formula:     d.formula,
-    isCustom:    true,
-  })) : [];
+const customKpis = Array.isArray(custom) ? custom.map(d => {
+    let formula = d.formula;
+    if (typeof formula === "string") {
+      try { formula = JSON.parse(formula); } catch { formula = null; }
+    }
+    return {
+      id:          d.kpi_id,
+      label:       d.label,
+      description: d.description ?? "",
+      category:    "Custom",
+      format:      d.format ?? "currency",
+      tag:         d.tag ?? "",
+      benchmark:   d.benchmark ?? null,
+      formula,
+      isCustom:    true,
+    };
+  }).filter(k => k.id && k.label && k.formula) : [];
 
 
 const result = [...standardKpis, ...customKpis];
@@ -1004,51 +1011,94 @@ function KpiSelectorPopover({ kpiList, currentId, onSelect, onClose }) {
       </div>
 
 {/* List */}
-      <div className="overflow-y-auto p-1.5 hide-scrollbar" style={{ maxHeight: 220 }}>
-        {Object.entries(grouped).map(([cat, kpis], catIdx) => {
-          const CAT_COLORS = [
-            "#1a2f8a", "#CF305D", "#57aa78", "#7c3aed",
-            "#d97706", "#0891b2", "#be185d", "#065f46",
-          ];
-          const catColor = CAT_COLORS[catIdx % CAT_COLORS.length];
+<div className="overflow-y-auto p-1.5 hide-scrollbar" style={{ maxHeight: 280 }}>
+        {/* Custom company KPIs pinned at top */}
+        {(() => {
+          const custom = filtered.filter(k => k.isCustom);
+          if (!custom.length) return null;
           return (
-            <div key={cat} className="mb-1">
-              {/* Section header */}
+            <div className="mb-2">
               <div className="flex items-center gap-2 px-2 py-1.5 mb-0.5">
-                <div className="w-1.5 h-4 rounded-full flex-shrink-0" style={{ background: catColor }} />
-                <p className="text-[9px] font-black uppercase tracking-[0.2em]" style={{ color: catColor }}>
-                  {cat}
+                <div className="w-1.5 h-4 rounded-full flex-shrink-0" style={{ background: "#7c3aed" }} />
+                <p className="text-[9px] font-black uppercase tracking-[0.2em]" style={{ color: "#7c3aed" }}>
+                  Company KPIs
                 </p>
-                <div className="flex-1 h-px" style={{ background: `${catColor}25` }} />
-                <span className="text-[8px] font-bold tabular-nums" style={{ color: `${catColor}80` }}>
-                  {kpis.length}
-                </span>
+                <div className="flex-1 h-px" style={{ background: "#7c3aed25" }} />
+                <span className="text-[8px] font-bold tabular-nums" style={{ color: "#7c3aed80" }}>{custom.length}</span>
               </div>
-
-              {/* KPI rows */}
-              {kpis.map(k => {
+              {custom.map(k => {
                 const active = k.id === currentId;
                 return (
                   <button
                     key={k.id}
                     onClick={() => onSelect(k.id)}
-                    className="w-full text-left px-3 py-2 rounded-xl text-xs transition-all"
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs transition-all flex items-center gap-2"
                     style={{
-                      background: active ? catColor : "transparent",
+                      background: active ? "#7c3aed" : "transparent",
                       color: active ? "#fff" : "#374151",
                       fontWeight: active ? 700 : 500,
                     }}
-                    onMouseEnter={e => { if (!active) e.currentTarget.style.background = `${catColor}12`; }}
+                    onMouseEnter={e => { if (!active) e.currentTarget.style.background = "#7c3aed12"; }}
                     onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
                   >
-                    {k.label}
+                    <span className="flex-1">{k.label}</span>
+                    <span className="text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-md flex-shrink-0"
+                      style={{ background: active ? "rgba(255,255,255,0.2)" : "#7c3aed15", color: active ? "#fff" : "#7c3aed" }}>
+                      Custom
+                    </span>
                   </button>
                 );
               })}
+              <div className="h-px bg-gray-100 mx-2 mt-1.5" />
             </div>
           );
-        })}
-{filtered.length === 0 && (
+        })()}
+
+        {/* System KPIs grouped by category */}
+        {Object.entries(grouped)
+          .filter(([cat]) => cat !== "Custom")
+          .map(([cat, kpis], catIdx) => {
+            const CAT_COLORS = [
+              "#1a2f8a", "#CF305D", "#57aa78", "#7c3aed",
+              "#d97706", "#0891b2", "#be185d", "#065f46",
+            ];
+            const catColor = CAT_COLORS[catIdx % CAT_COLORS.length];
+            return (
+              <div key={cat} className="mb-1">
+                <div className="flex items-center gap-2 px-2 py-1.5 mb-0.5">
+                  <div className="w-1.5 h-4 rounded-full flex-shrink-0" style={{ background: catColor }} />
+                  <p className="text-[9px] font-black uppercase tracking-[0.2em]" style={{ color: catColor }}>
+                    {cat}
+                  </p>
+                  <div className="flex-1 h-px" style={{ background: `${catColor}25` }} />
+                  <span className="text-[8px] font-bold tabular-nums" style={{ color: `${catColor}80` }}>
+                    {kpis.length}
+                  </span>
+                </div>
+                {kpis.map(k => {
+                  const active = k.id === currentId;
+                  return (
+                    <button
+                      key={k.id}
+                      onClick={() => onSelect(k.id)}
+                      className="w-full text-left px-3 py-2 rounded-xl text-xs transition-all"
+                      style={{
+                        background: active ? catColor : "transparent",
+                        color: active ? "#fff" : "#374151",
+                        fontWeight: active ? 700 : 500,
+                      }}
+                      onMouseEnter={e => { if (!active) e.currentTarget.style.background = `${catColor}12`; }}
+                      onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
+                    >
+                      {k.label}
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+
+        {filtered.length === 0 && (
           <p className="text-xs text-gray-400 text-center py-6">{t("kpi_no_match")}</p>
         )}
       </div>
@@ -1059,6 +1109,79 @@ function KpiSelectorPopover({ kpiList, currentId, onSelect, onClose }) {
           to   { opacity: 1; transform: translateY(0) scale(1); }
         }
       `}</style>
+    </div>
+  );
+}
+
+function UnmappedAccountsAlert({ accounts, standard, colors, onClose, onMapNow }) {
+const filtered = accounts;
+
+  return (
+    <div className="fixed inset-0 z-[450] flex items-center justify-center p-6"
+      style={{ background: "rgba(15,23,42,0.5)", backdropFilter: "blur(10px)" }}>
+      <div className="relative bg-white rounded-3xl flex flex-col overflow-hidden"
+        style={{ width: 520, maxHeight: "82vh",
+          boxShadow: "0 32px 80px -12px rgba(217,119,6,0.3), 0 8px 24px -8px rgba(0,0,0,0.1)",
+          animation: "hpPopIn 320ms cubic-bezier(0.34,1.56,0.64,1)" }}>
+
+        {/* Header */}
+        <div className="relative overflow-hidden px-6 pt-6 pb-5 flex-shrink-0"
+          style={{ background: "linear-gradient(135deg, #b45309 0%, #d97706 60%, #f59e0b 100%)" }}>
+          <div className="absolute -right-8 -top-8 w-40 h-40 rounded-full opacity-15"
+            style={{ background: "white" }} />
+          <div className="relative flex items-start gap-4">
+            <div className="w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0"
+              style={{ background: "rgba(255,255,255,0.2)", border: "1px solid rgba(255,255,255,0.3)" }}>
+              <AlertTriangle size={22} className="text-white" />
+            </div>
+            <div>
+              <p className="text-white font-black text-lg leading-tight">
+                {accounts.length} Unmapped Account{accounts.length !== 1 ? "s" : ""}
+              </p>
+              <p className="text-white/70 text-[11px] mt-0.5 uppercase tracking-wider font-bold">
+                {standard} · not in system template
+              </p>
+              <p className="text-white/80 text-xs mt-2 leading-relaxed max-w-sm">
+                These accounts exist in your chart of accounts but are not recognised by the{" "}
+                <span className="font-black text-white">{standard}</span> system mapping.
+                They won't appear in standard P&L or Balance Sheet reports.
+              </p>
+            </div>
+          </div>
+        </div>
+
+
+        {/* Account list */}
+        <div className="flex-1 overflow-y-auto hide-scrollbar px-5 pb-2 space-y-0.5">
+          {filtered.map((a, i) => (
+            <div key={a.code}
+              className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-amber-50/60 transition-colors"
+              style={{ animation: `kCardEntry 0.3s ease-out ${Math.min(i, 20) * 0.02}s both` }}>
+              <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: "#d97706" }} />
+              <span className="font-mono font-bold text-[11px] flex-shrink-0 w-20 truncate"
+                style={{ color: "#d97706" }}>{a.code}</span>
+              <span className="text-xs text-gray-600 flex-1 truncate">{a.name}</span>
+            </div>
+          ))}
+          {filtered.length === 0 && (
+            <p className="text-xs text-gray-300 text-center py-8">No matching accounts</p>
+          )}
+        </div>
+
+{/* Footer */}
+        <div className="flex-shrink-0 px-5 py-4 border-t border-gray-100 flex items-center gap-3">
+          <button onClick={onClose}
+            className="px-4 py-2.5 rounded-xl text-sm font-black bg-gray-100 text-gray-500 transition-all hover:bg-gray-200">
+            Dismiss
+          </button>
+          <button onClick={() => { onClose(); onMapNow?.(); }}
+            className="flex-1 py-2.5 rounded-xl text-sm font-black text-white transition-all hover:opacity-90 active:scale-[0.98]"
+            style={{ background: "linear-gradient(135deg, #b45309 0%, #d97706 100%)",
+              boxShadow: "0 4px 14px -4px rgba(180,83,9,0.5)" }}>
+            Map now →
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1645,9 +1768,53 @@ const { data: rows } = await supabase
 
   // Resolver — same hook as KpiIndividualesPage
 const {
-    kpiList, ccTagToCodes, sectionCodes, standard: detectedStandard,
+    kpiList: kpiListSystem, ccTagToCodes, sectionCodes, standard: detectedStandard,
     ready: resolverReady,
   } = useResolvedKpiList(groupAccounts, settingsCompanyId);
+const [companyKpis, setCompanyKpis] = useState([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) return;
+        const jwt = session?.access_token ?? SUPABASE_APIKEY;
+
+        // Resolve companyId the same way KpiIndividualesPage does
+        const { getActiveCompanyId } = await import("../../lib/mappingsApi");
+        const companyId = await getActiveCompanyId(uid);
+        if (!companyId) return;
+
+const res = await fetch(
+          `${SUPABASE_URL}/company_kpis?company_id=eq.${companyId}&is_archived=eq.false&kpi_type=eq.custom&select=*`,
+          { headers: { apikey: SUPABASE_APIKEY, Authorization: `Bearer ${jwt}` } }
+        );
+        const rows = await res.json();
+        if (!Array.isArray(rows) || !rows.length) return;
+        setCompanyKpis(rows.map(d => {
+          let formula = d.formula;
+          if (typeof formula === "string") { try { formula = JSON.parse(formula); } catch { formula = null; } }
+          return {
+            id:          d.kpi_id ?? d.id,
+            label:       d.label,
+            description: d.description ?? "",
+            category:    "Custom",
+            format:      d.format ?? "currency",
+            tag:         d.tag ?? "",
+            benchmark:   null,
+            formula,
+            isCustom:    true,
+          };
+        }).filter(k => k.id && k.label));
+      } catch(e) { console.error("[company_kpis] error:", e); }
+    })();
+  }, [userId]);
+
+  // Merge — shadow kpiList so every existing reference picks up custom KPIs
+  const kpiList = useMemo(() => {
+    const ids = new Set(kpiListSystem.map(k => k.id));
+    return [...kpiListSystem, ...companyKpis.filter(k => !ids.has(k.id))];
+  }, [kpiListSystem, companyKpis]);
 
 const { setDetectedLocale } = useSettingsControls();
 
@@ -1727,6 +1894,78 @@ const { setDetectedLocale } = useSettingsControls();
       detectedStandard === "PGC"           ? "es" : "en";
     setDetectedLocale(locale);
   }, [detectedStandard, setDetectedLocale]);
+
+// ── Standard mapping ────────────────────────────────────────
+  const [standardMappingData, setStandardMappingData] = useState(null);
+  useEffect(() => {
+    if (!userId) return;
+    (async () => {
+      try {
+        const { data } = await supabase.from("user_settings").select("preferences").eq("user_id", userId).single();
+        const mid = data?.preferences?.standard_mapping_id;
+        if (!mid) return;
+        const res = await fetch(`${SUPABASE_URL}/mappings?mapping_id=eq.${mid}&select=*&limit=1`, { headers: SB_HEADERS });
+        const rows = await res.json();
+        if (Array.isArray(rows) && rows[0]) setStandardMappingData(rows[0]);
+      } catch { /* non-critical */ }
+    })();
+  }, [userId]);
+
+  // ── Unmapped accounts detection ─────────────────────────────
+  const [unmappedAccounts, setUnmappedAccounts]       = useState(null);
+  const [unmappedDismissed, setUnmappedDismissed]     = useState(false);
+  const [mappingsModalOpen, setMappingsModalOpen]     = useState(false);
+  const unmappedCheckDoneRef                          = useRef(false);
+
+useEffect(() => {
+    if (!detectedStandard || !groupAccounts.length || !userId) return;
+    if (unmappedCheckDoneRef.current) return;
+    unmappedCheckDoneRef.current = true;
+
+    const templateStd = detectedStandard === "SpanishIFRS-ES" ? "SpanishIFRS" : detectedStandard;
+
+    (async () => {
+      try {
+        // If a standard mapping is already set, the user has handled their
+        // account organisation — no need to show the unmapped warning
+        const { data: settingsData } = await supabase
+          .from("user_settings")
+          .select("preferences")
+          .eq("user_id", userId)
+          .single();
+        if (settingsData?.preferences?.standard_mapping_id) return;
+        // Fetch PL and BS separately — exactly as the mapper does per statement
+        const [plRes, bsRes] = await Promise.all([
+          fetch(`${SUPABASE_URL}/template_rows?select=account_code&standard=eq.${templateStd}&statement=eq.PL`, { headers: SB_HEADERS }),
+          fetch(`${SUPABASE_URL}/template_rows?select=account_code&standard=eq.${templateStd}&statement=eq.BS`, { headers: SB_HEADERS }),
+        ]);
+        const [plRows, bsRows] = await Promise.all([plRes.json(), bsRes.json()]);
+
+        const plCodes = new Set((Array.isArray(plRows) ? plRows : []).map(r => String(r.account_code ?? "")).filter(Boolean));
+        const bsCodes = new Set((Array.isArray(bsRows) ? bsRows : []).map(r => String(r.account_code ?? "")).filter(Boolean));
+
+        if (!plCodes.size && !bsCodes.size) return;
+
+        const unmapped = [];
+        groupAccounts.forEach(ga => {
+          const code    = String(ga.AccountCode  ?? ga.accountCode  ?? "");
+          const name    = String(ga.AccountName  ?? ga.accountName  ?? "");
+          const isSum   = !!(ga.IsSumAccount ?? ga.isSumAccount);
+          const acctType = String(ga.AccountType ?? ga.accountType ?? "");
+          if (!code || isSum) return;
+
+          // Mirror the mapper: compare each account against its own statement's template
+          const isPL = acctType === "P/L" || acctType === "DIS";
+          const isBS = acctType === "B/S";
+
+          if (isPL && plCodes.size > 0 && !plCodes.has(code)) unmapped.push({ code, name });
+          else if (isBS && bsCodes.size > 0 && !bsCodes.has(code)) unmapped.push({ code, name });
+        });
+
+        if (unmapped.length > 0) setUnmappedAccounts(unmapped);
+      } catch { /* non-critical */ }
+    })();
+  }, [detectedStandard, groupAccounts, userId]);
 
   // Cost breakdown rows from PL table — fetched independently to avoid
   // touching the resolver. Same standard detection.
@@ -2537,7 +2776,7 @@ const [structures, pref] = await Promise.all([
           getBreakdownPreference({ userId: uid, companyId: cid }),
         ]);
         if (cancelled) return;
-        setCustomStructures(structures ?? []);
+setCustomStructures(structures ?? []);
         if (pref?.active_view_id) {
           setActiveBreakdownView(pref.active_view_id);
           setDefaultViewId(pref.active_view_id);
@@ -2556,10 +2795,60 @@ const [structures, pref] = await Promise.all([
     saveBreakdownPreference({ userId, companyId: settingsCompanyId, activeViewId: activeBreakdownView });
   }, [activeBreakdownView, userId, settingsCompanyId]);
 
-  const activeCustomStructure = useMemo(
-    () => customStructures.find(s => s.id === activeBreakdownView) ?? null,
-    [customStructures, activeBreakdownView]
-  );
+// Convert the standard mapping's pl_tree into a costBreakdown-compatible structure
+  const standardMappingStructure = useMemo(() => {
+    const plTree = Array.isArray(standardMappingData?.pl_tree) ? standardMappingData.pl_tree : [];
+    if (!plTree.length) return null;
+
+    function collectLeaves(nodes) {
+      const out = [];
+      (nodes || []).forEach(n => {
+        if (n.kind === "breaker") { out.push(...collectLeaves(n.children)); return; }
+        if (!n.children || n.children.length === 0) {
+          out.push({ account_code: n.code, account_name: n.name, sign: "+", _key: n.code });
+        } else {
+          out.push(...collectLeaves(n.children));
+        }
+      });
+      return out;
+    }
+
+    const items = [];
+    let gi = 0;
+    plTree.forEach((node, i) => {
+      if (node.kind === "breaker") {
+        const lines = collectLeaves(node.children || []);
+        if (lines.length > 0) {
+          items.push({ id: node.code ?? `brk-${i}`, label: node.name, color: node.color ?? GROUP_PALETTE[gi % GROUP_PALETTE.length], sign: "+", order: gi, lines });
+          gi++;
+        }
+      } else {
+        const lines = (node.isSum || node.isSumAccount)
+          ? collectLeaves(node.children || [])
+          : [{ account_code: node.code, account_name: node.name, sign: "+", _key: node.code }];
+        if (lines.length > 0) {
+          items.push({ id: node.code ?? `node-${i}`, label: node.name, color: GROUP_PALETTE[gi % GROUP_PALETTE.length], sign: "+", order: gi, lines });
+          gi++;
+        }
+      }
+    });
+    return items.length ? { id: "standard_mapping", name: standardMappingData.name, description: "From your standard mapping", items } : null;
+  }, [standardMappingData]);
+
+  const activeCustomStructure = useMemo(() => {
+    const fromCustom = customStructures.find(s => s.id === activeBreakdownView);
+    if (fromCustom) return fromCustom;
+    if (activeBreakdownView === "standard_mapping" && standardMappingStructure) return standardMappingStructure;
+    return null;
+  }, [customStructures, activeBreakdownView, standardMappingStructure]);
+
+// When the standard mapping loads, switch to it if still on a preset view
+  useEffect(() => {
+    if (!standardMappingStructure) return;
+    setActiveBreakdownView(prev =>
+      BREAKDOWN_VIEWS.some(v => v.id === prev) ? "standard_mapping" : prev
+    );
+  }, [standardMappingStructure]);
 
   const activeView = BREAKDOWN_VIEWS.find(v => v.id === activeBreakdownView) ?? BREAKDOWN_VIEWS[0];
 
@@ -4216,6 +4505,27 @@ const { data: { session } } = await supabase.auth.getSession();
             } catch (e) { alert(`Could not delete: ${e.message}`); }
           }}
           onClose={() => setEditingStructure(null)}
+        />
+      )}
+
+{unmappedAccounts?.length > 0 && !unmappedDismissed && (
+        <UnmappedAccountsAlert
+          accounts={unmappedAccounts}
+          standard={detectedStandard}
+          colors={colors}
+          onClose={() => setUnmappedDismissed(true)}
+          onMapNow={() => { setUnmappedDismissed(true); setMappingsModalOpen(true); }}
+        />
+      )}
+
+      {mappingsModalOpen && (
+        <MappingsModal
+          open={mappingsModalOpen}
+          onClose={() => setMappingsModalOpen(false)}
+          groupAccounts={groupAccounts}
+          dimensions={dimensions}
+          token={token}
+          initialStandard={detectedStandard}
         />
       )}
 

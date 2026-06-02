@@ -62,7 +62,7 @@ function getField(obj, ...names) {
   }
   return undefined;
 }
-function detectStandard(groupAccounts = []) {
+export function detectStandard(groupAccounts = []) {
   if (!groupAccounts.length) return null;
   const codes = groupAccounts.map(n => String(n.accountCode ?? n.AccountCode ?? ""));
   if (codes.some(c => /[a-zA-Z]/.test(c) && c.endsWith(".S"))) return "PGC";
@@ -291,19 +291,21 @@ return (
 }
 
 // ─── Structure Mappings View ──────────────────────────────────
-function StructureMappingsView({ groupAccounts, dimensions = [], search, setSearch, colors, onBack, token, mappingKind = "structure" }) {
+function StructureMappingsView({ groupAccounts, dimensions = [], search, setSearch, colors, onBack, token, mappingKind = "structure", initialView = "list", initialStandard = null }) {
   const api = useMemo(() => (
     mappingKind === "report"
       ? { list: listReportMappings, create: createReportMapping, update: updateReportMapping, archive: archiveReportMapping }
       : { list: listMappings, create: createMapping, update: updateMapping, archive: archiveMapping }
   ), [mappingKind]);
-  const [view, setView] = useState("list");
-  const [selectedStandard, setSelectedStandard] = useState(null);
+  const [view, setView] = useState(initialView);
+  const [selectedStandard, setSelectedStandard] = useState(initialStandard);
   const [authUserId, setAuthUserId] = useState(null);
   const [companyId, setCompanyId] = useState(null);
   const [mappings, setMappings] = useState([]);
 const [mappingsLoading, setMappingsLoading] = useState(true);
 const [editingMapping, setEditingMapping] = useState(null);
+  const [standardMappingId, setStandardMappingId] = useState(null);
+  const [pendingStandardMapping, setPendingStandardMapping] = useState(null);
   const [mapperStatement, setMapperStatement] = useState("PL");
   const mapperSaveRef = useRef(null);
   const mapperResetRef = useRef(null);
@@ -323,6 +325,27 @@ useEffect(() => {
     setMappingsLoading(true);
     api.list({ companyId }).then(rows => setMappings(rows)).finally(() => setMappingsLoading(false));
   }, [view, companyId, api]);
+
+  useEffect(() => {
+    if (!authUserId) return;
+    (async () => {
+      const { data } = await supabase.from("user_settings").select("preferences").eq("user_id", authUserId).single();
+      if (data?.preferences?.standard_mapping_id) setStandardMappingId(data.preferences.standard_mapping_id);
+    })();
+  }, [authUserId]);
+
+  const handleSetStandard = async (id) => {
+    if (!authUserId) return;
+    const newId = standardMappingId === id ? null : id; // toggle off if already set
+    const { data } = await supabase.from("user_settings").select("preferences").eq("user_id", authUserId).single();
+    const prefs = data?.preferences ?? {};
+    await supabase.from("user_settings").upsert({
+      user_id: authUserId,
+      preferences: { ...prefs, standard_mapping_id: newId },
+      updated_at: new Date().toISOString(),
+    });
+    setStandardMappingId(newId);
+  };
 
 const detectedStandard = useMemo(() => detectStandard(groupAccounts), [groupAccounts]);
 
@@ -364,11 +387,12 @@ const detectedStandard = useMemo(() => detectStandard(groupAccounts), [groupAcco
 }, [token, groupAccounts.length]);
 
 const kindLabel = mappingKind === "report" ? "Report Mappings" : "Structure Mappings";
+const activeAccent = (selectedStandard && STANDARD_META[selectedStandard]?.accent) || colors?.primary || "#1a2f8a";
   const headerConfig = {
     list: { title: kindLabel, back: onBack },
     create: { title: "Create mapping", back: () => setView("list") },
     selectStandard: { title: "Select standard", back: () => setView("create") },
-mapper: { title: selectedStandard ? `Mapping · ${STANDARD_META[selectedStandard]?.label}` : "Mapper", back: () => setView("selectStandard") },
+mapper: { title: selectedStandard ? `Mapping · ${STANDARD_META[selectedStandard]?.label}` : "Mapper", back: initialView === "mapper" ? null : () => setView("selectStandard") },
   };
   const cfg = headerConfig[view] ?? headerConfig.list;
 
@@ -395,7 +419,7 @@ mapper: { title: selectedStandard ? `Mapping · ${STANDARD_META[selectedStandard
                 if (!pill) {
                   pill = document.createElement('span');
                   pill.className = 'mapper-pill';
-                  pill.style.cssText = `position:absolute;top:4px;bottom:4px;border-radius:8px;transition:left 280ms cubic-bezier(0.34,1.56,0.64,1),width 280ms cubic-bezier(0.34,1.56,0.64,1);pointer-events:none;z-index:0;background:${colors.primary};box-shadow:0 2px 8px -2px rgba(26,47,138,0.35)`;
+                  pill.style.cssText = `position:absolute;top:4px;bottom:4px;border-radius:8px;transition:left 280ms cubic-bezier(0.34,1.56,0.64,1),width 280ms cubic-bezier(0.34,1.56,0.64,1);pointer-events:none;z-index:0;background:${activeAccent};box-shadow:0 2px 8px -2px rgba(26,47,138,0.35)`;
                   el.appendChild(pill);
                 }
                 if (active) {
@@ -414,28 +438,37 @@ mapper: { title: selectedStandard ? `Mapping · ${STANDARD_META[selectedStandard
 <button onClick={() => mapperResetRef.current?.()}
               title="Reset"
               className="flex items-center justify-center w-8 h-8 rounded-xl transition-all hover:scale-105"
-              style={{ background: "rgba(26,47,138,0.06)", color: colors.primary, border: "1px solid rgba(26,47,138,0.1)" }}>
+              style={{ background: "rgba(26,47,138,0.06)", color: activeAccent, border: "1px solid rgba(26,47,138,0.1)" }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
             </button>
-            <button onClick={() => mapperSaveRef.current?.()}
+<button onClick={() => mapperSaveRef.current?.()}
               title={editingMapping ? "Save" : "Save mapping"}
               className="flex items-center justify-center w-8 h-8 rounded-xl transition-all hover:scale-105"
-              style={{ background: colors.primary, color: "white", boxShadow: `0 4px 12px -4px ${colors.primary}60` }}>
+              style={{ background: activeAccent, color: "white", boxShadow: `0 4px 12px -4px ${activeAccent}60` }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
             </button>
+            {initialView === "mapper" && onBack && (
+              <button onClick={onBack} title="Close"
+                className="flex items-center justify-center w-8 h-8 rounded-xl transition-all hover:scale-105 ml-1"
+                style={{ background: "rgba(0,0,0,0.06)", color: "#6b7280", border: "1px solid rgba(0,0,0,0.08)" }}>
+                ✕
+              </button>
+            )}
           </div>
         ) : undefined}
       />
     <div className="flex-1 min-h-0 overflow-hidden flex flex-col mt-3 rounded-2xl bg-white shadow-xl border border-gray-100">
-        {view === "list" && (
+{view === "list" && (
           <ListView
             mappings={mappings}
             loading={mappingsLoading}
             search={search}
+            standardMappingId={standardMappingId}
+            onSetStandard={handleSetStandard}
             onCreate={() => { setEditingMapping(null); setView("create"); }}
             onOpen={m => { setEditingMapping(m); setSelectedStandard(m.standard); setView("mapper"); }}
             onApply={() => {}}
-onArchive={async m => {
+            onArchive={async m => {
               if (!window.confirm(`Delete "${m.name}"? This cannot be undone.`)) return;
               await api.archive({ mappingId: m.mapping_id, userId: authUserId });
               const rows = await api.list({ companyId });
@@ -466,7 +499,7 @@ onArchive={async m => {
             companyId={companyId}
 editingMapping={editingMapping}
             existingMappings={mappings}
-            onSaved={saved => setEditingMapping(saved)}
+            onSaved={saved => { setEditingMapping(saved); if (!editingMapping) setPendingStandardMapping(saved); }}
             onBackToList={() => { setEditingMapping(null); setSelectedStandard(null); setView("list"); }}
             statement={mapperStatement}
             setStatement={setMapperStatement}
@@ -477,12 +510,41 @@ editingMapping={editingMapping}
           />
         )}
       </div>
+{pendingStandardMapping && (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" onClick={() => setPendingStandardMapping(null)}>
+        <div className="absolute inset-0 bg-black/50 backdrop-blur-md" />
+        <div className="relative bg-white rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
+          <div className="px-6 pt-6 pb-5" style={{ background: "linear-gradient(135deg, #57aa78 0%, #3d8c5c 100%)" }}>
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-3" style={{ background: "rgba(255,255,255,0.2)" }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+            </div>
+            <p className="text-white font-black text-lg leading-tight">Set as standard mapping?</p>
+            <p className="text-white/70 text-xs mt-1 leading-relaxed">
+              "{pendingStandardMapping.name}" will be used as the default account grouping on the home page.
+            </p>
+          </div>
+          <div className="p-5 space-y-2">
+            <button
+              onClick={async () => { await handleSetStandard(pendingStandardMapping.mapping_id); setPendingStandardMapping(null); }}
+              className="w-full py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-white transition-all hover:opacity-90"
+              style={{ background: "linear-gradient(135deg, #57aa78 0%, #3d8c5c 100%)" }}>
+              Yes, set as standard
+            </button>
+            <button
+              onClick={() => setPendingStandardMapping(null)}
+              className="w-full py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all">
+              Not now
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
     </div>
   );
 }
 
 // ─── ListView ────────────────────────────────────────────────
-function ListView({ mappings, loading, search, onCreate, onOpen, onApply, onArchive }) {
+function ListView({ mappings, loading, search, standardMappingId, onSetStandard, onCreate, onOpen, onApply, onArchive }) {
   const filtered = search.trim()
     ? mappings.filter(m => String(m.name ?? m.mapping_name ?? "").toLowerCase().includes(search.toLowerCase()))
     : mappings;
@@ -500,7 +562,7 @@ function ListView({ mappings, loading, search, onCreate, onOpen, onApply, onArch
         <EmptyLibrary onCreate={onCreate} hasSearch={!!search.trim()} />
 ) : (
         <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-          {filtered.map(m => <MappingCard key={m.mapping_id} mapping={m} onOpen={onOpen} onApply={onApply} onArchive={onArchive} />)}
+          {filtered.map(m => <MappingCard key={m.mapping_id} mapping={m} isStandard={m.mapping_id === standardMappingId} onSetStandard={onSetStandard} onOpen={onOpen} onApply={onApply} onArchive={onArchive} />)}
         </div>
       )}
     </div>
@@ -518,7 +580,7 @@ function EmptyLibrary({ onCreate, hasSearch }) {
   );
 }
 
-function MappingCard({ mapping, onOpen, onApply, onArchive }) {
+function MappingCard({ mapping, isStandard, onSetStandard, onOpen, onApply, onArchive }) {
   const standardMeta = STANDARD_META[mapping.standard];
   return (
     <div className="bg-white rounded-2xl border border-gray-100 p-5 hover:border-[#1a2f8a]/30 hover:shadow-lg transition-all group flex flex-col">
@@ -534,8 +596,22 @@ function MappingCard({ mapping, onOpen, onApply, onArchive }) {
           <button onClick={e => { e.stopPropagation(); onArchive?.(mapping); }} className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-red-50 hover:text-red-500 transition-all" title="Archive"><Trash2 size={11} /></button>
         </div>
         {mapping.description && <p className="text-[11px] text-gray-500 mb-3 line-clamp-2">{mapping.description}</p>}
+</div>
+
+      {/* Standard mapping toggle */}
+      <div className="flex items-center gap-3 py-2.5" onClick={e => e.stopPropagation()}>
+        <span className="text-[10px] font-black uppercase tracking-wider flex-1"
+          style={{ color: isStandard ? "#57aa78" : "#9ca3af" }}>
+          {isStandard ? "✓ Standard mapping" : "Set as standard"}
+        </span>
+        <div onClick={() => onSetStandard?.(mapping.mapping_id)}
+          className="relative cursor-pointer select-none flex-shrink-0"
+          style={{ width: 34, height: 18, borderRadius: 9, background: isStandard ? "#57aa78" : "#d1d5db", transition: "background 220ms" }}>
+          <div style={{ position: "absolute", top: 2, left: isStandard ? 16 : 2, width: 14, height: 14, borderRadius: "50%", background: "white", boxShadow: "0 1px 3px rgba(0,0,0,0.25)", transition: "left 220ms" }} />
+        </div>
       </div>
-<div className="flex flex-col gap-1 pt-3 border-t border-gray-50 text-[11px] text-gray-500 min-w-0">
+
+      <div className="flex flex-col gap-1 pt-3 border-t border-gray-50 text-[11px] text-gray-500 min-w-0">
         <div className="flex items-center gap-2">
           <Clock size={11} className="text-gray-300 flex-shrink-0" />
           <span className="truncate">Updated {new Date(mapping.updated_at).toLocaleDateString()}{mapping.updated_by_name ? ` · ${mapping.updated_by_name}` : ""}</span>
@@ -853,7 +929,34 @@ useEffect(() => {
 }, [editingMapping]);
   useEffect(() => { if (baseClientTree.length > 0) setClientTreeBy(prev => prev[statement] ? prev : { ...prev, [statement]: baseClientTree }); }, [baseClientTree, statement]);
   useEffect(() => { if (baseTemplateTree.length > 0) setTemplateTreeBy(prev => prev[statement] ? prev : { ...prev, [statement]: baseTemplateTree }); }, [baseTemplateTree, statement]);
-  useEffect(() => { setCurrentName(editingMapping?.name ?? ""); setCurrentDescription(editingMapping?.description ?? ""); }, [editingMapping]);
+useEffect(() => { setCurrentName(editingMapping?.name ?? ""); setCurrentDescription(editingMapping?.description ?? ""); }, [editingMapping]);
+
+// When opening a fresh standard template (no saved mapping), pre-mark
+  // client accounts that already exist in the template tree as "moved".
+  // Uses baseTemplateTree directly (already loaded, same codes as right panel)
+  // and accumulates with a functional update so switching PL↔BS doesn't
+  // overwrite codes from the other statement.
+  useEffect(() => {
+    if (editingMapping || standard === "Scratch" || !baseTemplateTree.length || !groupAccounts.length) return;
+    const templateCodes = new Set();
+    const walkTemplate = nodes => {
+      nodes.forEach(n => {
+        if (n.kind !== "breaker" && n.code && !String(n.code).startsWith("__"))
+          templateCodes.add(String(n.code));
+        walkTemplate(n.children || []);
+      });
+    };
+    walkTemplate(baseTemplateTree);
+    if (!templateCodes.size) return;
+    setMovedClientCodes(prev => {
+      const next = new Set(prev);
+      groupAccounts.forEach(ga => {
+        const code = String(ga.AccountCode ?? ga.accountCode ?? "");
+        if (code && templateCodes.has(code)) next.add(code);
+      });
+      return next;
+    });
+  }, [editingMapping, standard, baseTemplateTree, groupAccounts]);
 
   const clientTree = clientTreeBy[statement] ?? baseClientTree;
   const templateTree = templateTreeBy[statement] ?? baseTemplateTree;
@@ -1923,22 +2026,35 @@ function PanelToolbar({ search, setSearch, placeholder, count, total }) {
 function EmptyPanelState({ icon: Icon, message }) {
   return <div className="text-center py-16"><Icon size={24} className="text-gray-200 mx-auto mb-2" /><p className="text-xs text-gray-400 font-medium">{message}</p></div>;
 }
-export function MappingsModal({ open, onClose, groupAccounts = [], onApply }) {
+export function normalizeMappingStandard(std) {
+  if (!std) return null;
+  if (STANDARD_META[std]) return std;           // already a valid STANDARD_META key
+  if (std === "SpanishIFRS-ES") return "SpanishIFRS"; // KPI resolver → mapper name
+  return null;
+}
+
+export function MappingsModal({ open, onClose, groupAccounts = [], dimensions = [], token, initialStandard = null }) {
   if (!open) return null;
+  const std = normalizeMappingStandard(initialStandard);
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-6" onClick={onClose}>
+    <div className="fixed inset-0 z-[480] flex items-center justify-center p-4" onClick={onClose}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
       <div
         className="relative bg-white rounded-2xl overflow-hidden flex flex-col"
-        style={{ width: "90vw", height: "85vh" }}
+        style={{ width: "95vw", height: "90vh", boxShadow: "0 32px 80px -12px rgba(0,0,0,0.4)" }}
         onClick={e => e.stopPropagation()}
       >
-        <StructureMappingsView
+<StructureMappingsView
           groupAccounts={groupAccounts}
+          dimensions={dimensions}
           search=""
           setSearch={() => {}}
           colors={{}}
+          token={token}
           onBack={onClose}
+          mappingKind="structure"
+          initialView={std ? "mapper" : "list"}
+          initialStandard={std}
         />
       </div>
     </div>
