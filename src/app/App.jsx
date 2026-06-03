@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { useSessionGuard } from "../hooks/useSessionGuard.js";
+import InactivityWarning from "../components/InactivityWarning.jsx";
 import { Routes, Route } from "react-router-dom";
 import Login from "../auth/Login.jsx";
 import AdminPortal from "../auth/AdminPortal.jsx";
@@ -28,11 +30,14 @@ function MainApp() {
   const [preloadedData, setPreloadedData] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
-const handleLogin = (accessToken, userData, credentials, reporting) => {
+const [sessionId, setSessionId] = useState(null);
+
+  const handleLogin = (accessToken, userData, credentials, reporting, newSessionId) => {
     setToken(accessToken);
-    setUser(userData); // set immediately, enrich below
+    setUser(userData);
     setCreds(credentials);
     setReportingStatus(reporting);
+    setSessionId(newSessionId ?? null);
 
 // If Login already resolved the display name, use it immediately
     if (userData?.displayName) {
@@ -64,11 +69,18 @@ const handleLogin = (accessToken, userData, credentials, reporting) => {
 
 
 
-  const handleLogout = () => {
+const handleLogout = () => {
+    // Clear Supabase session record so the user can log back in
+    if (creds?.username && sessionId) {
+      import("../hooks/useSessionGuard.js").then(({ clearSessionKeepAlive }) => {
+        clearSessionKeepAlive(creds.username.trim().toLowerCase(), sessionId);
+      });
+    }
     setToken(null);
     setUser(null);
     setCreds(null);
     setReportingStatus(null);
+    setSessionId(null);
     setLoaderActive(false);
     setShellReady(false);
     setPreloadedData(null);
@@ -158,32 +170,69 @@ const handleLogin = (accessToken, userData, credentials, reporting) => {
 
 // 6. Acceso completo
   return (
+    <AuthenticatedApp
+      token={token}
+      user={user}
+      creds={creds}
+      sessionId={sessionId}
+      preloadedData={preloadedData}
+      loaderActive={loaderActive}
+      shellReady={shellReady}
+      refreshKey={refreshKey}
+      onLogout={handleLogout}
+      onRefresh={handleRefresh}
+      onDataLoaded={(d) => setPreloadedData(d)}
+      onReady={() => {
+        setShellReady(true);
+        setTimeout(() => setLoaderActive(false), 100);
+        setTimeout(() => window.dispatchEvent(new Event('resize')), 200);
+        setTimeout(() => window.dispatchEvent(new Event('resize')), 600);
+      }}
+    />
+  );
+}
+
+function AuthenticatedApp({
+  token, user, creds, sessionId, preloadedData,
+  loaderActive, shellReady, refreshKey,
+  onLogout, onRefresh, onDataLoaded, onReady,
+}) {
+  const { showWarning, secondsLeft, stayActive, logout: guardLogout } = useSessionGuard({
+    email:     creds?.username ?? null,
+    sessionId: sessionId,
+    onLogout:  onLogout,
+    enabled:   !!token && !!sessionId,
+  });
+
+  return (
     <SettingsProvider>
       <LatestPeriodProvider>
-      {loaderActive && (
+        {showWarning && (
+          <InactivityWarning
+            secondsLeft={secondsLeft}
+            onStay={stayActive}
+            onLogout={guardLogout}
+          />
+        )}
+{loaderActive && (
         <EpicLoader
           token={token}
-          onDataLoaded={(d) => setPreloadedData(d)}
-onReady={() => {
-  setShellReady(true);
-  setTimeout(() => setLoaderActive(false), 100);
-  setTimeout(() => window.dispatchEvent(new Event('resize')), 200);
-  setTimeout(() => window.dispatchEvent(new Event('resize')), 600);
-}}
+          onDataLoaded={onDataLoaded}
+          onReady={onReady}
         />
       )}
-<div
+      <div
         style={{
           opacity: shellReady ? 1 : 0,
           transform: shellReady ? "scale(1)" : "scale(0.96)",
           transition: "opacity 600ms cubic-bezier(0.4,0,0.2,1) 100ms, transform 600ms cubic-bezier(0.4,0,0.2,1) 100ms",
-height: "100vh",
+          height: "100vh",
           overflow: "hidden",
         }}
       >
-        <Shell key={refreshKey} user={user} onLogout={handleLogout} onRefresh={handleRefresh}>
+        <Shell key={refreshKey} user={user} onLogout={onLogout} onRefresh={onRefresh}>
           {(activePage, onNavigate) => (
-<AppRoutes
+            <AppRoutes
               token={token}
               user={user}
               activePage={activePage}
@@ -191,13 +240,12 @@ height: "100vh",
               preloadedData={preloadedData}
             />
           )}
-</Shell>
+        </Shell>
       </div>
       </LatestPeriodProvider>
     </SettingsProvider>
   );
 }
-
 
 // ════════════════════════════════════════════════════════════════
 // App — bifurcación según URL.

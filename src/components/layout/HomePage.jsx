@@ -477,6 +477,7 @@ function ConsolidationBackground({ primary }) {
    KPI HERO CARD
 ═══════════════════════════════════════════════════════════════ */
 function HeroKPI({ label, value, prevValue, trend, color, accent, icon: Icon, delay = 0, loading }) {
+  const t = useT();
   const change = prevValue && prevValue !== 0 ? ((value - prevValue) / Math.abs(prevValue)) * 100 : null;
   const isPositive = change != null ? change >= 0 : null;
   const sparklineData = useMemo(() => (trend ?? []).map((v, i) => ({ x: i, y: v })), [trend]);
@@ -528,7 +529,7 @@ style={{
             </p>
           )}
 {prevValue != null && prevValue !== 0 && (
-            <p className="text-[12px] text-white/65 mt-1 font-semibold">vs {fmtBig(prevValue)}</p>
+            <p className="text-[12px] text-white/65 mt-1 font-semibold">{t("hero_vs")} {fmtBig(prevValue)}</p>
           )}
         </div>
 
@@ -1020,8 +1021,8 @@ function KpiSelectorPopover({ kpiList, currentId, onSelect, onClose }) {
             <div className="mb-2">
               <div className="flex items-center gap-2 px-2 py-1.5 mb-0.5">
                 <div className="w-1.5 h-4 rounded-full flex-shrink-0" style={{ background: "#7c3aed" }} />
-                <p className="text-[9px] font-black uppercase tracking-[0.2em]" style={{ color: "#7c3aed" }}>
-                  Company KPIs
+<p className="text-[9px] font-black uppercase tracking-[0.2em]" style={{ color: "#7c3aed" }}>
+                  {t("kpi_company_kpis")}
                 </p>
                 <div className="flex-1 h-px" style={{ background: "#7c3aed25" }} />
                 <span className="text-[8px] font-bold tabular-nums" style={{ color: "#7c3aed80" }}>{custom.length}</span>
@@ -1042,9 +1043,9 @@ function KpiSelectorPopover({ kpiList, currentId, onSelect, onClose }) {
                     onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
                   >
                     <span className="flex-1">{k.label}</span>
-                    <span className="text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-md flex-shrink-0"
+<span className="text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-md flex-shrink-0"
                       style={{ background: active ? "rgba(255,255,255,0.2)" : "#7c3aed15", color: active ? "#fff" : "#7c3aed" }}>
-                      Custom
+                      {t("kpi_custom")}
                     </span>
                   </button>
                 );
@@ -1114,7 +1115,8 @@ function KpiSelectorPopover({ kpiList, currentId, onSelect, onClose }) {
 }
 
 function UnmappedAccountsAlert({ accounts, standard, colors, onClose, onMapNow }) {
-const filtered = accounts;
+  const t = useT();
+  const filtered = accounts;
 
   return (
     <div className="fixed inset-0 z-[450] flex items-center justify-center p-6"
@@ -1135,16 +1137,16 @@ const filtered = accounts;
               <AlertTriangle size={22} className="text-white" />
             </div>
             <div>
-              <p className="text-white font-black text-lg leading-tight">
-                {accounts.length} Unmapped Account{accounts.length !== 1 ? "s" : ""}
+<p className="text-white font-black text-lg leading-tight">
+                {accounts.length} {t("unmapped_title")}
               </p>
               <p className="text-white/70 text-[11px] mt-0.5 uppercase tracking-wider font-bold">
-                {standard} · not in system template
+                {standard} · {t("unmapped_subtitle")}
               </p>
               <p className="text-white/80 text-xs mt-2 leading-relaxed max-w-sm">
-                These accounts exist in your chart of accounts but are not recognised by the{" "}
-                <span className="font-black text-white">{standard}</span> system mapping.
-                They won't appear in standard P&L or Balance Sheet reports.
+                {t("unmapped_desc_pre")}{" "}
+                <span className="font-black text-white">{standard}</span>{" "}
+                {t("unmapped_desc_post")}
               </p>
             </div>
           </div>
@@ -1164,21 +1166,21 @@ const filtered = accounts;
             </div>
           ))}
           {filtered.length === 0 && (
-            <p className="text-xs text-gray-300 text-center py-8">No matching accounts</p>
+           <p className="text-xs text-gray-300 text-center py-8">{t("unmapped_no_match")}</p>
           )}
         </div>
 
 {/* Footer */}
         <div className="flex-shrink-0 px-5 py-4 border-t border-gray-100 flex items-center gap-3">
-          <button onClick={onClose}
+<button onClick={onClose}
             className="px-4 py-2.5 rounded-xl text-sm font-black bg-gray-100 text-gray-500 transition-all hover:bg-gray-200">
-            Dismiss
+            {t("unmapped_dismiss")}
           </button>
           <button onClick={() => { onClose(); onMapNow?.(); }}
             className="flex-1 py-2.5 rounded-xl text-sm font-black text-white transition-all hover:opacity-90 active:scale-[0.98]"
             style={{ background: "linear-gradient(135deg, #b45309 0%, #d97706 100%)",
               boxShadow: "0 4px 14px -4px rgba(180,83,9,0.5)" }}>
-            Map now →
+            {t("unmapped_map_now")}
           </button>
         </div>
       </div>
@@ -1190,6 +1192,7 @@ function BreakdownLibraryModal({
   structures, activeViewId, defaultViewId, colors,
   onApply, onSetDefault, onEdit, onDelete, onCreate, onClose,
 }) {
+  const t = useT();
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   return (
     <div className="fixed inset-0 z-[500] flex items-center justify-center p-6"
@@ -1202,8 +1205,8 @@ function BreakdownLibraryModal({
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100 flex-shrink-0">
           <div>
-            <p className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 mb-0.5">Company library</p>
-            <p className="text-base font-black text-gray-800">Breakdown Structures</p>
+<p className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 mb-0.5">{t("breakdown_lib_kicker")}</p>
+            <p className="text-base font-black text-gray-800">{t("breakdown_lib_title")}</p>
           </div>
           <button onClick={onClose}
             className="w-8 h-8 rounded-xl flex items-center justify-center hover:bg-gray-100 transition-colors text-gray-400">✕</button>
@@ -1217,8 +1220,8 @@ function BreakdownLibraryModal({
                 style={{ background: `${colors.primary}10` }}>
                 <Layers size={24} style={{ color: colors.primary, opacity: 0.3 }} />
               </div>
-              <p className="text-xs font-black text-gray-400">No structures yet</p>
-              <p className="text-[10px] text-gray-300">Create the first one below</p>
+<p className="text-xs font-black text-gray-400">{t("breakdown_lib_empty")}</p>
+              <p className="text-[10px] text-gray-300">{t("breakdown_lib_empty_sub")}</p>
             </div>
           ) : structures.map((s, si) => {
             const isActive  = s.id === activeViewId;
@@ -1237,9 +1240,9 @@ function BreakdownLibraryModal({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className="font-black text-gray-800 text-sm">{s.name}</p>
-                      {isActive && (
+{isActive && (
                         <span className="text-[8px] font-black px-2 py-0.5 rounded-full text-white"
-                          style={{ background: colors.primary }}>Active</span>
+                          style={{ background: colors.primary }}>{t("breakdown_lib_active")}</span>
                       )}
                     </div>
                     {s.description && (
@@ -1255,9 +1258,9 @@ function BreakdownLibraryModal({
 
                   {/* Default toggle — inline label + pill */}
                   <div className="flex items-center gap-1.5 flex-shrink-0 mt-0.5">
-                    <span className="text-[8px] font-black uppercase tracking-wider"
+<span className="text-[8px] font-black uppercase tracking-wider"
                       style={{ color: isDefault ? colors.primary : "#9ca3af" }}>
-                      Default
+                      {t("breakdown_lib_default")}
                     </span>
                     <div
                       onClick={() => onSetDefault(isDefault ? null : s.id)}
@@ -1284,18 +1287,18 @@ function BreakdownLibraryModal({
 {/* Actions */}
                 <div className="flex items-center gap-2 px-4 pb-3">
                   {confirmDeleteId === s.id ? (
-                    <>
-                      <span className="text-[10px] font-black text-red-500 flex-1">Delete this structure?</span>
+<>
+                      <span className="text-[10px] font-black text-red-500 flex-1">{t("breakdown_lib_confirm_delete")}</span>
                       <button
                         onClick={() => setConfirmDeleteId(null)}
                         className="px-2.5 py-1.5 rounded-xl text-[10px] font-black bg-gray-100 text-gray-500 transition-all">
-                        Cancel
+                        {t("breakdown_lib_cancel")}
                       </button>
                       <button
                         onClick={() => { onDelete(s.id); setConfirmDeleteId(null); }}
                         className="px-2.5 py-1.5 rounded-xl text-[10px] font-black text-white transition-all"
                         style={{ background: "#dc2626" }}>
-                        Delete
+                        {t("breakdown_lib_delete")}
                       </button>
                     </>
                   ) : (
@@ -1328,8 +1331,8 @@ function BreakdownLibraryModal({
                             : `linear-gradient(135deg, ${colors.primary} 0%, #3b54b8 100%)`,
                           color: isActive ? "#9ca3af" : "white",
                         }}
-                        disabled={isActive}>
-                        {isActive ? "Active ✓" : "Apply"}
+disabled={isActive}>
+                        {isActive ? t("breakdown_lib_active_check") : t("breakdown_lib_apply")}
                       </button>
                     </>
                   )}
@@ -1344,8 +1347,8 @@ function BreakdownLibraryModal({
           <button onClick={onCreate}
             className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl border-2 border-dashed transition-all hover:bg-gray-50"
             style={{ borderColor: `${colors.primary}25` }}>
-            <span className="text-xs font-black" style={{ color: colors.primary, opacity: 0.6 }}>
-              + Create new breakdown
+<span className="text-xs font-black" style={{ color: colors.primary, opacity: 0.6 }}>
+              {t("breakdown_lib_create_new")}
             </span>
           </button>
         </div>
@@ -1357,6 +1360,7 @@ function BreakdownLibraryModal({
 const GROUP_PALETTE = ["#1a2f8a","#CF305D","#57aa78","#7c3aed","#d97706","#0891b2","#be185d","#065f46"];
 
 function BreakdownBuilderModal({ structure, groupAccounts, currentPivot, colors, onSave, onDelete, onClose }) {
+  const t = useT();
   const [name, setName]               = useState(structure?.name ?? "");
   const [description, setDescription] = useState(structure?.description ?? "");
   const [groups, setGroups]           = useState(() =>
@@ -1437,10 +1441,10 @@ const allAccounts = useMemo(() =>
         {/* ── Header ── */}
         <div className="flex items-center justify-between px-6 pt-6 pb-4 flex-shrink-0">
           <div>
-            <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400 mb-0.5">
-              {structure ? "Edit" : "New"} breakdown
+<p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400 mb-0.5">
+              {structure ? t("builder_edit") : t("builder_new")} {t("builder_breakdown")}
             </p>
-            <p className="text-[17px] font-black text-gray-900 leading-tight">Custom Account Breakdown</p>
+            <p className="text-[17px] font-black text-gray-900 leading-tight">{t("builder_title")}</p>
           </div>
           <button onClick={onClose}
             className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 hover:bg-gray-100 transition-colors">✕</button>
@@ -1449,15 +1453,15 @@ const allAccounts = useMemo(() =>
         {/* ── Name + description ── */}
         <div className="grid grid-cols-2 gap-3 px-6 pb-5 flex-shrink-0 border-b border-gray-100">
           <div>
-            <label className="text-[9px] font-black uppercase tracking-[0.18em] text-gray-400 block mb-1.5">Name *</label>
-            <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. My P&L"
+<label className="text-[9px] font-black uppercase tracking-[0.18em] text-gray-400 block mb-1.5">{t("builder_name_label")}</label>
+            <input value={name} onChange={e => setName(e.target.value)} placeholder={t("builder_name_placeholder")}
               className="w-full rounded-xl px-3 py-2.5 text-sm font-semibold text-gray-800 outline-none border border-gray-200 transition-all"
               onFocus={e => e.target.style.borderColor = colors.primary + "50"}
               onBlur={e => e.target.style.borderColor = "#e5e7eb"} />
           </div>
           <div>
-            <label className="text-[9px] font-black uppercase tracking-[0.18em] text-gray-400 block mb-1.5">Description</label>
-            <input value={description} onChange={e => setDescription(e.target.value)} placeholder="Optional"
+<label className="text-[9px] font-black uppercase tracking-[0.18em] text-gray-400 block mb-1.5">{t("builder_desc_label")}</label>
+            <input value={description} onChange={e => setDescription(e.target.value)} placeholder={t("builder_desc_placeholder")}
               className="w-full rounded-xl px-3 py-2.5 text-sm font-semibold text-gray-800 outline-none border border-gray-200 transition-all"
               onFocus={e => e.target.style.borderColor = colors.primary + "50"}
               onBlur={e => e.target.style.borderColor = "#e5e7eb"} />
@@ -1485,8 +1489,8 @@ const allAccounts = useMemo(() =>
                 </label>
 
                 {/* Group name */}
-                <input value={group.label} onChange={e => updateGroup(group._key, { label: e.target.value })}
-                  placeholder="Group name…"
+<input value={group.label} onChange={e => updateGroup(group._key, { label: e.target.value })}
+                  placeholder={t("builder_group_name_placeholder")}
                   className="flex-1 text-sm font-black text-gray-800 outline-none bg-transparent min-w-0" />
 
 {/* Contribution sign — matches account line pill style */}
@@ -1555,13 +1559,13 @@ const allAccounts = useMemo(() =>
                       ) : availableFor(group._key).map(a => (
 <button key={a.code} onClick={() => addLine(group._key, a.code, a.name)}
                           className="w-full text-left flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-gray-50 transition-colors"
-                          style={{ opacity: a.hasData ? 1 : 0.4 }}>
+style={{ opacity: a.hasData ? 1 : 0.4 }}>
                           <span className="font-mono font-bold text-[11px] w-14 flex-shrink-0"
                             style={{ color: a.hasData ? colors.primary : "#9ca3af" }}>{a.code}</span>
                           <span className="text-xs text-gray-600 truncate flex-1">{a.name}</span>
                           <span className="text-[10px] font-mono font-bold flex-shrink-0"
                             style={{ color: a.hasData ? "#16a34a" : "#d1d5db" }}>
-                            {a.hasData ? fmtBig(a.balance) : "no data"}
+                            {a.hasData ? fmtBig(a.balance) : t("builder_no_data")}
                           </span>
                         </button>
                       ))}
@@ -1579,35 +1583,35 @@ const allAccounts = useMemo(() =>
           ))}
 
           {/* Add group button */}
-          <button onClick={addGroup}
+<button onClick={addGroup}
             className="w-full py-3 rounded-2xl border-2 border-dashed border-gray-200 text-xs font-black text-gray-400 hover:border-gray-300 hover:text-gray-500 transition-all">
-            + Add group
+            {t("builder_add_group")}
           </button>
         </div>
 
         {/* ── Footer ── */}
         <div className="flex-shrink-0 px-6 py-4 border-t border-gray-100 flex items-center gap-2">
-          {onDelete && !confirmDelete && (
+{onDelete && !confirmDelete && (
             <button onClick={() => setConfirmDelete(true)}
               className="px-3 py-2 rounded-xl text-xs font-black"
-              style={{ background: "#fee2e2", color: "#dc2626" }}>Delete</button>
+              style={{ background: "#fee2e2", color: "#dc2626" }}>{t("builder_delete")}</button>
           )}
           {confirmDelete && (
             <>
               <button onClick={() => setConfirmDelete(false)}
-                className="px-3 py-2 rounded-xl text-xs font-black bg-gray-100 text-gray-600">Cancel</button>
+                className="px-3 py-2 rounded-xl text-xs font-black bg-gray-100 text-gray-600">{t("builder_cancel")}</button>
               <button onClick={onDelete}
                 className="px-3 py-2 rounded-xl text-xs font-black text-white"
-                style={{ background: "#dc2626" }}>Confirm delete</button>
+                style={{ background: "#dc2626" }}>{t("builder_confirm_delete")}</button>
             </>
           )}
           <div className="flex-1" />
           <button onClick={onClose}
-            className="px-4 py-2 rounded-xl text-xs font-black bg-gray-100 text-gray-600">Cancel</button>
+            className="px-4 py-2 rounded-xl text-xs font-black bg-gray-100 text-gray-600">{t("builder_cancel")}</button>
           <button onClick={handleSave} disabled={!name.trim()}
             className="px-5 py-2 rounded-xl text-xs font-black text-white disabled:opacity-40"
             style={{ background: `linear-gradient(135deg, ${colors.primary} 0%, #3b54b8 100%)` }}>
-            {structure ? "Save changes" : "Create"}
+            {structure ? t("builder_save_changes") : t("builder_create")}
           </button>
         </div>
       </div>
@@ -1806,7 +1810,7 @@ const res = await fetch(
             isCustom:    true,
           };
         }).filter(k => k.id && k.label));
-      } catch(e) { console.error("[company_kpis] error:", e); }
+      } catch { /* non-critical */ }
     })();
   }, [userId]);
 
@@ -3354,7 +3358,7 @@ return (
                   style={{ color: pickerOpen ? "#fff" : "#374151" }}>
                   {compareLabel}
                 </span>
-                {company && (
+{company && (
                   <>
                     <div style={{ width: 1, height: 14, background: pickerOpen ? "rgba(255,255,255,0.3)" : "rgba(26,47,138,0.1)", flexShrink: 0 }} />
                     <span className="text-[11px] font-semibold" style={{ color: pickerOpen ? "rgba(255,255,255,0.85)" : "#9ca3af" }}>
@@ -3362,6 +3366,21 @@ return (
                     </span>
                   </>
                 )}
+                <div style={{ width: 1, height: 14, background: pickerOpen ? "rgba(255,255,255,0.3)" : "rgba(26,47,138,0.1)", flexShrink: 0 }} />
+                <span className="text-[10px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-md"
+                  style={{
+                    background: pickerOpen ? "rgba(255,255,255,0.18)" : `${colors.primary}12`,
+                    color: pickerOpen ? "rgba(255,255,255,0.9)" : colors.primary,
+                  }}>
+                  {viewScope === "consolidated" ? t("picker_consolidated") : t("picker_individual")}
+                </span>
+                <span className="text-[10px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-md"
+                  style={{
+                    background: pickerOpen ? "rgba(255,255,255,0.18)" : `${colors.primary}12`,
+                    color: pickerOpen ? "rgba(255,255,255,0.9)" : colors.primary,
+                  }}>
+                  {valueMode === "ytd" ? t("picker_ytd") : t("picker_monthly")}
+                </span>
 <ChevronDown size={10} style={{ color: pickerOpen ? "rgba(255,255,255,0.7)" : "#9ca3af", marginLeft: 2 }} />
 </button>
 
@@ -3415,8 +3434,8 @@ selectedCompany={company}
                 boxShadow: `0 4px 14px -4px ${colors.primary}80`,
               }}
             >
-              <Sparkles size={11} className="text-white" />
-              <span className="text-[11px] font-black text-white uppercase tracking-wider">AI</span>
+  <Sparkles size={11} className="text-white" />
+              <span className="text-[11px] font-black text-white uppercase tracking-wider">{t("ai_button")}</span>
             </button>
           </div>
 
@@ -3537,7 +3556,7 @@ selectedCompany={company}
                       style={{ color: "#6b7280" }}
                     >
                       <ChevronRight size={12} style={{ transform: "rotate(180deg)" }} />
-                      <span className="text-[10px] font-black uppercase tracking-wider">Back</span>
+                      <span className="text-[10px] font-black uppercase tracking-wider">{t("back")}</span>
                     </button>
                     <span className="h-px w-3 bg-gray-200 flex-shrink-0" />
 <p className="text-[12px] font-black uppercase tracking-widest text-gray-500 flex-shrink-0">{t("home_ranking")}</p>
@@ -4056,7 +4075,7 @@ className="absolute right-0 top-full mt-2 z-[500] rounded-2xl p-2 flex flex-col 
                           <Layers size={10} />
                         </div>
 <p className="text-xs font-black" style={{ color: colors.primary }}>
-                          Custom breakdowns
+                          {t("breakdown_custom_label")}
                         </p>
                       </button>
                     </div>
@@ -4132,11 +4151,11 @@ const absTot = Math.abs(totalCosts);
                 ) : (
                   <>
                     <p className="text-xs font-black text-gray-400">
-                      {activeCustomStructure ? "No data for these accounts" : t("home_no_costs")}
+                      {activeCustomStructure ? t("breakdown_no_data") : t("home_no_costs")}
                     </p>
                     {activeCustomStructure && (
-                      <p className="text-[10px] text-gray-300 leading-relaxed">
-                        The accounts in this structure have no entries for {periodLabel}. Edit the structure and pick accounts shown in green.
+<p className="text-[10px] text-gray-300 leading-relaxed">
+                        {t("breakdown_no_data_hint_1")} {periodLabel}. {t("breakdown_no_data_hint_2")}
                       </p>
                     )}
                   </>

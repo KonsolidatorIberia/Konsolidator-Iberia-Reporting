@@ -225,7 +225,7 @@ export default function Login({ onLogin }) {
 const navigate = useNavigate();
 
 const handleLogin = async () => {
-  if (!username || !password) { setError("Enter your credentials"); return; }
+if (!username || !password) { setError("Invalid credentials. Please try again."); return; }
 setLoading(true);
   setError("");
 
@@ -390,8 +390,36 @@ await supabase.auth.signInWithPassword({
     });
   }
 
-setLoading(false);
-onLogin(b2cToken, { username, displayName: acctUser?.username ?? null }, { username, password }, reporting);
+// ── Session guard: block concurrent logins ──────────────────────
+  const userEmail = username.trim().toLowerCase();
+  const SESSION_STALE_MS = 2 * 60 * 1000;
+
+  const { data: existingSession } = await supabase
+    .from("user_sessions")
+    .select("last_seen")
+    .eq("email", userEmail)
+    .maybeSingle();
+
+  if (existingSession) {
+    const age = Date.now() - new Date(existingSession.last_seen).getTime();
+    if (age < SESSION_STALE_MS) {
+      setError("Another active session exists for this account. Please wait a moment and try again.");
+      setLoading(false);
+      return;
+    }
+  }
+
+  // Create / refresh session record
+  const newSessionId = crypto.randomUUID();
+  await supabase.from("user_sessions").upsert({
+    email:      userEmail,
+    session_id: newSessionId,
+    last_seen:  new Date().toISOString(),
+    created_at: new Date().toISOString(),
+  });
+
+  setLoading(false);
+  onLogin(b2cToken, { username, displayName: acctUser?.username ?? null }, { username, password }, reporting, newSessionId);
 };
 
   return (
