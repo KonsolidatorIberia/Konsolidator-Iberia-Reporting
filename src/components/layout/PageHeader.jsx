@@ -16,7 +16,8 @@ const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
   const [search, setSearch] = useState("");
   const [dropdownRect, setDropdownRect] = useState(null);
-  const ref = useRef(null);
+const ref = useRef(null);
+  const dropdownRef = useRef(null);
   const filterTypo = useTypo("filter");
   const { colors } = useSettings();
 
@@ -58,7 +59,11 @@ const matchedOption = options.find(o => String(o.value) === String(value));
 const display = matchedOption?.displayLabel ?? matchedOption?.label ?? "—";
 
 useEffect(() => {
-    function handler(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
+    function handler(e) {
+      const inPill = ref.current && ref.current.contains(e.target);
+      const inDropdown = dropdownRef.current && dropdownRef.current.contains(e.target);
+      if (!inPill && !inDropdown) setOpen(false);
+    }
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
@@ -121,7 +126,7 @@ useEffect(() => {
       </button>
 
 {open && createPortal(
-        <div className="fixed z-[9999] min-w-[180px] rounded-2xl overflow-hidden"
+        <div ref={dropdownRef} className="fixed z-[9999] min-w-[180px] rounded-2xl overflow-hidden"
           style={{
             top: dropdownRect ? dropdownRect.bottom + 8 : 0,
             left: dropdownRect ? dropdownRect.left : 0,
@@ -203,7 +208,8 @@ export function MultiFilterPill({ label, values, onChange, options }) {
   const [hover, setHover] = useState(false);
   const [search, setSearch] = useState("");
   const [dropdownRect, setDropdownRect] = useState(null);
-  const ref = useRef(null);
+const ref = useRef(null);
+  const dropdownRef = useRef(null);
   const filterTypo = useTypo("filter");
   const { colors } = useSettings();
 
@@ -238,7 +244,11 @@ const handleKeyDown = (e) => {
 };
 
 useEffect(() => {
-    function handler(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
+    function handler(e) {
+      const inPill = ref.current && ref.current.contains(e.target);
+      const inDropdown = dropdownRef.current && dropdownRef.current.contains(e.target);
+      if (!inPill && !inDropdown) setOpen(false);
+    }
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
@@ -294,7 +304,7 @@ const display = isDefault
       </button>
 
 {open && createPortal(
-        <div className="fixed z-[9999] min-w-[220px] rounded-2xl overflow-hidden"
+        <div ref={dropdownRef} className="fixed z-[9999] min-w-[220px] rounded-2xl overflow-hidden"
           style={{
             top: dropdownRect ? dropdownRect.bottom + 8 : 0,
             left: dropdownRect ? dropdownRect.left : 0,
