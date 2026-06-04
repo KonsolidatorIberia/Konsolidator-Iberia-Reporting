@@ -2874,7 +2874,6 @@ savedPlLiteral = null,
   savedHighlightedIds = null,
   ytdOnly = false,
 }) {
-    console.log("[PL-ENTRY]", { hasLiteral: !!savedPlLiteral, isArr: Array.isArray(savedPlLiteral), len: savedPlLiteral?.length });
 
 const { colors } = useSettings();
 const header3Style = useTypo("header3");
@@ -2978,23 +2977,6 @@ const allSumRows = useMemo(() => {
   return result;
 }, [tree, pgcMapping]);
 
-
-// ADD THIS RIGHT HERE:
-useEffect(() => {
-  console.log("=== TREE DEBUG ===");
-  function walkDebug(node, depth) {
-    console.log(
-      "  ".repeat(depth) +
-      `[${node.isSumAccount ? "SUM" : "grp"}] code=${node.code} name=${node.name} type=${node.accountType} level=${node.level}`
-    );
-    (node.children || []).forEach(c => walkDebug(c, depth + 1));
-  }
-  tree
-    .filter(n => ["P/L", "DIS"].includes(n.accountType))
-    .forEach(n => walkDebug(n, 0));
-  console.log("=== allSumRows ===");
-  allSumRows.forEach(n => console.log(`  code=${n.code} name=${n.name} isSumAccount=${n.isSumAccount} level=${n.level}`));
-}, [tree, allSumRows]);
 
 
 const prevTree = useMemo(
@@ -3488,7 +3470,7 @@ dimFullIdx.set(`${code}|${g}:${v}`, (dimFullIdx.get(`${code}|${g}:${v}`) ?? 0) +
         const name  = String(d.dimensionName  ?? d.DimensionName  ?? d.name      ?? d.Name      ?? "").trim();
         if (group && code && name) nameToCode.set(`${group}:${name}`, code);
       });
-      console.log("[NAME-MAP] dimensions metadata entries:", nameToCode.size, "sample:", [...nameToCode.entries()].slice(0, 5));
+     
       // Mirror every existing code-keyed entry under a name-keyed entry
       [...dimFullIdx.entries()].forEach(([k, v]) => {
         const pipe = k.indexOf("|");
@@ -3509,33 +3491,6 @@ dimFullIdx.set(`${code}|${g}:${v}`, (dimFullIdx.get(`${code}|${g}:${v}`) ?? 0) +
       });
     }
 
-    // PROBE: see if name-keying is actually happening
-    if (typeof window !== "undefined") {
-      let nameKeyCount = 0;
-      let probedRows = 0;
-      (uploadedAccounts || []).forEach(row => {
-        const code = String(getField(row, "accountCode") ?? "");
-        if (code !== "700000") return;
-        const dCode = String(getField(row, "DimensionCode", "dimensionCode") ?? "").trim();
-        const dName = String(getField(row, "DimensionName", "dimensionName") ?? "").trim();
-        const dimsStr = String(getField(row, "Dimensions", "dimensions") ?? "");
-        if (probedRows < 3) {
-          console.log(`[NAME-PROBE] 700000 row: DimensionCode="${dCode}" DimensionName="${dName}" Dimensions="${dimsStr}"`);
-          probedRows++;
-        }
-        if (dName) nameKeyCount++;
-      });
-      console.log(`[NAME-PROBE] 700000 rows with non-empty DimensionName: ${nameKeyCount}`);
-      console.log(`[NAME-PROBE] dimValIdx keys for 700000:`, [...dimValIdx.keys()].filter(k => k.startsWith("700000|")));
-    }
-    // PROBE: see what dimension metadata is available in scope
-    if (typeof window !== "undefined") {
-      console.log("[DIM-META-PROBE] window.__dimensions:", typeof window.__dimensions);
-      try { console.log("[DIM-META-PROBE] effectiveDimensions:", typeof effectiveDimensions !== "undefined" ? effectiveDimensions : "undefined"); } catch (e) { console.log("[DIM-META-PROBE] effectiveDimensions: NOT IN SCOPE"); }
-      try { console.log("[DIM-META-PROBE] dimensions:", typeof dimensions !== "undefined" ? dimensions : "undefined"); } catch (e) { console.log("[DIM-META-PROBE] dimensions: NOT IN SCOPE"); }
-      try { console.log("[DIM-META-PROBE] dataRef:", typeof dataRef !== "undefined" ? dataRef : "undefined"); } catch (e) { console.log("[DIM-META-PROBE] dataRef: NOT IN SCOPE"); }
-      try { console.log("[DIM-META-PROBE] dimensionsData:", typeof dimensionsData !== "undefined" ? dimensionsData : "undefined"); } catch (e) { console.log("[DIM-META-PROBE] dimensionsData: NOT IN SCOPE"); }
-    }
 
     // For dim-filtered nodes: walk the group-account subtree and sum any
     // descendant whose dim matches, so a parent code with dim filter rolls up.
@@ -3552,71 +3507,6 @@ dimFullIdx.set(`${code}|${g}:${v}`, (dimFullIdx.get(`${code}|${g}:${v}`) ?? 0) +
       return total;
     };
 
-if (typeof window !== "undefined") {
-      console.log("[SAVED-PL] treeByCode has 603000?", treeByCode.has("603000"), "700000?", treeByCode.has("700000"), "610000?", treeByCode.has("610000"));
-      // Are we using the same tree the standard renderer uses?
-      console.log("[SAVED-PL] tree length:", tree.length, "treeByCode size:", treeByCode.size);
-      console.log("[SAVED-PL] uploadedAccounts length:", (uploadedAccounts || []).length);
-      const sample700 = treeByCode.get("700000");
-      console.log("[SAVED-PL] 700000 node:", sample700);
-      console.log("[SAVED-PL] sumNode(700000):", sample700 ? sumNode(sample700) : "no-node");
-      // Sample raw row counts by company:
-      const byCo = {};
-      (uploadedAccounts || []).forEach(r => {
-        const c = String(r.CompanyShortName ?? r.companyShortName ?? "?");
-        byCo[c] = (byCo[c] ?? 0) + 1;
-      });
-      console.log("[SAVED-PL] uploadedAccounts company counts:", byCo);
-
-      const probe = (code) => {
-        const full = [...dimFullIdx.entries()].filter(([k]) => k.startsWith(code + "|"));
-        const val  = [...dimValIdx.entries()].filter(([k]) => k.startsWith(code + "|"));
-        const totalAcc = treeByCode.get(code) ? sumNode(treeByCode.get(code)) : "NO_TREE_NODE";
-        console.log(`[SAVED-PL] ${code}: sumNode=${totalAcc}, dimFull entries=${full.length}, dimVal entries=${val.length}`);
-        console.log(`  dimFull:`, full);
-        console.log(`  dimVal:`, val);
-      };
-      probe("603000");
-      probe("700000");
-      probe("700000i");
-      probe("600000");
-      probe("610000");
-
-      const rows610 = (uploadedAccounts || []).filter(r => String(getField(r, "accountCode") ?? "") === "610000");
-      console.log(`[SAVED-PL] raw uploaded rows for 610000 (count=${rows610.length}):`, rows610.map(r => ({
-        amt: getField(r, "AmountYTD", "amountYTD"),
-        dims: getField(r, "Dimensions", "dimensions")
-      })));
-    }
-    // Dump every saved node's dims vs what dimFullIdx/dimValIdx know for that code
-    if (typeof window !== "undefined") {
-      console.log("[SAVED-PL] === DIM MATCH DEBUG ===");
-      // Probe the actual fields on one row to find dim name field
-      const probe700 = (uploadedAccounts || []).find(r => String(getField(r, "accountCode") ?? "") === "700000" && getField(r, "Dimensions", "dimensions"));
-      if (probe700) {
-        console.log("[SAVED-PL] sample 700000 row keys:", Object.keys(probe700));
-        console.log("[SAVED-PL] sample 700000 row:", probe700);
-      }
-      const walkLit = (nodes) => {
-        nodes.forEach(n => {
-          if (n.dims && n.dims.length > 0) {
-            const gaNode = treeByCode.get(String(n.code));
-            const knownFull = [...dimFullIdx.keys()].filter(k => k.startsWith(n.code + "|")).map(k => k.split("|")[1]);
-            const knownVal  = [...dimValIdx.keys()].filter(k => k.startsWith(n.code + "|")).map(k => k.split("|")[1]);
-            console.log(`  code=${n.code} name="${n.name}" SAVED dims:`, n.dims, "→ KNOWN full keys:", knownFull, "KNOWN val keys:", knownVal);
-            // Test each saved dim
-            n.dims.forEach(d => {
-              const fullHit = dimFullIdx.get(`${n.code}|${d}`);
-              const valHit  = dimValIdx.get(`${n.code}|${d}`);
-              const recur   = sumDimRecursive(gaNode, String(d));
-              console.log(`    "${d}" → fullHit=${fullHit ?? "miss"}, valHit=${valHit ?? "miss"}, sumDimRecursive=${recur}`);
-            });
-          }
-          if (n.children) walkLit(n.children);
-        });
-      };
-      savedPlLiteral.forEach(s => walkLit(s.nodes));
-    }
 
 // Build a prev-month index for monthly mode — use RAW (unfiltered) prev data
     // so that posting-account leaf rows (which have Dimensions="—") are included
@@ -4332,7 +4222,6 @@ const prevAmt = leaf.code && Number(month) !== 1
                                     });
 for (const dimsStr of dimsOnLeaf) {
   const key = `${node.code}|${dimsStr}`;
-  console.log('[DIMFIX] trying key:', key, 'hit:', prevDimFullIdx.get(key));
   if (prevDimFullIdx.has(key)) {
     prevDimVal = prevDimFullIdx.get(key) ?? 0;
     break;
@@ -4790,7 +4679,6 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
 </tr>
 </thead>
             <tbody>
-              {console.log("allSumRows codes:", allSumRows.map(n=>n.code), "breakers.pl:", Object.keys(breakers.pl))}
 {(summaryMode ? summaryRows : allSumRows).map((node, nodeIdx, nodeArr) => {
 
 
@@ -5535,26 +5423,14 @@ const [cmp2EnabledInternal, setCmp2EnabledInternal] = useState(true);
   const setCmp2Enabled = (v) => { setCmp2EnabledInternal(v); onBsCmp2EnabledChange?.(v); };
 const bsDrillMap = externalBsDrillMap ?? {};
 const setBsDrillMap = externalSetBsDrillMap ?? (() => {});
-useEffect(() => {
-  console.log("🔥 bsDrillMap CHANGED:", Object.keys(bsDrillMap).length, "keys");
-}, [bsDrillMap]);
-useEffect(() => {
-  console.log("🔥 compareMode CHANGED:", compareMode, "| bsDrillMap keys at this moment:", Object.keys(bsDrillMap).length);
-}, [compareMode]);
 
+const bsDrill = useCallback((key) => {
+  setBsDrillMap(prev => ({ ...prev, [key]: !prev[key] }));
+}, [setBsDrillMap]);
 // Intentionally do NOT reset bsDrillMap on compareMode/cmp2Enabled changes
 // so the user keeps their expanded rows when toggling compare or removing Period C.
   const [jrnPopup, setJrnPopup] = useState(null);
   const [dimPopup, setDimPopup] = useState(null);
-const bsDrill = useCallback((key) => {
-  setBsDrillMap(prev => {
-    const next = { ...prev, [key]: !prev[key] };
-    console.log("bsDrill updating:", key, "new value:", next[key], "all keys:", Object.keys(next));
-    return next;
-  });
-}, []);
-
-
 
 const journalByCode = useMemo(() => {
   const idx = new Map();
@@ -5577,12 +5453,10 @@ const bsCmpLeafIndex = useMemo(() => {
     if (!lac) return;
     idx.set(lac, (idx.get(lac) ?? 0) + amt);
   });
-  return idx;
+return idx;
 }, [cmpData]);
-
 const bsCmp2LeafIndex = useMemo(() => {
   const idx = new Map();
-  console.log("cmp2Data for leaf index:", cmp2Data?.length);
   (cmp2Data || []).forEach(row => {
     const lac = String(getField(row, "localAccountCode") ?? "");
     const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
@@ -5962,7 +5836,6 @@ function renderNode(node, depth = 0) {
     const kids = (node.children || []).filter(hasData);
     const drillKey = `bsmulti-${node.code}`;
    const expanded = !!bsDrillMap[drillKey];
-    console.log("BS node:", node.code, node.name);
     const hasMore = kids.length > 0 || node.uploadLeaves?.filter(l => l.type !== "plain").length > 0;
 
     // Render kids first (same as before — post-order)
@@ -6161,7 +6034,6 @@ if (expanded) {
     const drillKey = `bsrow-${node.code}`;
     const hasMore = kids.length > 0 || node.uploadLeaves?.filter(l => l.type !== "plain").length > 0;
     const expanded = !!bsDrillMap[drillKey];
-console.log("renderBSRows node:", node.code, "drillKey:", drillKey, "expanded:", expanded, "bsDrillMap keys:", Object.keys(bsDrillMap));
 const BS_DIVIDERS = Object.keys(breakers.bs).length
   ? effectiveBreakersBs
   : { '399999': { label: "Activo", color: colors.primary }, '499999': { label: "Patrimonio Neto", color: colors.secondary }, '699999': { label: "Pasivo", color: colors.tertiary }, 'C.ACT': { label: "Activo", color: colors.primary }, 'D.S': { label: "Patrimonio Neto", color: colors.secondary }, 'E.S': { label: "Pasivo", color: colors.tertiary } };
@@ -7609,7 +7481,6 @@ useEffect(() => {
   if (sources.length > 0 && structures.length > 0 && companies.length > 0) return;
   const t = setTimeout(() => {
     if (sources.length === 0 || structures.length === 0 || companies.length === 0) {
-      console.warn("[AccountsDashboard] Filter props empty — self-fetching metadata.");
       metaFetchedRef.current = false;
       fetchMetadata();
     }
@@ -7635,8 +7506,8 @@ const handleTabChange = (newTab) => {
 };
 
   // ── Filter state (shared — used by Uploaded and Report tabs) ──
-  const [upYear, setUpYear] = useState(DEFAULT_YEAR);
-  const [upMonth, setUpMonth] = useState(DEFAULT_MONTH);
+const [upYear, setUpYear] = useState("");
+  const [upMonth, setUpMonth] = useState("");
   const [upSource, setUpSource] = useState("");
   const [upStructure, setUpStructure] = useState("");
   const [upCompany, setUpCompany] = useState("");
@@ -7819,7 +7690,6 @@ setPgcBsMapping({ rows, sections, names });
 
 // ── Danish IFRS: load PL mapping(danish_ifrs_pl_rows + danish_ifrs_pl_sections) ──
 useEffect(() => {
-  console.log("[DanishPL useEffect] fired, grpData.length=", grpData.length);
   if (!grpData.length) { setDanishIfrsPlMapping(null); return; }
 
   const isPGC = grpData.some(n => {
@@ -7829,8 +7699,6 @@ useEffect(() => {
 const isSpanishIfrsEs = !isPGC && grpData.some(n => /\.PL$/i.test(String(n.accountCode ?? n.AccountCode ?? "").trim()));
   const isSpanishIFRS = !isPGC && !isSpanishIfrsEs && grpData.some(n => /^[A-Z]\.\d/.test(String(n.accountCode ?? n.AccountCode ?? "")));
   const isDanish = !isPGC && !isSpanishIFRS && !isSpanishIfrsEs && grpData.some(n => /^\d{5,6}$/.test(String(n.accountCode ?? n.AccountCode ?? "")));
-
-  console.log("[DanishPL useEffect] isPGC=", isPGC, "isSpanishIFRS=", isSpanishIFRS, "isDanish=", isDanish);
 
   if (!isDanish) { setDanishIfrsPlMapping(null); return; }
 
@@ -8116,7 +7984,6 @@ const breakersFetchedRef = useRef(false);
 // ── FAST PATH 1: React context cache ──────────────────
     const cached = getLatestPeriod(upSource, upStructure, upCompany);
     if (cached) {
-      console.log("[IndividualesPage] CONTEXT CACHE HIT ✓", cached);
       setUpYear(String(cached.year));
       setUpMonth(String(cached.month));
       setProbingPeriod(false);
@@ -8240,46 +8107,6 @@ setPlCmpLoading(true);
   } catch { setCmpData([]); setCmpPrevData([]); }
   finally { setCmpLoading(false); }
 }, [headers]);
-  
-
-// ── DEBUG: raw fetch to inspect what API actually returns ───
-  useEffect(() => {
-    if (!token) return;
-    (async () => {
-      const h = { Authorization: `Bearer ${token}`, Accept: "application/json" };
-      try {
-        const r1 = await fetch(`${BASE_URL}/v2/mapped-accounts`, { headers: h });
-        const j1 = await r1.json();
-        const rows1 = j1.value ?? (Array.isArray(j1) ? j1 : []);
-        console.log("🔍🔍🔍 RAW /v2/mapped-accounts 🔍🔍🔍");
-        console.log("Total rows:", rows1.length);
-        console.log("First row keys:", rows1[0] ? Object.keys(rows1[0]) : "NO ROWS");
-        console.log("First row:", rows1[0]);
-        const m70810 = rows1.filter(r => String(r.LocalAccountCode ?? r.localAccountCode ?? "") === "70810000");
-        const m70500 = rows1.filter(r => String(r.LocalAccountCode ?? r.localAccountCode ?? "") === "70500000");
-        console.log("MAPPED 70810000 raw:", JSON.stringify(m70810, null, 2));
-        console.log("MAPPED 70500000 raw:", JSON.stringify(m70500, null, 2));
-      } catch (e) { console.error("Mapped fetch error:", e); }
-
-      try {
-        // Use a sensible filter to limit volume — current period
-        const filter = `Year eq 2025 and Month eq 12 and CompanyShortName eq 'SON'`;
-        const r2 = await fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h });
-        const j2 = await r2.json();
-        const rows2 = j2.value ?? (Array.isArray(j2) ? j2 : []);
-        console.log("🔍🔍🔍 RAW /v2/reports/uploaded-accounts (SON 2025-12) 🔍🔍🔍");
-        console.log("Total rows:", rows2.length);
-        console.log("First row keys:", rows2[0] ? Object.keys(rows2[0]) : "NO ROWS");
-        console.log("First row:", rows2[0]);
-        const u70810 = rows2.filter(r => String(r.LocalAccountCode ?? r.localAccountCode ?? "") === "70810000");
-        const u70500 = rows2.filter(r => String(r.LocalAccountCode ?? r.localAccountCode ?? "") === "70500000");
-        const u70000 = rows2.filter(r => String(r.LocalAccountCode ?? r.localAccountCode ?? "") === "70000000");
-        console.log("UPLOADED 70810000 raw:", JSON.stringify(u70810, null, 2));
-        console.log("UPLOADED 70500000 raw:", JSON.stringify(u70500, null, 2));
-        console.log("UPLOADED 70000000 raw (first 2):", JSON.stringify(u70000.slice(0, 2), null, 2));
-      } catch (e) { console.error("Uploaded fetch error:", e); }
-    })();
-  }, [token]);
 
   const fetchMapped = useCallback(async () => {
     setMapLoading(true); setMapError(null); setMapFetched(false);
@@ -8299,7 +8126,6 @@ setPlCmpLoading(true);
       const res = await fetch(`${BASE_URL}/v2/group-accounts`, { headers: headers() });
       if (!res.ok) { const t = await res.text(); throw new Error(`HTTP ${res.status} – ${t.slice(0, 200)}`); }
       const json = await res.json();
-      console.log("GROUP ACCOUNTS RAW:", JSON.stringify(json.value?.slice(0,3) ?? json.slice?.(0,3), null, 2));
       setGrpData(json.value ?? (Array.isArray(json) ? json : [json]));
       setGrpFetched(true);
     } catch (e) { setGrpError(e.message); }
@@ -8330,7 +8156,6 @@ const fetchJournal = useCallback(async (year, month, source, structure, company)
     if (!res.ok) { const t = await res.text(); throw new Error(`HTTP ${res.status} – ${t.slice(0, 200)}`); }
     const json = await res.json();
     setJrnData(json.value ?? (Array.isArray(json) ? json : [json]));
-    console.log("JOURNAL RAW:", JSON.stringify(json).slice(0, 500));
     setJrnFetched(true);
   } catch (e) { setJrnError(e.message); }
   finally { setJrnLoading(false); }
@@ -8472,7 +8297,6 @@ useEffect(() => {
   }
 }, [compareMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company]);
 
-console.log("🔴 RENDER AccountsDashboard | grpData:", grpData.length, "| pgcMapping:", pgcMapping ? "SET" : "null", "| danishIfrsPlMapping:", danishIfrsPlMapping ? "SET" : "null", "| pgcBsMapping:", pgcBsMapping ? "SET" : "null", "| danishIfrsBsMapping:", danishIfrsBsMapping ? "SET" : "null");
 const tab        = TABS.find(t => t.id === activeTab);
    const anyLoading = probingPeriod || upLoading || prevLoading || plCmpLoading || plCmp2Loading || mapLoading || grpLoading || jrnLoading;
 
@@ -8495,11 +8319,12 @@ const hasStartedFetching = useRef(false);
 
   // Smoothly animate the displayed value between progress changes
   const animatedDashProgress = useAnimatedNumber(dashProgress, 700);
+const dashReady = dashProgress >= 100
+    || !!upError
+    || !!grpError
+    || (upFetched && !upLoading && !probingPeriod && !grpLoading);
 
-  const dashReady = dashProgress >= 100;
 
-  console.log("jrnData:", jrnData.length, jrnData[0]);
-console.log("jrnFetched:", jrnFetched, "jrnLoading:", jrnLoading, "jrnError:", jrnError);
   const dimGroups = useMemo(() => {
   const seen = new Set();
   return effectiveDimensions
@@ -8515,14 +8340,6 @@ const filteredDims = useMemo(() => {
     return upDimGroups.includes(g);
   });
 }, [effectiveDimensions, upDimGroups]);
-
-useEffect(() => {
-  window.__upDataDebug = upData;
-  window.__upDimGroupsDebug = upDimGroups;
-  window.__upDimensionsDebug = upDimensions;
-  window.__effectiveDimensionsDebug = effectiveDimensions;
-  console.log("[DEBUG EXPOSE] upData:", upData.length, "groups:", upDimGroups, "dims:", upDimensions);
-}, [upData, upDimGroups, upDimensions, effectiveDimensions]);
 
 const cmpFilteredDims = useMemo(() => {
   if (!cmpDimGroups || cmpDimGroups.length === 0) return effectiveDimensions;
@@ -9163,7 +8980,6 @@ fabActions={viewsMode ? undefined : [
   const hasPlRows = filteredUpData.some(r => plCodes.has(String(r.accountCode ?? r.AccountCode ?? "")));
 
   const dimEmpty = hasDimFilter && upData.length > 0 && !hasPlRows;
-  console.log("[PL EMPTY CHECK]", { groups: upDimGroups, dims: upDimensions, hasDimFilter, upDataLen: upData.length, filteredLen: filteredUpData.length, hasPlRows, dimEmpty });
 
 if (dimEmpty) {
     return (
