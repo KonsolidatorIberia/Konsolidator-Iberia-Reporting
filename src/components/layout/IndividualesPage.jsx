@@ -51,6 +51,13 @@ function rowMatchesDim(r, group, code) {
   return dims.some(d => d.group === group);
 }
 
+function buildCompanyFilter(companies) {
+  const arr = Array.isArray(companies) ? companies : (companies ? [companies] : []);
+  if (arr.length === 0) return "";
+  if (arr.length === 1) return `CompanyShortName eq '${arr[0]}'`;
+  return `(${arr.map(c => `CompanyShortName eq '${c}'`).join(" or ")})`;
+}
+
 /* ═══════════════════════════════════════════════════════════════
    SHARED UTILITIES
 ═══════════════════════════════════════════════════════════════ */
@@ -2850,9 +2857,9 @@ renderPage('Balance Sheet — Summary',isFirst,makeBSCols(),bsSumFl.map(r=>toBSR
     })
     .catch(e=>alert('Could not load PDF library: '+e.message));
 }
-
 function PLStatement({
   externalExpandedMap, externalSetExpandedMap,
+  multiCompany = false,
   token,
   upDimGroups, upDimensions,
   onHistoryExpandedChange,
@@ -2915,8 +2922,8 @@ const [filtersOpen, setFiltersOpen] = useState(true);
     } catch { return { data: [], prevData: [] }; }
   }, [token, source, structure]);
 
-  const toggleHistory = useCallback(async () => {
-    if (compareMode) return; // disabled in compare mode
+const toggleHistory = useCallback(async () => {
+    if (compareMode || multiCompany) return; // disabled in compare or multi-company mode
 if (historyExpanded) {
       setHistoryExpanded(false);
       setHistoryMonths([]);
@@ -2939,8 +2946,8 @@ const targets = [];
       const { data, prevData } = await fetchHistoryMonth(t.year, t.month);
       setHistoryMonths(prev => [...prev, { year: t.year, month: t.month, data, prevData }]);
     }
-    setHistoryLoading(false);
-  }, [compareMode, historyExpanded, year, month, fetchHistoryMonth]);
+setHistoryLoading(false);
+  }, [compareMode, multiCompany, historyExpanded, year, month, fetchHistoryMonth]);
   
 const [jrnPopup, setJrnPopup] = useState(null);
 const [dimPopup, setDimPopup] = useState(null);
@@ -5333,7 +5340,7 @@ function BSDeviationCells({ a, b, typoStyle }) {
 
 
 
-function BalanceSheet({ externalBsDrillMap, externalSetBsDrillMap, onHistoryExpandedChange, groupAccounts, uploadedAccounts,dimensions = [], loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], onCompareChange, dimensionActive = false, upDimGroup = "", upDimension = "", filteredDims = [], externalCmp2Enabled, onBsCmp2EnabledChange, breakers = { pl: {}, bs: {}, cf: {} }, pgcBsMapping = null, savedBsLiteral = null,
+function BalanceSheet({ multiCompany = false, externalBsDrillMap, externalSetBsDrillMap, onHistoryExpandedChange, groupAccounts, uploadedAccounts,dimensions = [], loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], onCompareChange, dimensionActive = false, upDimGroup = "", upDimension = "", filteredDims = [], externalCmp2Enabled, onBsCmp2EnabledChange, breakers = { pl: {}, bs: {}, cf: {} }, pgcBsMapping = null, savedBsLiteral = null,
   compareMode, setCompareMode,
   cmpYear, setCmpYear, cmpMonth, setCmpMonth, cmpSource, setCmpSource, cmpStructure, setCmpStructure, cmpCompany, setCmpCompany,
   cmpData, setCmpData,
@@ -5364,8 +5371,8 @@ const [filtersOpen, setFiltersOpen] = useState(true);
     } catch { return { data: [] }; }
   }, [token, source, structure]);
 
-  const toggleBSHistory = useCallback(async () => {
-    if (compareMode) return;
+const toggleBSHistory = useCallback(async () => {
+    if (compareMode || multiCompany) return;
     if (historyExpanded) {
       setHistoryExpanded(false);
       setHistoryMonths([]);
@@ -7510,7 +7517,9 @@ const [upYear, setUpYear] = useState("");
   const [upMonth, setUpMonth] = useState("");
   const [upSource, setUpSource] = useState("");
   const [upStructure, setUpStructure] = useState("");
-  const [upCompany, setUpCompany] = useState("");
+const [upCompanies, setUpCompanies] = useState([]);
+  const upCompany = upCompanies[0] ?? "";
+  const setUpCompany = (v) => setUpCompanies(v ? [v] : []);
 const [upDimGroups, setUpDimGroups] = useState(null);   // null = all, [] = none, [...] = selected
 const [upDimensions, setUpDimensions] = useState(null);
 
@@ -8044,11 +8053,12 @@ const breakersFetchedRef = useRef(false);
   }, [upSource, upStructure, upCompany, headers, getLatestPeriod, setLatestPeriod]);
 
   // ── Fetch functions ────────────────────────────────────────
-const fetchUploaded = useCallback(async (year, month, source, structure, company) => {
-  if (!year || !month || !source || !structure || !company) return;
+const fetchUploaded = useCallback(async (year, month, source, structure, companies) => {
+  const coFilter = buildCompanyFilter(companies);
+  if (!year || !month || !source || !structure || !coFilter) return;
     setUpLoading(true); setUpError(null); setUpFetched(false);
     try {
-      const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
+      const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and ${coFilter}`;
       const res = await fetch(
         `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
         { headers: headers() }
@@ -8062,13 +8072,14 @@ const fetchUploaded = useCallback(async (year, month, source, structure, company
     
   }, [headers]);
 
-const fetchPrev = useCallback(async (year, month, source, structure, company) => {
-  if (!year || !month || !source || !structure || !company) return;
+const fetchPrev = useCallback(async (year, month, source, structure, companies) => {
+  const coFilter = buildCompanyFilter(companies);
+  if (!year || !month || !source || !structure || !coFilter) return;
   if (Number(month) === 1) { setPrevData([]); return; }
   const prevMonth = Number(month) - 1;
   setPrevLoading(true);
   try {
-    const filter = `Year eq ${year} and Month eq ${prevMonth} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
+    const filter = `Year eq ${year} and Month eq ${prevMonth} and Source eq '${source}' and GroupStructure eq '${structure}' and ${coFilter}`;
     const res = await fetch(
       `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
       { headers: headers() }
@@ -8133,22 +8144,24 @@ setPlCmpLoading(true);
   }, [headers]);
 
 useEffect(() => {
-  if (upSource && upStructure && upYear && upMonth && upCompany) {
-fetchUploaded(upYear, upMonth, upSource, upStructure, upCompany);
-    fetchPrev(upYear, upMonth, upSource, upStructure, upCompany);
-    fetchJournal(upYear, upMonth, upSource, upStructure, upCompany);
+  if (upSource && upStructure && upYear && upMonth && upCompanies.length > 0) {
+    fetchUploaded(upYear, upMonth, upSource, upStructure, upCompanies);
+    fetchPrev(upYear, upMonth, upSource, upStructure, upCompanies);
+    fetchJournal(upYear, upMonth, upSource, upStructure, upCompanies);
   }
-}, [upSource, upStructure, upYear, upMonth, upCompany]);
+}, [upSource, upStructure, upYear, upMonth, upCompanies]);
 
 
 
-const fetchJournal = useCallback(async (year, month, source, structure, company) => {
+const fetchJournal = useCallback(async (year, month, source, structure, companies) => {
   const y = year ?? upYear; const m = month ?? upMonth;
-  const s = source ?? upSource; const st = structure ?? upStructure; const co = company ?? upCompany;
-  if (!y || !m || !s || !st || !co) return;
+  const s = source ?? upSource; const st = structure ?? upStructure;
+  const co = companies ?? upCompanies;
+  const coFilter = buildCompanyFilter(co);
+  if (!y || !m || !s || !st || !coFilter) return;
   setJrnLoading(true); setJrnError(null); setJrnFetched(false);
   try {
-    const filter = `Year eq ${y} and Month eq ${m} and Source eq '${s}' and GroupStructure eq '${st}' and CompanyShortName eq '${co}'`;
+    const filter = `Year eq ${y} and Month eq ${m} and Source eq '${s}' and GroupStructure eq '${st}' and ${coFilter}`;
     const res = await fetch(
       `${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(filter)}`,
       { headers: headers() }
@@ -8159,7 +8172,7 @@ const fetchJournal = useCallback(async (year, month, source, structure, company)
     setJrnFetched(true);
   } catch (e) { setJrnError(e.message); }
   finally { setJrnLoading(false); }
-}, [upYear, upMonth, upSource, upStructure, upCompany, headers]);
+}, [upYear, upMonth, upSource, upStructure, upCompanies, headers]);
 
 const fetchJournalCmp = useCallback(async (year, month, source, structure, company) => {
   if (!year || !month || !source || !structure || !company) { setJrnCmpData([]); return; }
@@ -8228,8 +8241,8 @@ useEffect(() => {
 
   // ── Manual re-fetch for uploaded when filters change ───────
 const handleLoadUploaded = () => {
-  fetchUploaded(upYear, upMonth, upSource, upStructure, upCompany);
-  fetchPrev(upYear, upMonth, upSource, upStructure, upCompany);
+  fetchUploaded(upYear, upMonth, upSource, upStructure, upCompanies);
+  fetchPrev(upYear, upMonth, upSource, upStructure, upCompanies);
 };
 
 // ── Compare mode state ─────────────────────────────────────
@@ -8613,7 +8626,7 @@ filters={viewsMode ? [] : [
       options: effectiveSources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; }) },
     { label: t("filter_structure"),value: upStructure,onChange: setUpStructure,
       options: effectiveStructures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; }) },
-{ label: t("filter_company"),  value: upCompany,  onChange: setUpCompany,
+{ label: t("filter_company"), multiselect: true, values: upCompanies, onChange: setUpCompanies,
       options: effectiveCompanies.map(c => {
         const v = typeof c === "object"
           ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "")
@@ -8642,9 +8655,9 @@ compareToggle={
     viewsMode ? null :
 activeTab === "pl" ? {
       active: compareMode,
-      disabled: plHistoryExpanded,
+      disabled: plHistoryExpanded || upCompanies.length > 1,
       onChange: () => {
-        if (plHistoryExpanded) return;
+        if (plHistoryExpanded || upCompanies.length > 1) return;
         if (!compareMode) {
           setCmpYear(upYear); setCmpMonth(upMonth); setCmpSource(upSource);
           setCmpStructure(upStructure); setCmpCompany(upCompany);
@@ -8655,11 +8668,11 @@ activeTab === "pl" ? {
         }
         setCompareMode(c => !c);
       },
-    } : activeTab === "bs" ? {
+} : activeTab === "bs" ? {
       active: bsCompareMode,
-      disabled: bsHistoryExpanded,
+      disabled: bsHistoryExpanded || upCompanies.length > 1,
       onChange: () => {
-        if (bsHistoryExpanded) return;
+        if (bsHistoryExpanded || upCompanies.length > 1) return;
         if (!bsCompareMode) {
           setBsCmpYear(String(upYear)); setBsCmpMonth(String(upMonth));
           setBsCmpSource(upSource); setBsCmpStructure(upStructure); setBsCmpCompany(upCompany);
@@ -9027,6 +9040,7 @@ onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}>
 <PLStatement
   externalExpandedMap={plExpandedMap}
   externalSetExpandedMap={setPlExpandedMap}
+  multiCompany={upCompanies.length > 1}
   token={token}
   upDimGroups={upDimGroups}
   upDimensions={upDimensions}
@@ -9167,6 +9181,7 @@ savedHighlightedIds={activeMapping?.highlightedIds ?? null}
   return (
 <div key={`bs-${animKey}`} className="tab-content" style={{ "--slide-from": TAB_ORDER.indexOf("bs") > TAB_ORDER.indexOf(prevTab ?? "bs") ? "30px" : "-30px" }}>
 <BalanceSheet
+  multiCompany={upCompanies.length > 1}
   externalBsDrillMap={bsDrillMap}
   externalSetBsDrillMap={setBsDrillMap}
   onHistoryExpandedChange={setBsHistoryExpanded}
