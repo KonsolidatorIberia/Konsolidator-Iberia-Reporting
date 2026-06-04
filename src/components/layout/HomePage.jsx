@@ -554,8 +554,7 @@ style={{
   );
 }
 
-// eslint-disable-next-line no-unused-vars
-function MiniTile({ label, value, icon: Icon, color, delay = 0, onClick }) {
+function MiniTile({ label, value, icon: Icon, color, delay = 0, onClick }) { // eslint-disable-line no-unused-vars
   return (
     <button
       onClick={onClick}
@@ -638,8 +637,7 @@ function useAnimatedNumber(target, duration = 700) {
   return display;
 }
 
-// eslint-disable-next-line no-unused-vars
-function DetailPopup({ title, items, icon: Icon, color, onClose, renderItem }) {
+function DetailPopup({ title, items, icon: Icon, color, onClose, renderItem }) { // eslint-disable-line no-unused-vars
   const t = useT();
   const ref = useRef(null);
 
@@ -1113,8 +1111,7 @@ function KpiSelectorPopover({ kpiList, currentId, onSelect, onClose }) {
     </div>
   );
 }
-
-function UnmappedAccountsAlert({ accounts, standard, colors, onClose, onMapNow }) {
+function UnmappedAccountsAlert({ accounts, standard, onClose, onMapNow }) {
   const t = useT();
   const filtered = accounts;
 
@@ -1192,6 +1189,7 @@ function BreakdownLibraryModal({
   structures, activeViewId, defaultViewId, colors,
   onApply, onSetDefault, onEdit, onDelete, onCreate, onClose,
 }) {
+  void colors;
   const t = useT();
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   return (
@@ -1358,7 +1356,6 @@ disabled={isActive}>
 }
 
 const GROUP_PALETTE = ["#1a2f8a","#CF305D","#57aa78","#7c3aed","#d97706","#0891b2","#be185d","#065f46"];
-
 function BreakdownBuilderModal({ structure, groupAccounts, currentPivot, colors, onSave, onDelete, onClose }) {
   const t = useT();
   const [name, setName]               = useState(structure?.name ?? "");
@@ -1368,7 +1365,7 @@ function BreakdownBuilderModal({ structure, groupAccounts, currentPivot, colors,
       ...g,
       color: g.color ?? GROUP_PALETTE[gi % GROUP_PALETTE.length],
       sign:  g.sign  ?? "+",
-      _key:  g.id    ?? Math.random().toString(36).slice(2),
+      _key:  g.id    ?? crypto.randomUUID(),
       lines: (g.lines ?? []).map(l => ({ ...l, _key: Math.random().toString(36).slice(2) })),
     }))
   );
@@ -1407,9 +1404,8 @@ const allAccounts = useMemo(() =>
   const updateGroup = (key, patch) => setGroups(prev => prev.map(g => g._key === key ? { ...g, ...patch } : g));
   const removeGroup = (key) => setGroups(prev => prev.filter(g => g._key !== key).map((g, i) => ({ ...g, order: i })));
 
-  const addLine = (groupKey, code, name) => {
-    const lk = Math.random().toString(36).slice(2);
-    updateGroup(groupKey, { lines: [...(groups.find(g => g._key === groupKey)?.lines ?? []), { account_code: code, account_name: name, sign: "+", _key: lk }] });
+const addLine = (groupKey, code, name) => {
+    updateGroup(groupKey, { lines: [...(groups.find(g => g._key === groupKey)?.lines ?? []), { account_code: code, account_name: name, sign: "+", _key: crypto.randomUUID() }] });
     setAddingToGroup(null); setAcSearch("");
   };
   const updateLine = (groupKey, lineKey, patch) =>
@@ -1427,7 +1423,7 @@ const allAccounts = useMemo(() =>
     if (!name.trim()) return;
     const cleanItems = groups.map(({ _key, lines, ...rest }, idx) => ({
       ...rest, id: rest.id ?? _key, order: idx,
-      lines: (lines ?? []).map(({ _key: lk, ...l }) => l),
+     lines: (lines ?? []).map((line) => { const { _key, ...rest } = line; void _key; return rest; }),
     }));
     onSave({ name: name.trim(), description: description.trim() || null, items: cleanItems });
   };
@@ -2641,7 +2637,7 @@ const trendFromYear = useMemo(() => {
 return `${MONTHS_ABBR[mNum - 1]} ${year}`;
   }, [year, month, probing, t, MONTHS_ABBR]);
 
-const anyLoading = loading || trendLoading || probing || allCoLoading || !resolverReady;
+const _anyLoading = loading || trendLoading || probing || allCoLoading || !resolverReady;
 
 // Progress meter: 5 stages, weighted by perceptual cost
   const loadProgress = useMemo(() => {
@@ -2787,8 +2783,8 @@ setCustomStructures(structures ?? []);
         }
       } catch { /* ignore */ }
     })();
-    return () => { cancelled = true; };
-  }, [settingsCompanyId, userId]);
+return () => { cancelled = true; };
+  }, [settingsCompanyId, userId, loadStructuresWithNames]);
 
   // Persist user's active view whenever it changes
   const prevActiveViewRef = useRef(null);
@@ -2847,12 +2843,13 @@ setCustomStructures(structures ?? []);
   }, [customStructures, activeBreakdownView, standardMappingStructure]);
 
 // When the standard mapping loads, switch to it if still on a preset view
-  useEffect(() => {
+useEffect(() => {
     if (!standardMappingStructure) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setActiveBreakdownView(prev =>
       BREAKDOWN_VIEWS.some(v => v.id === prev) ? "standard_mapping" : prev
     );
-  }, [standardMappingStructure]);
+  }, [standardMappingStructure, BREAKDOWN_VIEWS]);
 
   const activeView = BREAKDOWN_VIEWS.find(v => v.id === activeBreakdownView) ?? BREAKDOWN_VIEWS[0];
 
@@ -2927,7 +2924,7 @@ const isInc = (group.lines?.[0]?.sign ?? "+") === "+";
       .filter(r => Math.abs(r.value) > 0.005)
       .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
       .slice(0, 8);
- }, [activeCustomStructure, activeView, ccTagToCodes, currentMonthlyPivot, prevMonthlyPivot, rawCurrentMonthlyPivot, rawPrevMonthlyPivot, TAG_LABELS, INCOME_TAGS]);
+}, [activeCustomStructure, activeView, ccTagToCodes, currentMonthlyPivot, prevMonthlyPivot, rawCurrentMonthlyPivot, rawPrevMonthlyPivot, TAG_LABELS]);
 
 const totalCosts = useMemo(
     () => activeCustomStructure
@@ -2978,7 +2975,7 @@ const curr = f * Math.abs(rawCurr);
       .filter(r => Math.abs(r.value) > 0.005)
       .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
       .slice(0, 12);
-  }, [drillTag, ccTagToCodes, currentMonthlyPivot, prevMonthlyPivot, groupAccounts]);
+}, [drillTag, activeCustomStructure, ccTagToCodes, currentMonthlyPivot, prevMonthlyPivot, rawCurrentMonthlyPivot, rawPrevMonthlyPivot, groupAccounts]);
 
 const drillTimeSeries = useMemo(() => {
     if (!drillTag || !trendRows.length) return [];
@@ -3073,7 +3070,7 @@ const drillTimeSeries = useMemo(() => {
       });
     }
     return out;
-  }, [drillTag, trendRows, ccTagToCodes, year, month, sumAccountCodes, MONTHS_ABBR]);
+}, [drillTag, activeCustomStructure, trendRows, ccTagToCodes, year, month, sumAccountCodes, MONTHS_ABBR]);
 
   const drillStats = useMemo(() => {
     if (!drillTag) return null;

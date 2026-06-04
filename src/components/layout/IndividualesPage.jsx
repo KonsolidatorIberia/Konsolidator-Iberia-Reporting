@@ -3062,6 +3062,38 @@ const getCmp2LeafAmt = useCallback((localCode) => {
   return cmp2LeafIndex.get(String(localCode)) ?? 0;
 }, [cmp2LeafIndex]);
 
+const cmpPrevLeafIndex = useMemo(() => {
+  const idx = new Map();
+  (cmpPrevUploadedAccounts || []).forEach(row => {
+    const lac = String(getField(row, "localAccountCode") ?? "");
+    const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+    if (!lac) return;
+    idx.set(lac, (idx.get(lac) ?? 0) + amt);
+  });
+  return idx;
+}, [cmpPrevUploadedAccounts]);
+
+const cmp2PrevLeafIndex = useMemo(() => {
+  const idx = new Map();
+  (cmp2PrevUploadedAccounts || []).forEach(row => {
+    const lac = String(getField(row, "localAccountCode") ?? "");
+    const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+    if (!lac) return;
+    idx.set(lac, (idx.get(lac) ?? 0) + amt);
+  });
+  return idx;
+}, [cmp2PrevUploadedAccounts]);
+
+const getCmpPrevLeafAmt = useCallback((localCode) => {
+  if (Number(cmpFilters?.month) === 1) return 0;
+  return cmpPrevLeafIndex.get(String(localCode)) ?? 0;
+}, [cmpPrevLeafIndex, cmpFilters]);
+
+const getCmp2PrevLeafAmt = useCallback((localCode) => {
+  if (Number(cmp2Filters?.month) === 1) return 0;
+  return cmp2PrevLeafIndex.get(String(localCode)) ?? 0;
+}, [cmp2PrevLeafIndex, cmp2Filters]);
+
 const journalByCode = useMemo(() => {
   const idx = new Map();
   (journalEntries || []).forEach(row => {
@@ -5016,27 +5048,22 @@ rows.push(
       return (
         <>
           <PLAmountCell value={displayAmt} typoStyle={subbody1Style} />
-          {compareMode && (() => {
+{compareMode && (() => {
             const cmpYtd = leaf.code ? -(getCmpLeafAmt(leaf.code)) : 0;
-            // cmp monthly not available without prev cmp leaf index — show YTD for cmp
-            return <><PLAmountCell value={cmpYtd} typoStyle={subbody1Style} divider /><DeviationCells a={displayAmt} b={cmpYtd} typoStyle={subbody1Style} /></>;
+            const cmpPrev = leaf.code ? -(getCmpPrevLeafAmt(leaf.code)) : 0;
+            const cmpDisplay = ytdOnly ? cmpYtd : cmpYtd - cmpPrev;
+            return <><PLAmountCell value={cmpDisplay} typoStyle={subbody1Style} divider /><DeviationCells a={displayAmt} b={cmpDisplay} typoStyle={subbody1Style} /></>;
           })()}
           {compareMode && cmp2Enabled && (() => {
             const cmp2Ytd = leaf.code ? -(getCmp2LeafAmt(leaf.code)) : 0;
-            return <><PLAmountCell value={cmp2Ytd} typoStyle={subbody1Style} divider /><DeviationCells a={displayAmt} b={cmp2Ytd} typoStyle={subbody1Style} /></>;
+            const cmp2Prev = leaf.code ? -(getCmp2PrevLeafAmt(leaf.code)) : 0;
+            const cmp2Display = ytdOnly ? cmp2Ytd : cmp2Ytd - cmp2Prev;
+            return <><PLAmountCell value={cmp2Display} typoStyle={subbody1Style} divider /><DeviationCells a={displayAmt} b={cmp2Display} typoStyle={subbody1Style} /></>;
           })()}
         </>
       );
     })()}
-    {ytdOnly && false && null /* handled above */}
-    {ytdOnly && compareMode && (() => {
-      const cmpAmt = leaf.code ? -getCmpLeafAmt(leaf.code) : 0;
-      return <><PLAmountCell value={cmpAmt} typoStyle={subbody1Style} divider /><DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody1Style} /></>;
-    })()}
-    {ytdOnly && compareMode && cmp2Enabled && (() => {
-      const cmp2Amt = leaf.code ? -getCmp2LeafAmt(leaf.code) : 0;
-      return <><PLAmountCell value={cmp2Amt} typoStyle={subbody1Style} divider /><DeviationCells a={-amt} b={cmp2Amt} typoStyle={subbody1Style} /></>;
-    })()}
+
 {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => {
       const leafYtd = -(h.leafIdx.get(String(leaf.code ?? "")) ?? 0);
       const leafPrevYtd = -(h.prevLeafIdx.get(String(leaf.code ?? "")) ?? 0);
@@ -5707,30 +5734,21 @@ rows.push(
   <span style={body2Style}>{child.name}</span>
 </div>
     </td>
-<td className={`text-right pr-4 py-2 font-mono text-xs whitespace-nowrap w-36 ${isBold ? "font-bold text-[#1a2f8a]" : "text-gray-600"}`}>
-            {total === 0 ? "—" : fmtAmt(total)}
-          </td>
-{compareMode && (() => {
-const activeCmpTree = bsView === "summary" ? cmpTree : allCmpTree;
-const cmpRaw = activeCmpTree.length ? getNodeValue(activeCmpTree, child.code) : 0;
-const cmpVal = Number(child.code) >= 599999 ? -cmpRaw : cmpRaw;
-            const devB = total - cmpVal;
-            const devBPct = cmpVal !== 0 ? (devB / Math.abs(cmpVal)) * 100 : null;
-            const devColor = v => v === 0 ? "text-gray-300" : v > 0 ? "text-emerald-600" : "text-red-500";
+<BSAmountCell value={total} typoStyle={body2Style} />
+          {compareMode && (() => {
+            const activeCmpTree = bsView === "summary" ? cmpTree : allCmpTree;
+            const cmpRaw = activeCmpTree.length ? getNodeValue(activeCmpTree, child.code) : 0;
+            const cmpVal = Number(child.code) >= 599999 ? -cmpRaw : cmpRaw;
             return <>
-              <td className={`text-right pr-4 py-2 font-mono text-xs whitespace-nowrap text-[#CF305D]`} style={{ borderLeft: "2px solid #e2e8f0" }}>{cmpVal === 0 ? "-" : fmtAmt(cmpVal)}</td>
-              <td className={`text-right pr-4 py-2 font-mono text-xs whitespace-nowrap ${devColor(devB)}`}>{devB === 0 ? "-" : fmtAmt(devB)}</td>
-              <td className={`text-right pr-4 py-2 font-mono text-xs whitespace-nowrap ${devColor(devB)}`}>{devBPct === null ? "—" : `${devBPct >= 0 ? "+" : ""}${devBPct.toFixed(1)}%`}</td>
+              <BSAmountCell value={cmpVal} typoStyle={body2Style} divider />
+              <BSDeviationCells a={total} b={cmpVal} typoStyle={body2Style} />
               {cmp2Enabled && (() => {
                 const activeCmp2Tree = bsView === "summary" ? cmp2Tree : allCmp2Tree;
-const cmp2Raw = activeCmp2Tree.length ? getNodeValue(activeCmp2Tree, child.code) : 0;
-const cmp2Val = Number(child.code) >= 599999 ? -cmp2Raw : cmp2Raw;
-                const devC = total - cmp2Val;
-                const devCPct = cmp2Val !== 0 ? (devC / Math.abs(cmp2Val)) * 100 : null;
-return <>
-  <td className={`text-right pr-4 py-2 font-mono text-xs whitespace-nowrap text-[#57aa78]`} style={{ borderLeft: "2px solid #e2e8f0" }}>{cmp2Val === 0 ? "-" : fmtAmt(cmp2Val)}</td>
-                  <td className={`text-right pr-4 py-2 font-mono text-xs whitespace-nowrap ${devColor(devC)}`}>{devC === 0 ? "-" : fmtAmt(devC)}</td>
-                  <td className={`text-right pr-4 py-2 font-mono text-xs whitespace-nowrap ${devColor(devC)}`}>{devCPct === null ? "—" : `${devCPct >= 0 ? "+" : ""}${devCPct.toFixed(1)}%`}</td>
+                const cmp2Raw = activeCmp2Tree.length ? getNodeValue(activeCmp2Tree, child.code) : 0;
+                const cmp2Val = Number(child.code) >= 599999 ? -cmp2Raw : cmp2Raw;
+                return <>
+                  <BSAmountCell value={cmp2Val} typoStyle={body2Style} divider />
+                  <BSDeviationCells a={total} b={cmp2Val} typoStyle={body2Style} />
                 </>;
               })()}
             </>;
@@ -5823,27 +5841,17 @@ if (childExpanded && hasMore) {
     <span style={subbody1Style}>{leaf.name || ""}</span>
   </div>
 </td>
-<td className="text-right pr-4 py-1.5 font-mono text-xs text-gray-400 w-36">
-
-            {amt === 0 ? "—" : fmtAmt(amt)}
-          </td>
-{compareMode && (() => {
+<BSAmountCell value={amt} typoStyle={subbody1Style} />
+          {compareMode && (() => {
             const cmpAmt = leaf.code ? bsCmpLeafIndex.get(String(leaf.code)) ?? 0 : 0;
-            const devB = amt - cmpAmt;
-            const devBPct = cmpAmt !== 0 ? (devB / Math.abs(cmpAmt)) * 100 : null;
-            const devColor = v => v === 0 ? "text-gray-300" : v > 0 ? "text-emerald-600" : "text-red-500";
             return <>
-              <td className="text-right pr-4 py-1.5 font-mono text-xs text-[#CF305D]" style={{ borderLeft: "2px solid #e2e8f0" }}>{cmpAmt === 0 ? "—" : fmtAmt(cmpAmt)}</td>
-              <td className={`text-right pr-4 py-1.5 font-mono text-xs ${devColor(devB)}`}>{devB === 0 ? "—" : fmtAmt(devB)}</td>
-              <td className={`text-right pr-4 py-1.5 font-mono text-xs ${devColor(devB)}`}>{devBPct === null ? "—" : `${devBPct >= 0 ? "+" : ""}${devBPct.toFixed(1)}%`}</td>
+              <BSAmountCell value={cmpAmt} typoStyle={subbody1Style} divider />
+              <BSDeviationCells a={amt} b={cmpAmt} typoStyle={subbody1Style} />
               {cmp2Enabled && (() => {
                 const cmp2Amt = leaf.code ? (bsCmp2LeafIndex.get(String(leaf.code)) ?? 0) : 0;
-                const devC = amt - cmp2Amt;
-                const devCPct = cmp2Amt !== 0 ? (devC / Math.abs(cmp2Amt)) * 100 : null;
                 return <>
-                  <td className="text-right pr-4 py-1.5 font-mono text-xs text-[#57aa78]" style={{ borderLeft: "2px solid #e2e8f0" }}>{cmp2Amt === 0 ? "—" : fmtAmt(cmp2Amt)}</td>
-                  <td className={`text-right pr-4 py-1.5 font-mono text-xs ${devColor(devC)}`}>{devC === 0 ? "—" : fmtAmt(devC)}</td>
-                  <td className={`text-right pr-4 py-1.5 font-mono text-xs ${devColor(devC)}`}>{devCPct === null ? "—" : `${devCPct >= 0 ? "+" : ""}${devCPct.toFixed(1)}%`}</td>
+                  <BSAmountCell value={cmp2Amt} typoStyle={subbody1Style} divider />
+                  <BSDeviationCells a={amt} b={cmp2Amt} typoStyle={subbody1Style} />
                 </>;
               })()}
             </>;
@@ -5868,10 +5876,7 @@ if (childExpanded && hasMore) {
                   <span className="text-xs text-gray-400 italic">{dim.name || dim.code}</span>
                 </div>
               </td>
-<td className="text-right pr-4 py-1 font-mono text-xs text-gray-400">
-
-                {dim.amount === 0 ? "—" : fmtAmt(dim.amount)}
-              </td>
+<BSAmountCell value={dim.amount} typoStyle={subbody2Style} />
 {compareMode && <><td /><td /><td /></>}
 {compareMode && cmp2Enabled && <><td /><td /><td /></>}
             </tr>
@@ -8472,13 +8477,19 @@ const tab        = TABS.find(t => t.id === activeTab);
    const anyLoading = probingPeriod || upLoading || prevLoading || plCmpLoading || plCmp2Loading || mapLoading || grpLoading || jrnLoading;
 
 // Progress meter for the loading overlay covering the tab area
+const hasStartedFetching = useRef(false);
+  if (upLoading || grpLoading || probingPeriod) hasStartedFetching.current = true;
+
   const dashProgress = useMemo(() => {
+    // Until the first fetch has kicked off, force progress to 0 so the overlay
+    // doesn't briefly show a half-filled state from stale prop data on mount.
+    if (!hasStartedFetching.current && upData.length === 0 && grpData.length === 0) return 0;
     let pct = 0;
     if (upYear && upMonth)                                     pct += 15;
     if (effectiveSources.length > 0 && effectiveStructures.length > 0 && effectiveCompanies.length > 0) pct += 15;
     if (grpData.length > 0)                                    pct += 25;
     if (upData.length > 0)                                     pct += 25;
-    if (!probingPeriod && !upLoading && !grpLoading)           pct += 20;
+    if (!probingPeriod && !upLoading && !grpLoading && (upData.length > 0 || grpData.length > 0)) pct += 20;
     return Math.min(100, pct);
   }, [upYear, upMonth, effectiveSources.length, effectiveStructures.length, effectiveCompanies.length, grpData.length, upData.length, probingPeriod, upLoading, grpLoading]);
 

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, MoreHorizontal, GitCompareArrows, Calendar, CalendarRange, Search, X } from "lucide-react";
 import { useSettings, useTypo, useT } from "./SettingsContext.jsx";
 
@@ -119,7 +120,7 @@ useEffect(() => {
           }} />
       </button>
 
-{open && (
+{open && createPortal(
         <div className="fixed z-[9999] min-w-[180px] rounded-2xl overflow-hidden"
           style={{
             top: dropdownRect ? dropdownRect.bottom + 8 : 0,
@@ -178,9 +179,10 @@ useEffect(() => {
                   {selected && <span className="w-1.5 h-1.5 rounded-full bg-white/70 flex-shrink-0" />}
                 </button>
               );
-            })}
+})}
           </div>
-</div>
+</div>,
+        document.body
 )}
 
       <style>{`
@@ -291,7 +293,7 @@ const display = isDefault
         <ChevronDown size={11} style={{ color: colors.primary, opacity: 0.4, transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: `transform 280ms ${SPRING}` }} />
       </button>
 
-{open && (
+{open && createPortal(
         <div className="fixed z-[9999] min-w-[220px] rounded-2xl overflow-hidden"
           style={{
             top: dropdownRect ? dropdownRect.bottom + 8 : 0,
@@ -355,10 +357,11 @@ const display = isDefault
                   </span>
                   <span className="truncate">{o.label}</span>
                 </button>
-              );
+);
             })}
           </div>
-</div>
+</div>,
+        document.body
 )}
     </div>
   );
