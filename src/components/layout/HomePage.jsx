@@ -533,9 +533,9 @@ style={{
           )}
         </div>
 
-        {sparklineData.length > 1 && (
-          <div className="flex-1 min-h-[36px] -mx-1">
-            <ResponsiveContainer width="100%" height="100%">
+{sparklineData.length > 1 && (
+          <div className="flex-1 -mx-1" style={{ minHeight: 36, height: 36, width: "100%" }}>
+            <ResponsiveContainer width="100%" height={36}>
               <AreaChart data={sparklineData} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
                 <defs>
                   <linearGradient id={`spark-${label}`} x1="0" y1="0" x2="0" y2="1">
@@ -3935,7 +3935,7 @@ const maxAbs = Math.max(...drillAccountBreakdown.map(r => Math.abs(r.value)));
                 ))}
               </div>
             </div>
-            <div className="flex-1 min-h-0">
+<div className="flex-1" style={{ minHeight: 200, width: "100%" }}>
 {trendSeriesDisplay.length > 1 ? (
                 <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={trendSeriesDisplay} margin={{ top: 5, right: 20, bottom: 0, left: 20 }}>

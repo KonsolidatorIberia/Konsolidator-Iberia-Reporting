@@ -1,3 +1,5 @@
+import { supabase } from "./supabaseClient";
+
 const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
 const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
 
@@ -13,13 +15,8 @@ async function getToken() {
     }
   } catch { /* fall through */ }
   try {
-    // Slow path — ask Supabase client directly
-    const { createClient } = await import("@supabase/supabase-js");
-    const client = createClient(
-      "https://gmcawsapzkzmgrtiqebv.supabase.co",
-      SUPABASE_APIKEY
-    );
-    const { data: { session } } = await client.auth.getSession();
+    // Slow path — reuse the single Supabase client
+    const { data: { session } } = await supabase.auth.getSession();
     return session?.access_token ?? null;
   } catch { return null; }
 }

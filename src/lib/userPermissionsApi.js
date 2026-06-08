@@ -96,11 +96,55 @@ export function useCurrentUserPermissions() {
     return () => { cancelled = true; };
   }, []);
 
-  const can = (pageKey) => {
+const can = (pageKey) => {
     if (pagePerms === null) return true;
     if (pageKey in pagePerms) return pagePerms[pageKey];
     return true;
   };
 
   return { can, loaded };
+}
+
+// ─── Current user resource access hook ──────────────────────────────
+// Returns { loaded, access } where access is { company?: Set, structure?: Set,
+// source?: Set, dimension?: Set, mapping?: Set }. A missing key for a kind
+// means "no restriction" — the user can access all resources of that kind.
+
+export function useCurrentUserResourceAccess() {
+  const [access, setAccess] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) { if (!cancelled) setAccess({}); return; }
+        const cid = await getActiveCompanyId(uid);
+        if (!cid) { if (!cancelled) setAccess({}); return; }
+
+        const rows = await listUserResourceAccess({ companyId: cid }).catch(() => []);
+        if (cancelled) return;
+        const myRows = (rows ?? []).filter(r => r.user_id === uid);
+
+        const result = {};
+        ["company", "structure", "source", "dimension", "mapping"].forEach(kind => {
+          const kindRows = myRows.filter(r => r.resource_kind === kind);
+          if (kindRows.length > 0) {
+            result[kind] = new Set(
+              kindRows.filter(r => r.allowed).map(r => String(r.resource_id))
+            );
+          }
+          // no rows for this kind → no restriction → all allowed
+        });
+        if (!cancelled) setAccess(result);
+      } catch (e) {
+        console.warn("[useCurrentUserResourceAccess] failed:", e?.message);
+        if (!cancelled) setAccess({});
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  return { loaded: access !== null, access: access ?? {} };
 }

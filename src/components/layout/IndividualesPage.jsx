@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef, } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef, useDeferredValue, startTransition } from "react";
+import { useCurrentUserResourceAccess } from "../../lib/userPermissionsApi";
 import {
   FileText, Search, Loader2, AlertCircle, Filter,
   ChevronDown, ChevronRight, Hash, Download, Calendar, Database, Network,
@@ -7,6 +8,8 @@ import {
 } from "lucide-react";
 import { useSettings, useTypo, useT, useLocale } from "./SettingsContext.jsx";
 import { useLatestPeriod } from "./LatestPeriodContext.jsx";
+import ReactDOM from "react-dom";
+import { createPortal } from "react-dom";
 import PageHeader, { FilterPill as HeaderFilterPill, MultiFilterPill as HeaderMultiFilterPill } from "./PageHeader.jsx";
 const BASE_URL = "";
 
@@ -190,8 +193,8 @@ function DataTable({
       {filtered.length > 0 ? (
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
          <div className="scrollbar-hide" style={{ height: 'calc(100vh - 160px)', overflowY: 'auto' }}>
-            <table className="w-full">
-<thead className="sticky top-0 z-10">
+            <table className="w-full k-sticky-table">
+<thead>
   <tr className="border-b border-gray-100 bg-[#1a2f8a]/5">
                   <th className="text-left px-4 py-3 text-xs font-black text-gray-400 uppercase tracking-widest w-10 bg-[#eef1fb]">#</th>
                   {cols.map((col) => (
@@ -653,8 +656,8 @@ const total = sumNode(node);
 }
 
 function useCountUp(target, duration = 2000) {
-  const [display, setDisplay] = useState(0);
-  const fromRef = useRef(0);
+  const [display, setDisplay] = useState(target);
+  const fromRef = useRef(target);
   const startRef = useRef(null);
   const rafRef = useRef(null);
 
@@ -682,7 +685,7 @@ function useCountUp(target, duration = 2000) {
   return display;
 }
 
-function PLAmountCell({ value, divider, typoStyle }) {
+function PLAmountCell({ value, divider, typoStyle, centered }) {
   const animated = useCountUp(value ?? 0, 1000);
   const isEmpty = value === 0;
   const isNeg   = animated < 0;
@@ -695,7 +698,7 @@ function PLAmountCell({ value, divider, typoStyle }) {
   };
 
 return (
-<td className="pl-8 pr-6 py-3 text-right whitespace-nowrap tabular-nums" style={{ ...style, width: "140px" }}>
+<td className={`py-3 whitespace-nowrap tabular-nums ${centered ? "text-center px-4" : "pl-8 pr-6 text-right"}`} style={{ ...style, width: "140px" }}>
       {isEmpty ? "—" : isNeg ? `(${fmtAmt(Math.abs(animated))})` : fmtAmt(animated)}
     </td>
   );
@@ -1374,12 +1377,20 @@ function generateKonsolidatorXlsx({
   compareMode,
   cmpUploadedAccounts, cmpPrevUploadedAccounts, cmpFilters,
   cmp2UploadedAccounts, cmp2PrevUploadedAccounts, cmp2Filters,
-  cmp2Enabled = true,
+cmp2Enabled = true,
+  cmp3UploadedAccounts = [], cmp3PrevUploadedAccounts = [], cmp3Filters = {},
+  cmp3Enabled = false,
   bsCompareMode = false,
   bsCmpUploadedAccounts = [], bsCmpFilters = {},
   bsCmp2UploadedAccounts = [], bsCmp2Filters = {},
   bsCmp2Enabled = true,
-  month, year, source, structure,
+  bsCmp3UploadedAccounts = [], bsCmp3Filters = {},
+  bsCmp3Enabled = false,
+month, year, source, structure,
+  aFilters = {},
+  companies = [],
+  dimensions = [],
+  dimGroups = [],
   journalEntries = [],
   summaryRows = [],
   opts = {},
@@ -1392,6 +1403,7 @@ function generateKonsolidatorXlsx({
     const GRN       = 'FF57AA78';
     const AMBER     = 'FFDC7533';
     const INDIGO    = 'FF4F46E5';
+    const PURPLE    = 'FFA855F7';
     const LIGHT     = 'FFEEF1FB';
     const STRIPE    = 'FFF8F9FF';
     const WHITE     = 'FFFFFFFF';
@@ -1412,27 +1424,79 @@ function generateKonsolidatorXlsx({
     const NUM_FMT  = '#,##0.00;(#,##0.00);"-"';
     const PCT_FMT  = '0.0%;(0.0%);"-"';
 
-    const monthLabel = MONTHS.find(m => String(m.value) === String(month))?.label ?? month;
-    const cmpMoLabel = MONTHS.find(m => String(m.value) === String(cmpFilters?.month))?.label ?? '';
-    const cmp2MoLabel = MONTHS.find(m => String(m.value) === String(cmp2Filters?.month))?.label ?? '';
-    const bsCmpMoLabel = MONTHS.find(m => String(m.value) === String(bsCmpFilters?.month))?.label ?? '';
-    const bsCmp2MoLabel = MONTHS.find(m => String(m.value) === String(bsCmp2Filters?.month))?.label ?? '';
+// Resolve short company code → legal name
+    const resolveCompany = (code) => {
+      if (!code) return null;
+      const lookup = (c) => {
+        const m = companies.find(co => {
+          const v = typeof co === 'object' ? (co.companyShortName ?? co.CompanyShortName ?? co.company ?? co.Company ?? '') : String(co);
+          return String(v) === String(c);
+        });
+        if (!m || typeof m !== 'object') return c;
+        return m.companyLegalName ?? m.CompanyLegalName ?? c;
+      };
+      return Array.isArray(code) ? code.map(lookup).join(', ') : lookup(code);
+    };
 
-    const aLabel  = `${monthLabel} ${year} · ${source}`;
-    const bLabel  = compareMode ? [cmpMoLabel, cmpFilters?.year, cmpFilters?.source].filter(Boolean).join(' · ') : '';
-    const cLabel  = compareMode && cmp2Enabled ? [cmp2MoLabel, cmp2Filters?.year, cmp2Filters?.source].filter(Boolean).join(' · ') : '';
-    const bsBLabel = bsCompareMode ? [bsCmpMoLabel, bsCmpFilters?.year, bsCmpFilters?.source].filter(Boolean).join(' · ') : '';
-    const bsCLabel = bsCompareMode && bsCmp2Enabled ? [bsCmp2MoLabel, bsCmp2Filters?.year, bsCmp2Filters?.source].filter(Boolean).join(' · ') : '';
+    // Resolve dimension codes → list of names
+    const resolveDims = (codes) => {
+      if (!Array.isArray(codes) || codes.length === 0) return null;
+      return codes.map(c => {
+        const d = dimensions.find(dd => {
+          const v = typeof dd === 'object' ? (dd.dimensionCode ?? dd.DimensionCode ?? dd.code ?? '') : String(dd);
+          return String(v) === String(c);
+        });
+        if (!d || typeof d !== 'object') return c;
+        return d.dimensionName ?? d.DimensionName ?? d.name ?? c;
+      }).join(', ');
+    };
+
+    // Build a complete filter label (month · year · source · structure · company · dim groups · dims)
+    const buildFilterLabel = (filters) => {
+      if (!filters) return '';
+      const mo = MONTHS.find(m => String(m.value) === String(filters.month))?.label ?? filters.month;
+      const co = resolveCompany(filters.company);
+      const dgTxt = Array.isArray(filters.dimGroups) && filters.dimGroups.length > 0
+        ? `Groups: ${filters.dimGroups.join(', ')}` : null;
+      const dTxt = resolveDims(filters.dimensions);
+      return [
+        mo && filters.year ? `${mo} ${filters.year}` : null,
+        filters.source,
+        filters.structure,
+        co,
+        dgTxt,
+        dTxt ? `Dims: ${dTxt}` : null,
+      ].filter(Boolean).join(' · ');
+    };
+
+    const aLabel  = buildFilterLabel({
+      year:       aFilters?.year       ?? year,
+      month:      aFilters?.month      ?? month,
+      source:     aFilters?.source     ?? source,
+      structure:  aFilters?.structure  ?? structure,
+      company:    aFilters?.company,
+      dimGroups:  aFilters?.dimGroups,
+      dimensions: aFilters?.dimensions,
+    });
+    const bLabel   = compareMode                                       ? buildFilterLabel(cmpFilters)   : '';
+    const cLabel   = compareMode   && cmp2Enabled                      ? buildFilterLabel(cmp2Filters)  : '';
+    const dLabel   = compareMode   && cmp2Enabled  && cmp3Enabled      ? buildFilterLabel(cmp3Filters)  : '';
+    const bsBLabel = bsCompareMode                                     ? buildFilterLabel(bsCmpFilters) : '';
+    const bsCLabel = bsCompareMode && bsCmp2Enabled                    ? buildFilterLabel(bsCmp2Filters): '';
+    const bsDLabel = bsCompareMode && bsCmp2Enabled && bsCmp3Enabled   ? buildFilterLabel(bsCmp3Filters): '';
 
     // ── Trees ─────────────────────────────────────────────────
     const tree      = buildTree(groupAccounts, uploadedAccounts);
     const prevTree  = buildTree(groupAccounts, prevUploadedAccounts);
     const cT        = compareMode ? buildTree(groupAccounts, cmpUploadedAccounts) : [];
     const cPT       = compareMode ? buildTree(groupAccounts, cmpPrevUploadedAccounts) : [];
-    const c2T       = compareMode && cmp2Enabled ? buildTree(groupAccounts, cmp2UploadedAccounts) : [];
+const c2T       = compareMode && cmp2Enabled ? buildTree(groupAccounts, cmp2UploadedAccounts) : [];
     const c2PT      = compareMode && cmp2Enabled ? buildTree(groupAccounts, cmp2PrevUploadedAccounts) : [];
+    const c3T       = compareMode && cmp2Enabled && cmp3Enabled ? buildTree(groupAccounts, cmp3UploadedAccounts) : [];
+    const c3PT      = compareMode && cmp2Enabled && cmp3Enabled ? buildTree(groupAccounts, cmp3PrevUploadedAccounts) : [];
     const bsCT      = bsCompareMode ? buildTree(groupAccounts, bsCmpUploadedAccounts) : [];
     const bsC2T     = bsCompareMode && bsCmp2Enabled ? buildTree(groupAccounts, bsCmp2UploadedAccounts) : [];
+    const bsC3T     = bsCompareMode && bsCmp2Enabled && bsCmp3Enabled ? buildTree(groupAccounts, bsCmp3UploadedAccounts) : [];
 
     const nodeMap = t => {
       const m = new Map();
@@ -1442,8 +1506,9 @@ function generateKonsolidatorXlsx({
     };
     const pM = nodeMap(prevTree);
     const cM = nodeMap(cT), cPM = nodeMap(cPT);
-    const c2M = nodeMap(c2T), c2PM = nodeMap(c2PT);
-    const bsCM = nodeMap(bsCT), bsC2M = nodeMap(bsC2T);
+const c2M = nodeMap(c2T), c2PM = nodeMap(c2PT);
+    const c3M = nodeMap(c3T), c3PM = nodeMap(c3PT);
+    const bsCM = nodeMap(bsCT), bsC2M = nodeMap(bsC2T), bsC3M = nodeMap(bsC3T);
 
     const getYtd  = (m, c) => { const n = m.get(c); return n ? sumNode(n) : 0; };
     const getPrev = (m, c, mo) => Number(mo) === 1 ? 0 : getYtd(m, c);
@@ -1458,24 +1523,29 @@ function generateKonsolidatorXlsx({
     });
 
     // ── Column layout ─────────────────────────────────────────
-    const hasB  = compareMode;
+const hasB  = compareMode;
     const hasC  = compareMode && cmp2Enabled;
+    const hasD  = compareMode && cmp2Enabled && cmp3Enabled;
     const bsHasB = bsCompareMode;
     const bsHasC = bsCompareMode && bsCmp2Enabled;
+    const bsHasD = bsCompareMode && bsCmp2Enabled && bsCmp3Enabled;
 
     const PL = { name: 1, monA: 2 };
     let idx = 3;
     if (hasB) { PL.monB = idx++; PL.monBD = idx++; PL.monBP = idx++; }
     if (hasC) { PL.monC = idx++; PL.monCD = idx++; PL.monCP = idx++; }
+    if (hasD) { PL.monD = idx++; PL.monDD = idx++; PL.monDP = idx++; }
     PL.ytdA = idx++;
     if (hasB) { PL.ytdB = idx++; PL.ytdBD = idx++; PL.ytdBP = idx++; }
     if (hasC) { PL.ytdC = idx++; PL.ytdCD = idx++; PL.ytdCP = idx++; }
+    if (hasD) { PL.ytdD = idx++; PL.ytdDD = idx++; PL.ytdDP = idx++; }
     const plCols = idx - 1;
 
     const BS = { name: 1, act: 2 };
     let bidx = 3;
     if (bsHasB) { BS.cmp = bidx++; BS.cmpD = bidx++; BS.cmpP = bidx++; }
     if (bsHasC) { BS.cmp2 = bidx++; BS.cmp2D = bidx++; BS.cmp2P = bidx++; }
+    if (bsHasD) { BS.cmp3 = bidx++; BS.cmp3D = bidx++; BS.cmp3P = bidx++; }
     const bsCols = bidx - 1;
 
     const setC = (row, ci, val, fmt, fontColor, bold, fill, align='right') => {
@@ -1516,7 +1586,7 @@ function generateKonsolidatorXlsx({
       ws.addRow([]);
       const r2 = ws.lastRow;
       r2.height = 16;
-      r2.getCell(1).value = `A: ${aLabel} · ${structure}`;
+      r2.getCell(1).value = `A: ${aLabel}`;
       r2.getCell(1).font = mkFont(false, 'FFB4C6EE', 9);
       r2.getCell(1).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
       for (let c = 1; c <= plCols; c++) r2.getCell(c).fill = mkFill(NAVY);
@@ -1526,8 +1596,9 @@ function generateKonsolidatorXlsx({
         ws.addRow([]);
         const r3 = ws.lastRow;
         r3.height = 15;
-        const parts = [`B: ${bLabel}`];
+const parts = [`B: ${bLabel}`];
         if (hasC) parts.push(`C: ${cLabel}`);
+        if (hasD) parts.push(`D: ${dLabel}`);
         r3.getCell(1).value = parts.join('    |    ');
         r3.getCell(1).font = mkFont(false, 'FFFCD34D', 9);
         r3.getCell(1).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
@@ -1547,10 +1618,15 @@ function generateKonsolidatorXlsx({
         headers.push([PL.monBD, 'Δ', 'right', RED]);
         headers.push([PL.monBP, 'Δ%', 'right', RED]);
       }
-      if (hasC) {
+if (hasC) {
         headers.push([PL.monC, 'MON C', 'right', GRN]);
         headers.push([PL.monCD, 'Δ', 'right', GRN]);
         headers.push([PL.monCP, 'Δ%', 'right', GRN]);
+      }
+      if (hasD) {
+        headers.push([PL.monD, 'MON D', 'right', PURPLE]);
+        headers.push([PL.monDD, 'Δ', 'right', PURPLE]);
+        headers.push([PL.monDP, 'Δ%', 'right', PURPLE]);
       }
       headers.push([PL.ytdA, 'YTD', 'right', NAVY]);
       if (hasB) {
@@ -1558,10 +1634,15 @@ function generateKonsolidatorXlsx({
         headers.push([PL.ytdBD, 'Δ', 'right', RED]);
         headers.push([PL.ytdBP, 'Δ%', 'right', RED]);
       }
-      if (hasC) {
+if (hasC) {
         headers.push([PL.ytdC, 'YTD C', 'right', GRN]);
         headers.push([PL.ytdCD, 'Δ', 'right', GRN]);
         headers.push([PL.ytdCP, 'Δ%', 'right', GRN]);
+      }
+      if (hasD) {
+        headers.push([PL.ytdD, 'YTD D', 'right', PURPLE]);
+        headers.push([PL.ytdDD, 'Δ', 'right', PURPLE]);
+        headers.push([PL.ytdDP, 'Δ%', 'right', PURPLE]);
       }
       headers.forEach(([ci, lbl, align, fillArgb]) => {
         const c = rh.getCell(ci);
@@ -1582,11 +1663,18 @@ function generateKonsolidatorXlsx({
           col.outlineLevel = 1;
         });
       }
-      if (hasC) {
+if (hasC) {
         [PL.monC, PL.monCD, PL.monCP].forEach(ci => {
           const col = ws.getColumn(ci);
           col.width = ci === PL.monC ? 16 : ci === PL.monCD ? 13 : 10;
           col.outlineLevel = 2;
+        });
+      }
+      if (hasD) {
+        [PL.monD, PL.monDD, PL.monDP].forEach(ci => {
+          const col = ws.getColumn(ci);
+          col.width = ci === PL.monD ? 16 : ci === PL.monDD ? 13 : 10;
+          col.outlineLevel = 3;
         });
       }
       ws.getColumn(PL.ytdA).width = 16;
@@ -1597,11 +1685,18 @@ function generateKonsolidatorXlsx({
           col.outlineLevel = 1;
         });
       }
-      if (hasC) {
+if (hasC) {
         [PL.ytdC, PL.ytdCD, PL.ytdCP].forEach(ci => {
           const col = ws.getColumn(ci);
           col.width = ci === PL.ytdC ? 16 : ci === PL.ytdCD ? 13 : 10;
           col.outlineLevel = 2;
+        });
+      }
+      if (hasD) {
+        [PL.ytdD, PL.ytdDD, PL.ytdDP].forEach(ci => {
+          const col = ws.getColumn(ci);
+          col.width = ci === PL.ytdD ? 16 : ci === PL.ytdDD ? 13 : 10;
+          col.outlineLevel = 3;
         });
       }
 
@@ -1648,9 +1743,12 @@ function generateKonsolidatorXlsx({
         const cYtd  = hasB ? -getYtd(cM, node.code) : 0;
         const cPrev = hasB ? -getPrev(cPM, node.code, cmpFilters?.month) : 0;
         const cMon  = hasB ? cYtd - cPrev : 0;
-        const c2Ytd  = hasC ? -getYtd(c2M, node.code) : 0;
+const c2Ytd  = hasC ? -getYtd(c2M, node.code) : 0;
         const c2Prev = hasC ? -getPrev(c2PM, node.code, cmp2Filters?.month) : 0;
         const c2Mon  = hasC ? c2Ytd - c2Prev : 0;
+        const c3Ytd  = hasD ? -getYtd(c3M, node.code) : 0;
+        const c3Prev = hasD ? -getPrev(c3PM, node.code, cmp3Filters?.month) : 0;
+        const c3Mon  = hasD ? c3Ytd - c3Prev : 0;
 
         const isHighlighted = PL_HIGHLIGHTED_CODES.has(String(node.code)) || String(node.code).endsWith('.S') || String(node.code).endsWith('.PL');
         const isBold = forceBold !== null ? forceBold : (node.isSumAccount && isHighlighted);
@@ -1667,9 +1765,19 @@ function generateKonsolidatorXlsx({
         if (ol > 0) dr.outlineLevel = Math.min(ol, 7);
         if (hidden) dr.hidden = true;
 
-        const nc = dr.getCell(PL.name);
-        nc.value = isHighlighted ? (node.name || '').toUpperCase() : node.name;
-        nc.font = mkFont(isBold || isHighlighted, nameColor, 10);
+const nc = dr.getCell(PL.name);
+        const nmTxt = isHighlighted ? (node.name || '').toUpperCase() : (node.name || '');
+        if (node.code) {
+          nc.value = {
+            richText: [
+              { text: `${node.code}    `, font: { name: 'Consolas', color: { argb: 'FF9CA3AF' }, size: 9 } },
+              { text: nmTxt, font: { name: 'Calibri', color: { argb: nameColor }, size: 10, bold: isBold || isHighlighted } },
+            ]
+          };
+        } else {
+          nc.value = nmTxt;
+          nc.font = mkFont(isBold || isHighlighted, nameColor, 10);
+        }
         nc.fill = mkFill(bg);
         nc.alignment = { horizontal: 'left', vertical: 'middle', indent: Math.max(1, depth + 1) };
         nc.border = mkBorder();
@@ -1678,10 +1786,14 @@ function generateKonsolidatorXlsx({
         const dMBP = hasB && cMon !== 0 ? dMB / Math.abs(cMon) : null;
         const dYB  = hasB ? ytd - cYtd : 0;
         const dYBP = hasB && cYtd !== 0 ? dYB / Math.abs(cYtd) : null;
-        const dMC  = hasC ? mon - c2Mon : 0;
+const dMC  = hasC ? mon - c2Mon : 0;
         const dMCP = hasC && c2Mon !== 0 ? dMC / Math.abs(c2Mon) : null;
         const dYC  = hasC ? ytd - c2Ytd : 0;
         const dYCP = hasC && c2Ytd !== 0 ? dYC / Math.abs(c2Ytd) : null;
+        const dMD  = hasD ? mon - c3Mon : 0;
+        const dMDP = hasD && c3Mon !== 0 ? dMD / Math.abs(c3Mon) : null;
+        const dYD  = hasD ? ytd - c3Ytd : 0;
+        const dYDP = hasD && c3Ytd !== 0 ? dYD / Math.abs(c3Ytd) : null;
 
         setC(dr, PL.monA, mon, NUM_FMT, valueColor, isBold, bg);
         if (hasB) {
@@ -1689,10 +1801,15 @@ function generateKonsolidatorXlsx({
           setC(dr, PL.monBD, dMB,  NUM_FMT, devColor(dMB), isBold, bg);
           setC(dr, PL.monBP, dMBP, PCT_FMT, devColor(dMB), isBold, bg);
         }
-        if (hasC) {
+if (hasC) {
           setC(dr, PL.monC,  c2Mon, NUM_FMT, GRN, isBold, bg);
           setC(dr, PL.monCD, dMC,   NUM_FMT, devColor(dMC), isBold, bg);
           setC(dr, PL.monCP, dMCP,  PCT_FMT, devColor(dMC), isBold, bg);
+        }
+        if (hasD) {
+          setC(dr, PL.monD,  c3Mon, NUM_FMT, PURPLE, isBold, bg);
+          setC(dr, PL.monDD, dMD,   NUM_FMT, devColor(dMD), isBold, bg);
+          setC(dr, PL.monDP, dMDP,  PCT_FMT, devColor(dMD), isBold, bg);
         }
         setC(dr, PL.ytdA, ytd, NUM_FMT, valueColor, isBold, bg);
         if (hasB) {
@@ -1700,10 +1817,15 @@ function generateKonsolidatorXlsx({
           setC(dr, PL.ytdBD, dYB,  NUM_FMT, devColor(dYB), isBold, bg);
           setC(dr, PL.ytdBP, dYBP, PCT_FMT, devColor(dYB), isBold, bg);
         }
-        if (hasC) {
+if (hasC) {
           setC(dr, PL.ytdC,  c2Ytd, NUM_FMT, GRN, isBold, bg);
           setC(dr, PL.ytdCD, dYC,   NUM_FMT, devColor(dYC), isBold, bg);
           setC(dr, PL.ytdCP, dYCP,  PCT_FMT, devColor(dYC), isBold, bg);
+        }
+        if (hasD) {
+          setC(dr, PL.ytdD,  c3Ytd, NUM_FMT, PURPLE, isBold, bg);
+          setC(dr, PL.ytdDD, dYD,   NUM_FMT, devColor(dYD), isBold, bg);
+          setC(dr, PL.ytdDP, dYDP,  PCT_FMT, devColor(dYD), isBold, bg);
         }
       };
 
@@ -1725,8 +1847,8 @@ function generateKonsolidatorXlsx({
 
         setC(dr, PL.monA, -amt, NUM_FMT, TEXT_MUT, false, bg);
         setC(dr, PL.ytdA, -amt, NUM_FMT, TEXT_MUT, false, bg);
-        [PL.monB, PL.monBD, PL.monBP, PL.monC, PL.monCD, PL.monCP,
-         PL.ytdB, PL.ytdBD, PL.ytdBP, PL.ytdC, PL.ytdCD, PL.ytdCP].forEach(ci => {
+[PL.monB, PL.monBD, PL.monBP, PL.monC, PL.monCD, PL.monCP, PL.monD, PL.monDD, PL.monDP,
+         PL.ytdB, PL.ytdBD, PL.ytdBP, PL.ytdC, PL.ytdCD, PL.ytdCP, PL.ytdD, PL.ytdDD, PL.ytdDP].forEach(ci => {
           if (ci) {
             const c = dr.getCell(ci);
             c.value = '';
@@ -1812,16 +1934,48 @@ function generateKonsolidatorXlsx({
         });
       };
 
-      // SUMMARY MODE
+// SUMMARY MODE
       if (isSummary) {
         const sortedSummary = [...summaryRows]
           .filter(n => hasData(n) && ['P/L', 'DIS'].includes(n.accountType))
           .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
 
+        // Code -> node map of the local tree (so drill-down references the SAME tree)
+        const localTreeByCode = new Map();
+        (function index(nodes) {
+          nodes.forEach(n => { localTreeByCode.set(String(n.code), n); index(n.children || []); });
+        })(tree);
+
+// Drill-down: include ALL children, only skip OTHER summary rows (shown at top level)
+        const summaryRowCodes = new Set(sortedSummary.map(n => String(n.code)));
+        const writeSummaryDrill = (parentNode, depth, ol) => {
+          const grpChildren = (parentNode.children || []).filter(c =>
+            hasData(c) && ['P/L', 'DIS'].includes(c.accountType) && !summaryRowCodes.has(String(c.code))
+          );
+          grpChildren.forEach(child => {
+            writeDataRow(child, depth, ol, { hidden: true });
+            writeSummaryDrill(child, depth + 1, ol + 1);
+          });
+
+          (parentNode.uploadLeaves || []).forEach(leaf => {
+            if (leaf.type === 'plain') return;
+            writeLeafRow(leaf, depth, ol);
+            (leaf.children || []).forEach(dim => writeDimRow(dim, depth + 1, ol + 1));
+          });
+
+          const jrns = jrnByCode.get(String(parentNode.code)) || [];
+          if (jrns.length > 0) {
+            writeJrnHeaderRow(jrns.length, depth, ol);
+            jrns.forEach(j => writeJrnEntry(j, depth + 1, ol + 1));
+          }
+        };
+
         sortedSummary.forEach(node => {
           const div = SUMMARY_DIV[String(node.code)];
           if (div) writeDivider(div);
           writeDataRow(node, 0, 0, { forceBold: true });
+          const localNode = localTreeByCode.get(String(node.code)) ?? node;
+          writeSummaryDrill(localNode, 1, 1);
         });
         return;
       }
@@ -1906,8 +2060,9 @@ function generateKonsolidatorXlsx({
         ws.addRow([]);
         const r3 = ws.lastRow;
         r3.height = 15;
-        const parts = [`B: ${bsBLabel}`];
+const parts = [`B: ${bsBLabel}`];
         if (bsHasC) parts.push(`C: ${bsCLabel}`);
+        if (bsHasD) parts.push(`D: ${bsDLabel}`);
         r3.getCell(1).value = parts.join('    |    ');
         r3.getCell(1).font = mkFont(false, 'FFFCD34D', 9);
         r3.getCell(1).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
@@ -1927,10 +2082,15 @@ function generateKonsolidatorXlsx({
         headers.push([BS.cmpD, 'Δ',   'right', RED]);
         headers.push([BS.cmpP, 'Δ%',  'right', RED]);
       }
-      if (bsHasC) {
+if (bsHasC) {
         headers.push([BS.cmp2,  'C',  'right', GRN]);
         headers.push([BS.cmp2D, 'Δ',  'right', GRN]);
         headers.push([BS.cmp2P, 'Δ%', 'right', GRN]);
+      }
+      if (bsHasD) {
+        headers.push([BS.cmp3,  'D',  'right', PURPLE]);
+        headers.push([BS.cmp3D, 'Δ',  'right', PURPLE]);
+        headers.push([BS.cmp3P, 'Δ%', 'right', PURPLE]);
       }
       headers.forEach(([ci, lbl, align, fillArgb]) => {
         const c = rh.getCell(ci);
@@ -1951,11 +2111,18 @@ function generateKonsolidatorXlsx({
           col.outlineLevel = 1;
         });
       }
-      if (bsHasC) {
+if (bsHasC) {
         [BS.cmp2, BS.cmp2D, BS.cmp2P].forEach(ci => {
           const col = ws.getColumn(ci);
           col.width = ci === BS.cmp2 ? 16 : ci === BS.cmp2D ? 13 : 10;
           col.outlineLevel = 2;
+        });
+      }
+      if (bsHasD) {
+        [BS.cmp3, BS.cmp3D, BS.cmp3P].forEach(ci => {
+          const col = ws.getColumn(ci);
+          col.width = ci === BS.cmp3 ? 16 : ci === BS.cmp3D ? 13 : 10;
+          col.outlineLevel = 3;
         });
       }
 
@@ -1993,12 +2160,16 @@ function generateKonsolidatorXlsx({
         const total = Number(node.code) >= 599999 ? -sumNode(node) : sumNode(node);
         const cRaw = bsHasB ? getYtd(bsCM, node.code) : 0;
         const cVal = bsHasB ? (Number(node.code) >= 599999 ? -cRaw : cRaw) : 0;
-        const c2Raw = bsHasC ? getYtd(bsC2M, node.code) : 0;
+const c2Raw = bsHasC ? getYtd(bsC2M, node.code) : 0;
         const c2Val = bsHasC ? (Number(node.code) >= 599999 ? -c2Raw : c2Raw) : 0;
+        const c3Raw = bsHasD ? getYtd(bsC3M, node.code) : 0;
+        const c3Val = bsHasD ? (Number(node.code) >= 599999 ? -c3Raw : c3Raw) : 0;
         const dB = bsHasB ? total - cVal : 0;
         const dBP = bsHasB && cVal !== 0 ? dB / Math.abs(cVal) : null;
         const dC = bsHasC ? total - c2Val : 0;
         const dCP = bsHasC && c2Val !== 0 ? dC / Math.abs(c2Val) : null;
+        const dD = bsHasD ? total - c3Val : 0;
+        const dDP = bsHasD && c3Val !== 0 ? dD / Math.abs(c3Val) : null;
 
         const bg = isHighlighted ? LIGHT : (bsZebra % 2 === 0 ? WHITE : STRIPE);
         bsZebra++;
@@ -2010,10 +2181,19 @@ function generateKonsolidatorXlsx({
         dr.height = isHighlighted ? 19 : 17;
         // BS hierarchy rows stay VISIBLE (like the app — all structural levels shown)
         // We don't set outlineLevel on structural rows, only on drill-down (leaves/dims/journal)
-
-        const nc = dr.getCell(BS.name);
-        nc.value = isHighlighted ? (node.name || '').toUpperCase() : node.name;
-        nc.font = mkFont(isHighlighted, nameColor, 10);
+const nc = dr.getCell(BS.name);
+        const bnmTxt = isHighlighted ? (node.name || '').toUpperCase() : (node.name || '');
+        if (node.code) {
+          nc.value = {
+            richText: [
+              { text: `${node.code}    `, font: { name: 'Consolas', color: { argb: 'FF9CA3AF' }, size: 9 } },
+              { text: bnmTxt, font: { name: 'Calibri', color: { argb: nameColor }, size: 10, bold: isHighlighted } },
+            ]
+          };
+        } else {
+          nc.value = bnmTxt;
+          nc.font = mkFont(isHighlighted, nameColor, 10);
+        }
         nc.fill = mkFill(bg);
         nc.alignment = { horizontal: 'left', vertical: 'middle', indent: Math.max(1, depth + 1) };
         nc.border = mkBorder();
@@ -2024,10 +2204,15 @@ function generateKonsolidatorXlsx({
           setC(dr, BS.cmpD, dB,   NUM_FMT, devColor(dB), isHighlighted, bg);
           setC(dr, BS.cmpP, dBP,  PCT_FMT, devColor(dB), isHighlighted, bg);
         }
-        if (bsHasC) {
+if (bsHasC) {
           setC(dr, BS.cmp2,  c2Val, NUM_FMT, GRN, isHighlighted, bg);
           setC(dr, BS.cmp2D, dC,    NUM_FMT, devColor(dC), isHighlighted, bg);
           setC(dr, BS.cmp2P, dCP,   PCT_FMT, devColor(dC), isHighlighted, bg);
+        }
+        if (bsHasD) {
+          setC(dr, BS.cmp3,  c3Val, NUM_FMT, PURPLE, isHighlighted, bg);
+          setC(dr, BS.cmp3D, dD,    NUM_FMT, devColor(dD), isHighlighted, bg);
+          setC(dr, BS.cmp3P, dDP,   PCT_FMT, devColor(dD), isHighlighted, bg);
         }
 
         // Recurse children — structural rows stay visible
@@ -2051,8 +2236,9 @@ function generateKonsolidatorXlsx({
           lnc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 2 };
           lnc.border = mkBorder();
           setC(lr, BS.act, leaf.amount, NUM_FMT, TEXT_MUT, false, lbg);
-          if (bsHasB) { [BS.cmp, BS.cmpD, BS.cmpP].forEach(ci => { if (ci) { const c = lr.getCell(ci); c.value = ''; c.fill = mkFill(lbg); c.border = mkBorder(); }}); }
+if (bsHasB) { [BS.cmp, BS.cmpD, BS.cmpP].forEach(ci => { if (ci) { const c = lr.getCell(ci); c.value = ''; c.fill = mkFill(lbg); c.border = mkBorder(); }}); }
           if (bsHasC) { [BS.cmp2, BS.cmp2D, BS.cmp2P].forEach(ci => { if (ci) { const c = lr.getCell(ci); c.value = ''; c.fill = mkFill(lbg); c.border = mkBorder(); }}); }
+          if (bsHasD) { [BS.cmp3, BS.cmp3D, BS.cmp3P].forEach(ci => { if (ci) { const c = lr.getCell(ci); c.value = ''; c.fill = mkFill(lbg); c.border = mkBorder(); }}); }
 
           (leaf.children || []).forEach(dim => {
             const dbg = DIM_BG;
@@ -2068,8 +2254,9 @@ function generateKonsolidatorXlsx({
             dnc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 3 };
             dnc.border = mkBorder();
             setC(dr2, BS.act, dim.amount, NUM_FMT, AMBER, false, dbg);
-            if (bsHasB) { [BS.cmp, BS.cmpD, BS.cmpP].forEach(ci => { if (ci) { const c = dr2.getCell(ci); c.value = ''; c.fill = mkFill(dbg); c.border = mkBorder(); }}); }
+if (bsHasB) { [BS.cmp, BS.cmpD, BS.cmpP].forEach(ci => { if (ci) { const c = dr2.getCell(ci); c.value = ''; c.fill = mkFill(dbg); c.border = mkBorder(); }}); }
             if (bsHasC) { [BS.cmp2, BS.cmp2D, BS.cmp2P].forEach(ci => { if (ci) { const c = dr2.getCell(ci); c.value = ''; c.fill = mkFill(dbg); c.border = mkBorder(); }}); }
+            if (bsHasD) { [BS.cmp3, BS.cmp3D, BS.cmp3P].forEach(ci => { if (ci) { const c = dr2.getCell(ci); c.value = ''; c.fill = mkFill(dbg); c.border = mkBorder(); }}); }
           });
         });
 
@@ -2108,8 +2295,9 @@ function generateKonsolidatorXlsx({
             jnc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 3 };
             jnc.border = mkBorder();
             setC(jr, BS.act, amt, NUM_FMT, INDIGO, false, hbg);
-            if (bsHasB) { [BS.cmp, BS.cmpD, BS.cmpP].forEach(ci => { if (ci) { const c = jr.getCell(ci); c.value = ''; c.fill = mkFill(hbg); c.border = mkBorder(); }}); }
+if (bsHasB) { [BS.cmp, BS.cmpD, BS.cmpP].forEach(ci => { if (ci) { const c = jr.getCell(ci); c.value = ''; c.fill = mkFill(hbg); c.border = mkBorder(); }}); }
             if (bsHasC) { [BS.cmp2, BS.cmp2D, BS.cmp2P].forEach(ci => { if (ci) { const c = jr.getCell(ci); c.value = ''; c.fill = mkFill(hbg); c.border = mkBorder(); }}); }
+            if (bsHasD) { [BS.cmp3, BS.cmp3D, BS.cmp3P].forEach(ci => { if (ci) { const c = jr.getCell(ci); c.value = ''; c.fill = mkFill(hbg); c.border = mkBorder(); }}); }
           });
         }
       };
@@ -2154,7 +2342,7 @@ function generateKonsolidatorXlsx({
       ws.addRow([]);
       const rs = ws.lastRow;
       rs.height = 16;
-      rs.getCell(1).value = `${aLabel} · ${structure}`;
+      rs.getCell(1).value = aLabel;
       rs.getCell(1).font = mkFont(false, 'FFFDE5C3', 9);
       rs.getCell(1).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
       for (let c = 1; c <= 9; c++) rs.getCell(c).fill = mkFill(AMBER);
@@ -2860,16 +3048,25 @@ renderPage('Balance Sheet — Summary',isFirst,makeBSCols(),bsSumFl.map(r=>toBSR
 function PLStatement({
   externalExpandedMap, externalSetExpandedMap,
   multiCompany = false,
+  selectedCompanies = [],
   token,
   upDimGroups, upDimensions,
   onHistoryExpandedChange,
+  externalHistoryExpanded,
+  externalHistoryMonths,
+  onHistoryMonthsChange,
   groupAccounts, uploadedAccounts, prevUploadedAccounts = [], dimensions = [],
   compareMode, onToggleCompare,
   cmpUploadedAccounts = [], cmpPrevUploadedAccounts = [],
   cmpFilters, onCmpFilterChange,
   prevUploadedAccountsRaw = [],
-  cmp2UploadedAccounts = [], cmp2PrevUploadedAccounts = [],
+cmp2UploadedAccounts = [], cmp2PrevUploadedAccounts = [],
   cmp2Filters, onCmp2FilterChange,
+  cmp3UploadedAccounts = [], cmp3PrevUploadedAccounts = [],
+  cmp3Filters, onCmp3FilterChange,
+  cmp3FilteredDims = [],
+  cmp3Enabled = true, onCmp3EnabledChange,
+  journalEntriesCmp3 = [],
   sources = [], structures = [], companies = [],
 dimGroups = [], cmpFilteredDims = [], cmp2FilteredDims = [],
 cmp2Enabled = true, onCmp2EnabledChange,
@@ -2889,6 +3086,40 @@ const t = useT();
 const localName = useCallback((node) => {
   return pgcMapping?.names?.get(String(node.code)) ?? node.name;
 }, [pgcMapping]);
+
+const matchesSelf = useCallback((n, q) => {
+  if (!q) return false;
+  if (String(n.code ?? "").toLowerCase().includes(q)) return true;
+  if (String(localName(n) ?? "").toLowerCase().includes(q)) return true;
+  if (Array.isArray(n.uploadLeaves)) {
+    for (const leaf of n.uploadLeaves) {
+      if (leaf.type === "plain") continue;
+      if (String(leaf.code ?? "").toLowerCase().includes(q)) return true;
+      if (String(leaf.name ?? "").toLowerCase().includes(q)) return true;
+      if (Array.isArray(leaf.children)) {
+        for (const dim of leaf.children) {
+          if (String(dim.code ?? "").toLowerCase().includes(q)) return true;
+          if (String(dim.name ?? "").toLowerCase().includes(q)) return true;
+        }
+      }
+    }
+  }
+  return false;
+}, [localName]);
+
+const subtreeMatches = useCallback((node, q) => {
+  if (!q) return true;
+  if (matchesSelf(node, q)) return true;
+  if (Array.isArray(node.children)) {
+    for (const c of node.children) {
+      if (!hasData(c)) continue;
+      if (c.accountType && !["P/L", "DIS"].includes(c.accountType)) continue;
+      if (subtreeMatches(c, q)) return true;
+    }
+  }
+  return false;
+}, [matchesSelf]);
+
 const MONTHS = useMonths();
 const body1Style = useTypo("body1");
 const body2Style = useTypo("body2");
@@ -2899,9 +3130,30 @@ const expandedMap = externalExpandedMap ?? {};
 const setExpandedMap = externalSetExpandedMap ?? (() => {});
 const [hoveredDimRow, setHoveredDimRow] = useState(null);
 const [summaryMode, setSummaryMode] = useState(true);
+const [searchActive, setSearchActive] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const debouncedQuery = useDeferredValue(searchQuery);
+  const searchInputRef = useRef(null);
+  const searchDebounceRef = useRef(null);
+  useEffect(() => () => clearTimeout(searchDebounceRef.current), []);
 const [filtersOpen, setFiltersOpen] = useState(true);
-  const [historyExpanded, setHistoryExpanded] = useState(false);
-  const [historyMonths, setHistoryMonths] = useState([]); // [{ year, month, data, prevData }]
+  const [historyExpandedInternal, setHistoryExpandedInternal] = useState(false);
+  const historyExpanded = externalHistoryExpanded !== undefined ? externalHistoryExpanded : historyExpandedInternal;
+  const setHistoryExpanded = (v) => {
+    setHistoryExpandedInternal(v);
+    onHistoryExpandedChange?.(v);
+  };
+const [historyMonthsInternal, setHistoryMonthsInternal] = useState([]);
+  const historyMonths = externalHistoryMonths !== undefined ? externalHistoryMonths : historyMonthsInternal;
+  const historyMonthsRef = useRef(historyMonths);
+  useEffect(() => { historyMonthsRef.current = historyMonths; }, [historyMonths]);
+  const setHistoryMonths = useCallback((updater) => {
+    const current = historyMonthsRef.current;
+    const next = typeof updater === "function" ? updater(current) : updater;
+    historyMonthsRef.current = next;
+    setHistoryMonthsInternal(next);
+    onHistoryMonthsChange?.(next);
+  }, [onHistoryMonthsChange]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
   const fetchHistoryMonth = useCallback(async (y, mo) => {
@@ -2927,11 +3179,9 @@ const toggleHistory = useCallback(async () => {
 if (historyExpanded) {
       setHistoryExpanded(false);
       setHistoryMonths([]);
-      onHistoryExpandedChange?.(false);
       return;
     }
 setHistoryExpanded(true);
-    onHistoryExpandedChange?.(true);
     setHistoryLoading(true);
     // Compute the 11 previous months from (year, month)
 const targets = [];
@@ -2954,7 +3204,7 @@ const [dimPopup, setDimPopup] = useState(null);
   
   const tree = useMemo(() => buildTree(groupAccounts, uploadedAccounts, !dimensionActive), [groupAccounts, uploadedAccounts, dimensionActive]);
 
-  const toggle = (code) => setExpandedMap(prev => ({ ...prev, [code]: !prev[code] }));
+  const toggle = (code) => setExpandedMap(prev => ({ ...prev, [code]: !isOpen(code) }));
 
   // Collect all sum account nodes from P/L tree in ascending code order (post-order = leaves first)
 const allSumRows = useMemo(() => {
@@ -3083,6 +3333,105 @@ const getCmp2PrevLeafAmt = useCallback((localCode) => {
   return cmp2PrevLeafIndex.get(String(localCode)) ?? 0;
 }, [cmp2PrevLeafIndex, cmp2Filters]);
 
+// ── Multi-company per-company indexes ───────────────────────
+const perCompanyData = useMemo(() => {
+  if (!multiCompany) return null;
+  const map = new Map();
+  selectedCompanies.forEach(co => map.set(co, []));
+  (uploadedAccounts || []).forEach(row => {
+    const co = String(getField(row, "companyShortName", "CompanyShortName") ?? "");
+    if (map.has(co)) map.get(co).push(row);
+  });
+  return map;
+}, [uploadedAccounts, selectedCompanies, multiCompany]);
+
+const perCompanyPrevData = useMemo(() => {
+  if (!multiCompany) return null;
+  const map = new Map();
+  selectedCompanies.forEach(co => map.set(co, []));
+  (prevUploadedAccounts || []).forEach(row => {
+    const co = String(getField(row, "companyShortName", "CompanyShortName") ?? "");
+    if (map.has(co)) map.get(co).push(row);
+  });
+  return map;
+}, [prevUploadedAccounts, selectedCompanies, multiCompany]);
+
+const perCompanyNodeByCode = useMemo(() => {
+  if (!multiCompany || !perCompanyData) return null;
+  const map = new Map();
+  selectedCompanies.forEach(co => {
+    const t = buildTree(groupAccounts, perCompanyData.get(co) ?? [], !dimensionActive);
+    const codeMap = new Map();
+    const walk = (n) => { codeMap.set(n.code, n); n.children?.forEach(walk); };
+    t.forEach(walk);
+    map.set(co, codeMap);
+  });
+  return map;
+}, [groupAccounts, perCompanyData, selectedCompanies, multiCompany, dimensionActive]);
+
+const perCompanyPrevNodeByCode = useMemo(() => {
+  if (!multiCompany || !perCompanyPrevData) return null;
+  const map = new Map();
+  selectedCompanies.forEach(co => {
+    const t = buildTree(groupAccounts, perCompanyPrevData.get(co) ?? [], !dimensionActive);
+    const codeMap = new Map();
+    const walk = (n) => { codeMap.set(n.code, n); n.children?.forEach(walk); };
+    t.forEach(walk);
+    map.set(co, codeMap);
+  });
+  return map;
+}, [groupAccounts, perCompanyPrevData, selectedCompanies, multiCompany, dimensionActive]);
+
+const getNodeValForCompany = useCallback((code, company, isYtd) => {
+  const node = perCompanyNodeByCode?.get(company)?.get(code);
+  const ytdV = node ? -sumNode(node) : 0;
+  if (isYtd) return ytdV;
+  if (Number(month) === 1) return ytdV;
+  const prev = perCompanyPrevNodeByCode?.get(company)?.get(code);
+  const prevV = prev ? -sumNode(prev) : 0;
+  return ytdV - prevV;
+}, [perCompanyNodeByCode, perCompanyPrevNodeByCode, month]);
+
+const perCompanyLeafIdx = useMemo(() => {
+  if (!multiCompany) return null;
+  const result = new Map();
+  selectedCompanies.forEach(co => {
+    const idx = new Map();
+    (perCompanyData?.get(co) || []).forEach(row => {
+      const lac = String(getField(row, "localAccountCode") ?? "");
+      if (!lac) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      idx.set(lac, (idx.get(lac) ?? 0) + amt);
+    });
+    result.set(co, idx);
+  });
+  return result;
+}, [multiCompany, perCompanyData, selectedCompanies]);
+
+const perCompanyPrevLeafIdx = useMemo(() => {
+  if (!multiCompany) return null;
+  const result = new Map();
+  selectedCompanies.forEach(co => {
+    const idx = new Map();
+    (perCompanyPrevData?.get(co) || []).forEach(row => {
+      const lac = String(getField(row, "localAccountCode") ?? "");
+      if (!lac) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      idx.set(lac, (idx.get(lac) ?? 0) + amt);
+    });
+    result.set(co, idx);
+  });
+  return result;
+}, [multiCompany, perCompanyPrevData, selectedCompanies]);
+
+const getLeafValForCompany = useCallback((localCode, co, isYtd) => {
+  const ytd = perCompanyLeafIdx?.get(co)?.get(String(localCode)) ?? 0;
+  if (isYtd) return -ytd;
+  if (Number(month) === 1) return -ytd;
+  const prev = perCompanyPrevLeafIdx?.get(co)?.get(String(localCode)) ?? 0;
+  return -(ytd - prev);
+}, [perCompanyLeafIdx, perCompanyPrevLeafIdx, month]);
+
 const journalByCode = useMemo(() => {
   const idx = new Map();
   (journalEntries || []).forEach(row => {
@@ -3186,6 +3535,78 @@ const cmp2PrevNodeByCode = useMemo(() => {
   cmp2PrevTree.forEach(walk);
   return map;
 }, [cmp2PrevTree]);
+
+// ── Compare period 3 trees ──────────────────────────────────
+const cmp3Tree = useMemo(
+  () => compareMode ? buildTree(groupAccounts, cmp3UploadedAccounts, !dimensionActive) : [],
+  [groupAccounts, cmp3UploadedAccounts, compareMode, dimensionActive]
+);
+const cmp3PrevTree = useMemo(
+  () => compareMode ? buildTree(groupAccounts, cmp3PrevUploadedAccounts, !dimensionActive) : [],
+  [groupAccounts, cmp3PrevUploadedAccounts, compareMode, dimensionActive]
+);
+const cmp3NodeByCode = useMemo(() => {
+  const map = new Map();
+  function walk(node) { map.set(node.code, node); node.children?.forEach(walk); }
+  cmp3Tree.forEach(walk);
+  return map;
+}, [cmp3Tree]);
+const cmp3PrevNodeByCode = useMemo(() => {
+  const map = new Map();
+  function walk(node) { map.set(node.code, node); node.children?.forEach(walk); }
+  cmp3PrevTree.forEach(walk);
+  return map;
+}, [cmp3PrevTree]);
+
+const cmp3LeafIndex = useMemo(() => {
+  const idx = new Map();
+  (cmp3UploadedAccounts || []).forEach(row => {
+    const lac = String(getField(row, "localAccountCode") ?? "");
+    const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+    if (!lac) return;
+    idx.set(lac, (idx.get(lac) ?? 0) + amt);
+  });
+  return idx;
+}, [cmp3UploadedAccounts]);
+
+const cmp3PrevLeafIndex = useMemo(() => {
+  const idx = new Map();
+  (cmp3PrevUploadedAccounts || []).forEach(row => {
+    const lac = String(getField(row, "localAccountCode") ?? "");
+    const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+    if (!lac) return;
+    idx.set(lac, (idx.get(lac) ?? 0) + amt);
+  });
+  return idx;
+}, [cmp3PrevUploadedAccounts]);
+
+const getCmp3LeafAmt = useCallback((localCode) => {
+  return cmp3LeafIndex.get(String(localCode)) ?? 0;
+}, [cmp3LeafIndex]);
+
+const getCmp3PrevLeafAmt = useCallback((localCode) => {
+  if (Number(cmp3Filters?.month) === 1) return 0;
+  return cmp3PrevLeafIndex.get(String(localCode)) ?? 0;
+}, [cmp3PrevLeafIndex, cmp3Filters]);
+
+const getCmp3Ytd = useCallback((code) => { const n = cmp3NodeByCode.get(code); return n ? sumNode(n) : 0; }, [cmp3NodeByCode]);
+const getCmp3Prev = useCallback((code) => {
+  if (Number(cmp3Filters?.month) === 1) return 0;
+  const n = cmp3PrevNodeByCode.get(code); return n ? sumNode(n) : 0;
+}, [cmp3PrevNodeByCode, cmp3Filters]);
+
+const journalByCodeCmp3 = useMemo(() => {
+  const idx = new Map();
+  (journalEntriesCmp3 || []).forEach(row => {
+    const code = String(row.accountCode ?? row.AccountCode ?? "");
+    if (!code) return;
+    const jt = String(row.journalType ?? row.JournalType ?? "").toUpperCase();
+    if (jt !== "AJE" && jt !== "RJE") return;
+    if (!idx.has(code)) idx.set(code, []);
+    idx.get(code).push(row);
+  });
+  return idx;
+}, [journalEntriesCmp3]);
 
 // History months: filter raw data by dims, build trees, build code lookups
 const historyMonthsProcessed = useMemo(() => {
@@ -3292,8 +3713,99 @@ return filtered.sort((a, b) =>
   );
 }, [tree, breakers, pgcMapping]);
 
+const searchExpansionMap = useMemo(() => {
+  const q = debouncedQuery.trim().toLowerCase();
+  if (!q) return null;
+  const result = {};
 
+  // Saved-mapping literal path: keys are `saved-${secIdx}-${parentPath}-${node.id}` and `${rowKey}-leaf-${i}`
+  if (savedPlLiteral) {
+    // Build group-account lookup so we can inspect uploadLeaves for each literal node's code
+    const treeByCode = new Map();
+    (function indexTree(nodes) {
+      nodes.forEach(n => { treeByCode.set(String(n.code), n); indexTree(n.children || []); });
+    })(tree);
 
+    savedPlLiteral.forEach((section, secIdx) => {
+      const walk = (node, parentPath) => {
+        const rowKey = `saved-${secIdx}-${parentPath}-${node.id}`;
+        let descendantMatch = false;
+
+        // Children in the literal mapping tree
+        (node.children || []).forEach(child => {
+          if (walk(child, `${parentPath}-${node.id}`)) descendantMatch = true;
+        });
+
+        // Leaves under the matching group-account (same logic as render path)
+        const gaNode = treeByCode.get(String(node.code));
+        const leaves = (gaNode?.uploadLeaves || []).filter(l => l.type !== "plain");
+        leaves.forEach((leaf, i) => {
+          const leafMatch =
+            String(leaf.code ?? "").toLowerCase().includes(q) ||
+            String(leaf.name ?? "").toLowerCase().includes(q);
+          const dimMatch = (leaf.children || []).some(d =>
+            String(d.code ?? "").toLowerCase().includes(q) ||
+            String(d.name ?? "").toLowerCase().includes(q));
+          if (leafMatch || dimMatch) {
+            descendantMatch = true;
+            if (dimMatch) result[`${rowKey}-leaf-${i}`] = true;
+          }
+        });
+
+        const selfMatch =
+          String(node.code ?? "").toLowerCase().includes(q) ||
+          String(node.name ?? "").toLowerCase().includes(q);
+
+        if (descendantMatch || selfMatch) {
+          result[rowKey] = true;
+        }
+        return descendantMatch || selfMatch;
+      };
+      section.nodes.forEach(n => walk(n, "root"));
+    });
+
+return result;
+  }
+
+  // Standard path
+  const rows = summaryMode ? summaryRows : allSumRows;
+  rows.forEach(top => {
+    const walk = (node, childDepth, parentCode, isTop) => {
+      let descendantMatch = false;
+      (node.children || [])
+        .filter(c => hasData(c) && ["P/L", "DIS"].includes(c.accountType))
+        .forEach(child => {
+          if (walk(child, childDepth + 1, child.code, false)) descendantMatch = true;
+        });
+      (node.uploadLeaves || []).forEach((leaf, i) => {
+        if (leaf.type === "plain") return;
+        const leafMatch =
+          String(leaf.code ?? "").toLowerCase().includes(q) ||
+          String(leaf.name ?? "").toLowerCase().includes(q);
+        const dimMatch = (leaf.children || []).some(d =>
+          String(d.code ?? "").toLowerCase().includes(q) ||
+          String(d.name ?? "").toLowerCase().includes(q));
+        if (leafMatch || dimMatch) {
+          descendantMatch = true;
+          if (dimMatch) result[`drill-leaf-${top.code}-${parentCode ?? top.code}-${childDepth}-${i}`] = true;
+        }
+      });
+      if (descendantMatch) {
+        if (isTop) result[node.code] = true;
+        else result[`drill-${top.code}-${node.code}`] = true;
+      }
+      return matchesSelf(node, q) || descendantMatch;
+    };
+    walk(top, 0, top.code, true);
+  });
+  return result;
+}, [debouncedQuery, summaryMode, summaryRows, allSumRows, matchesSelf, savedPlLiteral, tree]);
+
+const isOpen = useCallback((key) => {
+  if (searchExpansionMap?.[key]) return true;
+  if (key in expandedMap) return !!expandedMap[key];
+  return false;
+}, [expandedMap, searchExpansionMap]);
 // When PGC mapping is active, derive the 3 breakers (one per section,
 // placed on the first row of each section in the rendered list).
 const effectiveBreakersPl = useMemo(() => {
@@ -3405,19 +3917,15 @@ const handleExportXlsx = () => {
     </div>
   ) : null;
 
-  if (loading) return (
+if (loading) return (
     <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
       <Loader2 size={28} className="text-[#1a2f8a] animate-spin mx-auto mb-3" />
      <p className="text-gray-400 text-sm">{t("loading_pl_data")}</p>
     </div>
   );
 
-// ────────────────────────────────────────────────────────────
-  //  SAVED-MAPPING LITERAL RENDER PATH
-  //  Activated only when a user-saved mapping is applied.
-  //  Renders the mapping tree literally: duplicates preserved,
-  //  dim filters applied, mapping hierarchy used (not groupAccounts).
-  //  Standard PGC / Danish / Spanish-IFRS paths below are bypassed.
+  // ────────────────────────────────────────────────────────────
+  //  PRECOMPUTED INDEXES (memoized — heavy work runs only on data change)
   // ────────────────────────────────────────────────────────────
 const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.value) === String(cmpFilters.month))?.label, cmpFilters.source, cmpFilters.dimension].filter(Boolean).join(" · ") || "Period B" : "";
   const cmp2Label = compareMode ? [cmp2Filters?.year, MONTHS.find(m => String(m.value) === String(cmp2Filters?.month))?.label, cmp2Filters?.source, cmp2Filters?.dimension].filter(Boolean).join(" · ") || "Period C" : "";
@@ -3642,6 +4150,46 @@ dimFullIdx.set(`${code}|${g}:${v}`, (dimFullIdx.get(`${code}|${g}:${v}`) ?? 0) +
         cmp2DimValIdx.set(`${code}|${v}`, (cmp2DimValIdx.get(`${code}|${v}`) ?? 0) + amt);
       });
     });
+// ── Compare period D indexes ───────────────────────────────
+    const cmp3AccIdx = new Map();
+    const cmp3DimFullIdx = new Map();
+    const cmp3DimValIdx = new Map();
+    (cmp3UploadedAccounts || []).forEach(row => {
+      const code = String(getField(row, "accountCode") ?? "");
+      if (!code) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      cmp3AccIdx.set(code, (cmp3AccIdx.get(code) ?? 0) + amt);
+      const dimsStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+      if (!dimsStr) return;
+      dimsStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+        const i = pair.indexOf(":");
+        if (i === -1) return;
+        const g = pair.slice(0, i).trim();
+        const v = pair.slice(i + 1).trim();
+        cmp3DimFullIdx.set(`${code}|${g}:${v}`, (cmp3DimFullIdx.get(`${code}|${g}:${v}`) ?? 0) + amt);
+        cmp3DimValIdx.set(`${code}|${v}`, (cmp3DimValIdx.get(`${code}|${v}`) ?? 0) + amt);
+      });
+    });
+    const cmp3PrevAccIdx = new Map();
+    const cmp3PrevDimFullIdx = new Map();
+    const cmp3PrevDimValIdx = new Map();
+    (cmp3PrevUploadedAccounts || []).forEach(row => {
+      const code = String(getField(row, "accountCode") ?? "");
+      if (!code) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      cmp3PrevAccIdx.set(code, (cmp3PrevAccIdx.get(code) ?? 0) + amt);
+      const dimsStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+      if (!dimsStr) return;
+      dimsStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+        const i = pair.indexOf(":");
+        if (i === -1) return;
+        const g = pair.slice(0, i).trim();
+        const v = pair.slice(i + 1).trim();
+        cmp3PrevDimFullIdx.set(`${code}|${g}:${v}`, (cmp3PrevDimFullIdx.get(`${code}|${g}:${v}`) ?? 0) + amt);
+        cmp3PrevDimValIdx.set(`${code}|${v}`, (cmp3PrevDimValIdx.get(`${code}|${v}`) ?? 0) + amt);
+      });
+    });
+
 const cmp2PrevAccIdx = new Map();
     const cmp2PrevDimFullIdx = new Map();
     const cmp2PrevDimValIdx = new Map();
@@ -3687,20 +4235,26 @@ const cmp2PrevAccIdx = new Map();
           }
         });
       };
-      mirrorIdx(cmpDimFullIdx, cmpDimValIdx);
+mirrorIdx(cmpDimFullIdx, cmpDimValIdx);
       mirrorIdx(cmpPrevDimFullIdx, cmpPrevDimValIdx);
       mirrorIdx(cmp2DimFullIdx, cmp2DimValIdx);
       mirrorIdx(cmp2PrevDimFullIdx, cmp2PrevDimValIdx);
+      mirrorIdx(cmp3DimFullIdx, cmp3DimValIdx);
+      mirrorIdx(cmp3PrevDimFullIdx, cmp3PrevDimValIdx);
     }
 
     const cmpTreeLit = buildTree(groupAccounts, cmpUploadedAccounts);
     const cmpPrevTreeLit = buildTree(groupAccounts, cmpPrevUploadedAccounts);
-    const cmp2TreeLit = buildTree(groupAccounts, cmp2UploadedAccounts);
+const cmp2TreeLit = buildTree(groupAccounts, cmp2UploadedAccounts);
     const cmp2PrevTreeLit = buildTree(groupAccounts, cmp2PrevUploadedAccounts);
+    const cmp3TreeLit = buildTree(groupAccounts, cmp3UploadedAccounts);
+    const cmp3PrevTreeLit = buildTree(groupAccounts, cmp3PrevUploadedAccounts);
     const cmpTreeByCode = new Map();
     const cmpPrevTreeByCode = new Map();
     const cmp2TreeByCode = new Map();
     const cmp2PrevTreeByCode = new Map();
+    const cmp3TreeByCode = new Map();
+    const cmp3PrevTreeByCode = new Map();
     (function indexCmpTree(nodes) {
       nodes.forEach(n => { cmpTreeByCode.set(String(n.code), n); indexCmpTree(n.children || []); });
     })(cmpTreeLit);
@@ -3713,6 +4267,12 @@ const cmp2PrevAccIdx = new Map();
     (function indexCmp2PrevTree(nodes) {
       nodes.forEach(n => { cmp2PrevTreeByCode.set(String(n.code), n); indexCmp2PrevTree(n.children || []); });
     })(cmp2PrevTreeLit);
+    (function indexCmp3Tree(nodes) {
+      nodes.forEach(n => { cmp3TreeByCode.set(String(n.code), n); indexCmp3Tree(n.children || []); });
+    })(cmp3TreeLit);
+    (function indexCmp3PrevTree(nodes) {
+      nodes.forEach(n => { cmp3PrevTreeByCode.set(String(n.code), n); indexCmp3PrevTree(n.children || []); });
+    })(cmp3PrevTreeLit);
 
     const sumDimRecursiveGeneric = (gaNode, dimStr, fullIdx, valIdx) => {
       if (!gaNode) return 0;
@@ -3751,12 +4311,16 @@ const cmp2PrevAccIdx = new Map();
       cmpDimFullIdx, cmpDimValIdx, cmpPrevDimFullIdx, cmpPrevDimValIdx,
       cmpFilters?.month
     );
-    const sumLiteralC = (node) => sumLiteralForPeriod(
+const sumLiteralC = (node) => sumLiteralForPeriod(
       node, cmp2TreeByCode, cmp2PrevTreeByCode,
       cmp2DimFullIdx, cmp2DimValIdx, cmp2PrevDimFullIdx, cmp2PrevDimValIdx,
       cmp2Filters?.month
     );
-
+    const sumLiteralD = (node) => sumLiteralForPeriod(
+      node, cmp3TreeByCode, cmp3PrevTreeByCode,
+      cmp3DimFullIdx, cmp3DimValIdx, cmp3PrevDimFullIdx, cmp3PrevDimValIdx,
+      cmp3Filters?.month
+    );
 
     // Sum a literal node (YTD or Monthly based on ytdOnly toggle):
     const sumLiteral = (node) => {
@@ -3787,9 +4351,18 @@ const cmp2PrevAccIdx = new Map();
 
 return (
       <div className="space-y-3 flex flex-col" style={{ minHeight: 0, flex: 1, overflow: "visible" }}>
-{compareMode && filtersOpen && (
+{compareMode && (
           <div className="bg-white rounded-2xl shadow-xl border border-gray-100"
-            style={{ overflow: "visible", position: "relative", zIndex: 100, marginBottom: 12, flex: "0 0 auto" }}>
+            style={{
+              overflow: filtersOpen ? "visible" : "hidden",
+              position: "relative",
+              zIndex: 100,
+              marginBottom: filtersOpen ? 12 : 0,
+              flex: "0 0 auto",
+              maxHeight: filtersOpen ? 800 : 0,
+              opacity: filtersOpen ? 1 : 0,
+              transition: "max-height 360ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 240ms ease, margin-bottom 240ms ease",
+            }}>
             <div className="px-5 py-3 flex items-center gap-2 flex-wrap">
               <div className="flex items-center gap-2 mr-2">
                 <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
@@ -3822,60 +4395,114 @@ return (
                 <HeaderFilterPill label="Company" value={cmp2Filters?.company} onChange={v => onCmp2FilterChange("company", v)} options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
                 <HeaderMultiFilterPill label="DIM GRP" values={cmp2Filters?.dimGroups} onChange={vs => onCmp2FilterChange("dimGroups", vs)} options={dimGroups.map(g => ({ value: g, label: g }))} />
                 <HeaderMultiFilterPill label="DIMS" values={cmp2Filters?.dimensions} onChange={vs => onCmp2FilterChange("dimensions", vs)} options={cmp2FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
-                <button onClick={() => onCmp2EnabledChange(false)} className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all" style={{ background: "#fee2e2", color: "#dc2626" }} title="Remove Period C"><X size={12} strokeWidth={2.5} /></button>
+<button onClick={() => onCmp2EnabledChange(false)} className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all" style={{ background: "#fee2e2", color: "#dc2626" }} title="Remove Period C"><X size={12} strokeWidth={2.5} /></button>
+              {!cmp3Enabled && (
+                <button onClick={() => onCmp3EnabledChange(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]" style={{ background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)", boxShadow: "0 4px 14px -4px rgba(168,85,247,0.5)" }}><span className="text-white text-[10px] font-black">+ Add Period D</span></button>
+              )}
+            </div>
+          )}
+          {cmp2Enabled && cmp3Enabled && (
+            <div className="px-5 py-3 flex items-center gap-2 flex-wrap border-t border-gray-100">
+              <div className="flex items-center gap-2 mr-2">
+                <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)", boxShadow: "0 4px 12px -4px rgba(168,85,247,0.5)" }}>
+                  <span className="text-white text-[11px] font-black">D</span>
+                </div>
+                <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>Period D</span>
               </div>
-            )}
-          </div>
-        )}
-        <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col"
-          style={{ maxHeight: "100%", minHeight: 0, boxShadow: "0 20px 40px -8px rgba(26, 47, 138, 0.15), 0 4px 12px -2px rgba(26, 47, 138, 0.08)" }}>
+              <HeaderFilterPill label="Year" value={cmp3Filters?.year} onChange={v => onCmp3FilterChange("year", v)} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+              <HeaderFilterPill label="Month" value={cmp3Filters?.month} onChange={v => onCmp3FilterChange("month", v)} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+              <HeaderFilterPill label="Source" value={cmp3Filters?.source} onChange={v => onCmp3FilterChange("source", v)} options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+              <HeaderFilterPill label="Structure" value={cmp3Filters?.structure} onChange={v => onCmp3FilterChange("structure", v)} options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+              <HeaderFilterPill label="Company" value={cmp3Filters?.company} onChange={v => onCmp3FilterChange("company", v)} options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+              <HeaderMultiFilterPill label="DIM GRP" values={cmp3Filters?.dimGroups} onChange={vs => onCmp3FilterChange("dimGroups", vs)} options={dimGroups.map(g => ({ value: g, label: g }))} />
+              <HeaderMultiFilterPill label="DIMS" values={cmp3Filters?.dimensions} onChange={vs => onCmp3FilterChange("dimensions", vs)} options={cmp3FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+              <button onClick={() => onCmp3EnabledChange(false)} className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all" style={{ background: "#fee2e2", color: "#dc2626" }} title="Remove Period D"><X size={12} strokeWidth={2.5} /></button>
+            </div>
+          )}
+        </div>
+      )}
+      <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col"
+        style={{ maxHeight: "100%", minHeight: 0, boxShadow: "0 20px 40px -8px rgba(26, 47, 138, 0.15), 0 4px 12px -2px rgba(26, 47, 138, 0.08)" }}>
           <div className="overflow-auto scrollbar-hide" style={{ flex: 1, minHeight: 0 }}>
-<table style={{ width: "100%",borderCollapse: "collapse", tableLayout: "auto" }}>
-              <colgroup>
+<table className="k-sticky-table" style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, tableLayout: "auto" }}>
+<colgroup>
                 <col style={{ width: "1px" }} />
-                <col style={{ width: "1px" }} />
-                {compareMode && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
-                {compareMode && cmp2Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
-                {historyExpanded && historyMonthsProcessed.map((h) => (
-                  <col key={`hist-col-${h.year}-${h.month}`} style={{ width: "1px" }} />
+                {multiCompany
+                  ? selectedCompanies.map(co => <col key={`mc-saved-col-${co}`} style={{ width: "1px" }} />)
+                  : <col style={{ width: "1px" }} />}
+{!multiCompany && compareMode && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+                {!multiCompany && compareMode && cmp2Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+                {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+                {!multiCompany && historyExpanded && historyMonthsProcessed.map((h) => (
+                  <col key={`hist-col-${h.year}-${h.month}`} style={{ width: "140px" }} />
                 ))}
                 <col />
               </colgroup>
-              <thead className="sticky top-0 z-10">
-                <tr className="border-b border-gray-100" style={{
-                  background: "rgba(255,255,255,0.95)",
-                  backdropFilter: "blur(24px)",
-                  WebkitBackdropFilter: "blur(24px)",
+<thead>
+<tr className="border-b border-gray-100" style={{
+                  background: "rgba(255,255,255,0.98)",
                   boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
                 }}>
-                  <th className="text-left px-6 whitespace-nowrap" style={{ height: "64px", background: "transparent" }}>
-                    <div className="flex items-baseline gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
-                      <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>
-                        {t("col_account")}
-                      </span>
-                      <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
-                        {t("page_pl_full")}
-                      </span>
-                    </div>
-                  </th>
-                  <th className="text-right pr-6 py-3 whitespace-nowrap" style={{ background: "transparent", cursor: "pointer" }}
-                    onClick={toggleHistory}
-                    title={historyExpanded ? "Hide history" : "Show last 6 months"}>
-                    <div className="flex items-center justify-end gap-3">
-                      <span key={ytdOnly ? "ytd" : "monthly"} className="font-black tracking-tight inline-block"
-                        style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em" }}>
-                        {(ytdOnly ? t("mode_ytd") : t("mode_monthly")).split("").map((ch, i) => (
-                          <span key={i} className="inline-block"
-                            style={{
-                              animation: `letterMorph 420ms cubic-bezier(0.34, 1.56, 0.64, 1) ${i * 35}ms both`,
-                            }}>
-                            {ch}
-                          </span>
-                        ))}
-                      </span>
+<th className="text-left px-6 whitespace-nowrap k-sticky-acc-head" style={{ height: "64px" }}>
+                    <div className="flex items-center gap-5">
+                      <div className="flex items-center gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
+                        <button onClick={() => setSearchActive(a => !a)}
+                          className="flex items-center justify-center"
+                          style={{ background: "transparent", color: searchActive ? colors.primary : "#94a3b8", padding: 0, transition: "color 240ms" }}
+                          onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+                          onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary : "#94a3b8"; }}
+                          title="Search">
+                          <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+                            <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.6"/>
+                            <path d="M9.5 9.5L12.5 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+                          </svg>
+                        </button>
+                        {searchActive ? (
+                          <>
+                            <input
+                              ref={searchInputRef}
+                              autoFocus
+                              type="text"
+                              value={searchQuery}
+                              onChange={e => setSearchQuery(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === "Escape") {
+                                  setSearchActive(false);
+                                  setSearchQuery("");
+                                }
+                              }}
+                              placeholder="Code or name..."
+                              style={{
+                                fontSize: 16, fontWeight: 700, color: colors.primary,
+                                border: "none", outline: "none", background: "transparent",
+                                width: 240, padding: 0, letterSpacing: "-0.02em"
+                              }}
+                            />
+                            <button onClick={() => { setSearchActive(false); setSearchQuery(""); }}
+                              className="flex items-center justify-center ml-1"
+                              style={{ background: "transparent", color: "#94a3b8", padding: 2, transition: "color 200ms" }}
+                              onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+                              onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
+                              title="Close search">
+                              <X size={14} />
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <span onClick={() => setSearchActive(true)} className="font-black tracking-tight"
+                              style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em", cursor: "pointer" }}>
+                              {t("col_account")}
+                            </span>
+                            <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
+                              {t("page_pl_full")}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                      <div style={{ width: 1, height: 18, background: "#e5e7eb" }} />
                       <button onClick={(e) => {
                         e.stopPropagation();
-if (Object.values(expandedMap).some(Boolean)) { setExpandedMap({}); return; }
+                        if (Object.values(expandedMap).some(Boolean)) { setExpandedMap({}); return; }
                         const next = {};
                         savedPlLiteral.forEach((section, secIdx) => {
                           const walk = (node, parentPath) => {
@@ -3892,8 +4519,10 @@ if (Object.values(expandedMap).some(Boolean)) { setExpandedMap({}); return; }
                         });
                         setExpandedMap(next);
                       }}
-className="flex items-center justify-center rounded-lg transition-all duration-200 hover:scale-[1.05]"
-                        style={{ background: `${colors.primary}12`, color: colors.primary, width: 28, height: 28, overflow: "hidden" }}
+                        className="flex items-center justify-center"
+                        style={{ background: "transparent", color: "#94a3b8", padding: 4, transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)" }}
+                        onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+                        onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
                         title={Object.values(expandedMap).some(Boolean) ? t("btn_collapse_all") : t("btn_expand_all")}>
                         <span key={Object.values(expandedMap).some(Boolean) ? "collapse" : "expand"}
                           className="inline-flex"
@@ -3906,9 +4535,32 @@ className="flex items-center justify-center rounded-lg transition-all duration-2
                       </button>
                     </div>
                   </th>
-                  {historyExpanded && historyMonthsProcessed.map((h) => (
-                    <th key={`hist-saved-${h.year}-${h.month}`} className="text-right pr-6 py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px" }}>
-                      <div className="flex flex-col items-end">
+{multiCompany ? selectedCompanies.map(co => (
+                    <th key={`mc-saved-th-${co}`} className="text-center py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px" }}>
+                      <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{co}</span>
+                    </th>
+                  )) : (
+                    <th className="text-right pr-6 py-3 whitespace-nowrap k-sticky-head" style={{ cursor: "pointer" }}
+                      onClick={toggleHistory}
+                      title={historyExpanded ? "Hide history" : "Show last 6 months"}>
+                      <div className="flex items-center justify-end gap-3">
+                        <span key={ytdOnly ? "ytd" : "monthly"} className="font-black tracking-tight inline-block"
+                          style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em" }}>
+                          {(ytdOnly ? t("mode_ytd") : t("mode_monthly")).split("").map((ch, i) => (
+                            <span key={i} className="inline-block"
+                              style={{
+                                animation: `letterMorph 420ms cubic-bezier(0.34, 1.56, 0.64, 1) ${i * 35}ms both`,
+                              }}>
+                              {ch}
+                            </span>
+                          ))}
+                        </span>
+                      </div>
+                    </th>
+                  )}
+{historyExpanded && historyMonthsProcessed.map((h) => (
+                    <th key={`hist-saved-${h.year}-${h.month}`} className="text-center py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px" }}>
+                      <div className="flex flex-col items-center">
                         <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>
                           {MONTHS.find(m => m.value === h.month)?.label.slice(0,3)}
                         </span>
@@ -3916,7 +4568,7 @@ className="flex items-center justify-center rounded-lg transition-all duration-2
                       </div>
                     </th>
                   ))}
-{compareMode && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap" style={{ background: "transparent" }}>
+{compareMode && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap k-sticky-head">
                     <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.26s both" }}>
                       <div className="flex items-center gap-1.5">
                         <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#CF305D" }} />
@@ -3925,7 +4577,7 @@ className="flex items-center justify-center rounded-lg transition-all duration-2
                       <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{cmpLabel}</span>
                     </div>
                   </th>}
-                  {compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap" style={{ background: "transparent" }}>
+{compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap k-sticky-head">
                     <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.30s both" }}>
                       <div className="flex items-center gap-1.5">
                         <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#57aa78" }} />
@@ -3934,12 +4586,24 @@ className="flex items-center justify-center rounded-lg transition-all duration-2
                       <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{cmp2Label}</span>
                     </div>
                   </th>}
+                  {compareMode && cmp2Enabled && cmp3Enabled && (() => {
+                    const cmp3Label = [cmp3Filters?.year, MONTHS.find(m => String(m.value) === String(cmp3Filters?.month))?.label, cmp3Filters?.source].filter(Boolean).join(" · ") || "Period D";
+                    return <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap k-sticky-head">
+                      <div className="flex flex-col items-center">
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#a855f7" }} />
+                          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>Period D</span>
+                        </div>
+                        <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{cmp3Label}</span>
+                      </div>
+                    </th>;
+                  })()}
                   {historyExpanded && historyLoading && (
                     <th className="text-center px-3 py-3" style={{ background: "transparent" }}>
                       <Loader2 size={14} className="animate-spin" style={{ color: colors.primary }} />
                     </th>
                   )}
-                  <th style={{ background: "transparent" }} />
+                  <th className="k-sticky-head" />
                 </tr>
               </thead>
 <tbody>
@@ -3947,12 +4611,16 @@ className="flex items-center justify-center rounded-lg transition-all duration-2
                   const sectionRows = [];
 
 // Section header (breaker)
-                  if (section.label) {
-                    sectionRows.push(
+if (section.label) {
+const dividerColSpan = multiCompany
+                      ? 1 + selectedCompanies.length + 1
+                      : 3 + (compareMode ? 3 : 0) + (compareMode && cmp2Enabled ? 3 : 0) + (compareMode && cmp2Enabled && cmp3Enabled ? 3 : 0) + (historyExpanded ? historyMonthsProcessed.length : 0);
+sectionRows.push(
                       <tr key={`sec-${secIdx}`} style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(sectionRows.length, 25) * 35}ms both` }}>
-                      <td colSpan={3 + (compareMode ? 3 : 0) + (compareMode && cmp2Enabled ? 3 : 0) + (historyExpanded ? historyMonthsProcessed.length : 0)} style={{ backgroundColor: section.color }} className="px-6 py-1.5">
+                        <td style={{ backgroundColor: section.color, position: "sticky", left: 0, zIndex: 4 }} className="px-6 py-1.5 whitespace-nowrap">
                           <span className="uppercase tracking-widest" style={header3Style}>{section.label}</span>
                         </td>
+                        <td colSpan={dividerColSpan - 1} style={{ backgroundColor: section.color }} />
                       </tr>
                     );
                   }
@@ -3964,10 +4632,9 @@ className="flex items-center justify-center rounded-lg transition-all duration-2
                     if (node.isSum && node.children && node.children.length > 0) {
                       displayVal = node.children.reduce((s, c) => s + sumLiteral(c), val);
                     }
-
-                    // Unique key per literal node (preserves duplicates across sections)
+// Unique key per literal node (preserves duplicates across sections)
                     const rowKey = `saved-${secIdx}-${parentPath}-${node.id}`;
-                    const expanded = !!expandedMap[rowKey];
+              const expanded = isOpen(rowKey);
 
 // Find the matching standard group-account node to drill into
                     const gaNode = treeByCode.get(String(node.code));
@@ -4023,11 +4690,17 @@ const hasDrill = leaves.length > 0 || (node.children && node.children.length > 0
                 const isHighlighted = savedHighlightedIds && (savedHighlightedIds.has?.(node.id) || savedHighlightedIds.has?.(node.originalId));
 sectionRows.push(
 <tr key={rowKey}
-                        className={`border-b border-gray-100 transition-colors ${isHighlighted ? "bg-amber-50/60 hover:bg-amber-50" : "bg-white"} ${hasDrill ? `cursor-pointer ${isHighlighted ? "" : "hover:bg-[#eef1fb]/60"}` : ""}`}
+                        className={`border-b border-gray-100 transition-colors ${(() => {
+                          const q = debouncedQuery.trim().toLowerCase();
+                          if (!q) return isHighlighted ? "bg-amber-50/60 hover:bg-amber-50" : "bg-white";
+                          const nodeMatch = String(node.code ?? "").toLowerCase().includes(q) || String(node.name ?? "").toLowerCase().includes(q);
+                          if (nodeMatch) return "bg-[#fef3c7]";
+                          return isHighlighted ? "bg-amber-50/60 hover:bg-amber-50" : "bg-white";
+                        })()} ${hasDrill ? `cursor-pointer ${isHighlighted ? "" : "hover:bg-[#eef1fb]/60"}` : ""}`}
                         style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(sectionRows.length, 25) * 35 + 50}ms both` }}
                         onClick={hasDrill ? (e) => { e.stopPropagation(); toggle(rowKey); } : undefined}
 >
-                        <td className="py-3 whitespace-nowrap" style={{ paddingLeft: `${24 + depth * 20}px` }}>
+                       <td className="py-3 whitespace-nowrap k-sticky-acc" style={{ paddingLeft: `${24 + depth * 20}px` }}>
                           <div className="flex items-center">
                             {hasDrill
                               ? <span className="text-[#1a2f8a]/50 mr-2">{expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
@@ -4058,20 +4731,24 @@ sectionRows.push(
                             )}
                           </div>
                         </td>
-<PLAmountCell value={displayVal} typoStyle={depth === 0 ? body1Style : body2Style} />
-                        {compareMode && (() => {
-                          let cmpVal = sumLiteralB(node);
-                          if (node.isSum && node.children && node.children.length > 0) {
-                            cmpVal = node.children.reduce((s, c) => s + sumLiteralB(c), cmpVal);
-                          }
-                          return (
-                            <>
-                              <PLAmountCell value={cmpVal} typoStyle={depth === 0 ? body1Style : body2Style} divider />
-                              <DeviationCells a={displayVal} b={cmpVal} typoStyle={depth === 0 ? body1Style : body2Style} />
-                            </>
-                          );
-                        })()}
-                        {compareMode && cmp2Enabled && (() => {
+{multiCompany ? selectedCompanies.map(co => (
+                          <PLAmountCell key={`mc-saved-${node.id}-${co}`} value={getNodeValForCompany(node.code, co, ytdOnly)} typoStyle={depth === 0 ? body1Style : body2Style} centered />
+                        )) : (
+                          <>
+                            <PLAmountCell value={displayVal} typoStyle={depth === 0 ? body1Style : body2Style} />
+                            {compareMode && (() => {
+                              let cmpVal = sumLiteralB(node);
+                              if (node.isSum && node.children && node.children.length > 0) {
+                                cmpVal = node.children.reduce((s, c) => s + sumLiteralB(c), cmpVal);
+                              }
+                              return (
+                                <>
+                                  <PLAmountCell value={cmpVal} typoStyle={depth === 0 ? body1Style : body2Style} divider />
+                                  <DeviationCells a={displayVal} b={cmpVal} typoStyle={depth === 0 ? body1Style : body2Style} />
+                                </>
+                              );
+                            })()}
+{compareMode && cmp2Enabled && (() => {
                           let cmp2Val = sumLiteralC(node);
                           if (node.isSum && node.children && node.children.length > 0) {
                             cmp2Val = node.children.reduce((s, c) => s + sumLiteralC(c), cmp2Val);
@@ -4083,7 +4760,21 @@ sectionRows.push(
                             </>
                           );
                         })()}
-                        {historyExpanded && historyMonthsProcessed.map((h) => {
+                        {compareMode && cmp2Enabled && cmp3Enabled && (() => {
+                          let cmp3Val = sumLiteralD(node);
+                          if (node.isSum && node.children && node.children.length > 0) {
+                            cmp3Val = node.children.reduce((s, c) => s + sumLiteralD(c), cmp3Val);
+                          }
+                          return (
+                            <>
+                              <PLAmountCell value={cmp3Val} typoStyle={depth === 0 ? body1Style : body2Style} divider />
+                              <DeviationCells a={displayVal} b={cmp3Val} typoStyle={depth === 0 ? body1Style : body2Style} />
+                            </>
+                          );
+                        })()}
+                          </>
+                        )}
+{historyExpanded && historyMonthsProcessed.map((h) => {
                           const histGaNode = h.map.get(String(node.code));
                           let histVal = 0;
                           if (histGaNode) {
@@ -4096,7 +4787,7 @@ sectionRows.push(
                               histVal = ytd - prevYtd;
                             }
                           }
-                          return <PLAmountCell key={`hist-saved-cell-${h.year}-${h.month}-${node.id}`} value={histVal} typoStyle={depth === 0 ? body1Style : body2Style} />;
+                          return <PLAmountCell key={`hist-saved-cell-${h.year}-${h.month}-${node.id}`} value={histVal} typoStyle={depth === 0 ? body1Style : body2Style} centered />;
                         })}
                         <td />
                       </tr>
@@ -4120,8 +4811,9 @@ sectionRows.push(
   const prevVal = prevDimFullIdx.get(`${node.code}|${String(d)}`) ?? 0;
   return dimVal + prevVal;
 })() } typoStyle={subbody2Style} />
-                            {compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+{compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
                             {compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+                            {compareMode && cmp2Enabled && cmp3Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
                             {historyExpanded && historyMonthsProcessed.map((h) => (
                               <td key={`hist-saved-dim-${h.year}-${h.month}-${di}`} />
                             ))}
@@ -4135,13 +4827,18 @@ sectionRows.push(
                     if (expanded && hasDrill) {
                       leaves.forEach((leaf, i) => {
                         const leafKey = `${rowKey}-leaf-${i}`;
-                        const leafExpanded = !!expandedMap[leafKey];
+                        const leafExpanded = isOpen(leafKey);
                         const hasDims = leaf.type === "localAccount" && leaf.children?.length > 0;
                         const amt = leaf.amount ?? 0;
 
+const leafIsMatch = (() => {
+                          const q = debouncedQuery.trim().toLowerCase();
+                          if (!q) return false;
+                          return String(leaf.code ?? "").toLowerCase().includes(q) || String(leaf.name ?? "").toLowerCase().includes(q);
+                        })();
                         sectionRows.push(
                           <tr key={leafKey}
-                            className={`border-b border-[#1a2f8a]/5 bg-white transition-colors ${hasDims ? "cursor-pointer hover:bg-amber-50/30" : "hover:bg-[#f0f3ff]"}`}
+                            className={`border-b border-[#1a2f8a]/5 ${leafIsMatch ? "bg-[#fef3c7]" : "bg-white"} transition-colors ${hasDims ? "cursor-pointer hover:bg-amber-50/30" : "hover:bg-[#f0f3ff]"}`}
                             onClick={hasDims ? (e) => { e.stopPropagation(); toggle(leafKey); } : undefined}>
 <td className="py-1.5" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
                               <div className="flex items-center gap-2">
@@ -4153,24 +4850,28 @@ sectionRows.push(
                                 <span style={subbody1Style}>{leaf.name || ""}</span>
                               </div>
                             </td>
-{(() => {
-                              const ytdAmt = -amt;
-const prevAmt = leaf.code && Number(month) !== 1
-                                ? (prevLeafIndexRaw.get(String(leaf.code)) ?? 0)
-                                : 0;
-                              const displayAmt = ytdOnly ? ytdAmt : -(amt - prevAmt);
-                              return <PLAmountCell value={displayAmt} typoStyle={subbody1Style} />;
-                            })()}
-                            {compareMode && (() => {
-                              const cmpAmt = leaf.code ? -(cmpLeafIndex.get(String(leaf.code)) ?? 0) : 0;
-                              return (
-                                <>
-                                  <PLAmountCell value={cmpAmt} typoStyle={subbody1Style} divider />
-                                  <DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody1Style} />
-                                </>
-                              );
-                            })()}
-                            {compareMode && cmp2Enabled && (() => {
+{multiCompany ? selectedCompanies.map(co => (
+                              <PLAmountCell key={`mc-saved-leaf-${leaf.code ?? "noleaf"}-${co}-${i}`} value={leaf.code ? getLeafValForCompany(leaf.code, co, ytdOnly) : 0} typoStyle={subbody1Style} centered />
+                            )) : (
+                              <>
+                                {(() => {
+                                  const ytdAmt = -amt;
+                                  const prevAmt = leaf.code && Number(month) !== 1
+                                    ? (prevLeafIndexRaw.get(String(leaf.code)) ?? 0)
+                                    : 0;
+                                  const displayAmt = ytdOnly ? ytdAmt : -(amt - prevAmt);
+                                  return <PLAmountCell value={displayAmt} typoStyle={subbody1Style} />;
+                                })()}
+                                {compareMode && (() => {
+                                  const cmpAmt = leaf.code ? -(cmpLeafIndex.get(String(leaf.code)) ?? 0) : 0;
+                                  return (
+                                    <>
+                                      <PLAmountCell value={cmpAmt} typoStyle={subbody1Style} divider />
+                                      <DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody1Style} />
+                                    </>
+                                  );
+                                })()}
+{compareMode && cmp2Enabled && (() => {
                               const cmp2Amt = leaf.code ? -(cmp2LeafIndex.get(String(leaf.code)) ?? 0) : 0;
                               return (
                                 <>
@@ -4179,11 +4880,22 @@ const prevAmt = leaf.code && Number(month) !== 1
                                 </>
                               );
                             })()}
-                            {historyExpanded && historyMonthsProcessed.map((h) => {
+                            {compareMode && cmp2Enabled && cmp3Enabled && (() => {
+                              const cmp3Amt = leaf.code ? -(cmp3LeafIndex.get(String(leaf.code)) ?? 0) : 0;
+                              return (
+                                <>
+                                  <PLAmountCell value={cmp3Amt} typoStyle={subbody1Style} divider />
+                                  <DeviationCells a={-amt} b={cmp3Amt} typoStyle={subbody1Style} />
+                                </>
+                              );
+                            })()}
+                              </>
+                            )}
+{historyExpanded && historyMonthsProcessed.map((h) => {
                               const leafAmt = leaf.code ? (h.leafIdx.get(String(leaf.code)) ?? 0) : 0;
                               const leafPrev = leaf.code ? (h.prevLeafIdx.get(String(leaf.code)) ?? 0) : 0;
                               const leafVal = ytdOnly ? -leafAmt : -(leafAmt - leafPrev);
-                              return <PLAmountCell key={`hist-saved-leaf-${h.year}-${h.month}-${i}`} value={leafVal} typoStyle={subbody1Style} />;
+                              return <PLAmountCell key={`hist-saved-leaf-${h.year}-${h.month}-${i}`} value={leafVal} typoStyle={subbody1Style} centered />;
                             })}
                           </tr>
                         );
@@ -4205,11 +4917,16 @@ const prevAmt = leaf.code && Number(month) !== 1
                             });
                           }
                           dimChildren.forEach((dim, j) => {
+const dimIsMatch = (() => {
+                              const q = debouncedQuery.trim().toLowerCase();
+                              if (!q) return false;
+                              return String(dim.code ?? "").toLowerCase().includes(q) || String(dim.name ?? "").toLowerCase().includes(q);
+                            })();
                             sectionRows.push(
                               <tr key={`${leafKey}-dim-${j}`}
-                                className="border-b border-[#1a2f8a]/5 bg-white hover:bg-amber-50/40 transition-colors cursor-pointer"
+                                className={`border-b border-[#1a2f8a]/5 ${dimIsMatch ? "bg-[#fef3c7]" : "bg-white"} hover:bg-amber-50/40 transition-colors cursor-pointer`}
                                 onClick={(e) => { e.stopPropagation(); setDimPopup(dim); }}>
-<td className="py-1" style={{ paddingLeft: `${24 + (depth + 2) * 20}px` }}>
+<td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 2) * 20}px` }}>
                                   <div className="flex items-center gap-1.5">
                                     <div className="w-2 h-px bg-amber-200 flex-shrink-0" />
                                    <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded flex-shrink-0">{t("label_dim")}</span>
@@ -4237,11 +4954,12 @@ for (const dimsStr of dimsOnLeaf) {
                                   }
                                   return <PLAmountCell value={ytdOnly ? -dim.amount : -(dim.amount - prevDimVal)} typoStyle={subbody2Style} />;
                                 })()}
-                                {compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-                                {compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-                                {historyExpanded && historyMonthsProcessed.map((h) => (
-                                  <td key={`hist-saved-dim-leaf-${h.year}-${h.month}-${j}`} />
-                                ))}
+{compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+                            {compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+                            {compareMode && cmp2Enabled && cmp3Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+                            {historyExpanded && historyMonthsProcessed.map((h) => (
+                              <td key={`hist-saved-dim-leaf-${h.year}-${h.month}-${j}`} />
+                            ))}
                                 <td />
                               </tr>
                             );
@@ -4320,9 +5038,19 @@ return (
           </div>
         </div>
       )}
-{compareMode && filtersOpen && (
+{compareMode && (
   <div className="bg-white rounded-2xl shadow-xl border border-gray-100"
-    style={{ overflow: "visible", position: "relative", zIndex: 100, marginBottom: 12, flex: "0 0 auto" }}>
+    style={{
+      overflow: filtersOpen ? "visible" : "hidden",
+      position: "relative",
+      zIndex: 100,
+      marginBottom: filtersOpen ? 12 : 0,
+      flex: "0 0 auto",
+      maxHeight: filtersOpen ? 800 : 0,
+      opacity: filtersOpen ? 1 : 0,
+      transition: "max-height 360ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 240ms ease, margin-bottom 240ms ease",
+      border: filtersOpen ? undefined : "1px solid transparent",
+    }}>
     {/* Period B row */}
     <div className="px-5 py-3 flex items-center gap-2 flex-wrap">
       <div className="flex items-center gap-2 mr-2">
@@ -4391,7 +5119,7 @@ return (
           options={dimGroups.map(g => ({ value: g, label: g }))} />
         <HeaderMultiFilterPill label="DIMS" values={cmp2Filters?.dimensions} onChange={vs => onCmp2FilterChange("dimensions", vs)}
           options={cmp2FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
-        <button onClick={() => onCmp2EnabledChange(false)}
+<button onClick={() => onCmp2EnabledChange(false)}
           className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all duration-200 hover:scale-[1.05]"
           style={{
             background: "#fee2e2",
@@ -4400,7 +5128,51 @@ return (
           title="Remove Period C">
           <X size={12} strokeWidth={2.5} />
         </button>
+        {!cmp3Enabled && (
+          <button onClick={() => onCmp3EnabledChange(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]"
+            style={{
+              background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)",
+              boxShadow: "0 4px 14px -4px rgba(168,85,247,0.5)",
+            }}>
+            <span className="text-white text-[10px] font-black">+ Add Period D</span>
+          </button>
+        )}
 </div>
+    )}
+    {cmp2Enabled && cmp3Enabled && (
+      <div className="px-5 py-3 flex items-center gap-2 flex-wrap border-t border-gray-100">
+        <div className="flex items-center gap-2 mr-2">
+          <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+            style={{
+              background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)",
+              boxShadow: "0 4px 12px -4px rgba(168,85,247,0.5)",
+            }}>
+            <span className="text-white text-[11px] font-black">D</span>
+          </div>
+          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>Period D</span>
+        </div>
+        <HeaderFilterPill label="Year" value={cmp3Filters?.year} onChange={v => onCmp3FilterChange("year", v)}
+          options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+        <HeaderFilterPill label="Month" value={cmp3Filters?.month} onChange={v => onCmp3FilterChange("month", v)}
+          options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+        <HeaderFilterPill label="Source" value={cmp3Filters?.source} onChange={v => onCmp3FilterChange("source", v)}
+          options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+        <HeaderFilterPill label="Structure" value={cmp3Filters?.structure} onChange={v => onCmp3FilterChange("structure", v)}
+          options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+        <HeaderFilterPill label="Company" value={cmp3Filters?.company} onChange={v => onCmp3FilterChange("company", v)}
+          options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+        <HeaderMultiFilterPill label="DIM GRP" values={cmp3Filters?.dimGroups} onChange={vs => onCmp3FilterChange("dimGroups", vs)}
+          options={dimGroups.map(g => ({ value: g, label: g }))} />
+        <HeaderMultiFilterPill label="DIMS" values={cmp3Filters?.dimensions} onChange={vs => onCmp3FilterChange("dimensions", vs)}
+          options={cmp3FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+        <button onClick={() => onCmp3EnabledChange(false)}
+          className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all"
+          style={{ background: "#fee2e2", color: "#dc2626" }}
+          title="Remove Period D">
+          <X size={12} strokeWidth={2.5} />
+        </button>
+      </div>
     )}
   </div>
 )}
@@ -4526,93 +5298,81 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
 
 
 <div className="overflow-auto scrollbar-hide" style={{ flex: 1, minHeight: 0 }}>
-<table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "auto" }}>
+<table className="k-sticky-table" style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, tableLayout: "auto" }}>
   <colgroup>
     <col style={{ width: "1px" }} />
-    <col style={{ width: "1px" }} />
-    {compareMode && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
-    {compareMode && cmp2Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+    {multiCompany
+      ? selectedCompanies.map(co => <col key={`mc-col-${co}`} style={{ width: "1px" }} />)
+      : <col style={{ width: "1px" }} />}
+{!multiCompany && compareMode && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+    {!multiCompany && compareMode && cmp2Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+    {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
     <col />
   </colgroup>
-<thead className="sticky top-0 z-10">
+<thead>
 <tr className="border-b border-gray-100" style={{
-  background: "rgba(255,255,255,0.95)",
-  backdropFilter: "blur(24px)",
-  WebkitBackdropFilter: "blur(24px)",
+  background: "rgba(255,255,255,0.98)",
   boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
 }}>
-<th className="text-left px-6 w-px whitespace-nowrap" style={{ height: "64px", background: "transparent" }}>
-  <div className="flex items-baseline gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
-    <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>
-      Account
-    </span>
-    <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
-      Profit & Loss
-    </span>
-  </div>
-</th>
-<th className="text-right pr-6 py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px", cursor: compareMode ? "default" : "pointer" }}
-  onClick={toggleHistory}
-  title={compareMode ? "" : (historyExpanded ? "Hide history" : "Show last 12 months")}>
-  <span key={ytdOnly ? "ytd" : "monthly"} className="font-black tracking-tight inline-block"
-    style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em" }}>
-    {(ytdOnly ? t("mode_ytd") : t("mode_monthly")).split("").map((ch, i) => (
-      <span key={i} className="inline-block"
-        style={{
-          animation: `letterMorph 420ms cubic-bezier(0.34, 1.56, 0.64, 1) ${i * 35}ms both`,
-        }}>
-        {ch}
-      </span>
-    ))}
-  </span>
-  </th>
-  {historyExpanded && historyMonthsProcessed.map((h) => (
-    <th key={`hist-${h.year}-${h.month}`} className="text-right pr-6 py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px" }}>
-      <div className="flex flex-col items-end">
-        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>
-          {MONTHS.find(m => m.value === h.month)?.label.slice(0,3)}
-        </span>
-        <span className="text-[10px] font-bold" style={{ color: "#9ca3af" }}>{h.year}</span>
-      </div>
-    </th>
-  ))}
-  {historyExpanded && historyLoading && (
-    <th className="text-center px-3 py-3" style={{ background: "transparent" }}>
-      <Loader2 size={14} className="animate-spin" style={{ color: colors.primary }} />
-    </th>
-  )}
-  {compareMode && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap" style={{ background: "transparent" }}>
-    <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.26s both" }}>
-      <div className="flex items-center gap-1.5">
-        <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#CF305D" }} />
-        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Period B</span>
-      </div>
-      <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{cmpLabel}</span>
-    </div>
-  </th>}
-{compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap" style={{ background: "transparent" }}>
-    <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.30s both" }}>
-      <div className="flex items-center gap-1.5">
-        <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#57aa78" }} />
-        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>Period C</span>
-      </div>
-      <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{cmp2Label}</span>
-    </div>
-  </th>}
-<th className="text-right pr-6 py-3" style={{ background: "transparent" }}>
-    <div className="flex items-center justify-end gap-2" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
-      {compareMode && (
-        <button onClick={() => setFiltersOpen(o => !o)}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all duration-200 hover:scale-[1.02]"
+<th className="text-left px-6 whitespace-nowrap k-sticky-acc-head" style={{ height: "64px" }}>
+  <div className="flex items-center gap-5">
+<div className="flex items-center gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
+      <button onClick={() => setSearchActive(a => !a)}
+        className="flex items-center justify-center"
+        style={{ background: "transparent", color: searchActive ? colors.primary : "#94a3b8", padding: 0, transition: "color 240ms" }}
+        onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+        onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary : "#94a3b8"; }}
+        title="Search">
+        <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+          <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.6"/>
+          <path d="M9.5 9.5L12.5 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+        </svg>
+      </button>
+{searchActive ? (
+        <>
+<input
+          ref={searchInputRef}
+          autoFocus
+          type="text"
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === "Escape") {
+              setSearchActive(false);
+              setSearchQuery("");
+            }
+          }}
+          placeholder="Code or name..."
           style={{
-            background: filtersOpen ? `${colors.primary}12` : "transparent",
-            color: filtersOpen ? colors.primary : "#9ca3af",
-          }}>
-          <ChevronDown size={10} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
-          <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? "Hide" : "Show"}</span>
+            fontSize: 16, fontWeight: 700, color: colors.primary,
+            border: "none", outline: "none", background: "transparent",
+            width: 240, padding: 0, letterSpacing: "-0.02em"
+          }}
+        />
+        <button onClick={() => { setSearchActive(false); setSearchQuery(""); }}
+          className="flex items-center justify-center ml-1"
+          style={{ background: "transparent", color: "#94a3b8", padding: 2, transition: "color 200ms" }}
+          onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+          onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
+          title="Close search">
+          <X size={14} />
         </button>
+        </>
+      ) : (
+        <>
+          <span onClick={() => setSearchActive(true)} className="font-black tracking-tight"
+            style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em", cursor: "pointer" }}>
+            Account
+          </span>
+          <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
+            Profit & Loss
+          </span>
+        </>
       )}
-      <button onClick={() => {
+    </div>
+<div style={{ width: 1, height: 18, background: "#e5e7eb" }} />
+    <div className="flex items-center gap-4" style={{ flexDirection: "row-reverse" }}>
+<button onClick={() => {
         if (Object.values(expandedMap).some(Boolean)) { setExpandedMap({}); return; }
         const next = {};
         const walk = (node, outerCode, depth, parentCode) => {
@@ -4632,8 +5392,10 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
         });
         setExpandedMap(next);
       }}
-        className="flex items-center justify-center rounded-lg transition-all duration-200 hover:scale-[1.05]"
-        style={{ background: `${colors.primary}12`, color: colors.primary, width: 28, height: 28, overflow: "hidden" }}
+        className="flex items-center justify-center"
+        style={{ background: "transparent", color: "#94a3b8", padding: 4, transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)" }}
+        onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+        onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
         title={Object.values(expandedMap).some(Boolean) ? "Collapse all" : "Expand all"}>
         <span key={Object.values(expandedMap).some(Boolean) ? "collapse" : "expand"}
           className="inline-flex"
@@ -4644,49 +5406,130 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
           }
         </span>
       </button>
-      <div className="relative flex items-center p-1 rounded-xl" style={{ background: "#f3f4f6" }}
+<div className="relative flex items-center"
         ref={el => {
           if (!el) return;
-          const btns = el.querySelectorAll("[data-mode-pill]");
-          const active = btns[summaryMode ? 0 : 1];
-          const pill = el.querySelector(".sum-det-pill");
-          if (active && pill) {
-            pill.style.left = active.offsetLeft + "px";
-            pill.style.width = active.offsetWidth + "px";
-            pill.style.top = active.offsetTop + "px";
-            pill.style.height = active.offsetHeight + "px";
+          const tabs = el.querySelectorAll("[data-pl-tab]");
+          const idx = summaryMode ? 0 : 1;
+          const active = tabs[idx];
+          const indicator = el.querySelector(".pl-view-indicator");
+          if (active && indicator) {
+            indicator.style.left = active.offsetLeft + "px";
+            indicator.style.width = active.offsetWidth + "px";
           }
         }}>
-        <span className="sum-det-pill" style={{
-          position: "absolute",
-          background: "#fff",
-          borderRadius: 8,
-          boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
-          transition: "left 320ms cubic-bezier(0.34, 1.56, 0.64, 1), width 320ms cubic-bezier(0.34, 1.56, 0.64, 1), top 320ms cubic-bezier(0.34, 1.56, 0.64, 1), height 320ms cubic-bezier(0.34, 1.56, 0.64, 1)",
+        <span className="pl-view-indicator" style={{
+          position: "absolute", bottom: -4, height: 2,
+          background: colors.primary, borderRadius: 1,
+          transition: "left 320ms cubic-bezier(0.34, 1.56, 0.64, 1), width 320ms cubic-bezier(0.34, 1.56, 0.64, 1)",
           pointerEvents: "none",
-          zIndex: 0,
         }} />
-        {[["summary","Summary"],["detailed","Detailed"]].map(([v,l]) => {
+{[["summary","Summary"],["detailed","Detailed"]].map(([v, label]) => {
           const active = (v === "summary" && summaryMode) || (v === "detailed" && !summaryMode);
           return (
-            <button key={v} data-mode-pill onClick={() => setSummaryMode(v === "summary")}
-              className="relative z-10 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider"
+            <button key={v} data-pl-tab onClick={() => setSummaryMode(v === "summary")}
+              className="px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] whitespace-nowrap"
               style={{
                 background: "transparent",
-                color: active ? colors.primary : "#9ca3af",
-                transition: "color 280ms cubic-bezier(0.4, 0, 0.2, 1)",
+                color: active ? colors.primary : "#94a3b8",
+                transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)",
               }}>
-              {l}
+              {label}
             </button>
           );
         })}
       </div>
+      {compareMode && (
+        <>
+          <div style={{ width: 1, height: 18, background: "#e5e7eb" }} />
+          <button onClick={() => setFiltersOpen(o => !o)}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg"
+            style={{
+              background: "transparent",
+              color: filtersOpen ? colors.primary : "#94a3b8",
+              transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+            onMouseLeave={e => { e.currentTarget.style.color = filtersOpen ? colors.primary : "#94a3b8"; }}>
+            <ChevronDown size={10} style={{ transition: "transform 300ms cubic-bezier(0.34,1.56,0.64,1)", transform: filtersOpen ? "rotate(0deg)" : "rotate(-90deg)" }} />
+            <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? "Hide" : "Show"}</span>
+          </button>
+        </>
+      )}
     </div>
+  </div>
+</th>
+{multiCompany ? selectedCompanies.map(co => (
+  <th key={`mc-th-${co}`} className="text-center py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px" }}>
+    <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{co}</span>
   </th>
+)) : (
+<th className="text-right pr-6 py-3 whitespace-nowrap k-sticky-head" style={{ width: "200px", cursor: (compareMode || multiCompany) ? "default" : "pointer" }}
+  onClick={toggleHistory}
+  title={(compareMode || multiCompany) ? "" : (historyExpanded ? "Hide history" : "Show last 12 months")}>
+  <span key={ytdOnly ? "ytd" : "monthly"} className="font-black tracking-tight inline-block"
+    style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em" }}>
+    {(ytdOnly ? t("mode_ytd") : t("mode_monthly")).split("").map((ch, i) => (
+      <span key={i} className="inline-block"
+        style={{
+          animation: `letterMorph 420ms cubic-bezier(0.34, 1.56, 0.64, 1) ${i * 35}ms both`,
+        }}>
+        {ch}
+      </span>
+    ))}
+  </span>
+  </th>
+)}
+{historyExpanded && historyMonthsProcessed.map((h) => (
+    <th key={`hist-${h.year}-${h.month}`} className="text-center py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px" }}>
+      <div className="flex flex-col items-center">
+        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>
+          {MONTHS.find(m => m.value === h.month)?.label.slice(0,3)}
+        </span>
+        <span className="text-[10px] font-bold" style={{ color: "#9ca3af" }}>{h.year}</span>
+      </div>
+    </th>
+  ))}
+  {historyExpanded && historyLoading && (
+    <th className="text-center px-3 py-3" style={{ background: "transparent" }}>
+      <Loader2 size={14} className="animate-spin" style={{ color: colors.primary }} />
+    </th>
+  )}
+  {compareMode && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap k-sticky-head">
+    <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.26s both" }}>
+      <div className="flex items-center gap-1.5">
+        <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#CF305D" }} />
+        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Period B</span>
+      </div>
+      <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{cmpLabel}</span>
+    </div>
+  </th>}
+{compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap k-sticky-head">
+    <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.30s both" }}>
+      <div className="flex items-center gap-1.5">
+        <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#57aa78" }} />
+        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>Period C</span>
+      </div>
+      <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{cmp2Label}</span>
+    </div>
+  </th>}
+  {compareMode && cmp2Enabled && cmp3Enabled && (() => {
+    const cmp3Label = [cmp3Filters?.year, MONTHS.find(m => String(m.value) === String(cmp3Filters?.month))?.label, cmp3Filters?.source].filter(Boolean).join(" · ") || "Period D";
+    return <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap k-sticky-head">
+      <div className="flex flex-col items-center">
+        <div className="flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#a855f7" }} />
+          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>Period D</span>
+        </div>
+        <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{cmp3Label}</span>
+      </div>
+    </th>;
+  })()}
+<th className="k-sticky-head" />
 </tr>
 </thead>
             <tbody>
-{(summaryMode ? summaryRows : allSumRows).map((node, nodeIdx, nodeArr) => {
+{(summaryMode ? summaryRows : allSumRows).map((node, nodeIdx) => {
 
 
 const ytd      = -sumNode(node);
@@ -4694,7 +5537,12 @@ const prevYtd  = -getPrevYtd(node.code);
 const cmpYtd = compareMode ? -getCmpYtd(node.code) : 0;
 const cmpMon = compareMode ? -getCmpYtd(node.code) - (-getCmpPrev(node.code)) : 0;
 const mon      = ytd - prevYtd;
-const expanded = !!expandedMap[node.code];
+const isMatchSelf = (() => {
+  const q = searchQuery.trim().toLowerCase();
+  if (!q) return false;
+  return String(node.code ?? "").toLowerCase().includes(q) || String(localName(node) ?? "").toLowerCase().includes(q);
+})();
+const expanded = isOpen(node.code);
 const hasKids  = (node.children||[]).filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType)).length > 0
                 || (node.uploadLeaves || []).some(l => l.type !== "plain");
 const isHighlighted = PL_HIGHLIGHTED_CODES.has(String(node.code)) || String(node.code).endsWith(".S") || String(node.code).endsWith(".PL");
@@ -4736,16 +5584,17 @@ const divider = !summaryMode
   return [
 divider ? (
   <tr key={`divider-${node.code}`} style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(nodeIdx, 25) * 35}ms both` }}>
-    <td colSpan={compareMode ? (cmp2Enabled ? 9 : 6) : (3 + (historyExpanded ? historyMonthsProcessed.length : 0))} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
+    <td style={{ backgroundColor: divider.color, position: "sticky", left: 0, zIndex: 4 }} className="px-6 py-1.5 whitespace-nowrap">
       <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
     </td>
+    <td colSpan={(multiCompany ? selectedCompanies.length + 1 : compareMode ? (cmp2Enabled ? (cmp3Enabled ? 11 : 8) : 5) : (2 + (historyExpanded ? historyMonthsProcessed.length : 0)))} style={{ backgroundColor: divider.color }} />
   </tr>
 ) : null,
 <tr key={node.code}
-      className="border-b border-gray-100 bg-white cursor-pointer hover:bg-[#eef1fb]/60 transition-colors"
+      className={`border-b border-gray-100 ${isMatchSelf ? "bg-[#fef3c7]" : "bg-white"} cursor-pointer hover:bg-[#eef1fb]/60 transition-colors`}
       style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(nodeIdx, 25) * 35 + 50}ms both` }}
       onClick={(e) => { e.stopPropagation(); toggle(node.code); }}>
-<td className="py-3 px-6 whitespace-nowrap">
+<td className="py-3 px-6 whitespace-nowrap k-sticky-acc">
   <div className="flex items-center">
     {hasKids
       ? <span className="text-[#1a2f8a]/50 mr-2">{expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
@@ -4756,10 +5605,13 @@ divider ? (
     </span>
   </div>
 </td>
-      {!ytdOnly && <PLAmountCell value={mon} typoStyle={body1Style} />}
-      {!ytdOnly && compareMode && <PLAmountCell value={cmpMon} typoStyle={body1Style} divider />}
-      {!ytdOnly && compareMode && <DeviationCells a={mon} b={cmpMon} typoStyle={body1Style} />}
-      {!ytdOnly && compareMode && cmp2Enabled && (() => {
+{multiCompany && selectedCompanies.map(co => (
+        <PLAmountCell key={`mc-val-${node.code}-${co}`} value={getNodeValForCompany(node.code, co, ytdOnly)} typoStyle={body1Style} centered />
+      ))}
+      {!multiCompany && !ytdOnly && <PLAmountCell value={mon} typoStyle={body1Style} />}
+      {!multiCompany && !ytdOnly && compareMode && <PLAmountCell value={cmpMon} typoStyle={body1Style} divider />}
+      {!multiCompany && !ytdOnly && compareMode && <DeviationCells a={mon} b={cmpMon} typoStyle={body1Style} />}
+{!multiCompany && !ytdOnly && compareMode && cmp2Enabled && (() => {
         const cmp2Ytd = -getCmp2Ytd(node.code);
         const cmp2Mon = cmp2Ytd - (-getCmp2Prev(node.code));
         return <>
@@ -4767,29 +5619,47 @@ divider ? (
           <DeviationCells a={mon} b={cmp2Mon} typoStyle={body1Style} />
         </>;
       })()}
-{ytdOnly && <PLAmountCell value={ytd} typoStyle={body1Style} />}
+      {!multiCompany && !ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && (() => {
+        const cmp3Ytd = -getCmp3Ytd(node.code);
+        const cmp3Mon = cmp3Ytd - (-getCmp3Prev(node.code));
+        return <>
+          <PLAmountCell value={cmp3Mon} typoStyle={body1Style} divider />
+          <DeviationCells a={mon} b={cmp3Mon} typoStyle={body1Style} />
+        </>;
+      })()}
+{!multiCompany && ytdOnly && <PLAmountCell value={ytd} typoStyle={body1Style} />}
       {ytdOnly && compareMode && <PLAmountCell value={cmpYtd} typoStyle={body1Style} divider />}
       {ytdOnly && compareMode && <DeviationCells a={ytd} b={cmpYtd} typoStyle={body1Style} />}
-      {ytdOnly && compareMode && cmp2Enabled && (() => {
+{ytdOnly && compareMode && cmp2Enabled && (() => {
         const cmp2Ytd = -getCmp2Ytd(node.code);
         return <>
           <PLAmountCell value={cmp2Ytd} typoStyle={body1Style} divider />
           <DeviationCells a={ytd} b={cmp2Ytd} typoStyle={body1Style} />
         </>;
       })()}
-      {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => {
+      {ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && (() => {
+        const cmp3Ytd = -getCmp3Ytd(node.code);
+        return <>
+          <PLAmountCell value={cmp3Ytd} typoStyle={body1Style} divider />
+          <DeviationCells a={ytd} b={cmp3Ytd} typoStyle={body1Style} />
+        </>;
+      })()}
+{historyExpanded && !compareMode && historyMonthsProcessed.map((h) => {
         const hYtd = -getHistYtd(h, node.code);
         const hPrev = -getHistPrev(h, node.code);
         const hMon = hYtd - hPrev;
-        return <PLAmountCell key={`hist-cell-${h.year}-${h.month}-${node.code}`} value={ytdOnly ? hYtd : hMon} typoStyle={body1Style} />;
+        return <PLAmountCell key={`hist-cell-${h.year}-${h.month}-${node.code}`} value={ytdOnly ? hYtd : hMon} typoStyle={body1Style} centered />;
       })}
     </tr>,
-...(expanded ? (function renderChildren(children, leaves, depth, parentCode) {
+...((expanded) ? (function renderChildren(children, leaves, depth, parentCode) {
 
+  const q = searchQuery.trim().toLowerCase();
   const rows = [];
 
   // Group account children
-  children.filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType)).forEach(child => {
+children
+    .filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType))
+    .forEach(child => {
     const cYtd = -sumNode(child);
     const cPrev = -getPrevYtd(child.code);
     const cMon = cYtd - cPrev;
@@ -4797,15 +5667,20 @@ divider ? (
     const cCmpMon = compareMode ? cCmpYtd - (-getCmpPrev(child.code)) : 0;
     const cCmp2Ytd = compareMode ? -getCmp2Ytd(child.code) : 0;
     const cCmp2Mon = compareMode ? cCmp2Ytd - (-getCmp2Prev(child.code)) : 0;
-    const childExpanded = !!expandedMap[`drill-${node.code}-${child.code}`];
+const childExpanded = isOpen(`drill-${node.code}-${child.code}`);
     const grandkids = (child.children || []).filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType));
     const hasMore = grandkids.length > 0 || (child.uploadLeaves?.length > 0);
+    const isChildMatch = (() => {
+      const q = searchQuery.trim().toLowerCase();
+      if (!q) return false;
+      return String(child.code ?? "").toLowerCase().includes(q) || String(localName(child) ?? "").toLowerCase().includes(q);
+    })();
 
 rows.push(
   <tr key={child.code}
-    className={`border-b border-[#1a2f8a]/5 bg-white transition-colors ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : "hover:bg-[#eef1fb]/20"}`}
+    className={`border-b border-[#1a2f8a]/5 ${isChildMatch ? "bg-[#fef3c7]" : "bg-white"} transition-colors ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : "hover:bg-[#eef1fb]/20"}`}
     onClick={hasMore ? (e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [`drill-${node.code}-${child.code}`]: !prev[`drill-${node.code}-${child.code}`] })); } : undefined}>
-<td className="py-2 whitespace-nowrap" style={{ paddingLeft: `${24 + depth * 20}px` }}>
+<td className="py-2 whitespace-nowrap k-sticky-acc" style={{ paddingLeft: `${24 + depth * 20}px` }}>
       <div className="flex items-center gap-2">
         {hasMore
           ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{childExpanded ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
@@ -4814,40 +5689,51 @@ rows.push(
         <span style={body2Style}>{localName(child)}</span>
       </div>
     </td>
-    {!ytdOnly && <PLAmountCell value={cMon} typoStyle={body2Style} />}
-    {!ytdOnly && compareMode && <PLAmountCell value={cCmpMon} typoStyle={body2Style} divider />}
-    {!ytdOnly && compareMode && <DeviationCells a={cMon} b={cCmpMon} typoStyle={body2Style} />}
-{!ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cCmp2Mon} typoStyle={body2Style} divider />}
-    {!ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={cMon} b={cCmp2Mon} typoStyle={body2Style} />}
-    {ytdOnly && <PLAmountCell value={cYtd} typoStyle={body2Style} />}
-    {ytdOnly && compareMode && <PLAmountCell value={cCmpYtd} typoStyle={body2Style} divider />}
-    {ytdOnly && compareMode && <DeviationCells a={cYtd} b={cCmpYtd} typoStyle={body2Style} />}
-    {ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cCmp2Ytd} typoStyle={body2Style} divider />}
-    {ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={cYtd} b={cCmp2Ytd} typoStyle={body2Style} />}
-    {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => {
+{multiCompany && selectedCompanies.map(co => (
+      <PLAmountCell key={`mc-child-${child.code}-${co}`} value={getNodeValForCompany(child.code, co, ytdOnly)} typoStyle={body2Style} centered />
+    ))}
+    {!multiCompany && !ytdOnly && <PLAmountCell value={cMon} typoStyle={body2Style} />}
+    {!multiCompany && !ytdOnly && compareMode && <PLAmountCell value={cCmpMon} typoStyle={body2Style} divider />}
+    {!multiCompany && !ytdOnly && compareMode && <DeviationCells a={cMon} b={cCmpMon} typoStyle={body2Style} />}
+{!multiCompany && !ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cCmp2Mon} typoStyle={body2Style} divider />}
+    {!multiCompany && !ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={cMon} b={cCmp2Mon} typoStyle={body2Style} />}
+    {!multiCompany && !ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && (() => {
+      const cCmp3Ytd = -getCmp3Ytd(child.code);
+      const cCmp3Mon = cCmp3Ytd - (-getCmp3Prev(child.code));
+      return <><PLAmountCell value={cCmp3Mon} typoStyle={body2Style} divider /><DeviationCells a={cMon} b={cCmp3Mon} typoStyle={body2Style} /></>;
+    })()}
+    {!multiCompany && ytdOnly && <PLAmountCell value={cYtd} typoStyle={body2Style} />}
+    {!multiCompany && ytdOnly && compareMode && <PLAmountCell value={cCmpYtd} typoStyle={body2Style} divider />}
+    {!multiCompany && ytdOnly && compareMode && <DeviationCells a={cYtd} b={cCmpYtd} typoStyle={body2Style} />}
+{!multiCompany && ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cCmp2Ytd} typoStyle={body2Style} divider />}
+    {!multiCompany && ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={cYtd} b={cCmp2Ytd} typoStyle={body2Style} />}
+    {!multiCompany && ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && (() => {
+      const cCmp3Ytd = -getCmp3Ytd(child.code);
+      return <><PLAmountCell value={cCmp3Ytd} typoStyle={body2Style} divider /><DeviationCells a={cYtd} b={cCmp3Ytd} typoStyle={body2Style} /></>;
+    })()}
+{historyExpanded && !compareMode && historyMonthsProcessed.map((h) => {
       const hYtd = -getHistYtd(h, child.code);
       const hPrev = -getHistPrev(h, child.code);
       const hMon = hYtd - hPrev;
-      return <PLAmountCell key={`hist-child-${h.year}-${h.month}-${child.code}`} value={ytdOnly ? hYtd : hMon} typoStyle={body2Style} />;
+      return <PLAmountCell key={`hist-child-${h.year}-${h.month}-${child.code}`} value={ytdOnly ? hYtd : hMon} typoStyle={body2Style} centered />;
     })}
   </tr>
 );
 
 if (childExpanded && hasMore) {
-           rows.push(...renderChildren(grandkids, child.uploadLeaves || [], depth + 1, child.code));
-
+      rows.push(...renderChildren(grandkids, child.uploadLeaves || [], depth + 1, child.code));
     }
 
     if (childExpanded) {
       const jrnRows = (journalByCode.get(child.code) || []);
       if (jrnRows.length > 0) {
         const jrnKey = `jrn-child-${node.code}-${child.code}`;
-        const jrnExpanded = !!expandedMap[jrnKey];
+       const jrnExpanded = isOpen(jrnKey);
 rows.push(
   <tr key={jrnKey}
     className="border-b border-[#1a2f8a]/5 bg-white cursor-pointer hover:bg-indigo-50/40 transition-colors"
-    onClick={(e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [jrnKey]: !prev[jrnKey] })); }}>
-    <td className="py-1" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
+    onClick={(e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [jrnKey]: !isOpen(jrnKey) })); }}>
+    <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
       <div className="flex items-center gap-1.5">
         <div className="w-2 h-px bg-indigo-200 flex-shrink-0" />
         <span className="text-[#1a2f8a]/40 flex-shrink-0">
@@ -4859,8 +5745,13 @@ rows.push(
        <span style={subbody2Style}>{jrnRows.length} {jrnRows.length === 1 ? t("entry") : t("entries")}</span>
       </div>
     </td>
-<td />{compareMode && <><td /><td /><td /></>}{compareMode && cmp2Enabled && <><td /><td /><td /></>}
-    {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => (
+{multiCompany ? selectedCompanies.map(co => (
+      <td key={`mc-jrnhdr-${child.code}-${co}`} />
+    )) : <td />}
+{!multiCompany && compareMode && <><td /><td /><td /></>}
+    {!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
+    {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
+    {!multiCompany && historyExpanded && !compareMode && historyMonthsProcessed.map((h) => (
       <td key={`hist-jrnhdr-${h.year}-${h.month}-${child.code}`} />
     ))}
   </tr>
@@ -4872,7 +5763,7 @@ if (jrnExpanded) {
       <tr key={`jrn-child-entry-${node.code}-${child.code}-${k}`}
         className="border-b border-[#1a2f8a]/5 bg-white hover:bg-indigo-50/40 transition-colors cursor-pointer"
         onClick={(e) => { e.stopPropagation(); setJrnPopup(jrn); }}>
-        <td className="py-1" style={{ paddingLeft: `${24 + (depth + 2) * 20}px` }}>
+        <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 2) * 20}px` }}>
           <div className="flex items-center gap-2">
             <div className="w-1.5 h-1.5 rounded-full bg-indigo-200 flex-shrink-0" />
             <span className="flex-shrink-0 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded" style={subbody2Style}>{jrn.journalNumber ?? jrn.JournalNumber ?? ""}</span>
@@ -4885,8 +5776,10 @@ if (jrnExpanded) {
   const jrnNum = jrn.journalNumber ?? jrn.JournalNumber;
   const cmpJrn = (journalByCodeCmp.get(child.code) || []).find(j => (j.journalNumber ?? j.JournalNumber) === jrnNum);
   const cmp2Jrn = (journalByCodeCmp2.get(child.code) || []).find(j => (j.journalNumber ?? j.JournalNumber) === jrnNum);
+  const cmp3Jrn = (journalByCodeCmp3.get(child.code) || []).find(j => (j.journalNumber ?? j.JournalNumber) === jrnNum);
   const cmpAmt = cmpJrn ? -parseAmt(cmpJrn.amountYTD ?? cmpJrn.AmountYTD ?? 0) : 0;
   const cmp2Amt = cmp2Jrn ? -parseAmt(cmp2Jrn.amountYTD ?? cmp2Jrn.AmountYTD ?? 0) : 0;
+  const cmp3Amt = cmp3Jrn ? -parseAmt(cmp3Jrn.amountYTD ?? cmp3Jrn.AmountYTD ?? 0) : 0;
   return (
     <>
       {!ytdOnly && <PLAmountCell value={-amt} typoStyle={subbody2Style} />}
@@ -4894,11 +5787,15 @@ if (jrnExpanded) {
       {!ytdOnly && compareMode && <DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody2Style} />}
       {!ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cmp2Amt} typoStyle={subbody2Style} divider />}
       {!ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={-amt} b={cmp2Amt} typoStyle={subbody2Style} />}
+      {!ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && <PLAmountCell value={cmp3Amt} typoStyle={subbody2Style} divider />}
+      {!ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && <DeviationCells a={-amt} b={cmp3Amt} typoStyle={subbody2Style} />}
       {ytdOnly && <PLAmountCell value={-amt} typoStyle={subbody2Style} />}
       {ytdOnly && compareMode && <PLAmountCell value={cmpAmt} typoStyle={subbody2Style} divider />}
       {ytdOnly && compareMode && <DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody2Style} />}
 {ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cmp2Amt} typoStyle={subbody2Style} divider />}
       {ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={-amt} b={cmp2Amt} typoStyle={subbody2Style} />}
+      {ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && <PLAmountCell value={cmp3Amt} typoStyle={subbody2Style} divider />}
+      {ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && <DeviationCells a={-amt} b={cmp3Amt} typoStyle={subbody2Style} />}
       {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => (
         <td key={`hist-jrn-${h.year}-${h.month}-${k}`} />
       ))}
@@ -4914,19 +5811,24 @@ if (jrnExpanded) {
   });
 
 // Upload leaves (local accounts)
-  leaves.forEach((leaf, i) => {
+leaves.forEach((leaf, i) => {
     if (leaf.type === "plain") return;
     const leafKey = `drill-leaf-${node.code}-${parentCode ?? node.code}-${depth}-${i}`;
 
-    const leafExpanded = !!expandedMap[leafKey];
+    const leafExpanded = isOpen(leafKey);
     const hasDims = leaf.type === "localAccount" && leaf.children?.length > 0;
     const amt = leaf.amount ?? 0;
 
-rows.push(
+const leafIsMatch = (() => {
+      const q = debouncedQuery.trim().toLowerCase();
+      if (!q) return false;
+      return String(leaf.code ?? "").toLowerCase().includes(q) || String(leaf.name ?? "").toLowerCase().includes(q);
+    })();
+    rows.push(
   <tr key={leafKey}
-    className={`border-b border-[#1a2f8a]/5 bg-white transition-colors ${hasDims ? "cursor-pointer hover:bg-amber-50/30" : "hover:bg-[#f0f3ff]"}`}
-    onClick={hasDims ? (e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [leafKey]: !prev[leafKey] })); } : undefined}>
-    <td className="py-1.5 border-r-0" style={{ paddingLeft: `${24 + depth * 20}px` }}>
+    className={`border-b border-[#1a2f8a]/5 ${leafIsMatch ? "bg-[#fef3c7]" : "bg-white"} transition-colors ${hasDims ? "cursor-pointer hover:bg-amber-50/30" : "hover:bg-[#f0f3ff]"}`}
+    onClick={hasDims ? (e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [leafKey]: !isOpen(leafKey) })); } : undefined}>
+    <td className="py-1.5 border-r-0 k-sticky-acc" style={{ paddingLeft: `${24 + depth * 20}px` }}>
       <div className="flex items-center gap-2">
         <div className="w-2 h-px bg-[#1a2f8a]/10 flex-shrink-0" />
         {hasDims
@@ -4936,7 +5838,10 @@ rows.push(
         <span style={subbody1Style}>{leaf.name || ""}</span>
       </div>
     </td>
-{(() => {
+{multiCompany && selectedCompanies.map(co => (
+      <PLAmountCell key={`mc-leaf-${leaf.code ?? "noleaf"}-${co}-${depth}-${i}`} value={leaf.code ? getLeafValForCompany(leaf.code, co, ytdOnly) : 0} typoStyle={subbody1Style} centered />
+    ))}
+    {!multiCompany && (() => {
       const monthlyAmt = -(amt - (leaf.code ? getPrevLeafAmt(leaf.code) : 0));
       const ytdAmt = -amt;
       const displayAmt = ytdOnly ? ytdAmt : monthlyAmt;
@@ -4949,11 +5854,17 @@ rows.push(
             const cmpDisplay = ytdOnly ? cmpYtd : cmpYtd - cmpPrev;
             return <><PLAmountCell value={cmpDisplay} typoStyle={subbody1Style} divider /><DeviationCells a={displayAmt} b={cmpDisplay} typoStyle={subbody1Style} /></>;
           })()}
-          {compareMode && cmp2Enabled && (() => {
+{compareMode && cmp2Enabled && (() => {
             const cmp2Ytd = leaf.code ? -(getCmp2LeafAmt(leaf.code)) : 0;
             const cmp2Prev = leaf.code ? -(getCmp2PrevLeafAmt(leaf.code)) : 0;
             const cmp2Display = ytdOnly ? cmp2Ytd : cmp2Ytd - cmp2Prev;
             return <><PLAmountCell value={cmp2Display} typoStyle={subbody1Style} divider /><DeviationCells a={displayAmt} b={cmp2Display} typoStyle={subbody1Style} /></>;
+          })()}
+          {compareMode && cmp2Enabled && cmp3Enabled && (() => {
+            const cmp3Ytd = leaf.code ? -(getCmp3LeafAmt(leaf.code)) : 0;
+            const cmp3Prev = leaf.code ? -(getCmp3PrevLeafAmt(leaf.code)) : 0;
+            const cmp3Display = ytdOnly ? cmp3Ytd : cmp3Ytd - cmp3Prev;
+            return <><PLAmountCell value={cmp3Display} typoStyle={subbody1Style} divider /><DeviationCells a={displayAmt} b={cmp3Display} typoStyle={subbody1Style} /></>;
           })()}
         </>
       );
@@ -4963,27 +5874,33 @@ rows.push(
       const leafYtd = -(h.leafIdx.get(String(leaf.code ?? "")) ?? 0);
       const leafPrevYtd = -(h.prevLeafIdx.get(String(leaf.code ?? "")) ?? 0);
       const leafMon = leafYtd - leafPrevYtd;
-      return <PLAmountCell key={`hist-leaf-${h.year}-${h.month}-${i}`} value={ytdOnly ? leafYtd : leafMon} typoStyle={subbody1Style} />;
+      return <PLAmountCell key={`hist-leaf-${h.year}-${h.month}-${i}`} value={ytdOnly ? leafYtd : leafMon} typoStyle={subbody1Style} centered />;
     })}
   </tr>
 );
 
 if (leafExpanded && hasDims) {
   leaf.children.forEach((dim, j) => {
+    const dimIsMatch = q && (
+      String(dim.code ?? "").toLowerCase().includes(q)||
+      String(dim.name ?? "").toLowerCase().includes(q));
     rows.push(
     <tr key={`dim-${parentCode ?? node.code}-${depth}-${i}-${j}`}
-      className="border-b border-[#1a2f8a]/5 bg-white hover:bg-amber-50/40 transition-colors cursor-pointer"
+      className={`border-b border-[#1a2f8a]/5 ${dimIsMatch ? "bg-[#fef3c7]" : "bg-white"} hover:bg-amber-50/40 transition-colors cursor-pointer`}
       onClick={(e) => { e.stopPropagation(); setDimPopup(dim); }}>
-      <td className="py-1" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
+      <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
         <div className="flex items-center gap-1.5">
           <div className="w-2 h-px bg-amber-200 flex-shrink-0" />
           <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded flex-shrink-0">{t("label_dim")}</span>
           <span style={subbody2Style}>{dim.name || dim.code}</span>
         </div>
       </td>
-<PLAmountCell value={-dim.amount} typoStyle={subbody2Style} />
-      {compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-      {compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+{multiCompany ? selectedCompanies.map(co => (
+        <td key={`mc-dim-${dim.code ?? "nocode"}-${co}-${depth}-${i}-${j}`} />
+      )) : <PLAmountCell value={-dim.amount} typoStyle={subbody2Style} />}
+      {!multiCompany && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+{!multiCompany && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+      {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
       {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => (
         <td key={`hist-dim-${h.year}-${h.month}-${j}`} />
       ))}
@@ -5302,7 +6219,7 @@ function buildSavedMappingLiteral(tree) {
   return cleaned.length === 0 ? null : cleaned;
 }
 
-function BSAmountCell({ value, divider, typoStyle }) {
+function BSAmountCell({ value, divider, typoStyle, centered }) {
   const animated = useCountUp(value ?? 0, 1000);
   const isEmpty = value === 0;
   const isNeg = animated < 0;
@@ -5315,7 +6232,7 @@ function BSAmountCell({ value, divider, typoStyle }) {
   };
 
   return (
-    <td className="pl-8 pr-6 py-2.5 text-right whitespace-nowrap tabular-nums" style={{ ...style, width: "200px" }}>
+    <td className={`py-2.5 whitespace-nowrap tabular-nums ${centered ? "text-center px-4" : "pl-8 pr-6 text-right"}`} style={{ ...style, width: "200px" }}>
       {isEmpty ? "—" : isNeg ? `(${fmtAmt(Math.abs(animated))})` : fmtAmt(animated)}
     </td>
   );
@@ -5340,12 +6257,17 @@ function BSDeviationCells({ a, b, typoStyle }) {
 
 
 
-function BalanceSheet({ multiCompany = false, externalBsDrillMap, externalSetBsDrillMap, onHistoryExpandedChange, groupAccounts, uploadedAccounts,dimensions = [], loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], onCompareChange, dimensionActive = false, upDimGroup = "", upDimension = "", filteredDims = [], externalCmp2Enabled, onBsCmp2EnabledChange, breakers = { pl: {}, bs: {}, cf: {} }, pgcBsMapping = null, savedBsLiteral = null,
+function BalanceSheet({ multiCompany = false, selectedCompanies = [], externalBsDrillMap, externalSetBsDrillMap, onHistoryExpandedChange, externalHistoryExpanded, externalHistoryMonths, onHistoryMonthsChange, groupAccounts, uploadedAccounts,dimensions = [], loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], onCompareChange, dimensionActive = false, upDimGroup = "", upDimension = "", filteredDims = [], externalCmp2Enabled, onBsCmp2EnabledChange, breakers = { pl: {}, bs: {}, cf: {} }, pgcBsMapping = null, savedBsLiteral = null,
   compareMode, setCompareMode,
   cmpYear, setCmpYear, cmpMonth, setCmpMonth, cmpSource, setCmpSource, cmpStructure, setCmpStructure, cmpCompany, setCmpCompany,
   cmpData, setCmpData,
-  cmp2Year, setCmp2Year, cmp2Month, setCmp2Month, cmp2Source, setCmp2Source, cmp2Structure, setCmp2Structure, cmp2Company, setCmp2Company,
+cmp2Year, setCmp2Year, cmp2Month, setCmp2Month, cmp2Source, setCmp2Source, cmp2Structure, setCmp2Structure, cmp2Company, setCmp2Company,
   cmp2Data, setCmp2Data,
+  cmp3Year, setCmp3Year, cmp3Month, setCmp3Month, cmp3Source, setCmp3Source, cmp3Structure, setCmp3Structure, cmp3Company, setCmp3Company,
+  cmp3Data, setCmp3Data,
+  externalCmp3Enabled, onBsCmp3EnabledChange,
+  bsCmp3DimGroups, setBsCmp3DimGroups,
+  bsCmp3Dimensions, setBsCmp3Dimensions,
 bsCmpDimGroups, setBsCmpDimGroups,
   bsCmpDimensions, setBsCmpDimensions,
   bsCmp2DimGroups, setBsCmp2DimGroups,
@@ -5356,8 +6278,23 @@ const { colors } = useSettings();
   const t = useT();
   const MONTHS = useMonths();
 const [filtersOpen, setFiltersOpen] = useState(true);
-  const [historyExpanded, setHistoryExpanded] = useState(false);
-  const [historyMonths, setHistoryMonths] = useState([]);
+  const [historyExpandedInternal, setHistoryExpandedInternal] = useState(false);
+  const historyExpanded = externalHistoryExpanded !== undefined ? externalHistoryExpanded : historyExpandedInternal;
+  const setHistoryExpanded = (v) => {
+    setHistoryExpandedInternal(v);
+    onHistoryExpandedChange?.(v);
+  };
+const [historyMonthsInternal, setHistoryMonthsInternal] = useState([]);
+  const historyMonths = externalHistoryMonths !== undefined ? externalHistoryMonths : historyMonthsInternal;
+  const historyMonthsRef = useRef(historyMonths);
+  useEffect(() => { historyMonthsRef.current = historyMonths; }, [historyMonths]);
+  const setHistoryMonths = useCallback((updater) => {
+    const current = historyMonthsRef.current;
+    const next = typeof updater === "function" ? updater(current) : updater;
+    historyMonthsRef.current = next;
+    setHistoryMonthsInternal(next);
+    onHistoryMonthsChange?.(next);
+  }, [onHistoryMonthsChange]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
   const fetchBSHistoryMonth = useCallback(async (y, mo) => {
@@ -5373,14 +6310,12 @@ const [filtersOpen, setFiltersOpen] = useState(true);
 
 const toggleBSHistory = useCallback(async () => {
     if (compareMode || multiCompany) return;
-    if (historyExpanded) {
+if (historyExpanded) {
       setHistoryExpanded(false);
       setHistoryMonths([]);
-      onHistoryExpandedChange?.(false);
       return;
     }
     setHistoryExpanded(true);
-    onHistoryExpandedChange?.(true);
     setHistoryLoading(true);
     const targets = [];
     let y = Number(year), m = Number(month);
@@ -5396,9 +6331,29 @@ const toggleBSHistory = useCallback(async () => {
     setHistoryLoading(false);
   }, [compareMode, historyExpanded, year, month, fetchBSHistoryMonth, onHistoryExpandedChange]);
 
-  const localName = useCallback((node) => {
+const localName = useCallback((node) => {
     return pgcBsMapping?.names?.get(String(node.code)) ?? node.name;
   }, [pgcBsMapping]);
+
+const matchesSelf = useCallback((n, q) => {
+  if (!q) return false;
+  if (String(n.code ?? "").toLowerCase().includes(q)) return true;
+  if (String(localName(n) ?? "").toLowerCase().includes(q)) return true;
+  if (Array.isArray(n.uploadLeaves)) {
+    for (const leaf of n.uploadLeaves) {
+      if (leaf.type === "plain") continue;
+      if (String(leaf.code ?? "").toLowerCase().includes(q)) return true;
+      if (String(leaf.name ?? "").toLowerCase().includes(q)) return true;
+      if (Array.isArray(leaf.children)) {
+        for (const dim of leaf.children) {
+          if (String(dim.code ?? "").toLowerCase().includes(q)) return true;
+          if (String(dim.name ?? "").toLowerCase().includes(q)) return true;
+        }
+      }
+    }
+  }
+  return false;
+}, [localName]);
 
   const [cmpLoading, setCmpLoading] = useState(false);
   const header3Style = useTypo("header3");
@@ -5409,6 +6364,10 @@ const toggleBSHistory = useCallback(async () => {
   const subbody2Style = useTypo("subbody2");
   const [cmp2Loading, setCmp2Loading] = useState(false);
 const [bsView, setBsView] = useState("summary");
+  const [searchActive, setSearchActive] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const debouncedQuery = useDeferredValue(searchQuery);
+  const searchInputRef = useRef(null);
 
 const bsCmpFilteredDims = useMemo(() => {
   if (!bsCmpDimGroups || bsCmpDimGroups.length === 0) return effectiveDimensions;
@@ -5428,6 +6387,16 @@ const bsCmp2FilteredDims = useMemo(() => {
 const [cmp2EnabledInternal, setCmp2EnabledInternal] = useState(true);
   const cmp2Enabled = externalCmp2Enabled !== undefined ? externalCmp2Enabled : cmp2EnabledInternal;
   const setCmp2Enabled = (v) => { setCmp2EnabledInternal(v); onBsCmp2EnabledChange?.(v); };
+const [cmp3EnabledInternal, setCmp3EnabledInternal] = useState(true);
+  const cmp3Enabled = externalCmp3Enabled !== undefined ? externalCmp3Enabled : cmp3EnabledInternal;
+  const setCmp3Enabled = (v) => { setCmp3EnabledInternal(v); onBsCmp3EnabledChange?.(v); };
+const bsCmp3FilteredDims = useMemo(() => {
+  if (!bsCmp3DimGroups || bsCmp3DimGroups.length === 0) return effectiveDimensions;
+  return effectiveDimensions.filter(d => {
+    const g = typeof d === "object" ? (d.dimensionGroup ?? d.DimensionGroup ?? "") : "";
+    return bsCmp3DimGroups.includes(g);
+  });
+}, [effectiveDimensions, bsCmp3DimGroups]);
 const bsDrillMap = externalBsDrillMap ?? {};
 const setBsDrillMap = externalSetBsDrillMap ?? (() => {});
 
@@ -5472,6 +6441,73 @@ const bsCmp2LeafIndex = useMemo(() => {
   });
   return idx;
 }, [cmp2Data]);
+const bsCmp3LeafIndex = useMemo(() => {
+  const idx = new Map();
+  (cmp3Data || []).forEach(row => {
+    const lac = String(getField(row, "localAccountCode") ?? "");
+    const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+    if (!lac) return;
+    idx.set(lac, (idx.get(lac) ?? 0) + amt);
+  });
+  return idx;
+}, [cmp3Data]);
+
+// ── Multi-company BS indexes ────────────────────────────────
+const perCompanyBsData = useMemo(() => {
+  if (!multiCompany) return null;
+  const map = new Map();
+  selectedCompanies.forEach(co => map.set(co, []));
+  (uploadedAccounts || []).forEach(row => {
+    const co = String(getField(row, "companyShortName", "CompanyShortName") ?? "");
+    if (map.has(co)) map.get(co).push(row);
+  });
+  return map;
+}, [uploadedAccounts, selectedCompanies, multiCompany]);
+
+const perCompanyBsNodeByCode = useMemo(() => {
+  if (!multiCompany || !perCompanyBsData) return null;
+  const map = new Map();
+  selectedCompanies.forEach(co => {
+    const t = buildTree(groupAccounts, perCompanyBsData.get(co) ?? [], !dimensionActive);
+    const codeMap = new Map();
+    const walk = (n) => { codeMap.set(n.code, n); n.children?.forEach(walk); };
+    t.forEach(walk);
+    map.set(co, codeMap);
+  });
+  return map;
+}, [groupAccounts, perCompanyBsData, selectedCompanies, multiCompany, dimensionActive]);
+
+const getBsValForCompany = useCallback((code, company) => {
+  const node = perCompanyBsNodeByCode?.get(company)?.get(code);
+  if (!node) return 0;
+  const raw = sumNode(node);
+  if (pgcBsMapping?.rows) {
+    const m = pgcBsMapping.rows.get(String(code));
+    if (m && (m.section === "PASIVO" || m.section === "PATRIMONIO")) return -raw;
+    return raw;
+  }
+  return Number(code) >= 599999 ? -raw : raw;
+}, [perCompanyBsNodeByCode, pgcBsMapping]);
+
+const perCompanyBsLeafIdx = useMemo(() => {
+  if (!multiCompany) return null;
+  const result = new Map();
+  selectedCompanies.forEach(co => {
+    const idx = new Map();
+    (perCompanyBsData?.get(co) || []).forEach(row => {
+      const lac = String(getField(row, "localAccountCode") ?? "");
+      if (!lac) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      idx.set(lac, (idx.get(lac) ?? 0) + amt);
+    });
+    result.set(co, idx);
+  });
+  return result;
+}, [multiCompany, perCompanyBsData, selectedCompanies]);
+
+const getBsLeafValForCompany = useCallback((localCode, co) => {
+  return perCompanyBsLeafIdx?.get(co)?.get(String(localCode)) ?? 0;
+}, [perCompanyBsLeafIdx]);
 
 const [allCompaniesData, setAllCompaniesData] = useState([]);
 const [allCompaniesLoading, setAllCompaniesLoading] = useState(false);
@@ -5576,7 +6612,7 @@ const companyTree = useMemo(() => {
 
 function renderBSDrill(node, parentKey, parentDepth = 0) {
 
-  if (!bsDrillMap[parentKey]) return null;
+  if (!isOpen(parentKey)) return null;
   const children = (node.children || []).filter(hasData);
   const leaves = (node.uploadLeaves || []).filter(l => l.type !== "plain");
 
@@ -5596,17 +6632,22 @@ const renderDrillChildren = (children, leaves, depth, contextKey) => {
       // PGC: skip children whose code is already shown as a sibling in the flat list
       if (pgcRenderedCodes && pgcRenderedCodes.has(String(child.code))) return;
       const childKey = `bsdrill-${contextKey}-${child.code}`;
-      const childExpanded = !!bsDrillMap[childKey];
+      const childExpanded = isOpen(childKey);
       const grandkids = (child.children || []).filter(hasData);
       const hasMore = grandkids.length > 0 || (child.uploadLeaves?.filter(l => l.type !== "plain").length > 0);
       const total = Number(child.code) >= 599999 ? -sumNode(child) : sumNode(child);
       const isBold = BS_HIGHLIGHTED_CODES.has(String(child.code));
 
-rows.push(
+const isChildMatch = (() => {
+        const q = debouncedQuery.trim().toLowerCase();
+        if (!q) return false;
+        return String(child.code ?? "").toLowerCase().includes(q) || String(localName(child) ?? "").toLowerCase().includes(q);
+      })();
+      rows.push(
   <tr key={childKey}
-    className={`border-b border-[#1a2f8a]/5 transition-colors ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : "hover:bg-[#eef1fb]/30"}`}
+    className={`border-b border-[#1a2f8a]/5 ${isChildMatch ? "bg-[#fef3c7]" : ""} transition-colors ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : "hover:bg-[#eef1fb]/30"}`}
     onClick={hasMore ? () => setBsDrillMap(prev => ({ ...prev, [childKey]: !prev[childKey] })) : undefined}>
-<td className="py-2 whitespace-nowrap" style={{ paddingLeft: `${24 + depth * 20}px` }}>
+<td className="py-2 whitespace-nowrap k-sticky-acc" style={{ paddingLeft: `${24 + depth * 20}px` }}>
 <div className="flex items-center">
   {hasMore
     ? <span className="text-[#1a2f8a]/50 mr-2">{childExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
@@ -5615,8 +6656,11 @@ rows.push(
   <span style={body2Style}>{child.name}</span>
 </div>
     </td>
-<BSAmountCell value={total} typoStyle={body2Style} />
-          {compareMode && (() => {
+{multiCompany && selectedCompanies.map(co => (
+            <BSAmountCell key={`bsmc-child-${child.code}-${co}`} value={getBsValForCompany(child.code, co)} typoStyle={body2Style} centered />
+          ))}
+          {!multiCompany && <BSAmountCell value={total} typoStyle={body2Style} />}
+{!multiCompany && compareMode && (() => {
             const activeCmpTree = bsView === "summary" ? cmpTree : allCmpTree;
             const cmpRaw = activeCmpTree.length ? getNodeValue(activeCmpTree, child.code) : 0;
             const cmpVal = Number(child.code) >= 599999 ? -cmpRaw : cmpRaw;
@@ -5632,10 +6676,18 @@ rows.push(
                   <BSDeviationCells a={total} b={cmp2Val} typoStyle={body2Style} />
                 </>;
               })()}
+              {cmp2Enabled && cmp3Enabled && (() => {
+                const cmp3Raw = cmp3Tree.length ? getNodeValue(cmp3Tree, child.code) : 0;
+                const cmp3Val = Number(child.code) >= 599999 ? -cmp3Raw : cmp3Raw;
+                return <>
+                  <BSAmountCell value={cmp3Val} typoStyle={body2Style} divider />
+                  <BSDeviationCells a={total} b={cmp3Val} typoStyle={body2Style} />
+                </>;
+              })()}
             </>;
           })()}
-          {historyExpanded && !compareMode && bsHistoryProcessed.map(h => (
-            <BSAmountCell key={`bshist-drill-${h.year}-${h.month}-${child.code}`} value={getBSHistVal(h, child.code)} typoStyle={body2Style} />
+{historyExpanded && !compareMode && bsHistoryProcessed.map(h => (
+            <BSAmountCell key={`bshist-drill-${h.year}-${h.month}-${child.code}`} value={getBSHistVal(h, child.code)} typoStyle={body2Style} centered />
           ))}
         </tr>
       );
@@ -5652,12 +6704,12 @@ if (childExpanded && hasMore) {
         const jrnRows = (journalByCode.get(child.code) || []);
         if (jrnRows.length > 0) {
           const jrnKey = `bsjrn-child-${contextKey}-${child.code}`;
-          const jrnExpanded = !!bsDrillMap[jrnKey];
+          const jrnExpanded = isOpen(jrnKey);
           rows.push(
             <tr key={jrnKey}
               className="border-b border-[#1a2f8a]/5 cursor-pointer hover:bg-indigo-50/50 transition-colors bg-indigo-50/20"
               onClick={() => setBsDrillMap(prev => ({ ...prev, [jrnKey]: !prev[jrnKey] }))}>
-              <td className="py-1" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
+              <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
                 <div className="flex items-center gap-1.5">
                   <div className="w-2 h-px bg-indigo-200 flex-shrink-0" />
 <span className="text-[#1a2f8a]/40 flex-shrink-0">
@@ -5669,9 +6721,11 @@ if (childExpanded && hasMore) {
                   <span className="text-[10px] text-gray-400">{jrnRows.length} {jrnRows.length === 1 ? t("entry") : t("entries")}</span>f
                 </div>
               </td>
-<td className="text-right pr-4 py-1 font-mono text-xs text-gray-300">—</td>
-              {compareMode && <><td /><td /><td /></>}
-              {compareMode && cmp2Enabled && <><td /><td /><td /></>}
+{multiCompany ? selectedCompanies.map(co => (
+                <td key={`bsmc-jrnhdr-${child.code}-${co}`} />
+              )) : <td className="text-right pr-4 py-1 font-mono text-xs text-gray-300">—</td>}
+              {!multiCompany && compareMode && <><td /><td /><td /></>}
+              {!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
             </tr>
           );
           if (jrnExpanded) {
@@ -5681,7 +6735,7 @@ if (childExpanded && hasMore) {
               <tr key={`bsjrn-child-entry-${contextKey}-${child.code}-${k}`}
                   className="border-b border-[#1a2f8a]/5 hover:bg-indigo-50/40 transition-colors bg-indigo-50/10 cursor-pointer"
                   onClick={() => setJrnPopup(jrn)}>
-                  <td className="py-1" style={{ paddingLeft: `${24 + (depth + 2) * 20}px` }}>
+                  <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 2) * 20}px` }}>
                     <div className="flex items-center gap-1.5">
                       <div className="w-2 h-px bg-indigo-100 flex-shrink-0" />
                       <span className="text-[10px] font-mono text-indigo-400 flex-shrink-0">{jrn.journalNumber ?? jrn.JournalNumber ?? ""}</span>
@@ -5690,11 +6744,13 @@ if (childExpanded && hasMore) {
                       {(jrn.counterpartyShortName ?? jrn.CounterpartyShortName) && <span className="text-[10px] text-gray-300 ml-1">· {jrn.counterpartyShortName ?? jrn.CounterpartyShortName}</span>}
                     </div>
                   </td>
-<td className="text-right pr-4 py-1 font-mono text-xs text-indigo-400">
+{multiCompany ? selectedCompanies.map(co => (
+                    <td key={`bsmc-jrn-${jrn.journalNumber ?? jrn.JournalNumber ?? k}-${co}`} />
+                  )) : <td className="text-right pr-4 py-1 font-mono text-xs text-indigo-400">
                     {amt === 0 ? "—" : fmtAmt(amt)}
-                  </td>
-                  {compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-                  {compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+                  </td>}
+                  {!multiCompany && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+                  {!multiCompany && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
                 </tr>
               );
             });
@@ -5705,15 +6761,20 @@ if (childExpanded && hasMore) {
 
     leaves.forEach((leaf, i) => {
       const leafKey = `bsdrill-leaf-${contextKey}-${depth}-${i}`;
-      const leafExpanded = !!bsDrillMap[leafKey];
+      const leafExpanded = isOpen(leafKey);
       const hasDims = leaf.type === "localAccount" && leaf.children?.length > 0;
       const amt = leaf.amount ?? 0;
 
       rows.push(
 <tr key={leafKey}
-          className={`border-b border-[#1a2f8a]/5 bg-[#fafbff] transition-colors ${hasDims ? "cursor-pointer hover:bg-amber-50/40" : "hover:bg-[#eef1fb]/20"}`}
+          className={`border-b border-[#1a2f8a]/5 ${(() => {
+            const q = debouncedQuery.trim().toLowerCase();
+            if (!q) return "bg-[#fafbff]";
+            const m = String(leaf.code ?? "").toLowerCase().includes(q) || String(leaf.name ?? "").toLowerCase().includes(q);
+            return m ? "bg-[#fef3c7]" : "bg-[#fafbff]";
+          })()} transition-colors ${hasDims ? "cursor-pointer hover:bg-amber-50/40" : "hover:bg-[#eef1fb]/20"}`}
           onClick={hasDims ? () => setBsDrillMap(prev => ({ ...prev, [leafKey]: !prev[leafKey] })) : undefined}>
-<td className="py-1.5 whitespace-nowrap" style={{ paddingLeft: `${24 + depth * 20}px` }}>
+<td className="py-1.5 whitespace-nowrap k-sticky-acc" style={{ paddingLeft: `${24 + depth * 20}px` }}>
   <div className="flex items-center">
     {hasDims
       ? <span className="text-[#1a2f8a]/50 mr-2">{leafExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
@@ -5722,8 +6783,11 @@ if (childExpanded && hasMore) {
     <span style={subbody1Style}>{leaf.name || ""}</span>
   </div>
 </td>
-<BSAmountCell value={amt} typoStyle={subbody1Style} />
-          {compareMode && (() => {
+{multiCompany && selectedCompanies.map(co => (
+            <BSAmountCell key={`bsmc-leaf-${leaf.code ?? "noleaf"}-${co}-${depth}-${i}`} value={leaf.code ? getBsLeafValForCompany(leaf.code, co) : 0} typoStyle={subbody1Style} centered />
+          ))}
+          {!multiCompany && <BSAmountCell value={amt} typoStyle={subbody1Style} />}
+{!multiCompany && compareMode && (() => {
             const cmpAmt = leaf.code ? bsCmpLeafIndex.get(String(leaf.code)) ?? 0 : 0;
             return <>
               <BSAmountCell value={cmpAmt} typoStyle={subbody1Style} divider />
@@ -5735,11 +6799,18 @@ if (childExpanded && hasMore) {
                   <BSDeviationCells a={amt} b={cmp2Amt} typoStyle={subbody1Style} />
                 </>;
               })()}
+              {cmp2Enabled && cmp3Enabled && (() => {
+                const cmp3Amt = leaf.code ? (bsCmp3LeafIndex.get(String(leaf.code)) ?? 0) : 0;
+                return <>
+                  <BSAmountCell value={cmp3Amt} typoStyle={subbody1Style} divider />
+                  <BSDeviationCells a={amt} b={cmp3Amt} typoStyle={subbody1Style} />
+                </>;
+              })()}
             </>;
           })()}
 {historyExpanded && !compareMode && bsHistoryProcessed.map(h => {
             const leafAmt = leaf.code ? (h.leafIdx.get(String(leaf.code)) ?? 0) : 0;
-            return <BSAmountCell key={`bshist-leaf-${h.year}-${h.month}-${i}`} value={leafAmt} typoStyle={subbody1Style} />;
+            return <BSAmountCell key={`bshist-leaf-${h.year}-${h.month}-${i}`} value={leafAmt} typoStyle={subbody1Style} centered />;
           })}
         </tr>
       );
@@ -5748,18 +6819,26 @@ if (childExpanded && hasMore) {
         leaf.children.forEach((dim, j) => {
           rows.push(
 <tr key={`bsdrill-dim-${contextKey}-${depth}-${i}-${j}`}
-              className="border-b border-[#1a2f8a]/5 hover:bg-amber-50/40 transition-colors bg-amber-50/10 cursor-pointer"
+              className={`border-b border-[#1a2f8a]/5 ${(() => {
+                const q = debouncedQuery.trim().toLowerCase();
+                if (!q) return "bg-amber-50/10";
+                const m = String(dim.code ?? "").toLowerCase().includes(q) || String(dim.name ?? "").toLowerCase().includes(q);
+                return m ? "bg-[#fef3c7]" : "bg-amber-50/10";
+              })()} hover:bg-amber-50/40 transition-colors cursor-pointer`}
               onClick={() => setDimPopup(dim)}>
-              <td className="py-1" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
+              <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
                 <div className="flex items-center gap-1.5">
                   <div className="w-2 h-px bg-amber-200 flex-shrink-0" />
                   <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded flex-shrink-0">{t("label_dim")}</span>
                   <span className="text-xs text-gray-400 italic">{dim.name || dim.code}</span>
                 </div>
               </td>
-<BSAmountCell value={dim.amount} typoStyle={subbody2Style} />
-{compareMode && <><td /><td /><td /></>}
-{compareMode && cmp2Enabled && <><td /><td /><td /></>}
+{multiCompany ? selectedCompanies.map(co => (
+                  <td key={`bsmc-dim-${dim.code ?? "nocode"}-${co}-${depth}-${i}-${j}`} />
+                )) : <BSAmountCell value={dim.amount} typoStyle={subbody2Style} />}
+{!multiCompany && compareMode && <><td /><td /><td /></>}
+{!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
+{!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
             </tr>
           );
         });
@@ -5768,12 +6847,12 @@ if (childExpanded && hasMore) {
         const jrnRows = (journalByCode.get(leaf.code) || []);
         if (jrnRows.length > 0) {
           const jrnKey = `bsjrn-leaf-${contextKey}-${depth}-${i}`;
-          const jrnExpanded = !!bsDrillMap[jrnKey];
+          const jrnExpanded = isOpen(jrnKey);
           rows.push(
             <tr key={jrnKey}
               className="border-b border-[#1a2f8a]/5 cursor-pointer hover:bg-indigo-50/40 transition-colors"
               onClick={() => setBsDrillMap(prev => ({ ...prev, [jrnKey]: !prev[jrnKey] }))}>
-              <td className="py-1" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
+              <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
                 <div className="flex items-center gap-1.5">
                   <div className="w-2 h-px bg-indigo-200 flex-shrink-0" />
                   <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded flex-shrink-0">
@@ -5792,7 +6871,7 @@ if (childExpanded && hasMore) {
                 <tr key={`bsjrn-${contextKey}-${depth}-${i}-${k}`}
                   className="border-b border-[#1a2f8a]/5 hover:bg-indigo-50/40 transition-colors bg-indigo-50/10 cursor-pointer"
                   onClick={() => setJrnPopup(jrn)}>
-                  <td className="py-1" style={{ paddingLeft: `${24 + (depth + 2) * 20}px` }}>
+                  <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 2) * 20}px` }}>
                     <div className="flex items-center gap-1.5">
                       <div className="w-2 h-px bg-indigo-100 flex-shrink-0" />
                       <span className="text-[10px] font-mono text-indigo-400 flex-shrink-0">{jrn.journalNumber ?? jrn.JournalNumber ?? ""}</span>
@@ -5842,7 +6921,7 @@ function renderNode(node, depth = 0) {
     const isBold = isBSHighlighted(node);
     const kids = (node.children || []).filter(hasData);
     const drillKey = `bsmulti-${node.code}`;
-   const expanded = !!bsDrillMap[drillKey];
+   const expanded = isOpen(drillKey);
     const hasMore = kids.length > 0 || node.uploadLeaves?.filter(l => l.type !== "plain").length > 0;
 
     // Render kids first (same as before — post-order)
@@ -5860,7 +6939,7 @@ function renderNode(node, depth = 0) {
       <tr key={node.code}
         className={`border-b border-gray-100 ${isBold ? "bg-[#eef1fb]" : "bg-white"} ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
         onClick={hasMore ? () => bsDrill(drillKey) : undefined}>
-<td className="px-6 py-2.5 sticky left-0 bg-inherit z-10 min-w-[220px]">
+<td className="px-6 py-2.5 k-sticky-acc min-w-[220px]">
           <div className="flex items-center gap-2">
             {hasMore
               ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{expanded ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
@@ -5980,26 +7059,32 @@ const flatNodes = bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes;
       const hasLeaves = (node.uploadLeaves || []).some(l => l.type !== "plain");
       const hasJournal = (journalByCode.get(node.code) || []).length > 0;
       const hasMore = flatChildren.length > 0 || hasNonFlatChildren || hasLeaves || hasJournal;
-      const expanded = !!bsDrillMap[drillKey];
+     const expanded = isOpen(drillKey);
 
 const divider = effectiveBreakersBs[String(node.code)];
       if (divider) {
 rows.push(
 <tr key={`bsdivider-${node.code}`} style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rows.length, 25) * 40}ms both` }}>
-<td colSpan={4 + (compareMode ? 3 : 0) + (compareMode && cmp2Enabled ? 3 : 0) + (historyExpanded ? bsHistoryProcessed.length : 0)} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
-             <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
+            <td style={{ backgroundColor: divider.color, position: "sticky", left: 0, zIndex: 4 }} className="px-6 py-1.5 whitespace-nowrap">
+              <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
             </td>
+            <td colSpan={(multiCompany ? selectedCompanies.length + 1 : 3 + (compareMode ? 3 : 0) + (compareMode && cmp2Enabled ? 3 : 0) + (historyExpanded ? bsHistoryProcessed.length : 0))} style={{ backgroundColor: divider.color }} />
           </tr>
         );
       }
 
 const rowStyle = depth === 0 ? body1Style : body2Style;
-rows.push(
+const isMatchSelf = (() => {
+        const q = debouncedQuery.trim().toLowerCase();
+        if (!q) return false;
+        return String(node.code ?? "").toLowerCase().includes(q) || String(localName(node) ?? "").toLowerCase().includes(q);
+      })();
+      rows.push(
   <tr key={node.code}
-    className={`border-b border-gray-100 bg-white ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
+    className={`border-b border-gray-100 ${isMatchSelf ? "bg-[#fef3c7]" : "bg-white"} ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
     style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rows.length, 25) * 40}ms both` }}
     onClick={hasMore ? () => bsDrill(drillKey) : undefined}>
-<td className="py-2.5 whitespace-nowrap" style={{ paddingLeft: `${24 + depth * 18}px` }}>
+<td className="py-2.5 whitespace-nowrap k-sticky-acc" style={{ paddingLeft: `${24 + depth * 18}px` }}>
       <div className="flex items-center">
         {hasMore
           ? <span className="text-[#1a2f8a]/50 mr-2">{expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
@@ -6010,9 +7095,13 @@ rows.push(
         </span>
       </div>
     </td>
-<BSAmountCell value={total} typoStyle={rowStyle} />
-    {historyExpanded && !compareMode && bsHistoryProcessed.map(h => (
-      <BSAmountCell key={`bshist-${h.year}-${h.month}-${node.code}`} value={getBSHistVal(h, node.code)} typoStyle={rowStyle} />
+{multiCompany
+  ? selectedCompanies.map(co => (
+      <BSAmountCell key={`bsmc-val-${node.code}-${co}`} value={getBsValForCompany(node.code, co)} typoStyle={rowStyle} centered />
+    ))
+  : <BSAmountCell value={total} typoStyle={rowStyle} />}
+{!multiCompany && historyExpanded && !compareMode && bsHistoryProcessed.map(h => (
+      <BSAmountCell key={`bshist-${h.year}-${h.month}-${node.code}`} value={getBSHistVal(h, node.code)} typoStyle={rowStyle} centered />
     ))}
   </tr>
 );
@@ -6048,9 +7137,10 @@ const BS_DIVIDERS = Object.keys(breakers.bs).length
 if (divider) {
           rows.push(
             <tr key={`bsdivider-${node.code}`}>
-              <td colSpan={cmp2Enabled ? 9 : 6} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
-               <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
+              <td style={{ backgroundColor: divider.color, position: "sticky", left: 0, zIndex: 4 }} className="px-6 py-1.5 whitespace-nowrap">
+                <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
               </td>
+              <td colSpan={(cmp2Enabled ? 8 : 5)} style={{ backgroundColor: divider.color }} />
             </tr>
           );
         }
@@ -6062,15 +7152,14 @@ rows.push(
     className={`border-b border-gray-100 bg-white ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
     style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rows.length, 25) * 40}ms both` }}
     onClick={hasMore ? () => bsDrill(drillKey) : undefined}>
-<td className="px-6 py-2.5 whitespace-nowrap">
+    <td className="px-6 py-2.5 whitespace-nowrap k-sticky-acc">
       <div className="flex items-center">
-        {hasMore && (
-          <span className="text-[#1a2f8a]/50 mr-2">
-            {expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
-          </span>
-        )}
+        {hasMore
+          ? <span className="text-[#1a2f8a]/50 mr-2">{expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
+          : <span className="inline-block mr-2" style={{ width: 12 }} />}
+        <span className="mr-2 font-mono text-gray-400" style={subbody2Style}>{node.code}</span>
         <span style={body1Style}>
-          {(node.name ?? "").charAt(0).toUpperCase() + (node.name ?? "").slice(1).toLowerCase()}
+          {(() => { const n = localName(node); return n.charAt(0).toUpperCase() + n.slice(1).toLowerCase(); })()}
         </span>
       </div>
     </td>
@@ -6109,11 +7198,17 @@ useEffect(() => {
     }
   }, [compareMode, cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany, fetchBSCompare]);
 
-  useEffect(() => {
+useEffect(() => {
     if (compareMode && cmp2Source && cmp2Structure && cmp2Year && cmp2Month && cmp2Company) {
       fetchBSCompare(cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, setCmp2Data, setCmp2Loading);
     }
   }, [compareMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, fetchBSCompare]);
+
+  useEffect(() => {
+    if (compareMode && cmp3Enabled && cmp3Source && cmp3Structure && cmp3Year && cmp3Month && cmp3Company) {
+      fetchBSCompare(cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3Company, setCmp3Data, () => {});
+    }
+  }, [compareMode, cmp3Enabled, cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3Company, fetchBSCompare]);
 
   useEffect(() => {
     onCompareChange?.(
@@ -6145,6 +7240,7 @@ const sumNodeFixed = useCallback((node) => {
 }, [rawSumByCode]);
   const cmpTree = useMemo(() => compareMode ? buildTree(groupAccounts, cmpData, !dimensionActive) : [], [groupAccounts, cmpData, compareMode, dimensionActive]);
   const cmp2Tree = useMemo(() => compareMode ? buildTree(groupAccounts, cmp2Data, !dimensionActive) : [], [groupAccounts, cmp2Data, compareMode, dimensionActive]);
+  const cmp3Tree = useMemo(() => compareMode && cmp3Enabled ? buildTree(groupAccounts, cmp3Data, !dimensionActive) : [], [groupAccounts, cmp3Data, compareMode, cmp3Enabled, dimensionActive]);
 
   // ADD THESE TWO:
 const allCmpTree = useMemo(
@@ -6206,7 +7302,7 @@ const getBSHistVal = useCallback((h, code) => {
       .filter(n => n && hasData(n) && n.accountType === "B/S");
   }, [tree, pgcBsMapping, sectionFilterForView]);
 
-  const bsPgcAllSumNodes = useMemo(() => {
+const bsPgcAllSumNodes = useMemo(() => {
     if (!pgcBsMapping?.rows) return null;
     const treeByCode = new Map();
     (function index(nodes) {
@@ -6218,6 +7314,164 @@ const getBSHistVal = useCallback((h, code) => {
       .map(([code]) => treeByCode.get(code))
       .filter(n => n && hasData(n) && n.accountType === "B/S");
   }, [tree, pgcBsMapping, sectionFilterForView]);
+
+const searchExpansionMap = useMemo(() => {
+  const q = debouncedQuery.trim().toLowerCase();
+  if (!q) return null;
+  const result = {};
+
+  // Saved-mapping literal path
+  if (savedBsLiteral) {
+    const treeByCode = new Map();
+    (function indexTree(nodes) {
+      nodes.forEach(n => { treeByCode.set(String(n.code), n); indexTree(n.children || []); });
+    })(tree);
+
+    savedBsLiteral.forEach((section, secIdx) => {
+      const walk = (node, parentPath) => {
+        const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
+        let descendantMatch = false;
+
+        (node.children || []).forEach(child => {
+          if (walk(child, `${parentPath}-${node.id}`)) descendantMatch = true;
+        });
+
+        const gaNode = treeByCode.get(String(node.code));
+        const leaves = (gaNode?.uploadLeaves || []).filter(l => l.type !== "plain");
+        leaves.forEach((leaf, i) => {
+          const leafMatch =
+            String(leaf.code ?? "").toLowerCase().includes(q) ||
+            String(leaf.name ?? "").toLowerCase().includes(q);
+          const dimMatch = (leaf.children || []).some(d =>
+            String(d.code ?? "").toLowerCase().includes(q) ||
+            String(d.name ?? "").toLowerCase().includes(q));
+          if (leafMatch || dimMatch) {
+            descendantMatch = true;
+            if (dimMatch) result[`${rowKey}-leaf-${i}`] = true;
+          }
+        });
+
+        const selfMatch =
+          String(node.code ?? "").toLowerCase().includes(q) ||
+          String(node.name ?? "").toLowerCase().includes(q);
+
+        if (descendantMatch || selfMatch) {
+          result[rowKey] = true;
+        }
+        return descendantMatch || selfMatch;
+      };
+      section.nodes.forEach(n => walk(n, "root"));
+    });
+
+    return result;
+  }
+
+  // PGC flat-list path: expand ancestors in the flat list when a descendant matches
+  if (pgcBsMapping?.rows) {
+    const flatNodes = bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes;
+    if (!flatNodes) return null;
+
+    const flatByCode = new Map(flatNodes.map(n => [String(n.code), n]));
+    const gaByCode = new Map(groupAccounts.map(g => [String(g.accountCode ?? g.AccountCode ?? ""), g]));
+
+    const parentInFlatOf = new Map();
+    flatNodes.forEach(n => {
+      let parentInFlat = null;
+      const ga = gaByCode.get(String(n.code));
+      let curParent = ga ? String(ga.sumAccountCode ?? ga.SumAccountCode ?? "") : "";
+      const seen = new Set([String(n.code)]);
+      while (curParent && !seen.has(curParent)) {
+        seen.add(curParent);
+        if (flatByCode.has(curParent)) { parentInFlat = curParent; break; }
+        const pa = gaByCode.get(curParent);
+        curParent = pa ? String(pa.sumAccountCode ?? pa.SumAccountCode ?? "") : "";
+      }
+      if (parentInFlat) parentInFlatOf.set(String(n.code), parentInFlat);
+    });
+
+    const walkDrill = (node, drillContextKey, depth) => {
+      let any = false;
+      (node.children || []).filter(c => hasData(c) && c.accountType === "B/S").forEach(child => {
+        const childDrillKey = `bsdrill-${drillContextKey}-${child.code}`;
+        if (walkDrill(child, childDrillKey, depth + 1)) {
+          any = true;
+          result[childDrillKey] = true;
+        }
+        if (matchesSelf(child, q)) {
+          any = true;
+          result[childDrillKey] = true;
+        }
+      });
+      (node.uploadLeaves || []).forEach((leaf, i) => {
+        if (leaf.type === "plain") return;
+        const leafMatch = String(leaf.code ?? "").toLowerCase().includes(q) || String(leaf.name ?? "").toLowerCase().includes(q);
+        const dimMatch = (leaf.children || []).some(d =>
+          String(d.code ?? "").toLowerCase().includes(q) ||
+          String(d.name ?? "").toLowerCase().includes(q));
+        if (leafMatch || dimMatch) {
+          any = true;
+          if (dimMatch) result[`bsdrill-leaf-${drillContextKey}-${depth}-${i}`] = true;
+        }
+      });
+      return any;
+    };
+
+    flatNodes.forEach(node => {
+      const rowKey = `bsrow-${node.code}`;
+      const selfMatch = matchesSelf(node, q);
+      const drillMatch = walkDrill(node, rowKey, 0);
+      if (selfMatch || drillMatch) {
+        result[rowKey] = true;
+        let p = parentInFlatOf.get(String(node.code));
+        while (p) {
+          result[`bsrow-${p}`] = true;
+          p = parentInFlatOf.get(p);
+        }
+      }
+    });
+
+    return result;
+  }
+
+  const walk = (node, drillContextKey, depth) => {
+    let descendantMatch = false;
+    (node.children || []).filter(c => hasData(c) && c.accountType === "B/S").forEach(child => {
+      const childDrillKey = `bsdrill-${drillContextKey}-${child.code}`;
+      if (walk(child, childDrillKey, depth + 1)) {
+        descendantMatch = true;
+        result[`bsrow-${child.code}`] = true;
+        result[`bsmulti-${child.code}`] = true;
+        result[childDrillKey] = true;
+      }
+    });
+    (node.uploadLeaves || []).forEach((leaf, i) => {
+      if (leaf.type === "plain") return;
+      const leafMatch = String(leaf.code ?? "").toLowerCase().includes(q) || String(leaf.name ?? "").toLowerCase().includes(q);
+      const dimMatch = (leaf.children || []).some(d =>
+        String(d.code ?? "").toLowerCase().includes(q) ||
+        String(d.name ?? "").toLowerCase().includes(q));
+      if (leafMatch || dimMatch) {
+        descendantMatch = true;
+        if (dimMatch) result[`bsdrill-leaf-${drillContextKey}-${depth}-${i}`] = true;
+      }
+    });
+    return matchesSelf(node, q) || descendantMatch;
+  };
+  bsRoots.forEach(top => {
+    const initialKey = `bsrow-${top.code}`;
+    if (walk(top, initialKey, 0)) {
+      result[initialKey] = true;
+      result[`bsmulti-${top.code}`] = true;
+    }
+  });
+  return result;
+}, [debouncedQuery, bsRoots, matchesSelf, pgcBsMapping, bsView, bsPgcSummaryNodes, bsPgcAllSumNodes, groupAccounts, savedBsLiteral, tree]);
+
+const isOpen = useCallback((key) => {
+  if (searchExpansionMap?.[key]) return true;
+  if (key in bsDrillMap) return !!bsDrillMap[key];
+  return false;
+}, [bsDrillMap, searchExpansionMap]);
 
 // Derive the 3 BS breakers in render order (parents-first, matching renderFlatNode)
 const effectiveBreakersBs = useMemo(() => {
@@ -6311,7 +7565,7 @@ const effectiveBreakersBs = useMemo(() => {
     return node ? sumNode(node) : 0;
   };
 
-function renderBSCompareRows(nodes, cmpTree, cmp2Tree) {
+function renderBSCompareRows(nodes, cmpTree, cmp2Tree, cmp3Tree) {
     const rows = [];
 
   // PGC mapping path: jerárquico
@@ -6377,25 +7631,31 @@ function renderBSCompareRows(nodes, cmpTree, cmp2Tree) {
         const hasLeavesCmp = (node.uploadLeaves || []).some(l => l.type !== "plain");
         const hasJournalCmp = (journalByCode.get(node.code) || []).length > 0;
         const hasMoreCmp = flatChildrenCmp.length > 0 || hasNonFlatCmp || hasLeavesCmp || hasJournalCmp;
-        const expandedCmp = !!bsDrillMap[drillKeyCmp];
+        const expandedCmp = isOpen(drillKeyCmp);
         const rowStyle = depth === 0 ? body1Style : body2Style;
         const divider = effectiveBreakersBs[String(node.code)];
 if (divider) {
           rows.push(
             <tr key={`bsdivider-${node.code}`}>
-              <td colSpan={3 + (compareMode ? 3 : 0) + (compareMode && cmp2Enabled ? 3 : 0) + (historyExpanded ? bsHistoryProcessed.length : 0)} style={{ backgroundColor: divider.color }} className="px-6 py-1.5">
-               <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
+              <td style={{ backgroundColor: divider.color, position: "sticky", left: 0, zIndex: 4 }} className="px-6 py-1.5 whitespace-nowrap">
+                <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
               </td>
+<td colSpan={2 + (compareMode ? 3 : 0) + (compareMode && cmp2Enabled ? 3 : 0) + (compareMode && cmp2Enabled && cmp3Enabled ? 3 : 0) + (historyExpanded ? bsHistoryProcessed.length : 0)} style={{ backgroundColor: divider.color }} />
             </tr>
           );
         }
 
 const rowStyleCmp = depth === 0 ? body1Style : body2Style;
-rows.push(
+const isMatchSelf = (() => {
+          const q = debouncedQuery.trim().toLowerCase();
+          if (!q) return false;
+          return String(node.code ?? "").toLowerCase().includes(q) || String(localName(node) ?? "").toLowerCase().includes(q);
+        })();
+        rows.push(
   <tr key={node.code}
-    className={`border-b border-gray-100 bg-white ${hasMoreCmp ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
+    className={`border-b border-gray-100 ${isMatchSelf ? "bg-[#fef3c7]" : "bg-white"} ${hasMoreCmp ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
     onClick={hasMoreCmp ? () => bsDrill(drillKeyCmp) : undefined}>
-<td className="py-2.5 whitespace-nowrap" style={{ paddingLeft: `${24 + depth * 18}px` }}>
+<td className="py-2.5 whitespace-nowrap k-sticky-acc" style={{ paddingLeft: `${24 + depth * 18}px` }}>
       <div className="flex items-center">
         {hasMoreCmp
           ? <span className="text-[#1a2f8a]/50 mr-2">{expandedCmp ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
@@ -6406,11 +7666,19 @@ rows.push(
         </span>
       </div>
     </td>
-    <BSAmountCell value={actual} typoStyle={rowStyleCmp} />
+<BSAmountCell value={actual} typoStyle={rowStyleCmp} />
     <BSAmountCell value={cmp} typoStyle={rowStyleCmp} divider />
     <BSDeviationCells a={actual} b={cmp} typoStyle={rowStyleCmp} />
     {cmp2Enabled && <BSAmountCell value={cmp2} typoStyle={rowStyleCmp} divider />}
     {cmp2Enabled && <BSDeviationCells a={actual} b={cmp2} typoStyle={rowStyleCmp} />}
+    {cmp2Enabled && cmp3Enabled && (() => {
+      const cmp3Raw = getNodeValue(cmp3Tree, node.code);
+      const cmp3Val = isPGC_BS(node.code) ? -cmp3Raw : cmp3Raw;
+      return <>
+        <BSAmountCell value={cmp3Val} typoStyle={rowStyleCmp} divider />
+        <BSDeviationCells a={actual} b={cmp3Val} typoStyle={rowStyleCmp} />
+      </>;
+    })()}
   </tr>
 );
 
@@ -6442,9 +7710,10 @@ const BS_DIVIDERS = Object.keys(breakers.bs).length
 if (bsDivider) {
         rows.push(
           <tr key={`bsdivider-${node.code}`}>
-            <td colSpan={cmp2Enabled ? 9 : 6} style={{ backgroundColor: bsDivider.color }} className="px-6 py-1.5">
-              <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
+            <td style={{ backgroundColor: bsDivider.color, position: "sticky", left: 0, zIndex: 4 }} className="px-6 py-1.5 whitespace-nowrap">
+              <span className="uppercase tracking-widest" style={header3Style}>{bsDivider.label}</span>
             </td>
+           <td colSpan={(cmp2Enabled ? (cmp3Enabled ? 11 : 8) : 5)} style={{ backgroundColor: bsDivider.color }} />
           </tr>
         );
       }
@@ -6482,11 +7751,19 @@ rows.push(
         </span>
       </div>
     </td>
-    <BSAmountCell value={actual} typoStyle={body1Style} />
+<BSAmountCell value={actual} typoStyle={body1Style} />
     <BSAmountCell value={cmp} typoStyle={body1Style} divider />
     <BSDeviationCells a={actual} b={cmp} typoStyle={body1Style} />
     {cmp2Enabled && <BSAmountCell value={cmp2} typoStyle={body1Style} divider />}
     {cmp2Enabled && <BSDeviationCells a={actual} b={cmp2} typoStyle={body1Style} />}
+    {cmp2Enabled && cmp3Enabled && (() => {
+      const cmp3Raw = getNodeValue(cmp3Tree, node.code);
+      const cmp3Val = Number(node.code) >= 599999 ? -cmp3Raw : cmp3Raw;
+      return <>
+        <BSAmountCell value={cmp3Val} typoStyle={body1Style} divider />
+        <BSDeviationCells a={actual} b={cmp3Val} typoStyle={body1Style} />
+      </>;
+    })()}
   </tr>
 );
 
@@ -6550,7 +7827,7 @@ const sumLiteral = (node) => {
         cmpDimIdxBs.set(`${code}|${g}:${v}`, (cmpDimIdxBs.get(`${code}|${g}:${v}`) ?? 0) + amt);
       });
     });
-    const cmp2AccIdxBs = new Map();
+const cmp2AccIdxBs = new Map();
     const cmp2DimIdxBs = new Map();
     (cmp2Data || []).forEach(row => {
       const code = String(getField(row, "accountCode") ?? "");
@@ -6567,6 +7844,23 @@ const sumLiteral = (node) => {
         cmp2DimIdxBs.set(`${code}|${g}:${v}`, (cmp2DimIdxBs.get(`${code}|${g}:${v}`) ?? 0) + amt);
       });
     });
+    const cmp3AccIdxBs = new Map();
+    const cmp3DimIdxBs = new Map();
+    (cmp3Data || []).forEach(row => {
+      const code = String(getField(row, "accountCode") ?? "");
+      if (!code) return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      cmp3AccIdxBs.set(code, (cmp3AccIdxBs.get(code) ?? 0) + amt);
+      const dimsStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+      if (!dimsStr) return;
+      dimsStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+        const i = pair.indexOf(":");
+        if (i === -1) return;
+        const g = pair.slice(0, i).trim();
+        const v = pair.slice(i + 1).trim();
+        cmp3DimIdxBs.set(`${code}|${g}:${v}`, (cmp3DimIdxBs.get(`${code}|${g}:${v}`) ?? 0) + amt);
+      });
+    });
     const sumLiteralBSGeneric = (node, accIdxLoc, dimIdxLoc) => {
       let total = 0;
       if (node.dims && node.dims.length > 0) {
@@ -6578,15 +7872,25 @@ const sumLiteral = (node) => {
     };
     const sumLiteralB = (node) => sumLiteralBSGeneric(node, cmpAccIdxBs, cmpDimIdxBs);
     const sumLiteralC = (node) => sumLiteralBSGeneric(node, cmp2AccIdxBs, cmp2DimIdxBs);
+    const sumLiteralD = (node) => sumLiteralBSGeneric(node, cmp3AccIdxBs, cmp3DimIdxBs);
 
 const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource, cmpStructure].filter(Boolean).join(" · ") || "Period B";
     const bsCmp2Label = [cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source, cmp2Structure].filter(Boolean).join(" · ") || "Period C";
 
     return (
       <div className="space-y-3 flex flex-col" style={{ minHeight: 0, flex: 1, overflow: "visible" }}>
-        {compareMode && filtersOpen && (
+{compareMode && (
           <div className="bg-white rounded-2xl shadow-xl border border-gray-100"
-            style={{ overflow: "visible", position: "relative", zIndex: 100, marginBottom: 12, flex: "0 0 auto" }}>
+            style={{
+              overflow: filtersOpen ? "visible" : "hidden",
+              position: "relative",
+              zIndex: 100,
+              marginBottom: filtersOpen ? 12 : 0,
+              flex: "0 0 auto",
+              maxHeight: filtersOpen ? 800 : 0,
+              opacity: filtersOpen ? 1 : 0,
+              transition: "max-height 360ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 240ms ease, margin-bottom 240ms ease",
+            }}>
             <div className="px-5 py-3 flex items-center gap-2 flex-wrap">
               <div className="flex items-center gap-2 mr-2">
                 <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
@@ -6637,10 +7941,46 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                   options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
                 <HeaderMultiFilterPill label="DIM GRP" values={bsCmp2DimGroups} onChange={vs => { setBsCmp2DimGroups(vs); setBsCmp2Dimensions(null); }} options={dimGroups.map(g => ({ value: g, label: g }))} />
                 <HeaderMultiFilterPill label="DIMS" values={bsCmp2Dimensions} onChange={vs => setBsCmp2Dimensions(vs)} options={bsCmp2FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
-                <button onClick={() => setCmp2Enabled(false)}
+<button onClick={() => setCmp2Enabled(false)}
                   className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all duration-200 hover:scale-[1.05]"
                   style={{ background: "#fee2e2", color: "#dc2626" }}
                   title="Remove Period C">
+                  <X size={12} strokeWidth={2.5} />
+                </button>
+                {!cmp3Enabled && (
+                  <button onClick={() => setCmp3Enabled(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]"
+                    style={{ background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)", boxShadow: "0 4px 14px -4px rgba(168,85,247,0.5)" }}>
+                    <span className="text-white text-[10px] font-black">+ Add Period D</span>
+                  </button>
+                )}
+              </div>
+            )}
+            {cmp2Enabled && cmp3Enabled && (
+              <div className="px-5 py-3 flex items-center gap-2 flex-wrap border-t border-gray-100">
+                <div className="flex items-center gap-2 mr-2">
+                  <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+                    style={{ background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)", boxShadow: "0 4px 12px -4px rgba(168,85,247,0.5)" }}>
+                    <span className="text-white text-[11px] font-black">D</span>
+                  </div>
+                  <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>Period D</span>
+                </div>
+                <HeaderFilterPill label="Year" value={cmp3Year} onChange={setCmp3Year}
+                  options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+                <HeaderFilterPill label="Month" value={cmp3Month} onChange={setCmp3Month}
+                  options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+                <HeaderFilterPill label="Source" value={cmp3Source} onChange={setCmp3Source}
+                  options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+                <HeaderFilterPill label="Structure" value={cmp3Structure} onChange={setCmp3Structure}
+                  options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+                <HeaderFilterPill label="Company" value={cmp3Company} onChange={setCmp3Company}
+                  options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+                <HeaderMultiFilterPill label="DIM GRP" values={bsCmp3DimGroups} onChange={vs => { setBsCmp3DimGroups(vs); setBsCmp3Dimensions(null); }} options={dimGroups.map(g => ({ value: g, label: g }))} />
+                <HeaderMultiFilterPill label="DIMS" values={bsCmp3Dimensions} onChange={vs => setBsCmp3Dimensions(vs)} options={bsCmp3FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+                <button onClick={() => setCmp3Enabled(false)}
+                  className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all"
+                  style={{ background: "#fee2e2", color: "#dc2626" }}
+                  title="Remove Period D">
                   <X size={12} strokeWidth={2.5} />
                 </button>
               </div>
@@ -6650,43 +7990,127 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
         <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col"
           style={{ maxHeight: "100%", minHeight: 0, boxShadow: "0 20px 40px -8px rgba(26, 47, 138, 0.15), 0 4px 12px -2px rgba(26, 47, 138, 0.08)" }}>
           <div className="scrollbar-hide" style={{ overflowX: "auto", overflowY: "auto", flex: 1, minHeight: 0 }}>
-<table className="w-full">
+<table className="w-full k-sticky-table">
 <colgroup>
                 <col style={{ width: "1px" }} />
-                <col style={{ width: "1px" }} />
-                {compareMode && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
-                {compareMode && cmp2Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
-                {historyExpanded && bsHistoryProcessed.map(h => (
-                  <col key={`bshist-col-${h.year}-${h.month}`} style={{ width: "1px" }} />
+                {multiCompany
+                  ? selectedCompanies.map(co => <col key={`bsmc-saved-col-${co}`} style={{ width: "1px" }} />)
+                  : <col style={{ width: "1px" }} />}
+{!multiCompany && compareMode && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+                {!multiCompany && compareMode && cmp2Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+                {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+                {!multiCompany && historyExpanded && bsHistoryProcessed.map(h => (
+                  <col key={`bshist-col-${h.year}-${h.month}`} style={{ width: "140px" }} />
                 ))}
                 <col />
               </colgroup>
-              <thead className="sticky top-0 z-10">
-                <tr className="border-b border-gray-100" style={{
-                  background: "rgba(255,255,255,0.95)",
-                  backdropFilter: "blur(24px)",
-                  WebkitBackdropFilter: "blur(24px)",
+<thead>
+<tr className="border-b border-gray-100" style={{
+                  background: "rgba(255,255,255,0.98)",
                   boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
                 }}>
-                  <th className="text-left px-6 whitespace-nowrap" style={{ height: "64px", background: "transparent" }}>
-                    <div className="flex items-baseline gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
-                      <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>
-                        {t("col_account")}
-                      </span>
-                      <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
-                        {t("page_bs_full")}
-                      </span>
+                  <th className="text-left px-6 whitespace-nowrap k-sticky-acc-head" style={{ height: "64px" }}>
+                    <div className="flex items-center gap-5">
+                      <div className="flex items-center gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
+                        <button onClick={() => setSearchActive(a => !a)}
+                          className="flex items-center justify-center"
+                          style={{ background: "transparent", color: searchActive ? colors.primary : "#94a3b8", padding: 0, transition: "color 240ms" }}
+                          onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+                          onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary : "#94a3b8"; }}
+                          title="Search">
+                          <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+                            <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.6"/>
+                            <path d="M9.5 9.5L12.5 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+                          </svg>
+                        </button>
+                        {searchActive ? (
+                          <>
+                            <input
+                              ref={searchInputRef}
+                              autoFocus
+                              type="text"
+                              value={searchQuery}
+                              onChange={e => setSearchQuery(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === "Escape") {
+                                  setSearchActive(false);
+                                  setSearchQuery("");
+                                }
+                              }}
+                              placeholder="Code or name..."
+                              style={{
+                                fontSize: 16, fontWeight: 700, color: colors.primary,
+                                border: "none", outline: "none", background: "transparent",
+                                width: 240, padding: 0, letterSpacing: "-0.02em"
+                              }}
+                            />
+                            <button onClick={() => { setSearchActive(false); setSearchQuery(""); }}
+                              className="flex items-center justify-center ml-1"
+                              style={{ background: "transparent", color: "#94a3b8", padding: 2, transition: "color 200ms" }}
+                              onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+                              onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
+                              title="Close search">
+                              <X size={14} />
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <span onClick={() => setSearchActive(true)} className="font-black tracking-tight"
+                              style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em", cursor: "pointer" }}>
+                              {t("col_account")}
+                            </span>
+                            <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
+                              {t("page_bs_full")}
+                            </span>
+</>
+                        )}
+                      </div>
+                      <div style={{ width: 1, height: 18, background: "#e5e7eb" }} />
+                      <button onClick={(e) => {
+                        e.stopPropagation();
+                        if (Object.values(bsDrillMap).some(Boolean)) { setBsDrillMap({}); return; }
+                        const next = {};
+                        savedBsLiteral.forEach((section, secIdx) => {
+                          const walk = (node, parentPath) => {
+                            const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
+                            next[rowKey] = true;
+                            (node.children || []).forEach(c => walk(c, `${parentPath}-${node.id}`));
+                          };
+                          section.nodes.forEach(n => walk(n, "root"));
+                        });
+                        setBsDrillMap(next);
+                      }}
+                        className="flex items-center justify-center"
+                        style={{ background: "transparent", color: "#94a3b8", padding: 4, transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)" }}
+                        onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+                        onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
+                        title={Object.values(bsDrillMap).some(Boolean) ? "Collapse all" : "Expand all"}>
+                        <span key={Object.values(bsDrillMap).some(Boolean) ? "collapse" : "expand"}
+                          className="inline-flex"
+                          style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
+                          {Object.values(bsDrillMap).some(Boolean)
+                            ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                            : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                          }
+                        </span>
+                      </button>
                     </div>
                   </th>
-                  <th className="text-right pr-6 py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px", cursor: compareMode ? "default" : "pointer" }}
-                    onClick={compareMode ? undefined : toggleBSHistory}
-                    title={compareMode ? "" : historyExpanded ? "Hide history" : "Show last 6 months"}>
-                    <span className="font-black tracking-tight inline-block"
-                      style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em", animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
-                      {t("col_actual")}
-                    </span>
-                  </th>
-{compareMode && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap" style={{ background: "transparent" }}>
+{multiCompany ? selectedCompanies.map(co => (
+                    <th key={`bsmc-saved-th-${co}`} className="text-center py-3 whitespace-nowrap k-sticky-head" style={{ width: "200px" }}>
+                      <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{co}</span>
+                    </th>
+                  )) : (
+                    <th className="text-right pr-6 py-3 whitespace-nowrap k-sticky-head" style={{ width: "200px", cursor: compareMode ? "default" : "pointer" }}
+                      onClick={compareMode ? undefined : toggleBSHistory}
+                      title={compareMode ? "" : historyExpanded ? "Hide history" : "Show last 6 months"}>
+                      <span className="font-black tracking-tight inline-block"
+                        style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em", animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
+                        {t("col_actual")}
+                      </span>
+                    </th>
+                  )}
+{compareMode && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap k-sticky-head">
                     <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.26s both" }}>
                       <div className="flex items-center gap-1.5">
                         <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#CF305D" }} />
@@ -6695,7 +8119,7 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                       <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{bsCmpLabel}</span>
                     </div>
                   </th>}
-                  {compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap" style={{ background: "transparent" }}>
+{compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap k-sticky-head">
                     <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.30s both" }}>
                       <div className="flex items-center gap-1.5">
                         <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#57aa78" }} />
@@ -6704,9 +8128,21 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
 <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{bsCmp2Label}</span>
                     </div>
                   </th>}
-                  {historyExpanded && bsHistoryProcessed.map(h => (
-                    <th key={`bshist-saved-${h.year}-${h.month}`} className="text-right pr-6 py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px" }}>
-                      <div className="flex flex-col items-end">
+                  {compareMode && cmp2Enabled && cmp3Enabled && (() => {
+                    const bsCmp3Label = [cmp3Year, MONTHS.find(m => String(m.value) === String(cmp3Month))?.label, cmp3Source].filter(Boolean).join(" · ") || "Period D";
+                    return <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap k-sticky-head">
+                      <div className="flex flex-col items-center">
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#a855f7" }} />
+                          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>Period D</span>
+                        </div>
+                        <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{bsCmp3Label}</span>
+                      </div>
+                    </th>;
+                  })()}
+{historyExpanded && bsHistoryProcessed.map(h => (
+                    <th key={`bshist-saved-${h.year}-${h.month}`} className="text-center py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px" }}>
+                      <div className="flex flex-col items-center">
                         <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>
                           {MONTHS.find(m => m.value === h.month)?.label.slice(0,3)}
                         </span>
@@ -6729,76 +8165,216 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                 </tr>
               </thead>
               <tbody>
-              {savedBsLiteral.map((section, secIdx) => {
+{(() => {
+                const treeByCode = new Map();
+                (function indexTree(nodes) {
+                  nodes.forEach(n => { treeByCode.set(String(n.code), n); indexTree(n.children || []); });
+                })(tree);
+                return savedBsLiteral.map((section, secIdx) => {
                 const rows = [];
 if (section.label) {
-                  rows.push(
+const dividerColSpan = multiCompany
+                    ? 1 + selectedCompanies.length + 1
+                    : 3 + (compareMode ? 3 : 0) + (compareMode && cmp2Enabled ? 3 : 0) + (compareMode && cmp2Enabled && cmp3Enabled ? 3 : 0) + (historyExpanded ? bsHistoryProcessed.length : 0);
+rows.push(
                     <tr key={`bssec-${secIdx}`} style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rows.length, 25) * 40}ms both` }}>
-                 <td colSpan={3 + (compareMode ? 3 : 0) + (compareMode && cmp2Enabled ? 3 : 0) + (historyExpanded ? bsHistoryProcessed.length : 0)} style={{ backgroundColor: section.color }} className="px-6 py-1.5">
+                      <td style={{ backgroundColor: section.color, position: "sticky", left: 0, zIndex: 4 }} className="px-6 py-1.5 whitespace-nowrap">
                         <span className="uppercase tracking-widest" style={header3Style}>{section.label}</span>
                       </td>
+                      <td colSpan={dividerColSpan - 1} style={{ backgroundColor: section.color }} />
                     </tr>
                   );
                 }
-                const renderNode = (node, depth) => {
+const renderNode = (node, depth, parentPath) => {
                   const val = sumLiteral(node);
                   let displayVal = val;
                   if (node.isSum && node.children && node.children.length > 0) {
                     displayVal = node.children.reduce((s, c) => s + sumLiteral(c), val);
                   }
                   const rowStyle = depth === 0 ? body1Style : body2Style;
+const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
+                  const gaNodeForKids = treeByCode.get(String(node.code));
+                  const leavesCount = (gaNodeForKids?.uploadLeaves || []).filter(l => l.type !== "plain").length;
+                  const hasKids = (node.children && node.children.length > 0) || leavesCount > 0;
+                  const expanded = isOpen(rowKey);
+                  const isMatchSelf = (() => {
+                    const q = debouncedQuery.trim().toLowerCase();
+                    if (!q) return false;
+                    return String(node.code ?? "").toLowerCase().includes(q) || String(node.name ?? "").toLowerCase().includes(q);
+                  })();
                   rows.push(
-                    <tr key={node.id}
-                      className="border-b border-gray-100 bg-white hover:bg-[#eef1fb]/60 transition-colors"
+                    <tr key={rowKey}
+                      className={`border-b border-gray-100 ${isMatchSelf ? "bg-[#fef3c7]" : "bg-white"} ${hasKids ? "cursor-pointer" : ""} hover:bg-[#eef1fb]/60 transition-colors`}
+                      onClick={hasKids ? (e) => { e.stopPropagation(); bsDrill(rowKey); } : undefined}
                       style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rows.length, 25) * 40}ms both` }}>
-                      <td className="py-2.5 whitespace-nowrap" style={{ paddingLeft: `${24 + depth * 18}px` }}>
+<td className="py-2.5 whitespace-nowrap k-sticky-acc" style={{ paddingLeft: `${24 + depth * 18}px` }}>
                         <div className="flex items-center">
-                          <span className="inline-block mr-2" style={{ width: 12 }} />
+                          {hasKids
+                            ? <span className="text-[#1a2f8a]/50 mr-2">{expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
+                            : <span className="inline-block mr-2" style={{ width: 12 }} />}
                           {node.code && <span className="mr-2 font-mono text-gray-400" style={subbody2Style}>{node.code}</span>}
                           <span style={rowStyle}>
                             {node.name ? (node.name.charAt(0).toUpperCase() + node.name.slice(1).toLowerCase()) : node.code}
                           </span>
                         </div>
                       </td>
-<BSAmountCell value={displayVal} typoStyle={rowStyle} />
-                      {compareMode && (() => {
-                        let cmpVal = sumLiteralB(node);
-                        if (node.isSum && node.children && node.children.length > 0) {
-                          cmpVal = node.children.reduce((s, c) => s + sumLiteralB(c), cmpVal);
-                        }
-                        return (
-                          <>
-                            <BSAmountCell value={cmpVal} typoStyle={rowStyle} divider />
-                            <BSDeviationCells a={displayVal} b={cmpVal} typoStyle={rowStyle} />
-                          </>
-                        );
-                      })()}
-                      {compareMode && cmp2Enabled && (() => {
-                        let cmp2Val = sumLiteralC(node);
-                        if (node.isSum && node.children && node.children.length > 0) {
-                          cmp2Val = node.children.reduce((s, c) => s + sumLiteralC(c), cmp2Val);
-                        }
-                        return (
-                          <>
-                            <BSAmountCell value={cmp2Val} typoStyle={rowStyle} divider />
-                            <BSDeviationCells a={displayVal} b={cmp2Val} typoStyle={rowStyle} />
-                          </>
-                        );
-                      })()}
-{historyExpanded && bsHistoryProcessed.map(h => {
-                        const histNode = h.map.get(String(node.code));
-                        const histVal = histNode
-                          ? (Number(node.code) >= 599999 ? -sumNode(histNode) : sumNode(histNode))
-                          : 0;
-                        return <BSAmountCell key={`bshist-saved-${h.year}-${h.month}-${node.id}`} value={histVal} typoStyle={rowStyle} />;
-                      })}
-                    </tr>
+{multiCompany ? selectedCompanies.map(co => (
+                        <BSAmountCell key={`bsmc-saved-${node.id}-${co}`} value={getBsValForCompany(node.code, co)} typoStyle={rowStyle} centered />
+                      )) : (
+                        <>
+                          <BSAmountCell value={displayVal} typoStyle={rowStyle} />
+                          {compareMode && (() => {
+                            let cmpVal = sumLiteralB(node);
+                            if (node.isSum && node.children && node.children.length > 0) {
+                              cmpVal = node.children.reduce((s, c) => s + sumLiteralB(c), cmpVal);
+                            }
+                            return (
+                              <>
+                                <BSAmountCell value={cmpVal} typoStyle={rowStyle} divider />
+                                <BSDeviationCells a={displayVal} b={cmpVal} typoStyle={rowStyle} />
+                              </>
+                            );
+                          })()}
+{compareMode && cmp2Enabled && (() => {
+                            let cmp2Val = sumLiteralC(node);
+                            if (node.isSum && node.children && node.children.length > 0) {
+                              cmp2Val = node.children.reduce((s, c) => s + sumLiteralC(c), cmp2Val);
+                            }
+                            return (
+                              <>
+                                <BSAmountCell value={cmp2Val} typoStyle={rowStyle} divider />
+                                <BSDeviationCells a={displayVal} b={cmp2Val} typoStyle={rowStyle} />
+                              </>
+                            );
+                          })()}
+                          {compareMode && cmp2Enabled && cmp3Enabled && (() => {
+                            let cmp3Val = sumLiteralD(node);
+                            if (node.isSum && node.children && node.children.length > 0) {
+                              cmp3Val = node.children.reduce((s, c) => s + sumLiteralD(c), cmp3Val);
+                            }
+                            return (
+                              <>
+                                <BSAmountCell value={cmp3Val} typoStyle={rowStyle} divider />
+                                <BSDeviationCells a={displayVal} b={cmp3Val} typoStyle={rowStyle} />
+                              </>
+                            );
+                          })()}
+                          {historyExpanded && bsHistoryProcessed.map(h => {
+                            const histNode = h.map.get(String(node.code));
+                            const histVal = histNode
+                              ? (Number(node.code) >= 599999 ? -sumNode(histNode) : sumNode(histNode))
+                              : 0;
+                            return <BSAmountCell key={`bshist-saved-${h.year}-${h.month}-${node.id}`} value={histVal} typoStyle={rowStyle} centered />;
+                          })}
+                        </>
+                      )}
+</tr>
                   );
-                  (node.children || []).forEach(c => renderNode(c, depth + 1));
+                  if (expanded) {
+                    (node.children || []).forEach(c => renderNode(c, depth + 1, `${parentPath}-${node.id}`));
+
+                    // Render uploadLeaves from the matching group-account
+                    const gaNode = treeByCode.get(String(node.code));
+                    const leaves = (gaNode?.uploadLeaves || []).filter(l => l.type !== "plain");
+                    leaves.forEach((leaf, i) => {
+                      const leafKey = `${rowKey}-leaf-${i}`;
+                      const leafExpanded = isOpen(leafKey);
+                      const hasDims = leaf.type === "localAccount" && leaf.children?.length > 0;
+                      const amt = leaf.amount ?? 0;
+                      const leafIsMatch = (() => {
+                        const q = debouncedQuery.trim().toLowerCase();
+                        if (!q) return false;
+                        return String(leaf.code ?? "").toLowerCase().includes(q) || String(leaf.name ?? "").toLowerCase().includes(q);
+                      })();
+                      rows.push(
+                        <tr key={leafKey}
+                          className={`border-b border-[#1a2f8a]/5 ${leafIsMatch ? "bg-[#fef3c7]" : "bg-[#fafbff]"} transition-colors ${hasDims ? "cursor-pointer hover:bg-amber-50/40" : "hover:bg-[#eef1fb]/20"}`}
+                          onClick={hasDims ? () => bsDrill(leafKey) : undefined}>
+                          <td className="py-1.5 whitespace-nowrap k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 18}px` }}>
+                            <div className="flex items-center">
+                              {hasDims
+                                ? <span className="text-[#1a2f8a]/50 mr-2">{leafExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
+                                : <span className="inline-block mr-2" style={{ width: 12 }} />}
+                              {leaf.code && <span className="font-mono text-gray-400 mr-2" style={subbody2Style}>{leaf.code}</span>}
+                              <span style={subbody1Style}>{leaf.name || ""}</span>
+                            </div>
+                          </td>
+{multiCompany ? selectedCompanies.map(co => (
+                            <BSAmountCell key={`bsmc-saved-leaf-${leaf.code ?? "noleaf"}-${co}-${i}`} value={leaf.code ? getBsLeafValForCompany(leaf.code, co) : 0} typoStyle={subbody1Style} centered />
+                          )) : (
+                            <>
+                              <BSAmountCell value={amt} typoStyle={subbody1Style} />
+                              {compareMode && (() => {
+                                const cmpAmt = leaf.code ? (bsCmpLeafIndex.get(String(leaf.code)) ?? 0) : 0;
+                                return <>
+                                  <BSAmountCell value={cmpAmt} typoStyle={subbody1Style} divider />
+                                  <BSDeviationCells a={amt} b={cmpAmt} typoStyle={subbody1Style} />
+{cmp2Enabled && (() => {
+                                    const cmp2Amt = leaf.code ? (bsCmp2LeafIndex.get(String(leaf.code)) ?? 0) : 0;
+                                    return <>
+                                      <BSAmountCell value={cmp2Amt} typoStyle={subbody1Style} divider />
+                                      <BSDeviationCells a={amt} b={cmp2Amt} typoStyle={subbody1Style} />
+                                    </>;
+                                  })()}
+                                  {cmp2Enabled && cmp3Enabled && (() => {
+                                    const cmp3Amt = leaf.code ? (bsCmp3LeafIndex.get(String(leaf.code)) ?? 0) : 0;
+                                    return <>
+                                      <BSAmountCell value={cmp3Amt} typoStyle={subbody1Style} divider />
+                                      <BSDeviationCells a={amt} b={cmp3Amt} typoStyle={subbody1Style} />
+                                    </>;
+                                  })()}
+                                </>;
+                              })()}
+                              {historyExpanded && !compareMode && bsHistoryProcessed.map(h => {
+                                const leafAmt = leaf.code ? (h.leafIdx.get(String(leaf.code)) ?? 0) : 0;
+                                return <BSAmountCell key={`bshist-saved-leaf-${h.year}-${h.month}-${i}`} value={leafAmt} typoStyle={subbody1Style} centered />;
+                              })}
+                            </>
+                          )}
+                        </tr>
+                      );
+                      if (leafExpanded && hasDims) {
+                        leaf.children.forEach((dim, j) => {
+                          const dimIsMatch = (() => {
+                            const q = debouncedQuery.trim().toLowerCase();
+                            if (!q) return false;
+                            return String(dim.code ?? "").toLowerCase().includes(q) || String(dim.name ?? "").toLowerCase().includes(q);
+                          })();
+                          rows.push(
+                            <tr key={`${leafKey}-dim-${j}`}
+                              className={`border-b border-[#1a2f8a]/5 ${dimIsMatch ? "bg-[#fef3c7]" : "bg-amber-50/10"} hover:bg-amber-50/40 transition-colors cursor-pointer`}
+                              onClick={() => setDimPopup(dim)}>
+                              <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 2) * 18}px` }}>
+                                <div className="flex items-center gap-1.5">
+                                  <div className="w-2 h-px bg-amber-200 flex-shrink-0" />
+                                  <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded flex-shrink-0">{t("label_dim")}</span>
+                                  <span className="text-xs text-gray-400 italic">{dim.name || dim.code}</span>
+                                </div>
+                              </td>
+{multiCompany ? selectedCompanies.map(co => (
+                                <td key={`bsmc-saved-dim-${dim.code ?? "nocode"}-${co}-${j}`} />
+                              )) : (
+                                <>
+                                  <BSAmountCell value={dim.amount} typoStyle={subbody2Style} />
+{compareMode && <><td /><td /><td /></>}
+                                  {compareMode && cmp2Enabled && <><td /><td /><td /></>}
+                                  {compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
+                                  {historyExpanded && !compareMode && bsHistoryProcessed.map(h => (
+                                    <td key={`bshist-saved-dim-${h.year}-${h.month}-${j}`} />
+                                  ))}
+                                </>
+                              )}
+                            </tr>
+                          );
+                        });
+                      }
+                    });
+                  }
                 };
-                section.nodes.forEach(n => renderNode(n, 0));
+section.nodes.forEach(n => renderNode(n, 0, "root"));
                 return rows;
-              })}
+              });
+              })()}
               </tbody>
             </table>
           </div>
@@ -6973,9 +8549,18 @@ const tabs = ["summary","assets","equity"];
       </div>
 
 {/* Compare filters */}
-{compareMode && filtersOpen && (
+{compareMode && (
   <div className="bg-white rounded-2xl shadow-xl border border-gray-100"
-    style={{ overflow: "visible", position: "relative", zIndex: 100, marginBottom: 12, flex: "0 0 auto" }}>
+    style={{
+      overflow: filtersOpen ? "visible" : "hidden",
+      position: "relative",
+      zIndex: 100,
+      marginBottom: filtersOpen ? 12 : 0,
+      flex: "0 0 auto",
+      maxHeight: filtersOpen ? 800 : 0,
+      opacity: filtersOpen ? 1 : 0,
+      transition: "max-height 360ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 240ms ease, margin-bottom 240ms ease",
+    }}>
     {/* Period B row */}
     <div className="px-5 py-3 flex items-center gap-2 flex-wrap">
       <div className="flex items-center gap-2 mr-2">
@@ -7044,13 +8629,54 @@ const tabs = ["summary","assets","equity"];
           options={dimGroups.map(g => ({ value: g, label: g }))} />
         <HeaderMultiFilterPill label={t("filter_dims")} values={bsCmp2Dimensions} onChange={vs => setBsCmp2Dimensions(vs)}
           options={bsCmp2FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
-        <button onClick={() => setCmp2Enabled(false)}
+<button onClick={() => setCmp2Enabled(false)}
           className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all duration-200 hover:scale-[1.05]"
           style={{
             background: "#fee2e2",
             color: "#dc2626",
           }}
           title="Remove Period C">
+          <X size={12} strokeWidth={2.5} />
+        </button>
+        {!cmp3Enabled && (
+          <button onClick={() => setCmp3Enabled(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]"
+            style={{
+              background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)",
+              boxShadow: "0 4px 14px -4px rgba(168,85,247,0.5)",
+            }}>
+            <span className="text-white text-[10px] font-black">+ Add Period D</span>
+          </button>
+        )}
+      </div>
+    )}
+    {cmp2Enabled && cmp3Enabled && (
+      <div className="px-5 py-3 flex items-center gap-2 flex-wrap border-t border-gray-100">
+        <div className="flex items-center gap-2 mr-2">
+          <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+            style={{ background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)", boxShadow: "0 4px 12px -4px rgba(168,85,247,0.5)" }}>
+            <span className="text-white text-[11px] font-black">D</span>
+          </div>
+          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>Period D</span>
+        </div>
+        <HeaderFilterPill label={t("filter_year")} value={cmp3Year} onChange={setCmp3Year}
+          options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+        <HeaderFilterPill label={t("filter_month")} value={cmp3Month} onChange={setCmp3Month}
+          options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+        <HeaderFilterPill label={t("filter_source")} value={cmp3Source} onChange={setCmp3Source}
+          options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+        <HeaderFilterPill label={t("filter_structure")} value={cmp3Structure} onChange={setCmp3Structure}
+          options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+        <HeaderFilterPill label={t("filter_company")} value={cmp3Company} onChange={setCmp3Company}
+          options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+        <HeaderMultiFilterPill label={t("filter_dim_group")} values={bsCmp3DimGroups} onChange={vs => { setBsCmp3DimGroups(vs); setBsCmp3Dimensions(null); }}
+          options={dimGroups.map(g => ({ value: g, label: g }))} />
+        <HeaderMultiFilterPill label={t("filter_dims")} values={bsCmp3Dimensions} onChange={vs => setBsCmp3Dimensions(vs)}
+          options={bsCmp3FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+        <button onClick={() => setCmp3Enabled(false)}
+          className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all duration-200 hover:scale-[1.05]"
+          style={{ background: "#fee2e2", color: "#dc2626" }}
+          title="Remove Period D">
           <X size={12} strokeWidth={2.5} />
         </button>
       </div>
@@ -7063,47 +8689,199 @@ const tabs = ["summary","assets","equity"];
 
 <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col" style={{ maxHeight: "100%", minHeight: 0, boxShadow: "0 20px 40px -8px rgba(26, 47, 138, 0.15), 0 4px 12px -2px rgba(26, 47, 138, 0.08)" }}>
 <div className="scrollbar-hide" style={{ overflowX: "auto", overflowY: "auto", maxHeight: !compareMode ? "calc(86vh)" : filtersOpen ? cmp2Enabled ? "calc(72.5vh)" : "calc(79.5vh)" : "calc(85.5vh)" }}>
-<table className="w-full">
+<table className="w-full k-sticky-table">
 <colgroup>
             <col style={{ width: "1px" }} />
-            <col style={{ width: "1px" }} />
-            {compareMode && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
-            {compareMode && cmp2Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+            {multiCompany
+              ? selectedCompanies.map(co => <col key={`bsmc-col-${co}`} style={{ width: "1px" }} />)
+              : <col style={{ width: "1px" }} />}
+{!multiCompany && compareMode && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+            {!multiCompany && compareMode && cmp2Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+            {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
             <col />
           </colgroup>
 <thead>
 {(pgcBsMapping || bsView === "summary") ? (
 <tr className="border-b border-gray-100" style={{
-  position: "sticky", top: 0, zIndex: 10,
-  background: "rgba(255,255,255,0.95)",
-  backdropFilter: "blur(24px)",
-  WebkitBackdropFilter: "blur(24px)",
+  background: "rgba(255,255,255,0.98)",
   boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
 }}>
-<th className="text-left px-6 whitespace-nowrap" style={{ height: "64px", background: "transparent" }}>
-    <div className="flex items-center gap-3">
-      <div className="flex items-baseline gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
-<span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>
-          {t("col_account")}
-        </span>
-        <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
-          {t("page_bs_full")}
-        </span>
+<th className="text-left px-6 whitespace-nowrap k-sticky-acc-head" style={{ height: "64px" }}>
+    <div className="flex items-center gap-5">
+      <div className="flex items-center gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
+        <button onClick={() => setSearchActive(a => !a)}
+          className="flex items-center justify-center"
+          style={{ background: "transparent", color: searchActive ? colors.primary : "#94a3b8", padding: 0, transition: "color 240ms" }}
+          onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+          onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary : "#94a3b8"; }}
+          title="Search">
+          <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+            <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.6"/>
+            <path d="M9.5 9.5L12.5 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+          </svg>
+        </button>
+        {searchActive ? (
+          <>
+            <input
+              ref={searchInputRef}
+              autoFocus
+              type="text"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Escape") {
+                  setSearchActive(false);
+                  setSearchQuery("");
+                }
+              }}
+              placeholder="Code or name..."
+              style={{
+                fontSize: 16, fontWeight: 700, color: colors.primary,
+                border: "none", outline: "none", background: "transparent",
+                width: 240, padding: 0, letterSpacing: "-0.02em"
+              }}
+            />
+            <button onClick={() => { setSearchActive(false); setSearchQuery(""); }}
+              className="flex items-center justify-center ml-1"
+              style={{ background: "transparent", color: "#94a3b8", padding: 2, transition: "color 200ms" }}
+              onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+              onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
+              title="Close search">
+              <X size={14} />
+            </button>
+          </>
+        ) : (
+          <>
+            <span onClick={() => setSearchActive(true)} className="font-black tracking-tight"
+              style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em", cursor: "pointer" }}>
+              {t("col_account")}
+            </span>
+            <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
+              {t("page_bs_full")}
+            </span>
+          </>
+        )}
+      </div>
+      <div style={{ width: 1, height: 18, background: "#e5e7eb" }} />
+<div className="flex items-center gap-4" style={{ flexDirection: "row-reverse" }}>
+        <button onClick={() => {
+          if (Object.values(bsDrillMap).some(Boolean)) { setBsDrillMap({}); return; }
+          const next = {};
+          const expandDrillChildren = (children, leaves, depth, contextKey) => {
+            (children || []).filter(hasData).forEach(child => {
+              const childKey = `bsdrill-${contextKey}-${child.code}`;
+              next[childKey] = true;
+              const grandkids = (child.children || []).filter(hasData);
+              const grandLeaves = (child.uploadLeaves || []).filter(l => l.type !== "plain");
+              expandDrillChildren(grandkids, grandLeaves, depth + 1, childKey);
+            });
+            (leaves || []).forEach((leaf, i) => {
+              const leafKey = `bsdrill-leaf-${contextKey}-${depth}-${i}`;
+              next[leafKey] = true;
+            });
+          };
+          const expandTopLevel = (node) => {
+            if (!hasData(node) || node.accountType !== "B/S") return;
+            next[`bsrow-${node.code}`] = true;
+            next[`bsmulti-${node.code}`] = true;
+            const kids = (node.children || []).filter(hasData);
+            const leaves = (node.uploadLeaves || []).filter(l => l.type !== "plain");
+            expandDrillChildren(kids, leaves, 0, `bsrow-${node.code}`);
+            expandDrillChildren(kids, leaves, 0, `bsmulti-${node.code}`);
+          };
+          const flatNodes = pgcBsMapping ? (bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes) : null;
+          if (flatNodes && flatNodes.length > 0) flatNodes.forEach(expandTopLevel);
+          else { const walkBS = (node) => { if (!hasData(node) || node.accountType !== "B/S") return; expandTopLevel(node); (node.children || []).forEach(walkBS); }; bsRoots.forEach(walkBS); }
+          setBsDrillMap(next);
+        }}
+className="flex items-center justify-center"
+          style={{ background: "transparent", color: "#94a3b8", padding: 4, transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)" }}
+          onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+          onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
+          title={Object.values(bsDrillMap).some(Boolean) ? "Collapse all" : "Expand all"}>
+          <span key={Object.values(bsDrillMap).some(Boolean) ? "collapse" : "expand"}
+            className="inline-flex"
+            style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
+            {Object.values(bsDrillMap).some(Boolean)
+              ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            }
+          </span>
+        </button>
+<div className="relative flex items-center"
+          ref={el => {
+            if (!el) return;
+            const tabs = el.querySelectorAll("[data-bs-tab]");
+            const idx = ["summary","assets","equity"].indexOf(bsView);
+            const active = tabs[idx >= 0 ? idx : 0];
+            const indicator = el.querySelector(".bs-view-indicator");
+            if (active && indicator) {
+              indicator.style.left = active.offsetLeft + "px";
+              indicator.style.width = active.offsetWidth + "px";
+            }
+          }}>
+          <span className="bs-view-indicator" style={{
+            position: "absolute",
+            bottom: -4,
+            height: 2,
+            background: colors.primary,
+            borderRadius: 1,
+            transition: "left 320ms cubic-bezier(0.34, 1.56, 0.64, 1), width 320ms cubic-bezier(0.34, 1.56, 0.64, 1)",
+            pointerEvents: "none",
+          }} />
+{[["summary","Summary"],["assets","Assets"],["equity","Equity & Liab."]].map(([v, label]) => {
+            const active = bsView === v;
+            return (
+              <button key={v} data-bs-tab onClick={() => setBsView(v)}
+                className="px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] whitespace-nowrap"
+                style={{
+                  background: "transparent",
+                  color: active ? colors.primary : "#94a3b8",
+                  transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)",
+                }}>
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        {compareMode && (
+          <>
+            <div style={{ width: 1, height: 18, background: "#e5e7eb" }} />
+            <button onClick={() => setFiltersOpen(o => !o)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg"
+              style={{
+                background: "transparent",
+                color: filtersOpen ? colors.primary : "#94a3b8",
+                transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+              onMouseLeave={e => { e.currentTarget.style.color = filtersOpen ? colors.primary : "#94a3b8"; }}>
+              <ChevronDown size={10} style={{ transition: "transform 300ms cubic-bezier(0.34,1.56,0.64,1)", transform: filtersOpen ? "rotate(0deg)" : "rotate(-90deg)" }} />
+              <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? "Hide" : "Show"}</span>
+            </button>
+          </>
+        )}
       </div>
     </div>
   </th>
+{multiCompany ? selectedCompanies.map(co => (
+  <th key={`bsmc-th-${co}`} className="text-center py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px" }}>
+    <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{co}</span>
+  </th>
+)) : (
 <th className="text-right pr-6 py-3 whitespace-nowrap"
-  style={{ background: "transparent", width: "200px", cursor: compareMode ? "default" : "pointer" }}
+  style={{ background: "transparent", width: "200px", cursor: (compareMode || multiCompany) ? "default" : "pointer" }}
   onClick={toggleBSHistory}
-  title={compareMode ? "" : historyExpanded ? "Hide history" : "Show last 6 months"}>
+  title={(compareMode || multiCompany) ? "" : historyExpanded ? "Hide history" : "Show last 6 months"}>
     <span className="font-black tracking-tight inline-block"
       style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em", animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
       {t("col_actual")}
     </span>
   </th>
-  {historyExpanded && bsHistoryProcessed.map(h => (
-    <th key={`bshist-${h.year}-${h.month}`} className="text-right pr-6 py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px" }}>
-      <div className="flex flex-col items-end">
+)}
+{historyExpanded && bsHistoryProcessed.map(h => (
+    <th key={`bshist-${h.year}-${h.month}`} className="text-center py-3 whitespace-nowrap" style={{ background: "transparent", width: "200px" }}>
+      <div className="flex flex-col items-center">
         <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>
           {MONTHS.find(m => m.value === h.month)?.label.slice(0,3)}
         </span>
@@ -7116,7 +8894,7 @@ const tabs = ["summary","assets","equity"];
       <Loader2 size={14} className="animate-spin" style={{ color: colors.primary }} />
     </th>
   )}
-  {compareMode && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap" style={{ background: "transparent" }}>
+  {compareMode && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap k-sticky-head">
     <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.26s both" }}>
       <div className="flex items-center gap-1.5">
         <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#CF305D" }} />
@@ -7125,7 +8903,7 @@ const tabs = ["summary","assets","equity"];
       <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{[cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource].filter(Boolean).join(" · ")}</span>
     </div>
   </th>}
-{compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap" style={{ background: "transparent" }}>
+{compareMode && cmp2Enabled && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap k-sticky-head">
     <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.30s both" }}>
       <div className="flex items-center gap-1.5">
         <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#57aa78" }} />
@@ -7134,108 +8912,16 @@ const tabs = ["summary","assets","equity"];
       <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{[cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source].filter(Boolean).join(" · ")}</span>
     </div>
   </th>}
-<th className="text-right pr-6 py-3" style={{ background: "transparent" }}>
-    <div className="flex items-center justify-end gap-2" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
-      {compareMode && (
-        <button onClick={() => setFiltersOpen(o => !o)}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all duration-200 hover:scale-[1.02]"
-          style={{
-            background: filtersOpen ? `${colors.primary}12` : "transparent",
-            color: filtersOpen ? colors.primary : "#9ca3af",
-          }}>
-          <ChevronDown size={10} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
-          <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? "Hide" : "Show"}</span>
-        </button>
-      )}
-      <button onClick={() => {
-        if (Object.values(bsDrillMap).some(Boolean)) { setBsDrillMap({}); return; }
-        const next = {};
-        const expandDrillChildren = (children, leaves, depth, contextKey) => {
-          (children || []).filter(hasData).forEach(child => {
-            const childKey = `bsdrill-${contextKey}-${child.code}`;
-            next[childKey] = true;
-            const grandkids = (child.children || []).filter(hasData);
-            const grandLeaves = (child.uploadLeaves || []).filter(l => l.type !== "plain");
-            expandDrillChildren(grandkids, grandLeaves, depth + 1, childKey);
-          });
-          (leaves || []).forEach((leaf, i) => {
-            const leafKey = `bsdrill-leaf-${contextKey}-${depth}-${i}`;
-            next[leafKey] = true;
-          });
-        };
-        const expandTopLevel = (node) => {
-          if (!hasData(node) || node.accountType !== "B/S") return;
-          next[`bsrow-${node.code}`] = true;
-          next[`bsmulti-${node.code}`] = true;
-          const kids = (node.children || []).filter(hasData);
-          const leaves = (node.uploadLeaves || []).filter(l => l.type !== "plain");
-          expandDrillChildren(kids, leaves, 0, `bsrow-${node.code}`);
-          expandDrillChildren(kids, leaves, 0, `bsmulti-${node.code}`);
-        };
-        const flatNodes = pgcBsMapping ? (bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes) : null;
-        if (flatNodes && flatNodes.length > 0) flatNodes.forEach(expandTopLevel);
-        else { const walkBS = (node) => { if (!hasData(node) || node.accountType !== "B/S") return; expandTopLevel(node); (node.children || []).forEach(walkBS); }; bsRoots.forEach(walkBS); }
-        setBsDrillMap(next);
-      }}
-        className="flex items-center justify-center rounded-lg transition-all duration-200 hover:scale-[1.05]"
-        style={{ background: `${colors.primary}12`, color: colors.primary, width: 28, height: 28, overflow: "hidden" }}
-        title={Object.values(bsDrillMap).some(Boolean) ? "Collapse all" : "Expand all"}>
-        <span key={Object.values(bsDrillMap).some(Boolean) ? "collapse" : "expand"}
-          className="inline-flex"
-          style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
-          {Object.values(bsDrillMap).some(Boolean)
-            ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
-          }
-        </span>
-      </button>
-      <div className="relative flex items-center p-1 rounded-xl" style={{ background: "#f3f4f6" }}
-        ref={el => {
-          if (!el) return;
-          const btns = el.querySelectorAll("[data-bs-pill]");
-          const idx = ["summary","assets","equity"].indexOf(bsView);
-          const active = btns[idx >= 0 ? idx : 0];
-          const pill = el.querySelector(".bs-view-pill");
-          if (active && pill) {
-            pill.style.left = active.offsetLeft + "px";
-            pill.style.width = active.offsetWidth + "px";
-            pill.style.top = active.offsetTop + "px";
-            pill.style.height = active.offsetHeight + "px";
-          }
-        }}>
-        <span className="bs-view-pill" style={{
-          position: "absolute", background: "#fff", borderRadius: 8,
-          boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
-          transition: "left 320ms cubic-bezier(0.34, 1.56, 0.64, 1), width 320ms cubic-bezier(0.34, 1.56, 0.64, 1), top 320ms cubic-bezier(0.34, 1.56, 0.64, 1), height 320ms cubic-bezier(0.34, 1.56, 0.64, 1)",
-          pointerEvents: "none", zIndex: 0,
-        }} />
-{[["summary","Summary","S"],["assets","Assets","A"],["equity","Equity & Liab.","EQ"]].map(([v, label, short]) => {
-          const active = bsView === v;
-          return (
-            <button key={v} data-bs-pill onClick={() => setBsView(v)}
-              className="relative z-10 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-wider overflow-hidden"
-              style={{
-                background: "transparent",
-                color: active ? colors.primary : "#9ca3af",
-                padding: "6px 8px",
-                transition: "color 280ms cubic-bezier(0.4, 0, 0.2, 1)",
-              }}>
-<span style={{
-                display: "inline-block",
-                overflow: "hidden",
-                whiteSpace: "nowrap",
-                maxWidth: historyExpanded ? 20 : 150,
-                verticalAlign: "middle",
-                transition: "max-width 320ms cubic-bezier(0.34, 1.56, 0.64, 1)",
-              }}>
-                {historyExpanded ? short : label}
-              </span>
-            </button>
-          );
-        })}
+  {compareMode && cmp2Enabled && cmp3Enabled && <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap k-sticky-head">
+    <div className="flex flex-col items-center">
+      <div className="flex items-center gap-1.5">
+        <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#a855f7" }} />
+        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>Period D</span>
       </div>
+      <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{[cmp3Year, MONTHS.find(m => String(m.value) === String(cmp3Month))?.label, cmp3Source].filter(Boolean).join(" · ")}</span>
     </div>
-  </th>
+  </th>}
+<th className="k-sticky-head" />
 </tr>
 ) : (
   <>
@@ -7345,12 +9031,12 @@ const tabs = ["summary","assets","equity"];
             {pgcBsMapping ? (
               bsRoots.length === 0
                 ? <tr><td colSpan={8} className="py-12 text-center text-gray-400 text-sm">No Balance Sheet data found</td></tr>
-                : (compareMode ? renderBSCompareRows(bsRoots, cmpTree, cmp2Tree) : renderBSRows(bsRoots))
+                : (compareMode ? renderBSCompareRows(bsRoots, cmpTree, cmp2Tree, cmp3Tree) : renderBSRows(bsRoots))
             ) : (
               bsView === "summary" ? (
                 bsRoots.length === 0
                   ? <tr><td colSpan={8} className="py-12 text-center text-gray-400 text-sm">{t("no_bs_data")}</td></tr>
-                  : (compareMode ? renderBSCompareRows(bsRoots, cmpTree, cmp2Tree) : renderBSRows(bsRoots))
+                  : (compareMode ? renderBSCompareRows(bsRoots, cmpTree, cmp2Tree, cmp3Tree) : renderBSRows(bsRoots))
               ) : allCompaniesLoading ? (
                 <tr><td colSpan={companyColumns.length + 1} className="py-12 text-center">
                   <Loader2 size={20} className="animate-spin text-[#1a2f8a] mx-auto" />
@@ -7424,6 +9110,8 @@ const [plExpandedMap, setPlExpandedMap] = useState({});
 const [bsDrillMap, setBsDrillMap] = useState({});
 const [plHistoryExpanded, setPlHistoryExpanded] = useState(false);
 const [bsHistoryExpanded, setBsHistoryExpanded] = useState(false);
+const [plHistoryMonths, setPlHistoryMonths] = useState([]);
+const [bsHistoryMonths, setBsHistoryMonths] = useState([]);
 const [bsCmpDimGroups, setBsCmpDimGroups] = useState(null);
 const [bsCmpDimensions, setBsCmpDimensions] = useState(null);
 const [bsCmp2DimGroups, setBsCmp2DimGroups] = useState(null);
@@ -7440,10 +9128,20 @@ const [metaLoading,        setMetaLoading]        = useState(false);
 const metaFetchedRef = useRef(false);
  
 // Props win when available; internal fallback fills the gap
-const effectiveSources    = sources.length    > 0 ? sources    : internalSources;
-const effectiveStructures = structures.length > 0 ? structures : internalStructures;
-const effectiveCompanies  = companies.length  > 0 ? companies  : internalCompanies;
-const effectiveDimensions = dimensions.length > 0 ? dimensions : internalDimensions;
+const { access: resourceAccess } = useCurrentUserResourceAccess();
+const filterByAccess = (items, kind, getId) => {
+  const set = resourceAccess[kind];
+  if (!set) return items;
+  return items.filter(item => set.has(String(getId(item))));
+};
+const effectiveSources    = filterByAccess(sources.length    > 0 ? sources    : internalSources, "source", s => s.Source ?? s.source ?? s);
+const effectiveStructures = filterByAccess(structures.length > 0 ? structures : internalStructures, "structure", s => s.GroupStructure ?? s.groupStructure ?? s);
+const effectiveCompanies  = filterByAccess(companies.length  > 0 ? companies  : internalCompanies, "company", c => c.CompanyShortName ?? c.companyShortName ?? c.company ?? c.Company ?? c);
+const effectiveDimensions = filterByAccess(dimensions.length > 0 ? dimensions : internalDimensions, "dimension", d => {
+  const code = String(d.DimensionCode ?? d.dimensionCode ?? d.code ?? d.Code ?? "");
+  const name = String(d.DimensionName ?? d.dimensionName ?? d.name ?? d.Name ?? code);
+  return code || name;
+});
  
 // Mirrors exactly what HomePage.jsx fetches
 const fetchMetadata = useCallback(async () => {
@@ -7517,8 +9215,15 @@ const [upYear, setUpYear] = useState("");
   const [upMonth, setUpMonth] = useState("");
   const [upSource, setUpSource] = useState("");
   const [upStructure, setUpStructure] = useState("");
-const [upCompanies, setUpCompanies] = useState([]);
-  const upCompany = upCompanies[0] ?? "";
+const [upCompaniesRaw, setUpCompaniesRaw] = useState([]);
+  const upCompanies = Array.isArray(upCompaniesRaw) ? upCompaniesRaw : [];
+  const setUpCompanies = (v) => setUpCompaniesRaw(Array.isArray(v) ? v : []);
+ const upCompany = upCompanies[0] ?? "";
+const [upCompaniesDebounced, setUpCompaniesDebounced] = useState(upCompanies);
+useEffect(() => {
+  const t = setTimeout(() => setUpCompaniesDebounced(upCompanies), 300);
+  return () => clearTimeout(t);
+}, [upCompanies]);
   const setUpCompany = (v) => setUpCompanies(v ? [v] : []);
 const [upDimGroups, setUpDimGroups] = useState(null);   // null = all, [] = none, [...] = selected
 const [upDimensions, setUpDimensions] = useState(null);
@@ -7582,19 +9287,18 @@ const isSpanishIfrsEs = !isPGC && grpData.some(n => /\.PL$/i.test(String(n.accou
   const isSpanishIFRS = !isPGC && !isSpanishIfrsEs && grpData.some(n => /^[A-Z]\.\d/.test(String(n.accountCode ?? n.AccountCode ?? "")));
 const isDanish      = !isPGC && !isSpanishIFRS && !isSpanishIfrsEs && grpData.some(n => /^\d{5,6}$/.test(String(n.accountCode ?? n.AccountCode ?? "")));
 
-// Spanish IFRS-ES and Danish IFRS use mapping tables (no breakers needed)
-  if (isDanish || isSpanishIfrsEs) return;
+// PGC, Spanish IFRS-ES and Danish IFRS use mapping tables (no legacy breakers needed)
+  if (isPGC || isDanish || isSpanishIfrsEs) return;
 
-  if (!isPGC && !isSpanishIFRS) return;
+  if (!isSpanishIFRS) return;
 
   breakersFetchedRef.current = true;
 
-  const endpoint = isPGC
-    ? `${SUPABASE_URL}/pgc_breakers?select=*`
-    : `${SUPABASE_URL}/spanish_ifrs_breakers?select=*`;
+  const endpoint = `${SUPABASE_URL}/spanish_ifrs_breakers?select=*`;
 
   fetch(endpoint, { headers: sbHeaders })
-    .then(r => r.json())
+    .then(r => r.ok ? r.json() : [])
+    .catch(() => [])
     .then(rows => {
       if (!Array.isArray(rows)) return;
       const grouped = { pl: {}, bs: {}, cf: {} };
@@ -7741,10 +9445,9 @@ const rows = new Map();
       secsArr.forEach(s => {
         sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) });
       });
-console.log("[DanishPL useEffect] SETTING mapping, rows=", rows.size, "sections=", sections.size);
-      setDanishIfrsPlMapping({ rows, sections, names });
+setDanishIfrsPlMapping({ rows, sections, names });
     })
-    .catch((e) => { console.log("[DanishPL useEffect] FETCH ERROR:", e); setDanishIfrsPlMapping(null); });
+    .catch(() => setDanishIfrsPlMapping(null));
 }, [grpData, locale]);
 
 // ── Danish IFRS: load BS mapping(danish_ifrs_bs_rows + danish_ifrs_bs_sections) ──
@@ -7967,16 +9670,18 @@ if (effectiveSources.length > 0 && !upSource) {
   }, [effectiveStructures, upStructure]);
 
 
- useEffect(() => {
-    if (effectiveCompanies.length > 0 && !upCompany) {
+const upCompanyInitDone = useRef(false);
+  useEffect(() => {
+    if (upCompanyInitDone.current) return;
+    if (effectiveCompanies.length > 0 && upCompanies.length === 0) {
       const c = effectiveCompanies[0];
-      setUpCompany(
-        typeof c === "object"
-          ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "")
-          : String(c)
-      );
+      const v = typeof c === "object"
+        ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "")
+        : String(c);
+      setUpCompanies([v]);
+      upCompanyInitDone.current = true;
     }
-  }, [effectiveCompanies, upCompany]);
+  }, [effectiveCompanies, upCompanies.length]);
 
 
 // Auto-find the latest period with data once source/structure/company are known.
@@ -8143,16 +9848,6 @@ setPlCmpLoading(true);
     finally { setGrpLoading(false); }
   }, [headers]);
 
-useEffect(() => {
-  if (upSource && upStructure && upYear && upMonth && upCompanies.length > 0) {
-    fetchUploaded(upYear, upMonth, upSource, upStructure, upCompanies);
-    fetchPrev(upYear, upMonth, upSource, upStructure, upCompanies);
-    fetchJournal(upYear, upMonth, upSource, upStructure, upCompanies);
-  }
-}, [upSource, upStructure, upYear, upMonth, upCompanies]);
-
-
-
 const fetchJournal = useCallback(async (year, month, source, structure, companies) => {
   const y = year ?? upYear; const m = month ?? upMonth;
   const s = source ?? upSource; const st = structure ?? upStructure;
@@ -8170,9 +9865,17 @@ const fetchJournal = useCallback(async (year, month, source, structure, companie
     const json = await res.json();
     setJrnData(json.value ?? (Array.isArray(json) ? json : [json]));
     setJrnFetched(true);
-  } catch (e) { setJrnError(e.message); }
+} catch (e) { setJrnError(e.message); }
   finally { setJrnLoading(false); }
 }, [upYear, upMonth, upSource, upStructure, upCompanies, headers]);
+
+useEffect(() => {
+  if (upSource && upStructure && upYear && upMonth && upCompaniesDebounced.length > 0) {
+    fetchUploaded(upYear, upMonth, upSource, upStructure, upCompaniesDebounced);
+    fetchPrev(upYear, upMonth, upSource, upStructure, upCompaniesDebounced);
+    fetchJournal(upYear, upMonth, upSource, upStructure, upCompaniesDebounced);
+  }
+}, [upSource, upStructure, upYear, upMonth, upCompaniesDebounced]);
 
 const fetchJournalCmp = useCallback(async (year, month, source, structure, company) => {
   if (!year || !month || !source || !structure || !company) { setJrnCmpData([]); return; }
@@ -8259,6 +9962,15 @@ const [bsCmp2Source, setBsCmp2Source] = useState("");
 const [bsCmp2Structure, setBsCmp2Structure] = useState("");
 const [bsCmp2Company, setBsCmp2Company] = useState("");
 const [bsCmp2Data, setBsCmp2Data] = useState([]);
+const [bsCmp3Year, setBsCmp3Year] = useState("");
+const [bsCmp3Month, setBsCmp3Month] = useState("");
+const [bsCmp3Source, setBsCmp3Source] = useState("");
+const [bsCmp3Structure, setBsCmp3Structure] = useState("");
+const [bsCmp3Company, setBsCmp3Company] = useState("");
+const [bsCmp3Data, setBsCmp3Data] = useState([]);
+const [bsCmp3Enabled, setBsCmp3Enabled] = useState(true);
+const [bsCmp3DimGroups, setBsCmp3DimGroups] = useState(null);
+const [bsCmp3Dimensions, setBsCmp3Dimensions] = useState(null);
 const [compareMode, setCompareMode] = useState(false);
 const [cmpYear,      setCmpYear]      = useState("");
 const [cmpMonth,     setCmpMonth]     = useState("");
@@ -8282,6 +9994,20 @@ const [cmp2DimGroups, setCmp2DimGroups] = useState(null);
 const [cmp2Data,      setCmp2Data]      = useState([]);
 const [cmp2PrevData,  setCmp2PrevData]  = useState([]);
 const [cmp2Loading,   setCmp2Loading]   = useState(false);
+
+// ── Compare period 3 (Period D) ───────────────────────────
+const [cmp3Year,      setCmp3Year]      = useState("");
+const [cmp3Month,     setCmp3Month]     = useState("");
+const [cmp3Source,    setCmp3Source]    = useState("");
+const [cmp3Structure, setCmp3Structure] = useState("");
+const [cmp3Company,   setCmp3Company]   = useState("");
+const [cmp3DimGroups, setCmp3DimGroups] = useState(null);
+const [cmp3Dimensions, setCmp3Dimensions] = useState(null);
+const [cmp3Data,      setCmp3Data]      = useState([]);
+const [cmp3PrevData,  setCmp3PrevData]  = useState([]);
+const [cmp3Loading,   setCmp3Loading]   = useState(false);
+const [plCmp3Enabled, setPlCmp3Enabled] = useState(true);
+const [jrnCmp3Data, setJrnCmp3Data]     = useState([]);
   useEffect(() => {
   if (compareMode && cmpSource && cmpStructure && cmpYear && cmpMonth && cmpCompany) {
     fetchCmp(cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany);
@@ -8310,12 +10036,67 @@ useEffect(() => {
   }
 }, [compareMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company]);
 
+const fetchCmp3 = useCallback(async (year, month, source, structure, company) => {
+  if (!year || !month || !source || !structure || !company) return;
+  setCmp3Loading(true);
+  try {
+    const filterA = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
+    const resA = await fetch(
+      `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filterA)}`,
+      { headers: headers() }
+    );
+    const jsonA = resA.ok ? await resA.json() : { value: [] };
+    setCmp3Data(jsonA.value ?? (Array.isArray(jsonA) ? jsonA : []));
+
+    if (Number(month) === 1) { setCmp3PrevData([]); }
+    else {
+      const filterB = `Year eq ${year} and Month eq ${Number(month) - 1} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
+      const resB = await fetch(
+        `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filterB)}`,
+        { headers: headers() }
+      );
+      const jsonB = resB.ok ? await resB.json() : { value: [] };
+      setCmp3PrevData(jsonB.value ?? (Array.isArray(jsonB) ? jsonB : []));
+    }
+  } catch { setCmp3Data([]); setCmp3PrevData([]); }
+  finally { setCmp3Loading(false); }
+}, [headers]);
+
+const fetchJournalCmp3 = useCallback(async (year, month, source, structure, company) => {
+  if (!year || !month || !source || !structure || !company) { setJrnCmp3Data([]); return; }
+  try {
+    const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
+    const res = await fetch(
+      `${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(filter)}`,
+      { headers: headers() }
+    );
+    if (!res.ok) { setJrnCmp3Data([]); return; }
+    const json = await res.json();
+    setJrnCmp3Data(json.value ?? (Array.isArray(json) ? json : []));
+  } catch { setJrnCmp3Data([]); }
+}, [headers]);
+
+useEffect(() => {
+  if (compareMode && cmp3Source && cmp3Structure && cmp3Year && cmp3Month && cmp3Company) {
+    fetchCmp3(cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3Company);
+  }
+}, [compareMode, cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3Company]);
+
+useEffect(() => {
+  if (compareMode && cmp3Source && cmp3Structure && cmp3Year && cmp3Month && cmp3Company) {
+    fetchJournalCmp3(cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3Company);
+  } else {
+    setJrnCmp3Data([]);
+  }
+}, [compareMode, cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3Company, fetchJournalCmp3]);
+
 const tab        = TABS.find(t => t.id === activeTab);
    const anyLoading = probingPeriod || upLoading || prevLoading || plCmpLoading || plCmp2Loading || mapLoading || grpLoading || jrnLoading;
 
 // Progress meter for the loading overlay covering the tab area
 const hasStartedFetching = useRef(false);
   if (upLoading || grpLoading || probingPeriod) hasStartedFetching.current = true;
+  const hasBeenReady = useRef(false);
 
   const dashProgress = useMemo(() => {
     // Until the first fetch has kicked off, force progress to 0 so the overlay
@@ -8336,6 +10117,7 @@ const dashReady = dashProgress >= 100
     || !!upError
     || !!grpError
     || (upFetched && !upLoading && !probingPeriod && !grpLoading);
+  if (dashReady) hasBeenReady.current = true;
 
 
   const dimGroups = useMemo(() => {
@@ -8386,120 +10168,221 @@ const dataSubTabSelector = (
   </div>
 );
 
-const ExportModal = exportModal ? (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setExportModal(false)}>
-      <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
-      <div className="relative bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
-<div className="bg-[#1a2f8a] px-5 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-white/10 flex items-center justify-center">
-              <FileText size={13} className="text-white/70" />
-            </div>
-            <div>
-              <p className="k-panel-title font-black text-sm">Export Report</p>
-              <p className="text-white/50 text-[10px]">{compareMode ? "P&L compare on" : "P&L standard"}{bsCompareMode ? " · BS compare on" : " · BS standard"}</p>
-            </div>
-          </div>
-          <button onClick={() => setExportModal(false)} className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-all">
-            <X size={13} className="text-white/70" />
-          </button>
+const PeriodChip = ({ letter, color, label, filters, MONTHS, t, companies = [] }) => {
+  if (!filters) return null;
+  const moLabel = MONTHS.find(m => String(m.value) === String(filters.month))?.label ?? filters.month;
+  const resolveCompany = (code) => {
+    if (!code) return null;
+    if (Array.isArray(code)) {
+      return code.map(c => companies.find(co => String(co.value ?? co.code) === String(c))?.label ?? companies.find(co => String(co.value ?? co.code) === String(c))?.name ?? c).join(", ");
+    }
+    const m = companies.find(co => String(co.value ?? co.code) === String(code));
+    return m?.label ?? m?.name ?? code;
+  };
+  const lines = [
+    moLabel && filters.year ? `${moLabel} ${filters.year}` : null,
+    filters.source,
+    filters.structure,
+    resolveCompany(filters.company),
+    Array.isArray(filters.dimGroups) && filters.dimGroups.length > 0 ? `${filters.dimGroups.length} dim ${filters.dimGroups.length === 1 ? "group" : "groups"}` : null,
+    Array.isArray(filters.dimensions) && filters.dimensions.length > 0 ? `${filters.dimensions.length} ${filters.dimensions.length === 1 ? "dim" : "dims"}` : null,
+  ].filter(Boolean);
+return (
+    <div className="group flex gap-3 p-3 rounded-2xl border transition-all hover:shadow-sm"
+      style={{ borderColor: `${color}25`, background: `linear-gradient(135deg, ${color}08 0%, ${color}03 100%)` }}>
+      <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 text-white text-xs font-black"
+        style={{ background: color, boxShadow: `0 4px 12px -2px ${color}50` }}>
+        {letter}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-baseline justify-between gap-2 mb-1.5">
+          <p className="text-[10px] font-black uppercase tracking-[0.18em]" style={{ color }}>{label}</p>
+          {lines[0] && <p className="text-[11px] font-bold text-gray-800 truncate">{lines[0]}</p>}
         </div>
-        <div className="p-5 space-y-4">
+        <div className="flex flex-wrap gap-1">
+          {lines.slice(1).map((line, i) => (
+            <span key={i} className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-white/60 text-gray-600 border border-gray-100/80">{line}</span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
 
-
-{/* Active compare filters info */}
-          {(compareMode || bsCompareMode) && (
-            <div className="bg-[#f8f9ff] rounded-xl p-3 space-y-2 border border-[#1a2f8a]/10">
-              {compareMode && (
-                <div>
-                  <p className="text-[9px] font-black text-[#1a2f8a]/50 uppercase tracking-widest mb-1">P&L Compare</p>
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <div className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#CF305D]/10 border border-[#CF305D]/20">
-                      <div className="w-1.5 h-1.5 rounded-full bg-[#CF305D] flex-shrink-0"/>
-                      <span className="text-[9px] font-bold text-[#CF305D]">B</span>
-                      <span className="text-[9px] text-gray-500">{[MONTHS.find(m=>String(m.value)===String(cmpMonth))?.label,cmpYear,cmpSource,cmpStructure,cmpCompany].filter(Boolean).join(' · ')||'—'}</span>
-                    </div>
-                    <div className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#57aa78]/10 border border-[#57aa78]/20">
-                      <div className="w-1.5 h-1.5 rounded-full bg-[#57aa78] flex-shrink-0"/>
-                      <span className="text-[9px] font-bold text-[#57aa78]">C</span>
-                      <span className="text-[9px] text-gray-500">{[MONTHS.find(m=>String(m.value)===String(cmp2Month))?.label,cmp2Year,cmp2Source,cmp2Structure,cmp2Company].filter(Boolean).join(' · ')||'—'}</span>
-                    </div>
-                  </div>
-                </div>
-              )}
-              {bsCompareMode && (
-                <div>
-                  <p className="text-[9px] font-black text-[#1a2f8a]/50 uppercase tracking-widest mb-1">Balance Sheet Compare</p>
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <div className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#CF305D]/10 border border-[#CF305D]/20">
-                      <div className="w-1.5 h-1.5 rounded-full bg-[#CF305D] flex-shrink-0"/>
-                      <span className="text-[9px] font-bold text-[#CF305D]">B</span>
-                      <span className="text-[9px] text-gray-500">{[MONTHS.find(m=>String(m.value)===String(bsCmpMonth))?.label,bsCmpYear,bsCmpSource,bsCmpStructure,bsCmpCompany].filter(Boolean).join(' · ')||'—'}</span>
-                    </div>
-                    <div className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#57aa78]/10 border border-[#57aa78]/20">
-                      <div className="w-1.5 h-1.5 rounded-full bg-[#57aa78] flex-shrink-0"/>
-                      <span className="text-[9px] font-bold text-[#57aa78]">C</span>
-                      <span className="text-[9px] text-gray-500">{[MONTHS.find(m=>String(m.value)===String(bsCmp2Month))?.label,bsCmp2Year,bsCmp2Source,bsCmp2Structure,bsCmp2Company].filter(Boolean).join(' · ')||'—'}</span>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-          {/* P&L */}
-          <div>
-            <p className="text-white font-black text-base">Profit & Loss</p>
-            <div className="space-y-1.5">
-              {[["plSummary","Summary"],["plDetailed","Detailed"]].map(([k,l]) => (
-                <label key={k} className="flex items-center gap-2.5 cursor-pointer group">
-                  <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all flex-shrink-0 ${exportOpts[k] ? "bg-[#1a2f8a] border-[#1a2f8a]" : "border-gray-200 group-hover:border-[#1a2f8a]/40"}`}
-                    onClick={() => setExportOpts(o => ({...o,[k]:!o[k]}))}>
-                    {exportOpts[k] && <svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg>}
-                  </div>
-                  <span className="text-xs text-gray-700 font-medium">{l}</span>
-                </label>
-              ))}
-            </div>
-          </div>
-          {/* BS */}
-          <div>
-            <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Balance Sheet</p>
-            <div className="space-y-1.5">
-              {[["bsSummary","Summary"],["bsAssets","Assets"],["bsEquity","Equity & Liabilities"]].map(([k,l]) => (
-                <label key={k} className="flex items-center gap-2.5 cursor-pointer group">
-                  <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all flex-shrink-0 ${exportOpts[k] ? "bg-[#1a2f8a] border-[#1a2f8a]" : "border-gray-200 group-hover:border-[#1a2f8a]/40"}`}
-                    onClick={() => setExportOpts(o => ({...o,[k]:!o[k]}))}>
-                    {exportOpts[k] && <svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg>}
-                  </div>
-                  <span className="text-xs text-gray-700 font-medium">{l}</span>
-                </label>
-              ))}
-            </div>
-          </div>
-
-          {/* Dimensions & Journal */}
-          <div className="border-t border-gray-50 pt-3">
-            <label className="flex items-center gap-2.5 cursor-pointer group">
-              <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all flex-shrink-0 ${exportOpts.dimJournal !== false ? "bg-amber-500 border-amber-500" : "border-gray-200 group-hover:border-amber-300"}`}
-                onClick={() => setExportOpts(o => ({...o,dimJournal:o.dimJournal===false?true:false}))}>
-                {exportOpts.dimJournal !== false && <svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg>}
+const ExportModal = exportModal ? createPortal(
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
+      style={{ background: "rgba(15, 23, 42, 0.55)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", animation: "kBadgesPop 280ms cubic-bezier(0.34,1.56,0.64,1)" }}
+      onClick={() => setExportModal(false)}>
+      <div className="relative bg-white w-full max-w-xl overflow-hidden max-h-[92vh] flex flex-col"
+        style={{
+          borderRadius: 28,
+          boxShadow: `0 30px 80px -12px ${colors.primary}40, 0 12px 24px -6px rgba(0,0,0,0.12)`,
+          animation: "plRowSlideIn 340ms cubic-bezier(0.34,1.56,0.64,1)"
+        }}
+        onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="relative px-7 pt-7 pb-5 flex-shrink-0">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-center gap-3.5">
+              <div className="w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0"
+                style={{
+                  background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.primary}dd 100%)`,
+                  boxShadow: `0 8px 20px -6px ${colors.primary}60`
+                }}>
+                <Download size={17} className="text-white" strokeWidth={2.5} />
               </div>
               <div>
-                <span className="text-xs text-gray-700 font-medium">Dimensions & Journal entries</span>
-                <p className="text-[10px] text-gray-400">Separate sheet with all dimension and journal data</p>
+                <p className="font-black text-[20px] tracking-tight" style={{ color: colors.primary, letterSpacing: "-0.02em" }}>
+                  {t("export_report") || "Export Report"}
+                </p>
+                <div className="flex items-center gap-1.5 mt-1">
+                  <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
+                    style={{ background: `${colors.primary}10`, color: colors.primary }}>
+                    {(exportOpts.format ?? "xlsx") === "pdf" ? "PDF" : "Excel"}
+                  </span>
+                  {(compareMode || bsCompareMode) && (
+                    <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
+                      style={{ background: "#CF305D15", color: "#CF305D" }}>
+                      Compare
+                    </span>
+                  )}
+                </div>
               </div>
-            </label>
-          </div>
-<div className="border-t border-gray-50 pt-3 flex items-center gap-2">
-            <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest flex-shrink-0">Format</p>
-            <div className="flex items-center gap-1 p-1 bg-gray-100/70 rounded-xl ml-auto">
-              {[["xlsx","Excel"],["pdf","PDF"]].map(([f,l])=>(
-                <button key={f} onClick={()=>setExportOpts(o=>({...o,format:f}))}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all ${(exportOpts.format??'xlsx')===f?"bg-white text-[#1a2f8a] shadow-sm":"text-gray-400 hover:text-gray-600"}`}>
-                  {l}
-                </button>
-              ))}
             </div>
+            <button onClick={() => setExportModal(false)}
+              className="w-9 h-9 rounded-xl flex items-center justify-center transition-all duration-200 hover:scale-[1.05]"
+              style={{ background: "#f3f4f6", color: "#6b7280" }}
+              onMouseEnter={e => { e.currentTarget.style.background = "#e5e7eb"; e.currentTarget.style.color = "#111827"; }}
+              onMouseLeave={e => { e.currentTarget.style.background = "#f3f4f6"; e.currentTarget.style.color = "#6b7280"; }}>
+              <X size={14} strokeWidth={2.5} />
+            </button>
+          </div>
+        </div>
+{/* Body */}
+        <div className="flex-1 overflow-y-auto px-7 pb-5 space-y-6 scrollbar-hide">
+          {/* Period A — always shown */}
+          <div>
+            <div className="flex items-center gap-2 mb-2.5">
+              <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">{t("primary_period") || "Primary Period"}</p>
+              <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
+            </div>
+            <PeriodChip letter="A" color={colors.primary} label="Period A"
+              filters={{ year: upYear, month: upMonth, source: upSource, structure: upStructure, company: upCompany, dimGroups: upDimGroups, dimensions: upDimensions }}
+              MONTHS={MONTHS} t={t} companies={effectiveCompanies} />
+          </div>
+
+{/* P&L compare periods */}
+          {compareMode && (
+            <div>
+              <div className="flex items-center gap-2 mb-2.5">
+                <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">P&L Compare</p>
+                <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
+              </div>
+              <div className="space-y-2">
+                <PeriodChip letter="B" color="#CF305D" label="Period B"
+                  filters={{ year: cmpYear, month: cmpMonth, source: cmpSource, structure: cmpStructure, company: cmpCompany, dimGroups: cmpDimGroups, dimensions: cmpDimensions }}
+                  MONTHS={MONTHS} t={t} companies={effectiveCompanies} />
+                {plCmp2Enabled && (
+                  <PeriodChip letter="C" color="#57aa78" label="Period C"
+                    filters={{ year: cmp2Year, month: cmp2Month, source: cmp2Source, structure: cmp2Structure, company: cmp2Company, dimGroups: cmp2DimGroups, dimensions: cmp2Dimensions }}
+                    MONTHS={MONTHS} t={t} companies={effectiveCompanies} />
+                )}
+                {plCmp2Enabled && plCmp3Enabled && (
+                  <PeriodChip letter="D" color="#a855f7" label="Period D"
+                    filters={{ year: cmp3Year, month: cmp3Month, source: cmp3Source, structure: cmp3Structure, company: cmp3Company, dimGroups: cmp3DimGroups, dimensions: cmp3Dimensions }}
+                    MONTHS={MONTHS} t={t} companies={effectiveCompanies} />
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* BS compare periods */}
+          {bsCompareMode && (
+            <div>
+              <div className="flex items-center gap-2 mb-2.5">
+                <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">Balance Sheet Compare</p>
+                <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
+              </div>
+              <div className="space-y-2">
+                <PeriodChip letter="B" color="#CF305D" label="Period B"
+                  filters={{ year: bsCmpYear, month: bsCmpMonth, source: bsCmpSource, structure: bsCmpStructure, company: bsCmpCompany, dimGroups: bsCmpDimGroups, dimensions: bsCmpDimensions }}
+                  MONTHS={MONTHS} t={t} companies={effectiveCompanies} />
+                {bsCmp2Enabled && (
+                  <PeriodChip letter="C" color="#57aa78" label="Period C"
+                    filters={{ year: bsCmp2Year, month: bsCmp2Month, source: bsCmp2Source, structure: bsCmp2Structure, company: bsCmp2Company, dimGroups: bsCmp2DimGroups, dimensions: bsCmp2Dimensions }}
+                    MONTHS={MONTHS} t={t} companies={effectiveCompanies} />
+                )}
+                {bsCmp2Enabled && bsCmp3Enabled && (
+                  <PeriodChip letter="D" color="#a855f7" label="Period D"
+                    filters={{ year: bsCmp3Year, month: bsCmp3Month, source: bsCmp3Source, structure: bsCmp3Structure, company: bsCmp3Company, dimGroups: bsCmp3DimGroups, dimensions: bsCmp3Dimensions }}
+                    MONTHS={MONTHS} t={t} companies={effectiveCompanies} />
+                )}
+              </div>
+            </div>
+          )}
+
+{/* What to include */}
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">What to include</p>
+              <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                ["plSummary",  "P&L Summary",       colors.primary],
+                ["plDetailed", "P&L Detailed",      colors.primary],
+                ["bsSummary",  "BS Summary",        colors.primary],
+                ["bsAssets",   "BS Assets",         colors.primary],
+                ["bsEquity",   "BS Equity & Liab.", colors.primary],
+                ["dimJournal", "Dims & Journal",    "#dc7533"],
+              ].map(([k, label, accent]) => {
+                const checked = k === "dimJournal" ? exportOpts.dimJournal !== false : !!exportOpts[k];
+                return (
+                  <label key={k} className="flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all hover:bg-gray-50"
+                    style={{ borderColor: checked ? `${accent}40` : "#f3f4f6", background: checked ? `${accent}06` : "white" }}
+                    onClick={() => setExportOpts(o => ({ ...o, [k]: k === "dimJournal" ? (o.dimJournal === false) : !o[k] }))}>
+                    <div className="w-4 h-4 rounded border-2 flex items-center justify-center transition-all flex-shrink-0"
+                      style={{ background: checked ? accent : "transparent", borderColor: checked ? accent : "#d1d5db" }}>
+                      {checked && <svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg>}
+                    </div>
+                    <span className="text-xs font-bold text-gray-700">{label}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+{/* Footer */}
+        <div className="px-7 py-5 flex items-center gap-3 flex-shrink-0"
+          style={{ background: "linear-gradient(180deg, transparent 0%, #f9fafb 100%)" }}>
+          <div className="relative flex items-center p-1 rounded-xl"
+            style={{ background: "#f3f4f6" }}
+            ref={el => {
+              if (!el) return;
+              const btns = el.querySelectorAll("[data-fmt]");
+              const idx = ["xlsx","pdf"].indexOf(exportOpts.format ?? "xlsx");
+              const active = btns[idx >= 0 ? idx : 0];
+              const pill = el.querySelector(".fmt-pill");
+              if (active && pill) {
+                pill.style.left = active.offsetLeft + "px";
+                pill.style.width = active.offsetWidth + "px";
+              }
+            }}>
+            <span className="fmt-pill" style={{
+              position: "absolute", top: 4, bottom: 4,
+              background: "white", borderRadius: 8,
+              boxShadow: "0 2px 6px rgba(0,0,0,0.06)",
+              transition: "left 320ms cubic-bezier(0.34,1.56,0.64,1), width 320ms cubic-bezier(0.34,1.56,0.64,1)",
+              pointerEvents: "none"
+            }} />
+            {[["xlsx", "Excel"], ["pdf", "PDF"]].map(([f, l]) => (
+              <button key={f} data-fmt onClick={() => setExportOpts(o => ({ ...o, format: f }))}
+                className="relative z-10 px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-colors duration-200"
+                style={{ background: "transparent", color: (exportOpts.format ?? "xlsx") === f ? colors.primary : "#9ca3af" }}>
+                {l}
+              </button>
+            ))}
           </div>
           <button
             onClick={() => {
@@ -8507,25 +10390,53 @@ const ExportModal = exportModal ? (
               const fmt = exportOpts.format ?? 'xlsx';
               const commonArgs = {
                 groupAccounts: grpData,
-                uploadedAccounts: upDimension ? upData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === upDimension) : upData,
-                prevUploadedAccounts: upDimension ? prevData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === upDimension) : prevData,
+                uploadedAccounts: upData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions)),
+                prevUploadedAccounts: prevData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions)),
                 compareMode,
-                cmpUploadedAccounts: cmpDimension ? cmpData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === cmpDimension) : cmpData,
-                cmpPrevUploadedAccounts: cmpDimension ? cmpPrevData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === cmpDimension) : cmpPrevData,
-                cmpFilters: { year: cmpYear, month: cmpMonth, source: cmpSource, structure: cmpStructure, company: cmpCompany },
-                cmp2UploadedAccounts: cmp2Dimension ? cmp2Data.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === cmp2Dimension) : cmp2Data,
-                cmp2PrevUploadedAccounts: cmp2Dimension ? cmp2PrevData.filter(r => String(r.dimensionCode ?? r.DimensionCode ?? "") === cmp2Dimension) : cmp2PrevData,
-                cmp2Filters: { year: cmp2Year, month: cmp2Month, source: cmp2Source, structure: cmp2Structure, company: cmp2Company },
+                cmpUploadedAccounts: cmpData.filter(r => rowMatchesDimMulti(r, cmpDimGroups, cmpDimensions)),
+                cmpPrevUploadedAccounts: cmpPrevData.filter(r => rowMatchesDimMulti(r, cmpDimGroups, cmpDimensions)),
+                cmpFilters: { year: cmpYear, month: cmpMonth, source: cmpSource, structure: cmpStructure, company: cmpCompany, dimGroups: cmpDimGroups, dimensions: cmpDimensions },
+                cmp2UploadedAccounts: cmp2Data.filter(r => rowMatchesDimMulti(r, cmp2DimGroups, cmp2Dimensions)),
+                cmp2PrevUploadedAccounts: cmp2PrevData.filter(r => rowMatchesDimMulti(r, cmp2DimGroups, cmp2Dimensions)),
+                cmp2Filters: { year: cmp2Year, month: cmp2Month, source: cmp2Source, structure: cmp2Structure, company: cmp2Company, dimGroups: cmp2DimGroups, dimensions: cmp2Dimensions },
+                cmp3UploadedAccounts: cmp3Data.filter(r => rowMatchesDimMulti(r, cmp3DimGroups, cmp3Dimensions)),
+                cmp3PrevUploadedAccounts: cmp3PrevData.filter(r => rowMatchesDimMulti(r, cmp3DimGroups, cmp3Dimensions)),
+                cmp3Filters: { year: cmp3Year, month: cmp3Month, source: cmp3Source, structure: cmp3Structure, company: cmp3Company, dimGroups: cmp3DimGroups, dimensions: cmp3Dimensions },
                 bsCompareMode,
                 bsCmpUploadedAccounts: bsCmpData,
-                bsCmpFilters: { year: bsCmpYear, month: bsCmpMonth, source: bsCmpSource, structure: bsCmpStructure, company: bsCmpCompany },
+                bsCmpFilters: { year: bsCmpYear, month: bsCmpMonth, source: bsCmpSource, structure: bsCmpStructure, company: bsCmpCompany, dimGroups: bsCmpDimGroups, dimensions: bsCmpDimensions },
                 bsCmp2UploadedAccounts: bsCmp2Data,
-                bsCmp2Filters: { year: bsCmp2Year, month: bsCmp2Month, source: bsCmp2Source, structure: bsCmp2Structure, company: bsCmp2Company },
+                bsCmp2Filters: { year: bsCmp2Year, month: bsCmp2Month, source: bsCmp2Source, structure: bsCmp2Structure, company: bsCmp2Company, dimGroups: bsCmp2DimGroups, dimensions: bsCmp2Dimensions },
+                bsCmp3UploadedAccounts: bsCmp3Data,
+                bsCmp3Filters: { year: bsCmp3Year, month: bsCmp3Month, source: bsCmp3Source, structure: bsCmp3Structure, company: bsCmp3Company, dimGroups: bsCmp3DimGroups, dimensions: bsCmp3Dimensions },
                 month: upMonth, year: upYear, source: upSource, structure: upStructure,
+                aFilters: { year: upYear, month: upMonth, source: upSource, structure: upStructure, company: upCompany, dimGroups: upDimGroups, dimensions: upDimensions },
                 journalEntries: jrnData,
-               cmp2Enabled: plCmp2Enabled,
+                cmp2Enabled: plCmp2Enabled,
+                cmp3Enabled: plCmp3Enabled,
                 bsCmp2Enabled: bsCmp2Enabled,
+                bsCmp3Enabled: bsCmp3Enabled,
+selectedCompanies: upCompaniesDebounced,
+                companies: effectiveCompanies,
+                dimensions: effectiveDimensions,
+                dimGroups,
+                plHistoryMonths: plHistoryExpanded ? plHistoryMonths : [],
+                bsHistoryMonths: bsHistoryExpanded ? bsHistoryMonths : [],
+                ytdOnly,
                 summaryRows: (() => {
+                  const effectivePlMapping = activeMapping?.plConverted ?? pgcMapping ?? danishIfrsPlMapping ?? spanishIfrsEsPlMapping;
+                  const localTree = buildTree(grpData, upData);
+                  if (effectivePlMapping?.rows) {
+                    const treeByCode = new Map();
+                    (function index(nodes) {
+                      nodes.forEach(n => { treeByCode.set(String(n.code), n); index(n.children || []); });
+                    })(localTree);
+                    return [...effectivePlMapping.rows.entries()]
+                      .filter(([, info]) => info.showInSummary)
+                      .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+                      .map(([code]) => treeByCode.get(code))
+                      .filter(n => n && hasData(n) && ["P/L", "DIS"].includes(n.accountType));
+                  }
                   const allSums = [];
                   function walk(node) {
                     if (!hasData(node)) return;
@@ -8533,27 +10444,45 @@ const ExportModal = exportModal ? (
                     if (node.isSumAccount) allSums.push(node);
                     (node.children || []).forEach(c => walk(c));
                   }
-                  const localTree = buildTree(grpData, upData);
                   localTree.filter(n => ["P/L", "DIS"].includes(n.accountType)).forEach(n => walk(n));
                   const plSums = allSums.filter(n => n.accountType === "P/L");
                   const isAlpha = plSums.some(n => /[a-zA-Z]/.test(String(n.code)));
-                  let filtered = isAlpha
-                    ? plSums.filter(n => String(n.code).endsWith(".S"))
-                    : plSums.filter(n => PL_HIGHLIGHTED_CODES.has(String(n.code)));
+                  let filtered;
+                  if (isAlpha) {
+                    const hasDotS = plSums.some(n => String(n.code).endsWith(".S"));
+                    const hasDotPL = !hasDotS && plSums.some(n => String(n.code).endsWith(".PL"));
+                    const hasAlphaPlain = !hasDotS && plSums.some(n => /^[A-Z]\.\d/.test(String(n.code)));
+                    if (hasDotS) filtered = plSums.filter(n => String(n.code).endsWith(".S"));
+                    else if (hasDotPL || hasAlphaPlain) {
+                      const breakerKeys = new Set(Object.keys(breakers.pl));
+                      const plDotNodes = plSums.filter(n => String(n.code).endsWith(".PL"));
+                      const breakerNodes = breakerKeys.size > 0
+                        ? plSums.filter(n => breakerKeys.has(String(n.code)) && !String(n.code).endsWith(".PL"))
+                        : plSums.filter(n => n.level === 1 && !String(n.code).endsWith(".PL")).slice(0, 1);
+                      filtered = [...breakerNodes, ...plDotNodes];
+                    } else filtered = plSums.filter(n => PL_HIGHLIGHTED_CODES.has(String(n.code)));
+                  } else filtered = plSums.filter(n => PL_HIGHLIGHTED_CODES.has(String(n.code)));
                   if (filtered.length === 0) filtered = plSums.filter(n => n.level === 1);
                   return filtered.sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
                 })(),
                 opts: exportOpts,
               };
-      if(fmt==='pdf') generateKonsolidatorPdf(commonArgs);
-              else generateKonsolidatorXlsx({...commonArgs, compareMode});
+              if (fmt === 'pdf') generateKonsolidatorPdf(commonArgs);
+              else generateKonsolidatorXlsx({ ...commonArgs, compareMode });
             }}
-            className="w-full py-2.5 bg-[#1a2f8a] hover:bg-[#1a2f8a]/90 text-white text-xs font-black rounded-xl transition-all">
-            Download {(exportOpts.format??'xlsx')==='pdf'?'PDF':'Excel'}
+className="ml-auto flex items-center gap-2 px-5 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all duration-200 hover:scale-[1.03]"
+            style={{
+              background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.primary}e6 100%)`,
+              color: "white",
+              boxShadow: `0 8px 20px -6px ${colors.primary}80, 0 2px 6px -2px ${colors.primary}40`
+            }}>
+            <Download size={13} strokeWidth={2.5} />
+            {t("download") || "Download"}
           </button>
         </div>
-      </div>
-    </div>
+</div>
+    </div>,
+    document.body
 ) : null;
 
 return (
@@ -8597,8 +10526,22 @@ return (
         .bg-\\[\\#57aa78\\] { background-color: ${colors.tertiary} !important; }
         .border-\\[\\#57aa78\\] { border-color: ${colors.tertiary} !important; }
         .k-panel-title { color: ${colors.quaternary ?? "#F59E0B"} !important; }
-        .scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide::-webkit-scrollbar { display: none; }
 .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+/* Sticky requires the table to have border-collapse: separate */
+        .k-sticky-table { border-collapse: separate; border-spacing: 0; }
+        .k-sticky-table thead th { position: sticky; top: 0; z-index: 10; background: rgba(255,255,255,0.98); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); }
+        .k-sticky-table thead th.k-sticky-acc-head { left: 0; z-index: 25; box-shadow: 4px 0 8px -4px rgba(0,0,0,0.06); }
+        .k-sticky-table tbody td.k-sticky-acc,
+        .k-sticky-table tbody th.k-sticky-acc { position: sticky; left: 0; z-index: 5; background: white; box-shadow: 4px 0 8px -4px rgba(0,0,0,0.06); }
+        .k-sticky-table tbody tr.bg-\\[\\#fef3c7\\] td.k-sticky-acc { background: #fef3c7; }
+        .k-sticky-table tbody tr.bg-\\[\\#fafbff\\] td.k-sticky-acc { background: #fafbff; }
+        .k-sticky-table tbody tr.bg-amber-50\\/10 td.k-sticky-acc { background: #fffbeb1a; }
+        tr.bg-\\[\\#fef3c7\\] .k-sticky-acc { background: #fef3c7; }
+        tr.bg-\\[\\#fafbff\\] .k-sticky-acc { background: #fafbff; }
+        tr.bg-amber-50\\/10 .k-sticky-acc { background: #fffbeb1a; }
+        tr.bg-indigo-50\\/20 .k-sticky-acc { background: rgba(238,242,255,0.2); }
+        tr.bg-indigo-50\\/10 .k-sticky-acc { background: rgba(238,242,255,0.1); }
       `}</style>
 {ExportModal}
 
@@ -8626,16 +10569,39 @@ filters={viewsMode ? [] : [
       options: effectiveSources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; }) },
     { label: t("filter_structure"),value: upStructure,onChange: setUpStructure,
       options: effectiveStructures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; }) },
-{ label: t("filter_company"), multiselect: true, values: upCompanies, onChange: setUpCompanies,
-      options: effectiveCompanies.map(c => {
-        const v = typeof c === "object"
-          ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "")
-          : String(c);
-        const l = typeof c === "object"
-          ? (c.companyLegalName ?? c.CompanyLegalName ?? v)
-          : String(c);
-        return { value: v, label: l };
-      }) },
+(compareMode || bsCompareMode || plHistoryExpanded || bsHistoryExpanded)
+      ? { label: t("filter_company"), value: upCompany,
+          onChange: v => setUpCompanies(v ? [v] : []),
+          options: effectiveCompanies.map(c => {
+            const v = typeof c === "object"
+              ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "")
+              : String(c);
+            const l = typeof c === "object"
+              ? (c.companyLegalName ?? c.CompanyLegalName ?? v)
+              : String(c);
+            return { value: v, label: l };
+          }) }
+: { label: t("filter_company"), multiselect: true, values: upCompanies,
+          onChange: vs => {
+            if (!vs || vs.length === 0) {
+              setUpCompanies(effectiveCompanies.map(c =>
+                typeof c === "object"
+                  ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "")
+                  : String(c)
+              ));
+            } else {
+              setUpCompanies(vs);
+            }
+          },
+          options: effectiveCompanies.map(c => {
+            const v = typeof c === "object"
+              ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "")
+              : String(c);
+            const l = typeof c === "object"
+              ? (c.companyLegalName ?? c.CompanyLegalName ?? v)
+              : String(c);
+            return { value: v, label: l };
+          }) },
 { label: t("filter_dim_group"), multiselect: true, values: upDimGroups,
   onChange: vs => { setUpDimGroups(vs); setUpDimensions(null); },
   options: dimGroups.map(g => ({ value: g, label: g })) },
@@ -8658,13 +10624,16 @@ activeTab === "pl" ? {
       disabled: plHistoryExpanded || upCompanies.length > 1,
       onChange: () => {
         if (plHistoryExpanded || upCompanies.length > 1) return;
-        if (!compareMode) {
+if (!compareMode) {
           setCmpYear(upYear); setCmpMonth(upMonth); setCmpSource(upSource);
           setCmpStructure(upStructure); setCmpCompany(upCompany);
           setCmpDimGroups(upDimGroups); setCmpDimensions(upDimensions);
           setCmp2Year(upYear); setCmp2Month(upMonth); setCmp2Source(upSource);
           setCmp2Structure(upStructure); setCmp2Company(upCompany);
           setCmp2DimGroups(upDimGroups); setCmp2Dimensions(upDimensions);
+          setCmp3Year(upYear); setCmp3Month(upMonth); setCmp3Source(upSource);
+          setCmp3Structure(upStructure); setCmp3Company(upCompany);
+          setCmp3DimGroups(upDimGroups); setCmp3Dimensions(upDimensions);
         }
         setCompareMode(c => !c);
       },
@@ -8676,8 +10645,10 @@ activeTab === "pl" ? {
         if (!bsCompareMode) {
           setBsCmpYear(String(upYear)); setBsCmpMonth(String(upMonth));
           setBsCmpSource(upSource); setBsCmpStructure(upStructure); setBsCmpCompany(upCompany);
-          setBsCmp2Year(String(upYear)); setBsCmp2Month(String(upMonth));
+setBsCmp2Year(String(upYear)); setBsCmp2Month(String(upMonth));
           setBsCmp2Source(upSource); setBsCmp2Structure(upStructure); setBsCmp2Company(upCompany);
+          setBsCmp3Year(String(upYear)); setBsCmp3Month(String(upMonth));
+          setBsCmp3Source(upSource); setBsCmp3Structure(upStructure); setBsCmp3Company(upCompany);
         }
         setBsCompareMode(c => !c);
       },
@@ -8734,7 +10705,7 @@ fabActions={viewsMode ? undefined : [
 )}
 <div className="flex-1 scrollbar-hide" style={{ marginTop: 12, minHeight: 0, display: "flex", flexDirection: "column", overflow: "visible", position: "relative" }}>
 
-{!dashReady && !viewsMode && (
+{!dashReady && !hasBeenReady.current && !viewsMode && (
   <div
     className="absolute inset-0 z-[100] flex items-center justify-center rounded-2xl"
     style={{
@@ -9040,11 +11011,15 @@ onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}>
 <PLStatement
   externalExpandedMap={plExpandedMap}
   externalSetExpandedMap={setPlExpandedMap}
-  multiCompany={upCompanies.length > 1}
+multiCompany={upCompaniesDebounced.length > 1}
+selectedCompanies={upCompaniesDebounced}
   token={token}
   upDimGroups={upDimGroups}
   upDimensions={upDimensions}
   onHistoryExpandedChange={setPlHistoryExpanded}
+  externalHistoryExpanded={plHistoryExpanded}
+  externalHistoryMonths={plHistoryMonths}
+  onHistoryMonthsChange={setPlHistoryMonths}
   ytdOnly={ytdOnly}
   dimensionActive={(upDimGroups?.length > 0) || (upDimensions?.length > 0)}
   groupAccounts={grpData}
@@ -9116,9 +11091,35 @@ cmp2UploadedAccounts={cmp2Data.filter(r => rowMatchesDimMulti(r, cmp2DimGroups, 
     if (key === "dimGroups")  { setCmp2DimGroups(val); setCmp2Dimensions(null); }
     if (key === "dimensions") setCmp2Dimensions(val);
   }}
-  cmp2FilteredDims={cmp2FilteredDims}
+cmp2FilteredDims={cmp2FilteredDims}
   cmp2Enabled={plCmp2Enabled}
   onCmp2EnabledChange={setPlCmp2Enabled}
+  cmp3UploadedAccounts={cmp3Data.filter(r => rowMatchesDimMulti(r, cmp3DimGroups, cmp3Dimensions))}
+  cmp3PrevUploadedAccounts={cmp3PrevData.filter(r => rowMatchesDimMulti(r, cmp3DimGroups, cmp3Dimensions))}
+  cmp3Filters={{
+    year: cmp3Year, month: cmp3Month, source: cmp3Source,
+    structure: cmp3Structure, company: cmp3Company,
+    dimGroups: cmp3DimGroups, dimensions: cmp3Dimensions,
+  }}
+  onCmp3FilterChange={(key, val) => {
+    if (key === "year")      setCmp3Year(val);
+    if (key === "month")     setCmp3Month(val);
+    if (key === "source")    setCmp3Source(val);
+    if (key === "structure") setCmp3Structure(val);
+    if (key === "company")   setCmp3Company(val);
+    if (key === "dimGroups")  { setCmp3DimGroups(val); setCmp3Dimensions(null); }
+    if (key === "dimensions") setCmp3Dimensions(val);
+  }}
+  cmp3FilteredDims={(() => {
+    if (!cmp3DimGroups || cmp3DimGroups.length === 0) return effectiveDimensions;
+    return effectiveDimensions.filter(d => {
+      const g = typeof d === "object" ? (d.dimensionGroup ?? d.DimensionGroup ?? "") : "";
+      return cmp3DimGroups.includes(g);
+    });
+  })()}
+  cmp3Enabled={plCmp3Enabled}
+  onCmp3EnabledChange={setPlCmp3Enabled}
+  journalEntriesCmp3={jrnCmp3Data}
     loading={probingPeriod || (anyLoading && (!upData.length || !grpData.length))}
 
   error={upError || grpError || null}
@@ -9182,9 +11183,13 @@ savedHighlightedIds={activeMapping?.highlightedIds ?? null}
 <div key={`bs-${animKey}`} className="tab-content" style={{ "--slide-from": TAB_ORDER.indexOf("bs") > TAB_ORDER.indexOf(prevTab ?? "bs") ? "30px" : "-30px" }}>
 <BalanceSheet
   multiCompany={upCompanies.length > 1}
+  selectedCompanies={upCompanies}
   externalBsDrillMap={bsDrillMap}
   externalSetBsDrillMap={setBsDrillMap}
   onHistoryExpandedChange={setBsHistoryExpanded}
+  externalHistoryExpanded={bsHistoryExpanded}
+  externalHistoryMonths={bsHistoryMonths}
+  onHistoryMonthsChange={setBsHistoryMonths}
 dimensionActive={(upDimGroups?.length > 0) || (upDimensions?.length > 0)}
 upDimensions={upDimensions}
 upDimGroups={upDimGroups}
@@ -9224,7 +11229,7 @@ uploadedAccounts={upData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimens
   cmpStructure={bsCmpStructure} setCmpStructure={setBsCmpStructure}
   cmpCompany={bsCmpCompany} setCmpCompany={setBsCmpCompany}
   cmpData={bsCmpData} setCmpData={setBsCmpData}
-  cmp2Year={bsCmp2Year} setCmp2Year={setBsCmp2Year}
+cmp2Year={bsCmp2Year} setCmp2Year={setBsCmp2Year}
   cmp2Month={bsCmp2Month} setCmp2Month={setBsCmp2Month}
   cmp2Source={bsCmp2Source} setCmp2Source={setBsCmp2Source}
   cmp2Structure={bsCmp2Structure} setCmp2Structure={setBsCmp2Structure}
@@ -9232,6 +11237,16 @@ uploadedAccounts={upData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimens
   cmp2Data={bsCmp2Data} setCmp2Data={setBsCmp2Data}
 externalCmp2Enabled={bsCmp2Enabled}
   onBsCmp2EnabledChange={setBsCmp2Enabled}
+  cmp3Year={bsCmp3Year} setCmp3Year={setBsCmp3Year}
+  cmp3Month={bsCmp3Month} setCmp3Month={setBsCmp3Month}
+  cmp3Source={bsCmp3Source} setCmp3Source={setBsCmp3Source}
+  cmp3Structure={bsCmp3Structure} setCmp3Structure={setBsCmp3Structure}
+  cmp3Company={bsCmp3Company} setCmp3Company={setBsCmp3Company}
+  cmp3Data={bsCmp3Data} setCmp3Data={setBsCmp3Data}
+  externalCmp3Enabled={bsCmp3Enabled}
+  onBsCmp3EnabledChange={setBsCmp3Enabled}
+  bsCmp3DimGroups={bsCmp3DimGroups} setBsCmp3DimGroups={setBsCmp3DimGroups}
+  bsCmp3Dimensions={bsCmp3Dimensions} setBsCmp3Dimensions={setBsCmp3Dimensions}
   bsCmpDimGroups={bsCmpDimGroups} setBsCmpDimGroups={setBsCmpDimGroups}
   bsCmpDimensions={bsCmpDimensions} setBsCmpDimensions={setBsCmpDimensions}
   bsCmp2DimGroups={bsCmp2DimGroups} setBsCmp2DimGroups={setBsCmp2DimGroups}

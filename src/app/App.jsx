@@ -12,6 +12,16 @@ import { SettingsProvider } from "../components/layout/SettingsContext.jsx";
 import { LatestPeriodProvider } from "../components/layout/LatestPeriodContext.jsx";
 import EpicLoader from "../components/layout/EpicLoader.jsx";
 
+// Silence Recharts noisy "width(-1) and height(-1)" warning in dev.
+// Charts render correctly after the first measure pass; this is just spam.
+if (import.meta.env.DEV) {
+  const origWarn = console.warn;
+  console.warn = (...args) => {
+    if (typeof args[0] === "string" && args[0].includes("width(-1) and height(-1) of chart")) return;
+    origWarn(...args);
+  };
+}
+
 const TOKEN_URL = "https://konsolidatorsignin.b2clogin.com/konsolidatorsignin.onmicrosoft.com/B2C_1_ropc/oauth2/v2.0/token";
 const CLIENT_ID = "20e20379-2661-4066-b297-90c2e089e899";
 const SCOPE = "https://konsolidatorsignin.onmicrosoft.com/1c72d99d-de80-416c-94d0-f84300b7d77e/User.Read";

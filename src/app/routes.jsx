@@ -15,7 +15,8 @@ const ConsolidatedDimensionesPage = lazy(() => import("../components/layout/Cons
 const ConsolidatedMemoryNotesPage = lazy(() => import("../components/layout/ConsolidatedMemoryNotesPage.jsx"));
 const ConsolidatedKpiPage         = lazy(() => import("../components/layout/ConsolidatedKpiPage.jsx"));
 const MappingsPage                = lazy(() => import("../components/layout/MappingsPage.jsx"));
-import { useCurrentUserPermissions } from "../lib/userPermissionsApi";
+import { useMemo } from "react";
+import { useCurrentUserPermissions, useCurrentUserResourceAccess } from "../lib/userPermissionsApi";
 function AccessDenied() {
   return (
     <div className="flex items-center justify-center h-full p-8">
@@ -39,12 +40,40 @@ function PageFallback() {
 }
 
 function AppRoutesInner({ token, user, activePage, preloadedData }) {
-  const sharedData = preloadedData ?? {};
+  const rawData = preloadedData ?? {};
   const { can, loaded } = useCurrentUserPermissions();
+  const { loaded: accessLoaded, access } = useCurrentUserResourceAccess();
 
-  // Wait until permissions load before gating, otherwise the first paint
-  // would block pages momentarily.
-  if (loaded && activePage !== "user") {
+  // Filter resources by current user's access. Admins (no rows in
+  // user_resource_access) see everything. Pages that need the full list
+  // (e.g. UserManagement) receive rawData explicitly below.
+const sharedData = useMemo(() => {
+    if (!accessLoaded) return rawData;
+    const filterBy = (items, kind, getId) => {
+      const set = access[kind];
+      if (!set) return items;
+      return items.filter(item => set.has(String(getId(item))));
+    };
+    return {
+      ...rawData,
+      companies:  filterBy(rawData.companies  ?? [], "company",   c => c.CompanyShortName ?? c.companyShortName ?? c),
+      structures: filterBy(rawData.structures ?? [], "structure", s => s.GroupStructure ?? s.groupStructure ?? s),
+      sources:    filterBy(rawData.sources    ?? [], "source",    s => s.Source ?? s.source ?? s),
+      dimensions: filterBy(rawData.dimensions ?? [], "dimension", d => {
+        const code = String(d.DimensionCode ?? d.dimensionCode ?? d.code ?? d.Code ?? "");
+        const name = String(d.DimensionName ?? d.dimensionName ?? d.name ?? d.Name ?? code);
+        return code || name;
+      }),
+    };
+}, [rawData, accessLoaded, access]);
+
+  // Block rendering until both page perms and resource access have loaded.
+  // Avoids passing transient/empty data to children (which can cause hook
+  // count mismatches in chart libraries like Recharts that bail out on
+  // zero-sized containers).
+  if (!loaded || !accessLoaded) return <PageFallback />;
+
+  if (activePage !== "user") {
     const allowed = activePage === "settings"
       ? (can("settings-personalization") || can("settings-security"))
       : can(activePage);
@@ -55,13 +84,13 @@ if (activePage === "home") return (
     <HomePage token={token} initialData={sharedData} user={user} />
   );
 
-  if (activePage === "individual-data") return (
+if (activePage === "individual-data") return (
     <IndividualesPage
       token={token}
-      sources={sharedData.sources ?? []}
-      structures={sharedData.structures ?? []}
-      companies={sharedData.companies ?? []}
-      dimensions={sharedData.dimensions ?? []}
+      sources={rawData.sources ?? []}
+      structures={rawData.structures ?? []}
+      companies={rawData.companies ?? []}
+      dimensions={rawData.dimensions ?? []}
     />
   );
 
@@ -135,7 +164,7 @@ if (activePage === "consolidated-kpis") return (
       dimensions={sharedData.dimensions ?? []}
     />
   );
-if (activePage === "settings") return <SettingsPage token={token} preloadedData={sharedData} />;
+if (activePage === "settings") return <SettingsPage token={token} preloadedData={rawData} />;
 if (activePage === "mappings") return (
     <MappingsPage token={token} preloadedData={sharedData} />
   );
