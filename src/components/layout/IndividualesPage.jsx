@@ -1554,8 +1554,19 @@ const jrnByCode = new Map();
 
     // ── Column layout ─────────────────────────────────────────
 // History view replaces compare cols (mutually exclusive)
-    const plHist = Array.isArray(plHistoryMonths) ? plHistoryMonths.filter(h => h?.year && h?.month) : [];
-    const bsHist = Array.isArray(bsHistoryMonths) ? bsHistoryMonths.filter(h => h?.year && h?.month) : [];
+// History view (dedupe by year+month to prevent duplicate columns)
+    const dedupHist = (arr) => {
+      const seen = new Set();
+      return (arr || []).filter(h => {
+        if (!h?.year || !h?.month) return false;
+        const k = `${h.year}-${h.month}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    };
+    const plHist = dedupHist(plHistoryMonths);
+    const bsHist = dedupHist(bsHistoryMonths);
 let hasHistoryPL = !compareMode && plHist.length > 0;
     let hasHistoryBS = !bsCompareMode && bsHist.length > 0;
 
@@ -1591,11 +1602,22 @@ if (hasMultiCo) { hasHistoryPL = false; hasHistoryBS = false; }
     const bsHasC = bsCompareMode && bsCmp2Enabled && !hasMultiCo;
     const bsHasD = bsCompareMode && bsCmp2Enabled && bsCmp3Enabled && !hasMultiCo;
 
-const plHistMaps = hasHistoryPL ? plHist.map(h => ({
-      year: h.year, month: h.month,
-      map: nodeMap(buildTree(groupAccounts, h.data || [])),
-      prevMap: nodeMap(buildTree(groupAccounts, h.prevData || [])),
-    })) : [];
+const plHistMaps = hasHistoryPL ? plHist.map(h => {
+      const histJrnByCode = new Map();
+      (h.journals || []).forEach(j => {
+        const code = String(j.AccountCode ?? j.accountCode ?? '');
+        const jt = String(j.JournalType ?? j.journalType ?? '').toUpperCase();
+        if (!code || (jt !== 'AJE' && jt !== 'RJE')) return;
+        if (!histJrnByCode.has(code)) histJrnByCode.set(code, []);
+        histJrnByCode.get(code).push(j);
+      });
+      return {
+        year: h.year, month: h.month,
+        map: nodeMap(buildTree(groupAccounts, h.data || [])),
+        prevMap: nodeMap(buildTree(groupAccounts, h.prevData || [])),
+        jrnByCode: histJrnByCode,
+      };
+    }) : [];
     const bsHistMaps = hasHistoryBS ? bsHist.map(h => ({
       year: h.year, month: h.month,
       map: nodeMap(buildTree(groupAccounts, h.data || [])),
@@ -2238,9 +2260,14 @@ const dPrevLeafDimIdx = hasD ? buildLeafDimIdx(cmp3PrevUploadedAccounts) : new M
       const perCoLeafDimIdx = hasMultiCo ? _selectedCo.map(co =>
         buildLeafDimIdx((uploadedAccounts || []).filter(r => getCoF(r) === co))
       ) : [];
-      const perCoPrevLeafDimIdx = hasMultiCo ? _selectedCo.map(co =>
+const perCoPrevLeafDimIdx = hasMultiCo ? _selectedCo.map(co =>
         buildLeafDimIdx((prevUploadedAccounts || []).filter(r => getCoF(r) === co))
       ) : [];
+      const plHistLeafDimIdx = hasHistoryPL ? plHist.map(h => ({
+        month: h.month,
+        cur:  buildLeafDimIdx(h.data || []),
+        prev: buildLeafDimIdx(h.prevData || []),
+      })) : [];
 
       const writeDimRow = (dim, depth, ol, parentLac) => {
         const bg = DIM_BG;
@@ -2304,12 +2331,20 @@ if (hasD && key) {
           const dy = dA(ytdA, dY); setC(dr, PL.ytdDD, dy, NUM_FMT, devColor(dy), false, bg);
           setC(dr, PL.ytdDP, dP(ytdA, dY), PCT_FMT, devColor(dy), false, bg);
         }
-        if (hasMultiCo && key) {
+if (hasMultiCo && key) {
           perCoLeafDimIdx.forEach((idx, i) => {
             const ytdC = -(idx.get(key) ?? 0);
             const prevC = Number(month) === 1 ? 0 : -(perCoPrevLeafDimIdx[i]?.get(key) ?? 0);
             const val = _ytdOnly ? ytdC : (ytdC - prevC);
             if (PL.co[i]) setC(dr, PL.co[i], val, NUM_FMT, AMBER, false, bg);
+          });
+        }
+        if (hasHistoryPL && key) {
+          plHistLeafDimIdx.forEach((h, i) => {
+            const hY = -(h.cur.get(key) ?? 0);
+            const hP = Number(h.month) === 1 ? 0 : -(h.prev.get(key) ?? 0);
+            setC(dr, PL.histMon[i], hY - hP, NUM_FMT, AMBER, false, bg);
+            setC(dr, PL.histYtd[i], hY, NUM_FMT, AMBER, false, bg);
           });
         }
       };
@@ -2385,11 +2420,18 @@ if (hasMultiCo) {
             if (PL.co[i]) setC(dr, PL.co[i], v, NUM_FMT, INDIGO, false, bg);
           });
         }
+if (hasHistoryPL) {
+          plHistMaps.forEach((h, i) => {
+            const entries = h.jrnByCode?.get(accCode) || [];
+            const histAmt = entries.reduce((acc, j) => acc + -parseAmt(j.AmountYTD ?? j.amountYTD ?? 0), 0);
+            setC(dr, PL.histMon[i], histAmt, NUM_FMT, INDIGO, false, bg);
+            setC(dr, PL.histYtd[i], histAmt, NUM_FMT, INDIGO, false, bg);
+          });
+        }
         const blankCols = [
           ...(hasB ? [PL.monBD, PL.monBP, PL.ytdBD, PL.ytdBP, ...(bVal == null ? [PL.monB, PL.ytdB] : [])] : []),
           ...(hasC ? [PL.monCD, PL.monCP, PL.ytdCD, PL.ytdCP, ...(cVal == null ? [PL.monC, PL.ytdC] : [])] : []),
           ...(hasD ? [PL.monDD, PL.monDP, PL.ytdDD, PL.ytdDP, ...(dVal == null ? [PL.monD, PL.ytdD] : [])] : []),
-          ...PL.histMon, ...PL.histYtd,
           ...(hasMultiCo ? [] : PL.co),
         ];
         blankCols.forEach(ci => {
@@ -2778,8 +2820,13 @@ const dTree = hasD ? treeByCode(cmp3UploadedAccounts) : null;
   const bPrevLeafIdxOnce = hasB ? buildLeafIdxOnce(cmpPrevUploadedAccounts) : new Map();
   const cLeafIdxOnce = hasC ? buildLeafIdxOnce(cmp2UploadedAccounts) : new Map();
   const cPrevLeafIdxOnce = hasC ? buildLeafIdxOnce(cmp2PrevUploadedAccounts) : new Map();
-  const dLeafIdxOnce = hasD ? buildLeafIdxOnce(cmp3UploadedAccounts) : new Map();
+const dLeafIdxOnce = hasD ? buildLeafIdxOnce(cmp3UploadedAccounts) : new Map();
   const dPrevLeafIdxOnce = hasD ? buildLeafIdxOnce(cmp3PrevUploadedAccounts) : new Map();
+  const plHistLeafIdxOnce = hasHistoryPL ? plHist.map(h => ({
+    month: h.month,
+    cur:  buildLeafIdxOnce(h.data || []),
+    prev: buildLeafIdxOnce(h.prevData || []),
+  })) : [];
 
   // Pre-index uploaded rows by localAccountCode for dim-filter lookup
   const rowsByLac = new Map();
@@ -2985,6 +3032,28 @@ if (hasD && leaf.code) {
         const dy = dA(ytdA, dY); setC(dr2, PL.ytdDD, dy, NUM_FMT, devColor(dy), false, LEAF_BG);
         setC(dr2, PL.ytdDP, dP(ytdA, dY), PCT_FMT, devColor(dy), false, LEAF_BG);
       }
+if (hasHistoryPL && leaf.code) {
+        plHistLeafIdxOnce.forEach((h, i) => {
+          const hY = -(h.cur.get(String(leaf.code)) ?? 0);
+          const hP = Number(h.month) === 1 ? 0 : -(h.prev.get(String(leaf.code)) ?? 0);
+          setC(dr2, PL.histMon[i], hY - hP, NUM_FMT, TEXT_MUT, false, LEAF_BG);
+          setC(dr2, PL.histYtd[i], hY, NUM_FMT, TEXT_MUT, false, LEAF_BG);
+        });
+      }
+      if (hasMultiCo && leaf.code) {
+        if (!ws._savedPerCoLeafIdx) {
+          ws._savedPerCoLeafIdx = _selectedCo.map(co => ({
+            cur:  buildLeafIdxOnce((uploadedAccounts || []).filter(r => getCoF(r) === co)),
+            prev: buildLeafIdxOnce(((prevUploadedAccountsRaw?.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts) || []).filter(r => getCoF(r) === co)),
+          }));
+        }
+        ws._savedPerCoLeafIdx.forEach((idx, i) => {
+          const ytdC = -(idx.cur.get(String(leaf.code)) ?? 0);
+          const prevC = Number(month) === 1 ? 0 : -(idx.prev.get(String(leaf.code)) ?? 0);
+          const val = _ytdOnly ? ytdC : (ytdC - prevC);
+          if (PL.co[i]) setC(dr2, PL.co[i], val, NUM_FMT, TEXT_MUT, false, LEAF_BG);
+        });
+      }
 
       // Dimension sub-rows
       let dimChildren = leaf.children || [];
@@ -3012,7 +3081,7 @@ if (hasD && leaf.code) {
           });
           return m;
         };
-        ws._savedLeafDimIdx = {
+ws._savedLeafDimIdx = {
           aPrev: buildLDI(prevUploadedAccountsRaw?.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts),
           b:     hasB ? buildLDI(cmpUploadedAccounts) : new Map(),
           bPrev: hasB ? buildLDI(cmpPrevUploadedAccounts) : new Map(),
@@ -3020,6 +3089,7 @@ if (hasD && leaf.code) {
           cPrev: hasC ? buildLDI(cmp2PrevUploadedAccounts) : new Map(),
           d:     hasD ? buildLDI(cmp3UploadedAccounts) : new Map(),
           dPrev: hasD ? buildLDI(cmp3PrevUploadedAccounts) : new Map(),
+          hist:  hasHistoryPL ? plHist.map(h => ({ month: h.month, cur: buildLDI(h.data || []), prev: buildLDI(h.prevData || []) })) : [],
         };
       }
       const sLDI = ws._savedLeafDimIdx;
@@ -3082,6 +3152,14 @@ if (hasD && key) {
           setC(drd, PL.ytdD, dY, NUM_FMT, PURPLE, false, DIM_BG);
           const dy = dA(ytdA, dY); setC(drd, PL.ytdDD, dy, NUM_FMT, devColor(dy), false, DIM_BG);
           setC(drd, PL.ytdDP, dP(ytdA, dY), PCT_FMT, devColor(dy), false, DIM_BG);
+        }
+        if (hasHistoryPL && key) {
+          sLDI.hist.forEach((h, i) => {
+            const hY = -(h.cur.get(key) ?? 0);
+            const hP = Number(h.month) === 1 ? 0 : -(h.prev.get(key) ?? 0);
+            setC(drd, PL.histMon[i], hY - hP, NUM_FMT, AMBER, false, DIM_BG);
+            setC(drd, PL.histYtd[i], hY, NUM_FMT, AMBER, false, DIM_BG);
+          });
         }
         if (hasMultiCo && key) {
           if (!ws._savedPerCoLeafDimIdx) {
@@ -4692,16 +4770,37 @@ const LIGHT=[238,241,251], STRIPE=[248,249,255], WHITE=[255,255,255];
     const devPct = (a, b) => { if (!b) return '—'; const p = (a - b) / Math.abs(b) * 100; return `${p >= 0 ? '+' : ''}${p.toFixed(1)}%`; };
     const devAmt = (a, b) => { const d = a - b; return d === 0 ? '—' : d < 0 ? `(${fmtN(Math.abs(d))})` : fmtN(d); };
 
-// History view
-    const plHist = Array.isArray(plHistoryMonths) ? plHistoryMonths.filter(h => h?.year && h?.month) : [];
-    const bsHist = Array.isArray(bsHistoryMonths) ? bsHistoryMonths.filter(h => h?.year && h?.month) : [];
+// History view (dedupe by year+month to prevent duplicate columns)
+    const dedupHist = (arr) => {
+      const seen = new Set();
+      return (arr || []).filter(h => {
+        if (!h?.year || !h?.month) return false;
+        const k = `${h.year}-${h.month}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    };
+    const plHist = dedupHist(plHistoryMonths);
+    const bsHist = dedupHist(bsHistoryMonths);
     const hasHistoryPL = !compareMode && plHist.length > 0;
     const hasHistoryBS = !bsCompareMode && bsHist.length > 0;
-    const plHistMaps = hasHistoryPL ? plHist.map(h => ({
-      year: h.year, month: h.month,
-      map: nodeMapF(buildTree(groupAccounts, h.data || [])),
-      prevMap: nodeMapF(buildTree(groupAccounts, h.prevData || [])),
-    })) : [];
+const plHistMaps = hasHistoryPL ? plHist.map(h => {
+      const histJrnByCode = new Map();
+      (h.journals || []).forEach(j => {
+        const code = String(j.AccountCode ?? j.accountCode ?? '');
+        const jt = String(j.JournalType ?? j.journalType ?? '').toUpperCase();
+        if (!code || (jt !== 'AJE' && jt !== 'RJE')) return;
+        if (!histJrnByCode.has(code)) histJrnByCode.set(code, []);
+        histJrnByCode.get(code).push(j);
+      });
+      return {
+        year: h.year, month: h.month,
+        map: nodeMapF(buildTree(groupAccounts, h.data || [])),
+        prevMap: nodeMapF(buildTree(groupAccounts, h.prevData || [])),
+        jrnByCode: histJrnByCode,
+      };
+    }) : [];
     const bsHistMaps = hasHistoryBS ? bsHist.map(h => ({
       year: h.year, month: h.month,
       map: nodeMapF(buildTree(groupAccounts, h.data || [])),
@@ -4886,9 +4985,14 @@ if (!sections.find(s => s.title === sectionTitle)) {
     const pdfCPrevLeafDimIdx = hasC ? buildLeafDimIdxPdf(cmp2PrevUploadedAccounts) : new Map();
 const pdfDLeafDimIdx     = hasD ? buildLeafDimIdxPdf(cmp3UploadedAccounts) : new Map();
     const pdfDPrevLeafDimIdx = hasD ? buildLeafDimIdxPdf(cmp3PrevUploadedAccounts) : new Map();
-    const pdfPerCoLeafDimIdx = hasMultiCo ? selectedCompanies.map(co => ({
+const pdfPerCoLeafDimIdx = hasMultiCo ? selectedCompanies.map(co => ({
       cur:  buildLeafDimIdxPdf((uploadedAccounts || []).filter(r => getCoF(r) === co)),
       prev: buildLeafDimIdxPdf((prevUploadedAccounts || []).filter(r => getCoF(r) === co)),
+    })) : [];
+    const pdfPlHistLeafDimIdx = hasHistoryPL ? plHist.map(h => ({
+      month: h.month,
+      cur:  buildLeafDimIdxPdf(h.data || []),
+      prev: buildLeafDimIdxPdf(h.prevData || []),
     })) : [];
 
     // Build PL rows — fully expanded, all leaves/dims/journals
@@ -4978,12 +5082,18 @@ const dimCoVals = hasMultiCo && key ? pdfPerCoLeafDimIdx.map(idx => {
               const prevC = Number(month) === 1 ? 0 : -(idx.prev.get(key) ?? 0);
               return ytdOnly ? ytdC : (ytdC - prevC);
             }) : [];
+            const dimHistVals = hasHistoryPL && key ? pdfPlHistLeafDimIdx.map(h => {
+              const hY = -(h.cur.get(key) ?? 0);
+              const hP = Number(h.month) === 1 ? 0 : -(h.prev.get(key) ?? 0);
+              return { mon: hY - hP, ytd: hY };
+            }) : [];
             rows.push({
               code: dc, label: '  '.repeat(d + 2) + (dim.name || dim.code || ''),
               mon: monAdim, ytd: ytdAdim,
               cMon: bYdim != null ? bYdim - bPdim : null, cYtd: bYdim,
               c2Mon: cYdim != null ? cYdim - cPdim : null, c2Ytd: cYdim,
               c3Mon: dYdim != null ? dYdim - dPdimV : null, c3Ytd: dYdim,
+              histVals: dimHistVals,
               coVals: dimCoVals,
               isBold: false, depth: d + 2, isDim: true,
             });
@@ -4994,8 +5104,13 @@ const jrns = (journalEntries || []).filter(j => {
           const jt = String(j.JournalType ?? j.journalType ?? '').toUpperCase();
           return acc === String(node.code) && (jt === 'AJE' || jt === 'RJE');
         });
-        if (jrns.length > 0) {
-          rows.push({ code: '', label: '  '.repeat(d + 1) + `Journal entries (${jrns.length})`, mon: null, ytd: null, cMon: null, cYtd: null, c2Mon: null, c2Ytd: null, c3Mon: null, c3Ytd: null, isBold: false, depth: d + 1, isJrn: true, isJrnHeader: true });
+if (jrns.length > 0) {
+          const hdrHistVals = hasHistoryPL ? plHistMaps.map(h => {
+            const entries = h.jrnByCode?.get(String(node.code)) || [];
+            const histAmt = entries.reduce((acc, je) => acc + -parseAmt(je.AmountYTD ?? je.amountYTD ?? 0), 0);
+            return { mon: histAmt, ytd: histAmt };
+          }) : [];
+          rows.push({ code: '', label: '  '.repeat(d + 1) + `Journal entries (${jrns.length})`, mon: null, ytd: null, cMon: null, cYtd: null, c2Mon: null, c2Ytd: null, c3Mon: null, c3Ytd: null, histVals: hdrHistVals, isBold: false, depth: d + 1, isJrn: true, isJrnHeader: true });
           const findMatchPl = (idx, jnum) => {
             const m = (idx.get(String(node.code)) || []).find(jj => (jj.JournalNumber ?? jj.journalNumber) === jnum);
             return m ? -parseAmt(m.AmountYTD ?? m.amountYTD ?? 0) : null;
@@ -5395,6 +5510,18 @@ const buildSavedPlRowsLit = () => {
 const dLeafIdx = hasD ? buildLeafOnce(cmp3UploadedAccounts) : new Map();
       const dPrevLeafIdx = hasD ? buildLeafOnce(cmp3PrevUploadedAccounts) : new Map();
 
+      const plHistTreeMaps = hasHistoryPL ? plHist.map(h => ({
+        month: h.month,
+        tree: tbc(h.data || []),
+        prevTree: tbc(h.prevData || []),
+        idx: buildDimIdx(h.data || []),
+        prevIdx: buildDimIdx(h.prevData || []),
+        leafIdx: buildLeafOnce(h.data || []),
+        prevLeafIdx: buildLeafOnce(h.prevData || []),
+        leafDimIdx: buildSavedLDI(h.data || []),
+        prevLeafDimIdx: buildSavedLDI(h.prevData || []),
+      })) : [];
+
 // Per-company trees for multi-co — fully defensive
       let perCoTreesLit = [];
       try {
@@ -5459,6 +5586,7 @@ perCoTreesLit = cos.map(co => {
         const c = hasC ? sumLitWithKids(node, cTree, cPrevTree, cIdx, cPrevIdx, cmp2Filters?.month) : null;
         const d = hasD ? sumLitWithKids(node, dTree, dPrevTree, dIdx, dPrevIdx, cmp3Filters?.month) : null;
         const hl = isHl(node);
+const nodeHistVals = hasHistoryPL ? plHistTreeMaps.map(h => sumLitWithKids(node, h.tree, h.prevTree, h.idx, h.prevIdx, h.month)) : [];
         out.push({
           code: String(node.code ?? ''),
           label: '  '.repeat(depth) + (depth === 0 ? (node.name || '').toUpperCase() : (node.name || '')),
@@ -5466,6 +5594,7 @@ perCoTreesLit = cos.map(co => {
           cMon: b?.mon ?? null, cYtd: b?.ytd ?? null,
           c2Mon: c?.mon ?? null, c2Ytd: c?.ytd ?? null,
           c3Mon: d?.mon ?? null, c3Ytd: d?.ytd ?? null,
+          histVals: nodeHistVals,
           coVals: hasMultiCo ? coValFor(node) : [],
           isBold: hl || depth === 0, isHighlighted: hl || depth === 0, depth,
         });
@@ -5482,13 +5611,19 @@ perCoTreesLit = cos.map(co => {
           const cP = hasC && leaf.code ? (Number(cmp2Filters?.month) === 1 ? 0 : -(cPrevLeafIdx.get(String(leaf.code)) ?? 0)) : null;
           const dY = hasD && leaf.code ? -(dLeafIdx.get(String(leaf.code)) ?? 0) : null;
           const dPV = hasD && leaf.code ? (Number(cmp3Filters?.month) === 1 ? 0 : -(dPrevLeafIdx.get(String(leaf.code)) ?? 0)) : null;
-out.push({
+const leafHistVals = hasHistoryPL && leaf.code ? plHistTreeMaps.map(h => {
+            const lY = -(h.leafIdx.get(String(leaf.code)) ?? 0);
+            const lP = Number(h.month) === 1 ? 0 : -(h.prevLeafIdx.get(String(leaf.code)) ?? 0);
+            return { mon: lY - lP, ytd: lY };
+          }) : [];
+          out.push({
             code: String(leaf.code || ''),
             label: '  '.repeat(depth + 1) + (leaf.name || ''),
             mon: monA, ytd: ytdA,
             cMon: bY != null ? bY - bP : null, cYtd: bY,
             c2Mon: cY != null ? cY - cP : null, c2Ytd: cY,
             c3Mon: dY != null ? dY - dPV : null, c3Ytd: dY,
+            histVals: leafHistVals,
             coVals: hasMultiCo && leaf.code ? perCoTreesLit.map(cot => {
               const lAmt = cot.leafIdx.get(String(leaf.code)) ?? 0;
               const lPrev = cot.prevLeafIdx.get(String(leaf.code)) ?? 0;
@@ -5529,12 +5664,18 @@ const dimCoValsLit = hasMultiCo && key ? perCoTreesLit.map(cot => {
               const prevC = Number(month) === 1 ? 0 : -(cot._prevLeafDimIdx.get(key) ?? 0);
               return ytdOnly ? ytdC : (ytdC - prevC);
             }) : [];
+const dimHistVals = hasHistoryPL && key ? plHistTreeMaps.map(h => {
+              const hY = -(h.leafDimIdx.get(key) ?? 0);
+              const hP = Number(h.month) === 1 ? 0 : -(h.prevLeafDimIdx.get(key) ?? 0);
+              return { mon: hY - hP, ytd: hY };
+            }) : [];
             out.push({
               code: dc, label: '  '.repeat(depth + 2) + '◆ ' + (dim.name || dim.code || ''),
               mon: monAdim, ytd: ytdAdim,
               cMon: bYdim != null ? bYdim - bPdim : null, cYtd: bYdim,
               c2Mon: cYdim != null ? cYdim - cPdim : null, c2Ytd: cYdim,
               c3Mon: dYdim != null ? dYdim - dPdimV : null, c3Ytd: dYdim,
+              histVals: dimHistVals,
               coVals: dimCoValsLit,
               depth: depth + 2, isDim: true,
             });
@@ -5548,10 +5689,16 @@ const dimCoValsLit = hasMultiCo && key ? perCoTreesLit.map(cot => {
             const jt = String(j.JournalType ?? j.journalType ?? '').toUpperCase();
             return acc === String(node.code) && (jt === 'AJE' || jt === 'RJE');
           });
-          if (jrns.length > 0) {
+if (jrns.length > 0) {
+            const hdrHistVals = hasHistoryPL ? plHistMaps.map(h => {
+              const entries = h.jrnByCode?.get(String(node.code)) || [];
+              const histAmt = entries.reduce((acc, je) => acc + -parseAmt(je.AmountYTD ?? je.amountYTD ?? 0), 0);
+              return { mon: histAmt, ytd: histAmt };
+            }) : [];
             out.push({
               code: '', label: '  '.repeat(depth + 1) + `Journal entries (${jrns.length})`,
               mon: null, ytd: null, cMon: null, cYtd: null, c2Mon: null, c2Ytd: null, c3Mon: null, c3Ytd: null,
+              histVals: hdrHistVals,
               depth: depth + 1, isJrn: true, isJrnHeader: true,
             });
 jrns.forEach(j => {
@@ -6415,31 +6562,49 @@ const fetchHistoryMonth = useCallback(async (y, mo) => {
     } catch { return { data: [], prevData: [], journals: [] }; }
   }, [token, source, structure]);
 
-const toggleHistory = useCallback(async () => {
-    if (compareMode || multiCompany) return; // disabled in compare or multi-company mode
-if (historyExpanded) {
-      setHistoryExpanded(false);
-      setHistoryMonths([]);
-      return;
-    }
-setHistoryExpanded(true);
+const toggleHistory = useCallback(() => {
+    if (compareMode || multiCompany) return;
+    setHistoryExpanded(!historyExpanded);
+  }, [compareMode, multiCompany, historyExpanded]);
+// Single sync effect: fetches when expanded turns on or period changes; clears when off.
+// Skips refetch on remount when nothing actually changed.
+const plHistSyncRef = useRef({ expanded: externalHistoryExpanded, period: `${year}-${month}` });
+useEffect(() => {
+  const currentPeriod = `${year}-${month}`;
+  const last = plHistSyncRef.current;
+  const expandedChanged = last.expanded !== externalHistoryExpanded;
+  const periodChanged = last.period !== currentPeriod;
+  plHistSyncRef.current = { expanded: externalHistoryExpanded, period: currentPeriod };
+
+  if (!externalHistoryExpanded) {
+    if (expandedChanged && historyMonthsRef.current.length > 0) setHistoryMonths([]);
+    return;
+  }
+  if (compareMode || multiCompany) return;
+if (!expandedChanged && !periodChanged && historyMonthsRef.current.length > 0) return; // remount with existing data — keep it
+
+  (async () => {
     setHistoryLoading(true);
-    // Compute the 11 previous months from (year, month)
-const targets = [];
+    setHistoryMonths([]);
+    const targets = [];
     let y = Number(year), m = Number(month);
     for (let i = 0; i < 5; i++) {
       m -= 1;
       if (m < 1) { m = 12; y -= 1; }
       targets.push({ year: y, month: m });
     }
-    // Fetch sequentially, push as each resolves
-for (const t of targets) {
-      const { data, prevData, journals } = await fetchHistoryMonth(t.year, t.month);
-      setHistoryMonths(prev => [...prev, { year: t.year, month: t.month, data, prevData, journals }]);
+    for (const tg of targets) {
+      const { data, prevData, journals } = await fetchHistoryMonth(tg.year, tg.month);
+      setHistoryMonths(prev => {
+        const filtered = prev.filter(p => !(p.year === tg.year && p.month === tg.month));
+        return [...filtered, { year: tg.year, month: tg.month, data, prevData, journals }];
+      });
     }
-setHistoryLoading(false);
-  }, [compareMode, multiCompany, historyExpanded, year, month, fetchHistoryMonth]);
-  
+    setHistoryLoading(false);
+  })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [externalHistoryExpanded, year, month]);
+
 const [jrnPopup, setJrnPopup] = useState(null);
 const [dimPopup, setDimPopup] = useState(null);
   
@@ -6939,11 +7104,62 @@ const historyMonthsProcessed = useMemo(() => {
     const walk = (m) => (n) => { m.set(n.code, n); n.children?.forEach(walk(m)); };
     tree.forEach(walk(map));
     prevTree.forEach(walk(prevMap));
-    // Leaf index: localAccountCode → YTD amount
-const leafIdx = new Map();
+    const leafIdx = new Map();
     const aPrevLeafIdxOnce = new Map();
     const leafDimIdx = new Map();
     const prevLeafDimIdx = new Map();
+    // Dim indexes by accountCode + dim (for saved-mapping node.dims filtering)
+    const dimFullIdx = new Map();
+    const dimValIdx = new Map();
+    const prevDimFullIdx = new Map();
+    const prevDimValIdx = new Map();
+    const buildDimIdx = (rows, fullIdx, valIdx) => {
+      (rows || []).forEach(row => {
+        const code = String(getField(row, "accountCode") ?? "");
+        if (!code) return;
+        const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+        const dimsStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+        if (!dimsStr) return;
+        dimsStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+          const i = pair.indexOf(":");
+          if (i === -1) return;
+          const g = pair.slice(0, i).trim();
+          const v = pair.slice(i + 1).trim();
+          fullIdx.set(`${code}|${g}:${v}`, (fullIdx.get(`${code}|${g}:${v}`) ?? 0) + amt);
+          valIdx.set(`${code}|${v}`, (valIdx.get(`${code}|${v}`) ?? 0) + amt);
+        });
+      });
+    };
+    buildDimIdx(filteredData, dimFullIdx, dimValIdx);
+    buildDimIdx(filteredPrev, prevDimFullIdx, prevDimValIdx);
+    // Mirror by dim NAME using metadata (so saved dims stored as names still match)
+    if (Array.isArray(dimensions) && dimensions.length > 0) {
+      const nameToCode = new Map();
+      dimensions.forEach(d => {
+        const group = String(d.dimensionGroup ?? d.DimensionGroup ?? d.groupName ?? d.GroupName ?? "").trim();
+        const c = String(d.dimensionCode ?? d.DimensionCode ?? d.code ?? d.Code ?? "").trim();
+        const n = String(d.dimensionName ?? d.DimensionName ?? d.name ?? d.Name ?? "").trim();
+        if (group && c && n) nameToCode.set(`${group}:${n}`, c);
+      });
+      const mirror = (fullIdx, valIdx) => {
+        [...fullIdx.entries()].forEach(([k, vv]) => {
+          const pipe = k.indexOf("|"); const accCode = k.slice(0, pipe);
+          const rest = k.slice(pipe + 1); const colon = rest.indexOf(":");
+          if (colon === -1) return;
+          const group = rest.slice(0, colon); const codeVal = rest.slice(colon + 1);
+          for (const [nameKey, mappedCode] of nameToCode.entries()) {
+            if (mappedCode === codeVal && nameKey.startsWith(`${group}:`)) {
+              const name = nameKey.slice(group.length + 1);
+              fullIdx.set(`${accCode}|${group}:${name}`, vv);
+              valIdx.set(`${accCode}|${name}`, vv);
+              break;
+            }
+          }
+        });
+      };
+      mirror(dimFullIdx, dimValIdx);
+      mirror(prevDimFullIdx, prevDimValIdx);
+    }
     filteredData.forEach(row => {
       const lac = String(getField(row, "localAccountCode") ?? "");
       if (!lac) return;
@@ -6964,7 +7180,7 @@ const leafIdx = new Map();
         prevLeafDimIdx.set(`${lac}|${dc}`, (prevLeafDimIdx.get(`${lac}|${dc}`) ?? 0) + amt);
       }
     });
-const jrnByCode = new Map();
+    const jrnByCode = new Map();
     (h.journals || []).forEach(j => {
       const code = String(j.accountCode ?? j.AccountCode ?? "");
       const jt = String(j.journalType ?? j.JournalType ?? "").toUpperCase();
@@ -6972,9 +7188,9 @@ const jrnByCode = new Map();
       if (!jrnByCode.has(code)) jrnByCode.set(code, []);
       jrnByCode.get(code).push(j);
     });
-    return { year: h.year, month: h.month, map, prevMap, leafIdx, aPrevLeafIdxOnce, leafDimIdx, prevLeafDimIdx, jrnByCode };
+    return { year: h.year, month: h.month, map, prevMap, leafIdx, aPrevLeafIdxOnce, leafDimIdx, prevLeafDimIdx, jrnByCode, dimFullIdx, dimValIdx, prevDimFullIdx, prevDimValIdx };
   });
-}, [historyMonths, upDimGroups, upDimensions, groupAccounts]);
+}, [historyMonths, upDimGroups, upDimensions, groupAccounts, dimensions]);
 
 const getHistYtd = useCallback((h, code) => { const n = h.map.get(code); return n ? sumNode(n) : 0; }, []);
 const getHistPrev = useCallback((h, code) => {
@@ -8156,13 +8372,40 @@ sectionRows.push(
                           const histGaNode = h.map.get(String(node.code));
                           let histVal = 0;
                           if (histGaNode) {
-                            const ytd = -sumNode(histGaNode);
-                            if (ytdOnly) {
-                              histVal = ytd;
+                            if (node.dims && node.dims.length > 0) {
+                              // Dim-filtered roll-up (mirrors current-period sumLiteral with dims)
+                              const sumDimH = (gaN, dimStr, fullI, valI) => {
+                                if (!gaN) return 0;
+                                let t = 0;
+                                const c = String(gaN.code);
+                                if (dimStr.includes(":")) t += fullI.get(`${c}|${dimStr}`) ?? 0;
+                                else t += valI.get(`${c}|${dimStr}`) ?? 0;
+                                (gaN.children || []).forEach(ch => { t += sumDimH(ch, dimStr, fullI, valI); });
+                                return t;
+                              };
+                              let total = 0;
+                              node.dims.forEach(d => { total += sumDimH(histGaNode, String(d), h.dimFullIdx, h.dimValIdx); });
+                              const ytd = -total;
+                              if (ytdOnly) {
+                                histVal = ytd;
+                              } else {
+                                let prevTotal = 0;
+                                if (Number(h.month) !== 1) {
+                                  const prevGa = h.prevMap.get(String(node.code));
+                                  node.dims.forEach(d => { prevTotal += sumDimH(prevGa, String(d), h.prevDimFullIdx, h.prevDimValIdx); });
+                                }
+                                const prevYtd = -prevTotal;
+                                histVal = ytd - prevYtd;
+                              }
                             } else {
-                              const prevNode = h.prevMap.get(String(node.code));
-                              const prevYtd = prevNode ? -sumNode(prevNode) : 0;
-                              histVal = ytd - prevYtd;
+                              const ytd = -sumNode(histGaNode);
+                              if (ytdOnly) {
+                                histVal = ytd;
+                              } else {
+                                const prevNode = h.prevMap.get(String(node.code));
+                                const prevYtd = prevNode ? -sumNode(prevNode) : 0;
+                                histVal = ytd - prevYtd;
+                              }
                             }
                           }
                           return <PLAmountCell key={`hist-saved-cell-${h.year}-${h.month}-${node.id}`} value={histVal} typoStyle={depth === 0 ? body1Style : body2Style} centered />;
@@ -8423,9 +8666,9 @@ if (jrnExpanded) {
                                 {!multiCompany && compareMode && <><PLAmountCell value={cmpAmt} typoStyle={subbody2Style} divider /><DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody2Style} /></>}
                                 {!multiCompany && compareMode && cmp2Enabled && <><PLAmountCell value={cmp2Amt} typoStyle={subbody2Style} divider /><DeviationCells a={-amt} b={cmp2Amt} typoStyle={subbody2Style} /></>}
 {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><PLAmountCell value={cmp3Amt} typoStyle={subbody2Style} divider /><DeviationCells a={-amt} b={cmp3Amt} typoStyle={subbody2Style} /></>}
-                                {!multiCompany && historyExpanded && historyMonthsProcessed.map((h) => {
-                                  const histJrn = (h.jrnByCode?.get(String(node.code)) || []).find(j => (j.journalNumber ?? j.JournalNumber) === jnum);
-                                  const histAmt = histJrn ? -parseAmt(histJrn.amountYTD ?? histJrn.AmountYTD ?? 0) : 0;
+{!multiCompany && historyExpanded && historyMonthsProcessed.map((h) => {
+                                  const entries = h.jrnByCode?.get(String(node.code)) || [];
+                                  const histAmt = entries.reduce((acc, j) => acc + -parseAmt(j.amountYTD ?? j.AmountYTD ?? 0), 0);
                                   return <PLAmountCell key={`hist-saved-jrn-${h.year}-${h.month}-${k}`} value={histAmt} typoStyle={subbody2Style} centered />;
                                 })}
                               </tr>
@@ -9339,8 +9582,8 @@ if (jrnExpanded) {
 {ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && <PLAmountCell value={cmp3Amt} typoStyle={subbody2Style} divider />}
       {ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && <DeviationCells a={-amt} b={cmp3Amt} typoStyle={subbody2Style} />}
 {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => {
-        const histJrn = (h.jrnByCode?.get(String(child.code)) || []).find(j => String(j.journalNumber ?? j.JournalNumber) === String(jrnNum));
-        const histAmt = histJrn ? -parseAmt(histJrn.amountYTD ?? histJrn.AmountYTD ?? 0) : 0;
+        const entries = h.jrnByCode?.get(String(child.code)) || [];
+        const histAmt = entries.reduce((acc, j) => acc + -parseAmt(j.amountYTD ?? j.AmountYTD ?? 0), 0);
         return <PLAmountCell key={`hist-jrn-${h.year}-${h.month}-${k}`} value={histAmt} typoStyle={subbody2Style} centered />;
       })}
     </>
@@ -9950,31 +10193,40 @@ const loadBSHistory = useCallback(async () => {
       if (m < 1) { m = 12; y -= 1; }
       targets.push({ year: y, month: m });
     }
-    for (const target of targets) {
+for (const target of targets) {
       const { data, journals } = await fetchBSHistoryMonth(target.year, target.month);
-      setHistoryMonths(prev => [...prev, { year: target.year, month: target.month, data, journals }]);
+      setHistoryMonths(prev => {
+        const filtered = prev.filter(p => !(p.year === target.year && p.month === target.month));
+        return [...filtered, { year: target.year, month: target.month, data, journals }];
+      });
     }
     setHistoryLoading(false);
   }, [year, month, fetchBSHistoryMonth]);
 
-  const toggleBSHistory = useCallback(async () => {
+const toggleBSHistory = useCallback(() => {
     if (compareMode || multiCompany) return;
-    if (historyExpanded) {
-      setHistoryExpanded(false);
-      setHistoryMonths([]);
+    setHistoryExpanded(!historyExpanded);
+  }, [compareMode, multiCompany, historyExpanded]);
+
+// Single sync effect: fetches when expanded turns on or period changes; clears when off.
+  // Skips refetch on remount when nothing actually changed.
+  const bsHistSyncRef = useRef({ expanded: externalHistoryExpanded, period: `${year}-${month}` });
+  useEffect(() => {
+    const currentPeriod = `${year}-${month}`;
+    const last = bsHistSyncRef.current;
+    const expandedChanged = last.expanded !== externalHistoryExpanded;
+    const periodChanged = last.period !== currentPeriod;
+    bsHistSyncRef.current = { expanded: externalHistoryExpanded, period: currentPeriod };
+
+    if (!externalHistoryExpanded) {
+      if (expandedChanged && historyMonthsRef.current.length > 0) setHistoryMonths([]);
       return;
     }
-    setHistoryExpanded(true);
-    await loadBSHistory();
-  }, [compareMode, multiCompany, historyExpanded, loadBSHistory]);
-
-  // Auto-refresh history when year/month change while history is expanded
-  useEffect(() => {
-    if (historyExpanded && !compareMode && !multiCompany) {
-      loadBSHistory();
-    }
+    if (compareMode || multiCompany) return;
+   if (!expandedChanged && !periodChanged && historyMonthsRef.current.length > 0) return;
+    loadBSHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [year, month]);
+  }, [externalHistoryExpanded, year, month]);
 
 const localName = useCallback((node) => {
     return pgcBsMapping?.names?.get(String(node.code)) ?? node.name;
@@ -10597,7 +10849,7 @@ if (childExpanded && hasMore) {
   </div>
 </td>
 {multiCompany && selectedCompanies.map(co => (
-            <BSAmountCell key={`bsmc-leaf-${leaf.code ?? "noleaf"}-${co}-${depth}-${i}`} value={leaf.code ? getBsLeafValForCompany(leaf.code, co) : 0} typoStyle={subbody1Style} centered />
+            <BSAmountCell key={`bsmc-leaf-${leaf.code ?? "noleaf"}-${co}-${depth}-${i}`} value={leaf.code ? (perCompanyBsLeafIdx?.get(co)?.get(String(leaf.code)) ?? 0) : 0} typoStyle={subbody1Style} centered />
           ))}
           {!multiCompany && <BSAmountCell value={amt} typoStyle={subbody1Style} />}
 {!multiCompany && compareMode && (() => {
@@ -13116,8 +13368,18 @@ const [plCmp2Enabled, setPlCmp2Enabled] = useState(true);
 const [bsCmp2Enabled, setBsCmp2Enabled] = useState(true);
 const [plExpandedMap, setPlExpandedMap] = useState({});
 const [bsDrillMap, setBsDrillMap] = useState({});
-const [plHistoryExpanded, setPlHistoryExpanded] = useState(false);
-const [bsHistoryExpanded, setBsHistoryExpanded] = useState(false);
+const [plHistoryExpanded, setPlHistoryExpandedRaw] = useState(false);
+const [bsHistoryExpanded, setBsHistoryExpandedRaw] = useState(false);
+const setPlHistoryExpanded = (v) => {
+  setPlHistoryExpandedRaw(v);
+  setBsHistoryExpandedRaw(v);
+  if (!v) { setPlHistoryMonths([]); setBsHistoryMonths([]); }
+};
+const setBsHistoryExpanded = (v) => {
+  setBsHistoryExpandedRaw(v);
+  setPlHistoryExpandedRaw(v);
+  if (!v) { setPlHistoryMonths([]); setBsHistoryMonths([]); }
+};
 const [plHistoryMonths, setPlHistoryMonths] = useState([]);
 const [bsHistoryMonths, setBsHistoryMonths] = useState([]);
 const [bsCmpDimGroups, setBsCmpDimGroups] = useState(null);
