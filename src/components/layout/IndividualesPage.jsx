@@ -1374,7 +1374,7 @@ function generatePLPdf({
 
 function generateKonsolidatorXlsx({
   groupAccounts, uploadedAccounts, prevUploadedAccounts,
-  compareMode,
+compareMode,
   cmpUploadedAccounts, cmpPrevUploadedAccounts, cmpFilters,
   cmp2UploadedAccounts, cmp2PrevUploadedAccounts, cmp2Filters,
 cmp2Enabled = true,
@@ -1384,15 +1384,30 @@ cmp2Enabled = true,
   bsCmpUploadedAccounts = [], bsCmpFilters = {},
   bsCmp2UploadedAccounts = [], bsCmp2Filters = {},
   bsCmp2Enabled = true,
-  bsCmp3UploadedAccounts = [], bsCmp3Filters = {},
+bsCmp3UploadedAccounts = [], bsCmp3Filters = {},
   bsCmp3Enabled = false,
-month, year, source, structure,
+plHistoryMonths = [],
+  bsHistoryMonths = [],
+  selectedCompanies = [],
+  ytdOnly = false,
+savedPlLiteral = null,
+  savedBsLiteral = null,
+  savedHighlightedIds = null,
+  prevUploadedAccountsRaw = [],
+  month, year, source, structure,
   aFilters = {},
   companies = [],
   dimensions = [],
   dimGroups = [],
-  journalEntries = [],
+journalEntries = [],
+  journalEntriesCmp = [],
+  journalEntriesCmp2 = [],
+  journalEntriesCmp3 = [],
   summaryRows = [],
+  breakers = { pl: {}, bs: {}, cf: {} },
+  pgcMapping = null,
+  pgcBsMapping = null,
+  colors = { primary: '#1a2f8a', secondary: '#CF305D', tertiary: '#57aa78' },
   opts = {},
 }) {
   async function doGenerate(ExcelJS) {
@@ -1514,42 +1529,205 @@ const c2M = nodeMap(c2T), c2PM = nodeMap(c2PT);
     const getPrev = (m, c, mo) => Number(mo) === 1 ? 0 : getYtd(m, c);
     const devColor = v => !v || v === 0 ? 'FFD1D5DB' : v > 0 ? 'FF059669' : 'FFDC2626';
 
-    const jrnByCode = new Map();
+const jrnByCode = new Map();
     (journalEntries || []).forEach(j => {
       const code = String(j.AccountCode ?? j.accountCode ?? '');
-      if (!code) return;
+      const jt = String(j.JournalType ?? j.journalType ?? '').toUpperCase();
+      if (!code || (jt !== 'AJE' && jt !== 'RJE')) return;
       if (!jrnByCode.has(code)) jrnByCode.set(code, []);
       jrnByCode.get(code).push(j);
     });
+    const buildJrnByCode = (entries) => {
+      const m = new Map();
+      (entries || []).forEach(j => {
+        const code = String(j.AccountCode ?? j.accountCode ?? '');
+        const jt = String(j.JournalType ?? j.journalType ?? '').toUpperCase();
+        if (!code || (jt !== 'AJE' && jt !== 'RJE')) return;
+        if (!m.has(code)) m.set(code, []);
+        m.get(code).push(j);
+      });
+      return m;
+    };
+    const jrnByCodeCmp  = buildJrnByCode(journalEntriesCmp);
+    const jrnByCodeCmp2 = buildJrnByCode(journalEntriesCmp2);
+    const jrnByCodeCmp3 = buildJrnByCode(journalEntriesCmp3);
 
     // ── Column layout ─────────────────────────────────────────
-const hasB  = compareMode;
-    const hasC  = compareMode && cmp2Enabled;
-    const hasD  = compareMode && cmp2Enabled && cmp3Enabled;
-    const bsHasB = bsCompareMode;
-    const bsHasC = bsCompareMode && bsCmp2Enabled;
-    const bsHasD = bsCompareMode && bsCmp2Enabled && bsCmp3Enabled;
+// History view replaces compare cols (mutually exclusive)
+    const plHist = Array.isArray(plHistoryMonths) ? plHistoryMonths.filter(h => h?.year && h?.month) : [];
+    const bsHist = Array.isArray(bsHistoryMonths) ? bsHistoryMonths.filter(h => h?.year && h?.month) : [];
+let hasHistoryPL = !compareMode && plHist.length > 0;
+    let hasHistoryBS = !bsCompareMode && bsHist.length > 0;
 
-    const PL = { name: 1, monA: 2 };
-    let idx = 3;
-    if (hasB) { PL.monB = idx++; PL.monBD = idx++; PL.monBP = idx++; }
-    if (hasC) { PL.monC = idx++; PL.monCD = idx++; PL.monCP = idx++; }
-    if (hasD) { PL.monD = idx++; PL.monDD = idx++; PL.monDP = idx++; }
-    PL.ytdA = idx++;
-    if (hasB) { PL.ytdB = idx++; PL.ytdBD = idx++; PL.ytdBP = idx++; }
-    if (hasC) { PL.ytdC = idx++; PL.ytdCD = idx++; PL.ytdCP = idx++; }
-    if (hasD) { PL.ytdD = idx++; PL.ytdDD = idx++; PL.ytdDP = idx++; }
+    // Multi-company view: one column per selected company
+    const _selectedCo = (typeof selectedCompanies !== 'undefined' && Array.isArray(selectedCompanies)) ? selectedCompanies : [];
+    const _ytdOnly = typeof ytdOnly === 'boolean' ? ytdOnly : false;
+const hasMultiCo = _selectedCo.length > 1;
+    console.log('[Export] multi-co check', { selectedCompanies, _selectedCo, hasMultiCo, ytdOnly: _ytdOnly });
+    const getCoF = r => String(getField(r, 'companyShortName', 'CompanyShortName') ?? '');
+    const perCoMaps = hasMultiCo ? _selectedCo.map(co => {
+      const f = (uploadedAccounts || []).filter(r => getCoF(r) === co);
+      const pf = (prevUploadedAccounts || []).filter(r => getCoF(r) === co);
+      const legal = (() => {
+        const m = (companies || []).find(c => String(typeof c === 'object' ? (c.companyShortName ?? c.CompanyShortName) : c) === co);
+        return (m && typeof m === 'object' ? (m.companyLegalName ?? m.CompanyLegalName) : null) ?? co;
+      })();
+      return { co, legal, map: nodeMap(buildTree(groupAccounts, f)), prevMap: nodeMap(buildTree(groupAccounts, pf)) };
+    }) : [];
+    console.log('[Export] history check', {
+      plHistoryMonthsArg: plHistoryMonths,
+      bsHistoryMonthsArg: bsHistoryMonths,
+      plHistLength: plHist.length,
+      bsHistLength: bsHist.length,
+      compareMode, bsCompareMode,
+      hasHistoryPL, hasHistoryBS
+    });
+
+if (hasMultiCo) { hasHistoryPL = false; hasHistoryBS = false; }
+    const hasB  = compareMode && !hasMultiCo;
+    const hasC  = compareMode && cmp2Enabled && !hasMultiCo;
+    const hasD  = compareMode && cmp2Enabled && cmp3Enabled && !hasMultiCo;
+    const bsHasB = bsCompareMode && !hasMultiCo;
+    const bsHasC = bsCompareMode && bsCmp2Enabled && !hasMultiCo;
+    const bsHasD = bsCompareMode && bsCmp2Enabled && bsCmp3Enabled && !hasMultiCo;
+
+const plHistMaps = hasHistoryPL ? plHist.map(h => ({
+      year: h.year, month: h.month,
+      map: nodeMap(buildTree(groupAccounts, h.data || [])),
+      prevMap: nodeMap(buildTree(groupAccounts, h.prevData || [])),
+    })) : [];
+    const bsHistMaps = hasHistoryBS ? bsHist.map(h => ({
+      year: h.year, month: h.month,
+      map: nodeMap(buildTree(groupAccounts, h.data || [])),
+    })) : [];
+
+    // ── Saved literal mode helpers ────────────────────────────
+    const hasSavedLiteral = Array.isArray(savedPlLiteral) && savedPlLiteral.length > 0;
+
+    const buildDimIdx = (rows) => {
+      const fullIdx = new Map();
+      const valIdx = new Map();
+      (rows || []).forEach(row => {
+        const code = String(getField(row, 'accountCode') ?? '');
+        if (!code) return;
+        const amt = parseAmt(getField(row, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+        const dimsStr = String(getField(row, 'Dimensions', 'dimensions') ?? '');
+        if (!dimsStr) return;
+        dimsStr.split('||').map(s => s.trim()).filter(Boolean).forEach(pair => {
+          const i = pair.indexOf(':'); if (i === -1) return;
+          const g = pair.slice(0, i).trim();
+          const v = pair.slice(i + 1).trim();
+          fullIdx.set(`${code}|${g}:${v}`, (fullIdx.get(`${code}|${g}:${v}`) ?? 0) + amt);
+          valIdx.set(`${code}|${v}`, (valIdx.get(`${code}|${v}`) ?? 0) + amt);
+        });
+      });
+      // Mirror by NAME using dimensions metadata
+      if (Array.isArray(dimensions) && dimensions.length > 0) {
+        const nameToCode = new Map();
+        dimensions.forEach(d => {
+          const group = String(d.dimensionGroup ?? d.DimensionGroup ?? d.groupName ?? d.GroupName ?? '').trim();
+          const code = String(d.dimensionCode ?? d.DimensionCode ?? d.code ?? d.Code ?? '').trim();
+          const name = String(d.dimensionName ?? d.DimensionName ?? d.name ?? d.Name ?? '').trim();
+          if (group && code && name) nameToCode.set(`${group}:${name}`, code);
+        });
+        [...fullIdx.entries()].forEach(([k, v]) => {
+          const pipe = k.indexOf('|'); const accCode = k.slice(0, pipe);
+          const rest = k.slice(pipe + 1); const colon = rest.indexOf(':');
+          if (colon === -1) return;
+          const group = rest.slice(0, colon); const codeVal = rest.slice(colon + 1);
+          for (const [nameKey, mappedCode] of nameToCode.entries()) {
+            if (mappedCode === codeVal && nameKey.startsWith(`${group}:`)) {
+              const name = nameKey.slice(group.length + 1);
+              fullIdx.set(`${accCode}|${group}:${name}`, v);
+              valIdx.set(`${accCode}|${name}`, v);
+              break;
+            }
+          }
+        });
+      }
+      return { fullIdx, valIdx };
+    };
+
+    const treeByCodeOf = (t) => {
+      const m = new Map();
+      (function w(nodes) { nodes.forEach(n => { m.set(String(n.code), n); w(n.children || []); }); })(t);
+      return m;
+    };
+
+    const aTreeByCode = hasSavedLiteral ? treeByCodeOf(tree) : null;
+    const aPrevTreeByCode = hasSavedLiteral ? treeByCodeOf(prevTree) : null;
+    const aIdx = hasSavedLiteral ? buildDimIdx(uploadedAccounts) : null;
+    const aPrevIdx = hasSavedLiteral ? buildDimIdx(prevUploadedAccountsRaw && prevUploadedAccountsRaw.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts) : null;
+
+    const sumDimRec = (gaNode, dimStr, idx) => {
+      if (!gaNode) return 0;
+      let total = 0;
+      const code = String(gaNode.code);
+      total += dimStr.includes(':') ? (idx.fullIdx.get(`${code}|${dimStr}`) ?? 0) : (idx.valIdx.get(`${code}|${dimStr}`) ?? 0);
+      (gaNode.children || []).forEach(c => { total += sumDimRec(c, dimStr, idx); });
+      return total;
+    };
+
+    // Returns { ytd, mon } for a literal node in a given period
+    const sumLiteralPeriod = (node, treeMap, prevTreeMap, idx, prevIdx, periodMonth) => {
+      const gaNode = treeMap?.get(String(node.code));
+      if (!gaNode) return { ytd: 0, mon: 0 };
+      if (!node.dims || node.dims.length === 0) {
+        const ytd = -sumNode(gaNode);
+        const prevGa = prevTreeMap?.get(String(node.code));
+        const prevYtd = prevGa && Number(periodMonth) !== 1 ? -sumNode(prevGa) : 0;
+        return { ytd, mon: ytd - prevYtd };
+      }
+      let total = 0, prevTotal = 0;
+      node.dims.forEach(d => { total += sumDimRec(gaNode, String(d), idx); });
+      if (Number(periodMonth) !== 1 && prevIdx) {
+        node.dims.forEach(d => { prevTotal += sumDimRec(gaNode, String(d), prevIdx); });
+      }
+      const ytd = -total;
+      const prevYtd = -prevTotal;
+      return { ytd, mon: ytd - prevYtd };
+    };
+
+    const sumLiteralA = (node) => sumLiteralPeriod(node, aTreeByCode, aPrevTreeByCode, aIdx, aPrevIdx, month);
+
+const PL = { name: 1 };
+    let idx = 2;
+    if (!hasMultiCo) {
+      PL.monA = idx++;
+      if (hasB) { PL.monB = idx++; PL.monBD = idx++; PL.monBP = idx++; }
+      if (hasC) { PL.monC = idx++; PL.monCD = idx++; PL.monCP = idx++; }
+      if (hasD) { PL.monD = idx++; PL.monDD = idx++; PL.monDP = idx++; }
+    }
+    PL.histMon = [];
+    if (hasHistoryPL) plHistMaps.forEach(() => PL.histMon.push(idx++));
+    if (!hasMultiCo) {
+      PL.ytdA = idx++;
+      if (hasB) { PL.ytdB = idx++; PL.ytdBD = idx++; PL.ytdBP = idx++; }
+      if (hasC) { PL.ytdC = idx++; PL.ytdCD = idx++; PL.ytdCP = idx++; }
+      if (hasD) { PL.ytdD = idx++; PL.ytdDD = idx++; PL.ytdDP = idx++; }
+    }
+PL.histYtd = [];
+    if (hasHistoryPL) plHistMaps.forEach(() => PL.histYtd.push(idx++));
+    PL.co = [];
+    if (hasMultiCo) perCoMaps.forEach(() => PL.co.push(idx++));
     const plCols = idx - 1;
 
-    const BS = { name: 1, act: 2 };
-    let bidx = 3;
-    if (bsHasB) { BS.cmp = bidx++; BS.cmpD = bidx++; BS.cmpP = bidx++; }
-    if (bsHasC) { BS.cmp2 = bidx++; BS.cmp2D = bidx++; BS.cmp2P = bidx++; }
-    if (bsHasD) { BS.cmp3 = bidx++; BS.cmp3D = bidx++; BS.cmp3P = bidx++; }
+const BS = { name: 1 };
+    let bidx = 2;
+    if (!hasMultiCo) {
+      BS.act = bidx++;
+      if (bsHasB) { BS.cmp = bidx++; BS.cmpD = bidx++; BS.cmpP = bidx++; }
+      if (bsHasC) { BS.cmp2 = bidx++; BS.cmp2D = bidx++; BS.cmp2P = bidx++; }
+      if (bsHasD) { BS.cmp3 = bidx++; BS.cmp3D = bidx++; BS.cmp3P = bidx++; }
+    }
+BS.hist = [];
+    if (hasHistoryBS) bsHistMaps.forEach(() => BS.hist.push(bidx++));
+    BS.co = [];
+    if (hasMultiCo) perCoMaps.forEach(() => BS.co.push(bidx++));
     const bsCols = bidx - 1;
 
-    const setC = (row, ci, val, fmt, fontColor, bold, fill, align='right') => {
-      if (!ci) return;
+const setC = (row, ci, val, fmt, fontColor, bold, fill, align='right') => {
+      if (!ci || !Number.isFinite(ci) || !row) return;
       const c = row.getCell(ci);
       c.value = val ?? 0;
       if (fmt) c.numFmt = fmt;
@@ -1623,10 +1801,16 @@ if (hasC) {
         headers.push([PL.monCD, 'Δ', 'right', GRN]);
         headers.push([PL.monCP, 'Δ%', 'right', GRN]);
       }
-      if (hasD) {
+if (hasD) {
         headers.push([PL.monD, 'MON D', 'right', PURPLE]);
         headers.push([PL.monDD, 'Δ', 'right', PURPLE]);
         headers.push([PL.monDP, 'Δ%', 'right', PURPLE]);
+      }
+      if (hasHistoryPL) {
+        plHistMaps.forEach((h, i) => {
+          const moLbl = MONTHS.find(m => String(m.value) === String(h.month))?.label?.slice(0, 3).toUpperCase() ?? String(h.month);
+          headers.push([PL.histMon[i], `MON ${moLbl} ${h.year}`, 'right', NAVY_DK]);
+        });
       }
       headers.push([PL.ytdA, 'YTD', 'right', NAVY]);
       if (hasB) {
@@ -1639,12 +1823,21 @@ if (hasC) {
         headers.push([PL.ytdCD, 'Δ', 'right', GRN]);
         headers.push([PL.ytdCP, 'Δ%', 'right', GRN]);
       }
-      if (hasD) {
+if (hasD) {
         headers.push([PL.ytdD, 'YTD D', 'right', PURPLE]);
         headers.push([PL.ytdDD, 'Δ', 'right', PURPLE]);
         headers.push([PL.ytdDP, 'Δ%', 'right', PURPLE]);
       }
-      headers.forEach(([ci, lbl, align, fillArgb]) => {
+if (hasHistoryPL) {
+        plHistMaps.forEach((h, i) => {
+          const moLbl = MONTHS.find(m => String(m.value) === String(h.month))?.label?.slice(0, 3).toUpperCase() ?? String(h.month);
+          headers.push([PL.histYtd[i], `YTD ${moLbl} ${h.year}`, 'right', NAVY_DK]);
+        });
+      }
+      if (hasMultiCo) {
+        perCoMaps.forEach((c, i) => headers.push([PL.co[i], c.legal, 'right', NAVY]));
+      }
+headers.filter(h => Array.isArray(h) && Number.isFinite(h[0]) && h[0] > 0).forEach(([ci, lbl, align, fillArgb]) => {
         const c = rh.getCell(ci);
         c.value = lbl;
         c.font = mkFont(true, WHITE, 9);
@@ -1653,9 +1846,9 @@ if (hasC) {
         c.border = { bottom: { style: 'medium', color: { argb: NAVY_DK } } };
       });
 
-      // Widths + grouping on compare columns
+// Widths + grouping on compare columns
       ws.getColumn(PL.name).width = 46;
-      ws.getColumn(PL.monA).width = 16;
+      if (PL.monA) ws.getColumn(PL.monA).width = 16;
       if (hasB) {
         [PL.monB, PL.monBD, PL.monBP].forEach(ci => {
           const col = ws.getColumn(ci);
@@ -1670,14 +1863,16 @@ if (hasC) {
           col.outlineLevel = 2;
         });
       }
-      if (hasD) {
+if (hasD) {
         [PL.monD, PL.monDD, PL.monDP].forEach(ci => {
           const col = ws.getColumn(ci);
           col.width = ci === PL.monD ? 16 : ci === PL.monDD ? 13 : 10;
           col.outlineLevel = 3;
         });
       }
-      ws.getColumn(PL.ytdA).width = 16;
+     if (hasHistoryPL) PL.histYtd.forEach(ci => { ws.getColumn(ci).width = 15; });
+      if (hasMultiCo) PL.co.forEach(ci => { ws.getColumn(ci).width = 20; });
+if (PL.ytdA) ws.getColumn(PL.ytdA).width = 16;
       if (hasB) {
         [PL.ytdB, PL.ytdBD, PL.ytdBP].forEach(ci => {
           const col = ws.getColumn(ci);
@@ -1700,25 +1895,92 @@ if (hasC) {
         });
       }
 
-      const SUMMARY_DIV = isAlpha ? {
-        'A.04.S': { label: 'INGRESOS',          argb: DIV_BLUE },
-        'A.13.S': { label: 'GASTOS OPERATIVOS', argb: DIV_RED  },
-        'A.24.S': { label: 'RESULTADO FINAL',   argb: DIV_GRAY },
-      } : {
-        '11999':  { label: 'INGRESOS',          argb: DIV_BLUE },
-        '53999':  { label: 'GASTOS OPERATIVOS', argb: DIV_RED  },
-        '89999':  { label: 'RESULTADO FINAL',   argb: DIV_GRAY },
+// ── Build real PL breakers from mapping/Supabase (matches PLStatement.effectiveBreakersPl) ──
+      const hexToArgb = (h) => {
+        const s = String(h || '').replace('#', '').replace(/^FF/i, '').toUpperCase();
+        return /^[0-9A-F]{6}$/.test(s) ? `FF${s}` : DIV_BLUE;
+      };
+      const paletteArgb = [hexToArgb(colors.primary), hexToArgb(colors.secondary), hexToArgb(colors.tertiary)];
+
+      const buildEffectivePlBreakers = () => {
+        // PGC mapping path
+        if (pgcMapping?.rows && pgcMapping?.sections) {
+          const rowsToScan = isSummary ? summaryRows : (() => {
+            const all = [];
+            const walk = n => {
+              if (!hasData(n) || !['P/L','DIS'].includes(n.accountType)) return;
+              (n.children || []).forEach(walk);
+              if (n.isSumAccount) all.push(n);
+            };
+            tree.filter(n => ['P/L','DIS'].includes(n.accountType)).forEach(walk);
+            return all.sort((a,b) => String(a.code).localeCompare(String(b.code), undefined, {numeric:true}));
+          })();
+          const seen = new Set();
+          const out = {};
+          let i = 0;
+          for (const node of rowsToScan) {
+            const m = pgcMapping.rows.get(String(node.code));
+            if (!m) continue;
+            if (seen.has(m.section)) continue;
+            seen.add(m.section);
+            const sec = pgcMapping.sections.get(m.section);
+            if (sec) {
+              out[String(node.code)] = { label: sec.label, argb: paletteArgb[i] ?? hexToArgb(sec.color) };
+              i++;
+            }
+          }
+          return out;
+        }
+        // Legacy Supabase breakers
+        const legacy = breakers.pl ?? {};
+        const codes = Object.keys(legacy).sort((a,b) => String(a).localeCompare(String(b), undefined, {numeric:true}));
+        if (codes.length > 0) {
+          const out = {};
+          codes.forEach((code, i) => {
+            out[code] = { label: legacy[code].label, argb: paletteArgb[i] ?? hexToArgb(legacy[code].color) };
+          });
+          return out;
+        }
+        // Hardcoded fallback (original behaviour)
+        return isAlpha ? {
+          'A.04.S': { label: 'INGRESOS',          argb: DIV_BLUE },
+          'A.13.S': { label: 'GASTOS OPERATIVOS', argb: DIV_RED  },
+          'A.24.S': { label: 'RESULTADO FINAL',   argb: DIV_GRAY },
+        } : {
+          '11999':  { label: 'INGRESOS',          argb: DIV_BLUE },
+          '53999':  { label: 'GASTOS OPERATIVOS', argb: DIV_RED  },
+          '89999':  { label: 'RESULTADO FINAL',   argb: DIV_GRAY },
+        };
       };
 
-      const DETAIL_DIV_BEFORE = isAlpha ? {
-        'A.01.S': { label: 'INGRESOS',          argb: DIV_BLUE },
-        'A.05.S': { label: 'GASTOS OPERATIVOS', argb: DIV_RED  },
-        'A.14.S': { label: 'RESULTADO FINAL',   argb: DIV_GRAY },
-      } : {
-        '10999':  { label: 'INGRESOS',          argb: DIV_BLUE },
-        '12199':  { label: 'GASTOS OPERATIVOS', argb: DIV_RED  },
-        '89999':  { label: 'RESULTADO FINAL',   argb: DIV_GRAY },
-      };
+      const SUMMARY_DIV = buildEffectivePlBreakers();
+
+      // For detailed mode, remap the first breaker to the first allSumRows code (matches PLStatement)
+      const DETAIL_DIV_BEFORE = (() => {
+        const base = buildEffectivePlBreakers();
+        const allSumRowsLocal = [];
+        const walkSum = n => {
+          if (!hasData(n) || !['P/L','DIS'].includes(n.accountType)) return;
+          (n.children || []).forEach(walkSum);
+          if (n.isSumAccount) allSumRowsLocal.push(n);
+        };
+        tree.filter(n => ['P/L','DIS'].includes(n.accountType)).forEach(walkSum);
+        allSumRowsLocal.sort((a,b) => String(a.code).localeCompare(String(b.code), undefined, {numeric:true}));
+        if (allSumRowsLocal.length === 0) return base;
+        const positions = Object.keys(base)
+          .map(code => ({ code, pos: allSumRowsLocal.findIndex(n => String(n.code) === code) }))
+          .filter(x => x.pos >= 0)
+          .sort((a,b) => a.pos - b.pos);
+        if (positions.length === 0) return base;
+        const remapped = { ...base };
+        const earliest = positions[0];
+        const firstCode = String(allSumRowsLocal[0].code);
+        if (earliest.code !== firstCode) {
+          remapped[firstCode] = remapped[earliest.code];
+          delete remapped[earliest.code];
+        }
+        return remapped;
+      })();
 
       const writeDivider = (div) => {
         ws.addRow([]);
@@ -1806,10 +2068,17 @@ if (hasC) {
           setC(dr, PL.monCD, dMC,   NUM_FMT, devColor(dMC), isBold, bg);
           setC(dr, PL.monCP, dMCP,  PCT_FMT, devColor(dMC), isBold, bg);
         }
-        if (hasD) {
+if (hasD) {
           setC(dr, PL.monD,  c3Mon, NUM_FMT, PURPLE, isBold, bg);
           setC(dr, PL.monDD, dMD,   NUM_FMT, devColor(dMD), isBold, bg);
           setC(dr, PL.monDP, dMDP,  PCT_FMT, devColor(dMD), isBold, bg);
+        }
+        if (hasHistoryPL) {
+          plHistMaps.forEach((h, i) => {
+            const hYtd = -getYtd(h.map, node.code);
+            const hPrev = -getPrev(h.prevMap, node.code, h.month);
+            setC(dr, PL.histMon[i], hYtd - hPrev, NUM_FMT, valueColor, isBold, bg);
+          });
         }
         setC(dr, PL.ytdA, ytd, NUM_FMT, valueColor, isBold, bg);
         if (hasB) {
@@ -1822,16 +2091,70 @@ if (hasC) {
           setC(dr, PL.ytdCD, dYC,   NUM_FMT, devColor(dYC), isBold, bg);
           setC(dr, PL.ytdCP, dYCP,  PCT_FMT, devColor(dYC), isBold, bg);
         }
-        if (hasD) {
+if (hasD) {
           setC(dr, PL.ytdD,  c3Ytd, NUM_FMT, PURPLE, isBold, bg);
           setC(dr, PL.ytdDD, dYD,   NUM_FMT, devColor(dYD), isBold, bg);
           setC(dr, PL.ytdDP, dYDP,  PCT_FMT, devColor(dYD), isBold, bg);
         }
+if (hasHistoryPL) {
+          plHistMaps.forEach((h, i) => {
+            setC(dr, PL.histYtd[i], -getYtd(h.map, node.code), NUM_FMT, valueColor, isBold, bg);
+          });
+        }
+        if (hasMultiCo) {
+          perCoMaps.forEach((c, i) => {
+            const ytdC = -getYtd(c.map, node.code);
+            const prevC = Number(month) === 1 ? 0 : -getYtd(c.prevMap, node.code);
+            const val = _ytdOnly ? ytdC : (ytdC - prevC);
+            setC(dr, PL.co[i], val, NUM_FMT, valueColor, isBold, bg);
+          });
+        }
       };
+// Build leaf indexes once for the standard path (LAC → YTD sum)
+      const buildLeafIdx = (rows) => {
+        const m = new Map();
+        (rows || []).forEach(r => {
+          const lac = String(getField(r, 'localAccountCode') ?? '');
+          if (!lac) return;
+          m.set(lac, (m.get(lac) ?? 0) + parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod')));
+        });
+        return m;
+      };
+      const aLeafIdx     = buildLeafIdx(uploadedAccounts);
+      const aPrevLeafIdx = buildLeafIdx(prevUploadedAccounts);
+      const bLeafIdx     = hasB ? buildLeafIdx(cmpUploadedAccounts) : new Map();
+      const bPrevLeafIdx = hasB ? buildLeafIdx(cmpPrevUploadedAccounts) : new Map();
+      const cLeafIdxStd  = hasC ? buildLeafIdx(cmp2UploadedAccounts) : new Map();
+      const cPrevLeafIdxStd = hasC ? buildLeafIdx(cmp2PrevUploadedAccounts) : new Map();
+      const dLeafIdxStd  = hasD ? buildLeafIdx(cmp3UploadedAccounts) : new Map();
+      const dPrevLeafIdxStd = hasD ? buildLeafIdx(cmp3PrevUploadedAccounts) : new Map();
+      const perCoLeafIdx = hasMultiCo ? _selectedCo.map(co => ({
+        cur:  buildLeafIdx((uploadedAccounts || []).filter(r => getCoF(r) === co)),
+        prev: buildLeafIdx((prevUploadedAccounts || []).filter(r => getCoF(r) === co)),
+      })) : [];
+const plHistLeafIdx = hasHistoryPL ? plHist.map(h => ({
+        cur:  buildLeafIdx(h.data || []),
+        prev: buildLeafIdx(h.prevData || []),
+        month: h.month,
+      })) : [];
+
+      // Per-leaf+dim indexes for compare periods (key: "lac|dc")
+      const buildLeafDimIdx = (rows) => {
+        const m = new Map();
+        (rows || []).forEach(r => {
+          const lac = String(getField(r, 'localAccountCode') ?? '');
+          const dc  = String(getField(r, 'dimensionCode') ?? '');
+          if (!lac || !dc || dc === 'null') return;
+          const amt = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+          m.set(`${lac}|${dc}`, (m.get(`${lac}|${dc}`) ?? 0) + amt);
+        });
+        return m;
+};
 
       const writeLeafRow = (leaf, depth, ol) => {
         const amt = leaf.amount ?? 0;
         const bg = LEAF_BG;
+        const lac = String(leaf.code ?? '');
         ws.addRow([]);
         const dr = ws.lastRow;
         dr.height = 15;
@@ -1845,20 +2168,81 @@ if (hasC) {
         nc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 1 };
         nc.border = mkBorder();
 
-        setC(dr, PL.monA, -amt, NUM_FMT, TEXT_MUT, false, bg);
-        setC(dr, PL.ytdA, -amt, NUM_FMT, TEXT_MUT, false, bg);
-[PL.monB, PL.monBD, PL.monBP, PL.monC, PL.monCD, PL.monCP, PL.monD, PL.monDD, PL.monDP,
-         PL.ytdB, PL.ytdBD, PL.ytdBP, PL.ytdC, PL.ytdCD, PL.ytdCP, PL.ytdD, PL.ytdDD, PL.ytdDP].forEach(ci => {
-          if (ci) {
-            const c = dr.getCell(ci);
-            c.value = '';
-            c.fill = mkFill(bg);
-            c.border = mkBorder();
-          }
-        });
-      };
+        const ytdA = -amt;
+        const prevA = lac && Number(month) !== 1 ? (aPrevLeafIdx.get(lac) ?? 0) : 0;
+        const monA = -(amt - prevA);
 
-      const writeDimRow = (dim, depth, ol) => {
+        setC(dr, PL.monA, monA, NUM_FMT, TEXT_MUT, false, bg);
+        setC(dr, PL.ytdA, ytdA, NUM_FMT, TEXT_MUT, false, bg);
+
+        const dA = (a, b) => a - b;
+        const dP = (a, b) => b !== 0 ? (a - b) / Math.abs(b) : null;
+
+        if (hasB && lac) {
+          const bY = -(bLeafIdx.get(lac) ?? 0);
+          const bP = Number(cmpFilters?.month) === 1 ? 0 : -(bPrevLeafIdx.get(lac) ?? 0);
+          const bM = bY - bP;
+          setC(dr, PL.monB,  bM, NUM_FMT, RED, false, bg);
+          const dm = dA(monA, bM); setC(dr, PL.monBD, dm, NUM_FMT, devColor(dm), false, bg);
+          setC(dr, PL.monBP, dP(monA, bM), PCT_FMT, devColor(dm), false, bg);
+          setC(dr, PL.ytdB,  bY, NUM_FMT, RED, false, bg);
+          const dy = dA(ytdA, bY); setC(dr, PL.ytdBD, dy, NUM_FMT, devColor(dy), false, bg);
+          setC(dr, PL.ytdBP, dP(ytdA, bY), PCT_FMT, devColor(dy), false, bg);
+        }
+        if (hasC && lac) {
+          const cY = -(cLeafIdxStd.get(lac) ?? 0);
+          const cP = Number(cmp2Filters?.month) === 1 ? 0 : -(cPrevLeafIdxStd.get(lac) ?? 0);
+          const cM = cY - cP;
+          setC(dr, PL.monC,  cM, NUM_FMT, GRN, false, bg);
+          const dm = dA(monA, cM); setC(dr, PL.monCD, dm, NUM_FMT, devColor(dm), false, bg);
+          setC(dr, PL.monCP, dP(monA, cM), PCT_FMT, devColor(dm), false, bg);
+          setC(dr, PL.ytdC,  cY, NUM_FMT, GRN, false, bg);
+          const dy = dA(ytdA, cY); setC(dr, PL.ytdCD, dy, NUM_FMT, devColor(dy), false, bg);
+          setC(dr, PL.ytdCP, dP(ytdA, cY), PCT_FMT, devColor(dy), false, bg);
+        }
+        if (hasD && lac) {
+          const dY = -(dLeafIdxStd.get(lac) ?? 0);
+          const dPV = Number(cmp3Filters?.month) === 1 ? 0 : -(dPrevLeafIdxStd.get(lac) ?? 0);
+          const dM = dY - dPV;
+          setC(dr, PL.monD,  dM, NUM_FMT, PURPLE, false, bg);
+          const dm = dA(monA, dM); setC(dr, PL.monDD, dm, NUM_FMT, devColor(dm), false, bg);
+          setC(dr, PL.monDP, dP(monA, dM), PCT_FMT, devColor(dm), false, bg);
+          setC(dr, PL.ytdD,  dY, NUM_FMT, PURPLE, false, bg);
+          const dy = dA(ytdA, dY); setC(dr, PL.ytdDD, dy, NUM_FMT, devColor(dy), false, bg);
+          setC(dr, PL.ytdDP, dP(ytdA, dY), PCT_FMT, devColor(dy), false, bg);
+        }
+        if (hasHistoryPL && lac) {
+          plHistLeafIdx.forEach((h, i) => {
+            const hY = -(h.cur.get(lac) ?? 0);
+            const hP = Number(h.month) === 1 ? 0 : -(h.prev.get(lac) ?? 0);
+            setC(dr, PL.histMon[i], hY - hP, NUM_FMT, TEXT_MUT, false, bg);
+            setC(dr, PL.histYtd[i], hY, NUM_FMT, TEXT_MUT, false, bg);
+          });
+        }
+        if (hasMultiCo && lac) {
+          perCoLeafIdx.forEach((idx, i) => {
+            const ytdC = -(idx.cur.get(lac) ?? 0);
+            const prevC = Number(month) === 1 ? 0 : -(idx.prev.get(lac) ?? 0);
+            const val = _ytdOnly ? ytdC : (ytdC - prevC);
+            setC(dr, PL.co[i], val, NUM_FMT, TEXT_MUT, false, bg);
+          });
+        }
+};
+      const aPrevLeafDimIdx = buildLeafDimIdx(prevUploadedAccounts);
+      const bLeafDimIdx     = hasB ? buildLeafDimIdx(cmpUploadedAccounts) : new Map();
+      const bPrevLeafDimIdx = hasB ? buildLeafDimIdx(cmpPrevUploadedAccounts) : new Map();
+      const cLeafDimIdx     = hasC ? buildLeafDimIdx(cmp2UploadedAccounts) : new Map();
+      const cPrevLeafDimIdx = hasC ? buildLeafDimIdx(cmp2PrevUploadedAccounts) : new Map();
+      const dLeafDimIdx     = hasD ? buildLeafDimIdx(cmp3UploadedAccounts) : new Map();
+const dPrevLeafDimIdx = hasD ? buildLeafDimIdx(cmp3PrevUploadedAccounts) : new Map();
+      const perCoLeafDimIdx = hasMultiCo ? _selectedCo.map(co =>
+        buildLeafDimIdx((uploadedAccounts || []).filter(r => getCoF(r) === co))
+      ) : [];
+      const perCoPrevLeafDimIdx = hasMultiCo ? _selectedCo.map(co =>
+        buildLeafDimIdx((prevUploadedAccounts || []).filter(r => getCoF(r) === co))
+      ) : [];
+
+      const writeDimRow = (dim, depth, ol, parentLac) => {
         const bg = DIM_BG;
         ws.addRow([]);
         const dr = ws.lastRow;
@@ -1873,17 +2257,61 @@ if (hasC) {
         nc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 1 };
         nc.border = mkBorder();
 
-        setC(dr, PL.monA, -(dim.amount), NUM_FMT, AMBER, false, bg);
-        setC(dr, PL.ytdA, -(dim.amount), NUM_FMT, AMBER, false, bg);
-        [PL.monB, PL.monBD, PL.monBP, PL.monC, PL.monCD, PL.monCP,
-         PL.ytdB, PL.ytdBD, PL.ytdBP, PL.ytdC, PL.ytdCD, PL.ytdCP].forEach(ci => {
-          if (ci) {
-            const c = dr.getCell(ci);
-            c.value = '';
-            c.fill = mkFill(bg);
-            c.border = mkBorder();
-          }
-        });
+        const lac = parentLac ? String(parentLac) : '';
+        const dc  = String(dim.code ?? '');
+        const key = lac && dc ? `${lac}|${dc}` : null;
+
+        const ytdA = -(dim.amount ?? 0);
+        const prevA = key && Number(month) !== 1 ? -(aPrevLeafDimIdx.get(key) ?? 0) : 0;
+        const monA = ytdA - prevA;
+
+        setC(dr, PL.monA, monA, NUM_FMT, AMBER, false, bg);
+        setC(dr, PL.ytdA, ytdA, NUM_FMT, AMBER, false, bg);
+
+        const dA = (a, b) => a - b;
+        const dP = (a, b) => b !== 0 ? (a - b) / Math.abs(b) : null;
+
+        if (hasB && key) {
+          const bY = -(bLeafDimIdx.get(key) ?? 0);
+          const bP = Number(cmpFilters?.month) === 1 ? 0 : -(bPrevLeafDimIdx.get(key) ?? 0);
+          const bM = bY - bP;
+          setC(dr, PL.monB, bM, NUM_FMT, RED, false, bg);
+          const dm = dA(monA, bM); setC(dr, PL.monBD, dm, NUM_FMT, devColor(dm), false, bg);
+          setC(dr, PL.monBP, dP(monA, bM), PCT_FMT, devColor(dm), false, bg);
+          setC(dr, PL.ytdB, bY, NUM_FMT, RED, false, bg);
+          const dy = dA(ytdA, bY); setC(dr, PL.ytdBD, dy, NUM_FMT, devColor(dy), false, bg);
+          setC(dr, PL.ytdBP, dP(ytdA, bY), PCT_FMT, devColor(dy), false, bg);
+        }
+        if (hasC && key) {
+          const cY = -(cLeafDimIdx.get(key) ?? 0);
+          const cP = Number(cmp2Filters?.month) === 1 ? 0 : -(cPrevLeafDimIdx.get(key) ?? 0);
+          const cM = cY - cP;
+          setC(dr, PL.monC, cM, NUM_FMT, GRN, false, bg);
+          const dm = dA(monA, cM); setC(dr, PL.monCD, dm, NUM_FMT, devColor(dm), false, bg);
+          setC(dr, PL.monCP, dP(monA, cM), PCT_FMT, devColor(dm), false, bg);
+          setC(dr, PL.ytdC, cY, NUM_FMT, GRN, false, bg);
+          const dy = dA(ytdA, cY); setC(dr, PL.ytdCD, dy, NUM_FMT, devColor(dy), false, bg);
+          setC(dr, PL.ytdCP, dP(ytdA, cY), PCT_FMT, devColor(dy), false, bg);
+        }
+if (hasD && key) {
+          const dY = -(dLeafDimIdx.get(key) ?? 0);
+          const dPV = Number(cmp3Filters?.month) === 1 ? 0 : -(dPrevLeafDimIdx.get(key) ?? 0);
+          const dM = dY - dPV;
+          setC(dr, PL.monD, dM, NUM_FMT, PURPLE, false, bg);
+          const dm = dA(monA, dM); setC(dr, PL.monDD, dm, NUM_FMT, devColor(dm), false, bg);
+          setC(dr, PL.monDP, dP(monA, dM), PCT_FMT, devColor(dm), false, bg);
+          setC(dr, PL.ytdD, dY, NUM_FMT, PURPLE, false, bg);
+          const dy = dA(ytdA, dY); setC(dr, PL.ytdDD, dy, NUM_FMT, devColor(dy), false, bg);
+          setC(dr, PL.ytdDP, dP(ytdA, dY), PCT_FMT, devColor(dy), false, bg);
+        }
+        if (hasMultiCo && key) {
+          perCoLeafDimIdx.forEach((idx, i) => {
+            const ytdC = -(idx.get(key) ?? 0);
+            const prevC = Number(month) === 1 ? 0 : -(perCoPrevLeafDimIdx[i]?.get(key) ?? 0);
+            const val = _ytdOnly ? ytdC : (ytdC - prevC);
+            if (PL.co[i]) setC(dr, PL.co[i], val, NUM_FMT, AMBER, false, bg);
+          });
+        }
       };
 
       const writeJrnHeaderRow = (count, depth, ol) => {
@@ -1905,16 +2333,40 @@ if (hasC) {
         }
       };
 
-      const writeJrnEntry = (jrn, depth, ol) => {
+// Index compare/history journals by JournalNumber for cross-period lookup (PL)
+      const jrnPlIdxBy = (entries) => {
+        const m = new Map();
+        (entries || []).forEach(j => {
+          const num = String(j.JournalNumber ?? j.journalNumber ?? '');
+          if (!num) return;
+          const amt = parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
+          m.set(num, (m.get(num) ?? 0) + amt);
+        });
+        return m;
+      };
+      // Note: the export currently only receives `journalEntries` (Period A).
+      // For B/C/D/history/multi-co we fall back to 0 if no extra journal data was passed.
+      // (The component-level journalByCodeCmp/Cmp2/Cmp3 aren't piped through — that's a separate plumbing change.)
+
+const writeJrnEntry = (jrn, depth, ol) => {
         const bg = JRN_BG;
         const amt = parseAmt(jrn.AmountYTD ?? jrn.amountYTD ?? 0);
+        const accCode = String(jrn.AccountCode ?? jrn.accountCode ?? '');
+        const jnum = jrn.JournalNumber ?? jrn.journalNumber ?? '';
+        const findMatch = (idx) => {
+          if (!accCode || jnum === '') return null;
+          const m = (idx.get(accCode) || []).find(j => (j.JournalNumber ?? j.journalNumber) === jnum);
+          return m ? -parseAmt(m.AmountYTD ?? m.amountYTD ?? 0) : null;
+        };
+        const bVal = hasB ? findMatch(jrnByCodeCmp) : null;
+        const cVal = hasC ? findMatch(jrnByCodeCmp2) : null;
+        const dVal = hasD ? findMatch(jrnByCodeCmp3) : null;
         ws.addRow([]);
         const dr = ws.lastRow;
         dr.height = 14;
         dr.outlineLevel = Math.min(ol, 7);
         dr.hidden = true;
         const nc = dr.getCell(PL.name);
-        const jnum = jrn.JournalNumber ?? jrn.journalNumber ?? '';
         const jhdr = jrn.JournalHeader ?? jrn.journalHeader ?? '';
         nc.value = `📄 ${jnum}${jhdr ? ' · ' + jhdr : ''}`;
         nc.font = mkFont(false, INDIGO, 9);
@@ -1923,14 +2375,85 @@ if (hasC) {
         nc.border = mkBorder();
         setC(dr, PL.monA, -amt, NUM_FMT, INDIGO, false, bg);
         setC(dr, PL.ytdA, -amt, NUM_FMT, INDIGO, false, bg);
-        [PL.monB, PL.monBD, PL.monBP, PL.monC, PL.monCD, PL.monCP,
-         PL.ytdB, PL.ytdBD, PL.ytdBP, PL.ytdC, PL.ytdCD, PL.ytdCP].forEach(ci => {
-          if (ci) {
-            const c = dr.getCell(ci);
-            c.value = '';
-            c.fill = mkFill(bg);
-            c.border = mkBorder();
-          }
+        if (hasB && bVal != null) { setC(dr, PL.monB, bVal, NUM_FMT, INDIGO, false, bg); setC(dr, PL.ytdB, bVal, NUM_FMT, INDIGO, false, bg); }
+        if (hasC && cVal != null) { setC(dr, PL.monC, cVal, NUM_FMT, INDIGO, false, bg); setC(dr, PL.ytdC, cVal, NUM_FMT, INDIGO, false, bg); }
+        if (hasD && dVal != null) { setC(dr, PL.monD, dVal, NUM_FMT, INDIGO, false, bg); setC(dr, PL.ytdD, dVal, NUM_FMT, INDIGO, false, bg); }
+if (hasMultiCo) {
+          const jrnCo = String(jrn.CompanyShortName ?? jrn.companyShortName ?? '');
+          _selectedCo.forEach((co, i) => {
+            const v = jrnCo === co ? -amt : 0;
+            if (PL.co[i]) setC(dr, PL.co[i], v, NUM_FMT, INDIGO, false, bg);
+          });
+        }
+        const blankCols = [
+          ...(hasB ? [PL.monBD, PL.monBP, PL.ytdBD, PL.ytdBP, ...(bVal == null ? [PL.monB, PL.ytdB] : [])] : []),
+          ...(hasC ? [PL.monCD, PL.monCP, PL.ytdCD, PL.ytdCP, ...(cVal == null ? [PL.monC, PL.ytdC] : [])] : []),
+          ...(hasD ? [PL.monDD, PL.monDP, PL.ytdDD, PL.ytdDP, ...(dVal == null ? [PL.monD, PL.ytdD] : [])] : []),
+          ...PL.histMon, ...PL.histYtd,
+          ...(hasMultiCo ? [] : PL.co),
+        ];
+        blankCols.forEach(ci => {
+          if (ci) { const c = dr.getCell(ci); c.value = ''; c.fill = mkFill(bg); c.border = mkBorder(); }
+        });
+      };
+
+      const writeJrnExtras = (parentCode, aJrns, depth, ol) => {
+        if (!parentCode || (!hasB && !hasC && !hasD)) return;
+        const aNums = new Set(aJrns.map(j => j.JournalNumber ?? j.journalNumber));
+        const seen = new Map();
+        const collect = (idx, period) => {
+          (idx.get(String(parentCode)) || []).forEach(j => {
+            const num = j.JournalNumber ?? j.journalNumber;
+            if (aNums.has(num)) return;
+            if (!seen.has(num)) seen.set(num, { jrn: j, periods: { B: null, C: null, D: null } });
+            seen.get(num).periods[period] = -parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
+          });
+        };
+        if (hasB) collect(jrnByCodeCmp, 'B');
+        if (hasC) collect(jrnByCodeCmp2, 'C');
+        if (hasD) collect(jrnByCodeCmp3, 'D');
+        seen.forEach((entry, num) => {
+          ['B','C','D'].forEach(p => {
+            if (entry.periods[p] != null) return;
+            const idx = p === 'B' ? jrnByCodeCmp : p === 'C' ? jrnByCodeCmp2 : jrnByCodeCmp3;
+            const match = (idx.get(String(parentCode)) || []).find(j => (j.JournalNumber ?? j.journalNumber) === num);
+            if (match) entry.periods[p] = -parseAmt(match.AmountYTD ?? match.amountYTD ?? 0);
+          });
+        });
+        if (seen.size === 0) return;
+        ws.addRow([]);
+        const xhr = ws.lastRow;
+        xhr.height = 14;
+        xhr.outlineLevel = Math.min(ol, 7);
+        xhr.hidden = true;
+        const xnc = xhr.getCell(PL.name);
+        xnc.value = `↳ B/C/D only (${seen.size})`;
+        xnc.font = mkFont(true, INDIGO, 9);
+        xnc.fill = mkFill(JRN_BG);
+        xnc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 1 };
+        xnc.border = mkBorder();
+        for (let c = 2; c <= plCols; c++) { xhr.getCell(c).fill = mkFill(JRN_BG); xhr.getCell(c).border = mkBorder(); }
+        seen.forEach((entry, num) => {
+          ws.addRow([]);
+          const xr = ws.lastRow;
+          xr.height = 14;
+          xr.outlineLevel = Math.min(ol + 1, 7);
+          xr.hidden = true;
+          const xec = xr.getCell(PL.name);
+          const jhdr = entry.jrn.JournalHeader ?? entry.jrn.journalHeader ?? '';
+          xec.value = `📄 ${num}${jhdr ? ' · ' + jhdr : ''}`;
+          xec.font = mkFont(false, INDIGO, 9);
+          xec.fill = mkFill(JRN_BG);
+          xec.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 2 };
+          xec.border = mkBorder();
+          if (hasB && entry.periods.B != null) { setC(xr, PL.monB, entry.periods.B, NUM_FMT, INDIGO, false, JRN_BG); setC(xr, PL.ytdB, entry.periods.B, NUM_FMT, INDIGO, false, JRN_BG); }
+          if (hasC && entry.periods.C != null) { setC(xr, PL.monC, entry.periods.C, NUM_FMT, INDIGO, false, JRN_BG); setC(xr, PL.ytdC, entry.periods.C, NUM_FMT, INDIGO, false, JRN_BG); }
+          if (hasD && entry.periods.D != null) { setC(xr, PL.monD, entry.periods.D, NUM_FMT, INDIGO, false, JRN_BG); setC(xr, PL.ytdD, entry.periods.D, NUM_FMT, INDIGO, false, JRN_BG); }
+          [PL.monA, PL.ytdA, PL.monBD, PL.monBP, PL.monCD, PL.monCP, PL.monDD, PL.monDP,
+           PL.ytdBD, PL.ytdBP, PL.ytdCD, PL.ytdCP, PL.ytdDD, PL.ytdDP,
+           ...PL.histMon, ...PL.histYtd, ...PL.co].forEach(ci => {
+            if (ci && !xr.getCell(ci).value) { const c = xr.getCell(ci); c.value = ''; c.fill = mkFill(JRN_BG); c.border = mkBorder(); }
+          });
         });
       };
 
@@ -1960,13 +2483,14 @@ if (hasC) {
           (parentNode.uploadLeaves || []).forEach(leaf => {
             if (leaf.type === 'plain') return;
             writeLeafRow(leaf, depth, ol);
-            (leaf.children || []).forEach(dim => writeDimRow(dim, depth + 1, ol + 1));
+            (leaf.children || []).forEach(dim => writeDimRow(dim, depth + 1, ol + 1, leaf.code));
           });
 
-          const jrns = jrnByCode.get(String(parentNode.code)) || [];
+const jrns = jrnByCode.get(String(parentNode.code)) || [];
           if (jrns.length > 0) {
             writeJrnHeaderRow(jrns.length, depth, ol);
             jrns.forEach(j => writeJrnEntry(j, depth + 1, ol + 1));
+            writeJrnExtras(parentNode.code, jrns, depth + 1, ol + 1);
           }
         };
 
@@ -2005,14 +2529,15 @@ if (hasC) {
         (parentNode.uploadLeaves || []).forEach(leaf => {
           if (leaf.type === 'plain') return;
           writeLeafRow(leaf, depth, ol);
-          (leaf.children || []).forEach(dim => writeDimRow(dim, depth + 1, ol + 1));
+          (leaf.children || []).forEach(dim => writeDimRow(dim, depth + 1, ol + 1, leaf.code));
         });
 
-        // Journal entries
+// Journal entries
         const jrns = jrnByCode.get(String(parentNode.code)) || [];
         if (jrns.length > 0) {
           writeJrnHeaderRow(jrns.length, depth, ol);
           jrns.forEach(j => writeJrnEntry(j, depth + 1, ol + 1));
+          writeJrnExtras(parentNode.code, jrns, depth + 1, ol + 1);
         }
       };
 
@@ -2028,6 +2553,1254 @@ if (hasC) {
         writeDrillChildren(node, 1, 1);
       });
     };
+
+// ═══════════════════════════════════════════════════════════
+// SAVED LITERAL P&L SHEET — matches app render path 1:1
+// ═══════════════════════════════════════════════════════════
+const buildSavedPLSheet = (ws) => {
+  ws.views = [{ state: 'frozen', ySplit: hasB ? 4 : 3, showOutlineSymbols: true }];
+  ws.properties.outlineLevelRow = 0;
+
+  // ── Title ──
+  ws.addRow([]);
+  const r1 = ws.lastRow;
+  r1.height = 32;
+  r1.getCell(1).value = `Profit & Loss`;
+  r1.getCell(1).font = mkFont(true, WHITE, 14);
+  r1.getCell(1).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+  for (let c = 1; c <= plCols; c++) r1.getCell(c).fill = mkFill(NAVY);
+  ws.mergeCells(r1.number, 1, r1.number, plCols);
+
+  ws.addRow([]);
+  const r2 = ws.lastRow;
+  r2.height = 16;
+  r2.getCell(1).value = `A: ${aLabel}`;
+  r2.getCell(1).font = mkFont(false, 'FFB4C6EE', 9);
+  r2.getCell(1).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+  for (let c = 1; c <= plCols; c++) r2.getCell(c).fill = mkFill(NAVY);
+  ws.mergeCells(r2.number, 1, r2.number, plCols);
+
+  if (hasB) {
+    ws.addRow([]);
+    const r3 = ws.lastRow;
+    r3.height = 15;
+    const parts = [`B: ${bLabel}`];
+    if (hasC) parts.push(`C: ${cLabel}`);
+    if (hasD) parts.push(`D: ${dLabel}`);
+    r3.getCell(1).value = parts.join('    |    ');
+    r3.getCell(1).font = mkFont(false, 'FFFCD34D', 9);
+    r3.getCell(1).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+    for (let c = 1; c <= plCols; c++) r3.getCell(c).fill = mkFill(NAVY);
+    ws.mergeCells(r3.number, 1, r3.number, plCols);
+  }
+
+  // ── Column headers (same layout as buildPLSheet) ──
+  ws.addRow([]);
+  const rh = ws.lastRow;
+  rh.height = 22;
+  const headers = [[PL.name, 'ACCOUNT', 'left', NAVY], [PL.monA, 'MONTHLY', 'right', NAVY]];
+  if (hasB) headers.push([PL.monB, 'MON B', 'right', RED], [PL.monBD, 'Δ', 'right', RED], [PL.monBP, 'Δ%', 'right', RED]);
+  if (hasC) headers.push([PL.monC, 'MON C', 'right', GRN], [PL.monCD, 'Δ', 'right', GRN], [PL.monCP, 'Δ%', 'right', GRN]);
+  if (hasD) headers.push([PL.monD, 'MON D', 'right', PURPLE], [PL.monDD, 'Δ', 'right', PURPLE], [PL.monDP, 'Δ%', 'right', PURPLE]);
+  if (hasHistoryPL) plHistMaps.forEach((h, i) => {
+    const moLbl = MONTHS.find(m => String(m.value) === String(h.month))?.label?.slice(0, 3).toUpperCase() ?? String(h.month);
+    headers.push([PL.histMon[i], `MON ${moLbl} ${h.year}`, 'right', NAVY_DK]);
+  });
+  headers.push([PL.ytdA, 'YTD', 'right', NAVY]);
+  if (hasB) headers.push([PL.ytdB, 'YTD B', 'right', RED], [PL.ytdBD, 'Δ', 'right', RED], [PL.ytdBP, 'Δ%', 'right', RED]);
+  if (hasC) headers.push([PL.ytdC, 'YTD C', 'right', GRN], [PL.ytdCD, 'Δ', 'right', GRN], [PL.ytdCP, 'Δ%', 'right', GRN]);
+  if (hasD) headers.push([PL.ytdD, 'YTD D', 'right', PURPLE], [PL.ytdDD, 'Δ', 'right', PURPLE], [PL.ytdDP, 'Δ%', 'right', PURPLE]);
+  if (hasHistoryPL) plHistMaps.forEach((h, i) => {
+    const moLbl = MONTHS.find(m => String(m.value) === String(h.month))?.label?.slice(0, 3).toUpperCase() ?? String(h.month);
+    headers.push([PL.histYtd[i], `YTD ${moLbl} ${h.year}`, 'right', NAVY_DK]);
+  });
+if (hasMultiCo) perCoMaps.forEach((c, i) => headers.push([PL.co[i], c.legal, 'right', NAVY]));
+
+  headers.filter(h => Array.isArray(h) && Number.isFinite(h[0]) && h[0] > 0).forEach(([ci, lbl, align, fillArgb]) => {
+    const c = rh.getCell(ci);
+    c.value = lbl;
+    c.font = mkFont(true, WHITE, 9);
+    c.fill = mkFill(fillArgb);
+    c.alignment = { horizontal: align, vertical: 'middle', indent: align === 'left' ? 1 : 0 };
+    c.border = { bottom: { style: 'medium', color: { argb: NAVY_DK } } };
+  });
+// Column widths
+  ws.getColumn(PL.name).width = 52;
+  if (PL.monA) ws.getColumn(PL.monA).width = 16;
+  if (PL.ytdA) ws.getColumn(PL.ytdA).width = 16;
+  if (hasB) [PL.monB, PL.monBD, PL.monBP, PL.ytdB, PL.ytdBD, PL.ytdBP].forEach(ci => {
+    ws.getColumn(ci).width = (ci === PL.monB || ci === PL.ytdB) ? 16 : (ci === PL.monBD || ci === PL.ytdBD) ? 13 : 10;
+  });
+  if (hasC) [PL.monC, PL.monCD, PL.monCP, PL.ytdC, PL.ytdCD, PL.ytdCP].forEach(ci => {
+    ws.getColumn(ci).width = (ci === PL.monC || ci === PL.ytdC) ? 16 : (ci === PL.monCD || ci === PL.ytdCD) ? 13 : 10;
+  });
+  if (hasD) [PL.monD, PL.monDD, PL.monDP, PL.ytdD, PL.ytdDD, PL.ytdDP].forEach(ci => {
+    ws.getColumn(ci).width = (ci === PL.monD || ci === PL.ytdD) ? 16 : (ci === PL.monDD || ci === PL.ytdDD) ? 13 : 10;
+  });
+  if (hasHistoryPL) { PL.histMon.forEach(ci => { ws.getColumn(ci).width = 15; }); PL.histYtd.forEach(ci => { ws.getColumn(ci).width = 15; }); }
+  if (hasMultiCo) PL.co.forEach(ci => { ws.getColumn(ci).width = 20; });
+
+  // ── Build the same indexes the app uses for sumLiteral calculations ──
+  const buildDimIdx = (rows) => {
+    const fullIdx = new Map();
+    const valIdx = new Map();
+    (rows || []).forEach(row => {
+      const code = String(getField(row, 'accountCode') ?? '');
+      if (!code) return;
+      const amt = parseAmt(getField(row, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+      const dimsStr = String(getField(row, 'Dimensions', 'dimensions') ?? '');
+      if (!dimsStr) return;
+      dimsStr.split('||').map(s => s.trim()).filter(Boolean).forEach(pair => {
+        const i = pair.indexOf(':'); if (i === -1) return;
+        const g = pair.slice(0, i).trim();
+        const v = pair.slice(i + 1).trim();
+        fullIdx.set(`${code}|${g}:${v}`, (fullIdx.get(`${code}|${g}:${v}`) ?? 0) + amt);
+        valIdx.set(`${code}|${v}`, (valIdx.get(`${code}|${v}`) ?? 0) + amt);
+      });
+    });
+    if (Array.isArray(dimensions) && dimensions.length > 0) {
+      const nameToCode = new Map();
+      dimensions.forEach(d => {
+        const g = String(d.dimensionGroup ?? d.DimensionGroup ?? d.groupName ?? d.GroupName ?? '').trim();
+        const cd = String(d.dimensionCode ?? d.DimensionCode ?? d.code ?? d.Code ?? '').trim();
+        const nm = String(d.dimensionName ?? d.DimensionName ?? d.name ?? d.Name ?? '').trim();
+        if (g && cd && nm) nameToCode.set(`${g}:${nm}`, cd);
+      });
+      [...fullIdx.entries()].forEach(([k, v]) => {
+        const pipe = k.indexOf('|'); const acc = k.slice(0, pipe);
+        const rest = k.slice(pipe + 1); const colon = rest.indexOf(':');
+        if (colon === -1) return;
+        const g = rest.slice(0, colon); const cv = rest.slice(colon + 1);
+        for (const [nk, mc] of nameToCode.entries()) {
+          if (mc === cv && nk.startsWith(`${g}:`)) {
+            const nm = nk.slice(g.length + 1);
+            fullIdx.set(`${acc}|${g}:${nm}`, v);
+            valIdx.set(`${acc}|${nm}`, v);
+            break;
+          }
+        }
+      });
+    }
+    return { fullIdx, valIdx };
+  };
+
+  const treeByCode = (rows) => {
+    const m = new Map();
+    (function w(nodes) { nodes.forEach(n => { m.set(String(n.code), n); w(n.children || []); }); })(buildTree(groupAccounts, rows || []));
+    return m;
+  };
+
+  const aTree = treeByCode(uploadedAccounts);
+  const aPrevTree = treeByCode(prevUploadedAccountsRaw?.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts);
+  const aIdx = buildDimIdx(uploadedAccounts);
+  const aPrevIdx = buildDimIdx(prevUploadedAccountsRaw?.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts);
+
+  const bTree = hasB ? treeByCode(cmpUploadedAccounts) : null;
+  const bPrevTree = hasB ? treeByCode(cmpPrevUploadedAccounts) : null;
+  const bIdx = hasB ? buildDimIdx(cmpUploadedAccounts) : null;
+  const bPrevIdx = hasB ? buildDimIdx(cmpPrevUploadedAccounts) : null;
+
+  const cTree = hasC ? treeByCode(cmp2UploadedAccounts) : null;
+  const cPrevTree = hasC ? treeByCode(cmp2PrevUploadedAccounts) : null;
+  const cIdx = hasC ? buildDimIdx(cmp2UploadedAccounts) : null;
+  const cPrevIdx = hasC ? buildDimIdx(cmp2PrevUploadedAccounts) : null;
+const dTree = hasD ? treeByCode(cmp3UploadedAccounts) : null;
+  const dPrevTree = hasD ? treeByCode(cmp3PrevUploadedAccounts) : null;
+  const dIdx = hasD ? buildDimIdx(cmp3UploadedAccounts) : null;
+  const dPrevIdx = hasD ? buildDimIdx(cmp3PrevUploadedAccounts) : null;
+
+  // Per-company trees for multi-co mode (built once, used for sum-walks)
+  const perCoTrees = hasMultiCo ? _selectedCo.map(co => ({
+    tree: treeByCode((uploadedAccounts || []).filter(r => getCoF(r) === co)),
+    prevTree: treeByCode((prevUploadedAccountsRaw?.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts || []).filter(r => getCoF(r) === co)),
+  })) : [];
+
+  const sumDimRec = (gaNode, dimStr, idx) => {
+    if (!gaNode || !idx) return 0;
+    let total = 0;
+    const code = String(gaNode.code);
+    total += dimStr.includes(':') ? (idx.fullIdx.get(`${code}|${dimStr}`) ?? 0) : (idx.valIdx.get(`${code}|${dimStr}`) ?? 0);
+    (gaNode.children || []).forEach(c => { total += sumDimRec(c, dimStr, idx); });
+    return total;
+  };
+
+  // sumLiteral: returns { ytd, mon } for one literal node in one period — matches app exactly
+  const sumLit = (node, tree, prevTree, idx, prevIdx, periodMonth) => {
+    const ga = tree?.get(String(node.code));
+    if (!ga) return { ytd: 0, mon: 0 };
+    if (!node.dims || node.dims.length === 0) {
+      const ytd = -sumNode(ga);
+      const prevGa = prevTree?.get(String(node.code));
+      const prevYtd = prevGa && Number(periodMonth) !== 1 ? -sumNode(prevGa) : 0;
+      return { ytd, mon: ytd - prevYtd };
+    }
+    let total = 0, prevTotal = 0;
+    node.dims.forEach(d => { total += sumDimRec(ga, String(d), idx); });
+    if (Number(periodMonth) !== 1 && prevIdx) {
+      node.dims.forEach(d => { prevTotal += sumDimRec(ga, String(d), prevIdx); });
+    }
+    return { ytd: -total, mon: -total - (-prevTotal) };
+  };
+
+  // Apply the "sum + children" rule that the app applies for isSum nodes with children
+  const sumLitWithKids = (node, tree, prevTree, idx, prevIdx, periodMonth) => {
+    const self = sumLit(node, tree, prevTree, idx, prevIdx, periodMonth);
+    let ytd = self.ytd, mon = self.mon;
+    if (node.isSum && Array.isArray(node.children) && node.children.length > 0) {
+      node.children.forEach(c => {
+        const ch = sumLit(c, tree, prevTree, idx, prevIdx, periodMonth);
+        ytd += ch.ytd;
+        mon += ch.mon;
+      });
+    }
+    return { ytd, mon };
+  };
+
+  const isHl = (node) => savedHighlightedIds && (
+    savedHighlightedIds.has?.(node.id) || savedHighlightedIds.has?.(node.originalId)
+  );
+
+  const dA = (a, b) => a - b;
+  const dP = (a, b) => b !== 0 ? (a - b) / Math.abs(b) : null;
+
+// Pre-build leaf indexes ONCE (was rebuilt per node — caused major lag)
+  const buildLeafIdxOnce = (rows) => {
+    const m = new Map();
+    (rows || []).forEach(r => {
+      const lac = String(getField(r, 'localAccountCode') ?? '');
+      if (!lac) return;
+      m.set(lac, (m.get(lac) ?? 0) + parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod')));
+    });
+    return m;
+  };
+  const aPrevLeafIdxOnce = buildLeafIdxOnce(prevUploadedAccountsRaw?.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts);
+  const bLeafIdxOnce = hasB ? buildLeafIdxOnce(cmpUploadedAccounts) : new Map();
+  const bPrevLeafIdxOnce = hasB ? buildLeafIdxOnce(cmpPrevUploadedAccounts) : new Map();
+  const cLeafIdxOnce = hasC ? buildLeafIdxOnce(cmp2UploadedAccounts) : new Map();
+  const cPrevLeafIdxOnce = hasC ? buildLeafIdxOnce(cmp2PrevUploadedAccounts) : new Map();
+  const dLeafIdxOnce = hasD ? buildLeafIdxOnce(cmp3UploadedAccounts) : new Map();
+  const dPrevLeafIdxOnce = hasD ? buildLeafIdxOnce(cmp3PrevUploadedAccounts) : new Map();
+
+  // Pre-index uploaded rows by localAccountCode for dim-filter lookup
+  const rowsByLac = new Map();
+  (uploadedAccounts || []).forEach(r => {
+    const lac = String(getField(r, 'localAccountCode', 'LocalAccountCode') ?? '');
+    if (!lac) return;
+    if (!rowsByLac.has(lac)) rowsByLac.set(lac, []);
+    rowsByLac.get(lac).push(r);
+  });
+
+  let zebra = 0;
+
+  const writeNode = (node, depth) => {
+    const a = sumLitWithKids(node, aTree, aPrevTree, aIdx, aPrevIdx, month);
+    const b = hasB ? sumLitWithKids(node, bTree, bPrevTree, bIdx, bPrevIdx, cmpFilters?.month) : null;
+    const c = hasC ? sumLitWithKids(node, cTree, cPrevTree, cIdx, cPrevIdx, cmp2Filters?.month) : null;
+    const d = hasD ? sumLitWithKids(node, dTree, dPrevTree, dIdx, dPrevIdx, cmp3Filters?.month) : null;
+
+    const hl = isHl(node);
+    const bg = hl ? LIGHT : (zebra % 2 === 0 ? WHITE : STRIPE);
+    zebra++;
+    const nameColor = hl ? NAVY : (depth === 0 ? NAVY : TEXT_DK);
+    const valColor = hl ? NAVY : TEXT_DK;
+    const bold = hl || depth === 0;
+
+    ws.addRow([]);
+    const dr = ws.lastRow;
+    dr.height = hl ? 19 : 17;
+
+    const nc = dr.getCell(PL.name);
+    const txt = depth === 0 ? (node.name || '').toUpperCase() : (node.name || '');
+    if (node.code) {
+      nc.value = { richText: [
+        { text: `${node.code}    `, font: { name: 'Consolas', color: { argb: 'FF9CA3AF' }, size: 9 } },
+        { text: txt, font: { name: 'Calibri', color: { argb: nameColor }, size: 10, bold } },
+      ]};
+    } else {
+      nc.value = txt;
+      nc.font = mkFont(bold, nameColor, 10);
+    }
+    nc.fill = mkFill(bg);
+    nc.alignment = { horizontal: 'left', vertical: 'middle', indent: Math.max(1, depth + 1) };
+    nc.border = mkBorder();
+
+    // Monthly side
+    setC(dr, PL.monA, a.mon, NUM_FMT, valColor, bold, bg);
+    if (hasB) {
+      setC(dr, PL.monB, b.mon, NUM_FMT, RED, bold, bg);
+      const diff = dA(a.mon, b.mon);
+      setC(dr, PL.monBD, diff, NUM_FMT, devColor(diff), bold, bg);
+      setC(dr, PL.monBP, dP(a.mon, b.mon), PCT_FMT, devColor(diff), bold, bg);
+    }
+    if (hasC) {
+      setC(dr, PL.monC, c.mon, NUM_FMT, GRN, bold, bg);
+      const diff = dA(a.mon, c.mon);
+      setC(dr, PL.monCD, diff, NUM_FMT, devColor(diff), bold, bg);
+      setC(dr, PL.monCP, dP(a.mon, c.mon), PCT_FMT, devColor(diff), bold, bg);
+    }
+    if (hasD) {
+      setC(dr, PL.monD, d.mon, NUM_FMT, PURPLE, bold, bg);
+      const diff = dA(a.mon, d.mon);
+      setC(dr, PL.monDD, diff, NUM_FMT, devColor(diff), bold, bg);
+      setC(dr, PL.monDP, dP(a.mon, d.mon), PCT_FMT, devColor(diff), bold, bg);
+    }
+    if (hasHistoryPL) plHistMaps.forEach((h, i) => {
+      const hYtd = -getYtd(h.map, node.code);
+      const hPrev = -getPrev(h.prevMap, node.code, h.month);
+      setC(dr, PL.histMon[i], hYtd - hPrev, NUM_FMT, valColor, bold, bg);
+    });
+
+    // YTD side
+    setC(dr, PL.ytdA, a.ytd, NUM_FMT, valColor, bold, bg);
+    if (hasB) {
+      setC(dr, PL.ytdB, b.ytd, NUM_FMT, RED, bold, bg);
+      const diff = dA(a.ytd, b.ytd);
+      setC(dr, PL.ytdBD, diff, NUM_FMT, devColor(diff), bold, bg);
+      setC(dr, PL.ytdBP, dP(a.ytd, b.ytd), PCT_FMT, devColor(diff), bold, bg);
+    }
+    if (hasC) {
+      setC(dr, PL.ytdC, c.ytd, NUM_FMT, GRN, bold, bg);
+      const diff = dA(a.ytd, c.ytd);
+      setC(dr, PL.ytdCD, diff, NUM_FMT, devColor(diff), bold, bg);
+      setC(dr, PL.ytdCP, dP(a.ytd, c.ytd), PCT_FMT, devColor(diff), bold, bg);
+    }
+    if (hasD) {
+      setC(dr, PL.ytdD, d.ytd, NUM_FMT, PURPLE, bold, bg);
+      const diff = dA(a.ytd, d.ytd);
+      setC(dr, PL.ytdDD, diff, NUM_FMT, devColor(diff), bold, bg);
+      setC(dr, PL.ytdDP, dP(a.ytd, d.ytd), PCT_FMT, devColor(diff), bold, bg);
+    }
+    if (hasHistoryPL) plHistMaps.forEach((h, i) => {
+      setC(dr, PL.histYtd[i], -getYtd(h.map, node.code), NUM_FMT, valColor, bold, bg);
+    });
+if (hasMultiCo) perCoTrees.forEach((cot, i) => {
+      const ga = cot.tree.get(String(node.code));
+      let ytdC = ga ? -sumNode(ga) : 0;
+      let prevC = 0;
+      if (Number(month) !== 1) {
+        const prevGa = cot.prevTree.get(String(node.code));
+        if (prevGa) prevC = -sumNode(prevGa);
+      }
+      // Sum-with-kids rollup for isSum nodes (matches sumLitWithKids)
+      if (node.isSum && Array.isArray(node.children) && node.children.length > 0) {
+        node.children.forEach(ch => {
+          const g = cot.tree.get(String(ch.code));
+          if (g) ytdC += -sumNode(g);
+          if (Number(month) !== 1) {
+            const pg = cot.prevTree.get(String(ch.code));
+            if (pg) prevC += -sumNode(pg);
+          }
+        });
+      }
+      const val = _ytdOnly ? ytdC : (ytdC - prevC);
+      setC(dr, PL.co[i], val, NUM_FMT, valColor, bold, bg);
+    });
+
+// ── Drill-down: uploadLeaves (local accounts) + dimensions ──
+    const gaNode = aTree.get(String(node.code));
+    let leaves = (gaNode?.uploadLeaves || []).filter(l => l.type !== 'plain');
+
+// Filter leaves by node.dims if present (same logic as app render)
+    if (node.dims && node.dims.length > 0 && leaves.length > 0) {
+      const accepted = new Set(node.dims.map(d => String(d)));
+      const filtered = leaves.filter(leaf => {
+        const leafRows = rowsByLac.get(String(leaf.code ?? '')) || [];
+        return leafRows.some(r => {
+          const dimsStr = String(getField(r, 'Dimensions', 'dimensions') ?? '');
+          if (!dimsStr) return false;
+          return dimsStr.split('||').map(s => s.trim()).filter(Boolean).some(pair => {
+            const i = pair.indexOf(':'); if (i === -1) return false;
+            const g = pair.slice(0, i).trim();
+            const v = pair.slice(i + 1).trim();
+            if (accepted.has(`${g}:${v}`)) return true;
+            return [...accepted].some(sk => {
+              const sc = sk.indexOf(':');
+              const sv = sc === -1 ? sk : sk.slice(sc + 1);
+              if (sv === v) return true;
+              const dm = (dimensions || []).find(dd => {
+                const dg = String(dd.dimensionGroup ?? dd.DimensionGroup ?? '').trim();
+                const dn = String(dd.dimensionName ?? dd.DimensionName ?? '').trim();
+                return dn === sv && (sc === -1 || dg === sk.slice(0, sc));
+              });
+              if (!dm) return false;
+              return String(dm.dimensionCode ?? dm.DimensionCode ?? '') === v;
+            });
+          });
+        });
+      });
+      if (filtered.length > 0) leaves = filtered;
+    }
+
+    leaves.forEach((leaf, li) => {
+      const ytdA = -(leaf.amount ?? 0);
+      const prevA = leaf.code && Number(month) !== 1 ? (aPrevLeafIdxOnce.get(String(leaf.code)) ?? 0) : 0;
+      const monA = -(((leaf.amount ?? 0) - prevA));
+
+      ws.addRow([]);
+      const dr2 = ws.lastRow;
+      dr2.height = 15;
+      dr2.outlineLevel = Math.min(depth + 1, 7);
+      dr2.hidden = true;
+
+      const lnc = dr2.getCell(PL.name);
+      lnc.value = `${leaf.code || ''}  ${leaf.name || ''}`.trim();
+      lnc.font = mkFont(false, TEXT_MUT, 9, true);
+      lnc.fill = mkFill(LEAF_BG);
+      lnc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 2 };
+      lnc.border = mkBorder();
+
+      setC(dr2, PL.monA, monA, NUM_FMT, TEXT_MUT, false, LEAF_BG);
+      setC(dr2, PL.ytdA, ytdA, NUM_FMT, TEXT_MUT, false, LEAF_BG);
+
+      if (hasB && leaf.code) {
+        const bY = -(bLeafIdxOnce.get(String(leaf.code)) ?? 0);
+        const bP = Number(cmpFilters?.month) === 1 ? 0 : -(bPrevLeafIdxOnce.get(String(leaf.code)) ?? 0);
+        const bM = bY - bP;
+        setC(dr2, PL.monB, bM, NUM_FMT, RED, false, LEAF_BG);
+        const dm = dA(monA, bM); setC(dr2, PL.monBD, dm, NUM_FMT, devColor(dm), false, LEAF_BG);
+        setC(dr2, PL.monBP, dP(monA, bM), PCT_FMT, devColor(dm), false, LEAF_BG);
+        setC(dr2, PL.ytdB, bY, NUM_FMT, RED, false, LEAF_BG);
+        const dy = dA(ytdA, bY); setC(dr2, PL.ytdBD, dy, NUM_FMT, devColor(dy), false, LEAF_BG);
+        setC(dr2, PL.ytdBP, dP(ytdA, bY), PCT_FMT, devColor(dy), false, LEAF_BG);
+      }
+      if (hasC && leaf.code) {
+        const cY = -(cLeafIdxOnce.get(String(leaf.code)) ?? 0);
+        const cP = Number(cmp2Filters?.month) === 1 ? 0 : -(cPrevLeafIdxOnce.get(String(leaf.code)) ?? 0);
+        const cM = cY - cP;
+        setC(dr2, PL.monC, cM, NUM_FMT, GRN, false, LEAF_BG);
+        const dm = dA(monA, cM); setC(dr2, PL.monCD, dm, NUM_FMT, devColor(dm), false, LEAF_BG);
+        setC(dr2, PL.monCP, dP(monA, cM), PCT_FMT, devColor(dm), false, LEAF_BG);
+        setC(dr2, PL.ytdC, cY, NUM_FMT, GRN, false, LEAF_BG);
+        const dy = dA(ytdA, cY); setC(dr2, PL.ytdCD, dy, NUM_FMT, devColor(dy), false, LEAF_BG);
+        setC(dr2, PL.ytdCP, dP(ytdA, cY), PCT_FMT, devColor(dy), false, LEAF_BG);
+      }
+if (hasD && leaf.code) {
+        const dY = -(dLeafIdxOnce.get(String(leaf.code)) ?? 0);
+        const dPV = Number(cmp3Filters?.month) === 1 ? 0 : -(dPrevLeafIdxOnce.get(String(leaf.code)) ?? 0);
+        const dM = dY - dPV;
+        setC(dr2, PL.monD, dM, NUM_FMT, PURPLE, false, LEAF_BG);
+        const dm = dA(monA, dM); setC(dr2, PL.monDD, dm, NUM_FMT, devColor(dm), false, LEAF_BG);
+        setC(dr2, PL.monDP, dP(monA, dM), PCT_FMT, devColor(dm), false, LEAF_BG);
+        setC(dr2, PL.ytdD, dY, NUM_FMT, PURPLE, false, LEAF_BG);
+        const dy = dA(ytdA, dY); setC(dr2, PL.ytdDD, dy, NUM_FMT, devColor(dy), false, LEAF_BG);
+        setC(dr2, PL.ytdDP, dP(ytdA, dY), PCT_FMT, devColor(dy), false, LEAF_BG);
+      }
+
+      // Dimension sub-rows
+      let dimChildren = leaf.children || [];
+      if (node.dims && node.dims.length > 0) {
+        const accepted = new Set(node.dims.map(d => String(d)));
+        dimChildren = dimChildren.filter(dim => {
+          const dc = String(dim.code ?? ''); const dn = String(dim.name ?? '');
+          return [...accepted].some(sk => {
+            const colon = sk.indexOf(':');
+            const sv = colon === -1 ? sk : sk.slice(colon + 1);
+            return sv === dc || sv === dn;
+          });
+        });
+      }
+// Build per-leaf+dim indexes once for saved-mapping export
+      if (!ws._savedLeafDimIdx) {
+        const buildLDI = (rows) => {
+          const m = new Map();
+          (rows || []).forEach(r => {
+            const l = String(getField(r, 'localAccountCode') ?? '');
+            const dcd = String(getField(r, 'dimensionCode') ?? '');
+            if (!l || !dcd || dcd === 'null') return;
+            const a = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+            m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+          });
+          return m;
+        };
+        ws._savedLeafDimIdx = {
+          aPrev: buildLDI(prevUploadedAccountsRaw?.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts),
+          b:     hasB ? buildLDI(cmpUploadedAccounts) : new Map(),
+          bPrev: hasB ? buildLDI(cmpPrevUploadedAccounts) : new Map(),
+          c:     hasC ? buildLDI(cmp2UploadedAccounts) : new Map(),
+          cPrev: hasC ? buildLDI(cmp2PrevUploadedAccounts) : new Map(),
+          d:     hasD ? buildLDI(cmp3UploadedAccounts) : new Map(),
+          dPrev: hasD ? buildLDI(cmp3PrevUploadedAccounts) : new Map(),
+        };
+      }
+      const sLDI = ws._savedLeafDimIdx;
+
+      dimChildren.forEach(dim => {
+        ws.addRow([]);
+        const drd = ws.lastRow;
+        drd.height = 15;
+        drd.outlineLevel = Math.min(depth + 2, 7);
+        drd.hidden = true;
+        const dnc = drd.getCell(PL.name);
+        dnc.value = `◆  ${dim.name || dim.code || ''}`;
+        dnc.font = mkFont(false, AMBER, 9);
+        dnc.fill = mkFill(DIM_BG);
+        dnc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 3 };
+        dnc.border = mkBorder();
+
+        const lac = String(leaf.code ?? '');
+        const dc  = String(dim.code ?? '');
+        const key = lac && dc ? `${lac}|${dc}` : null;
+        const ytdA = -(dim.amount ?? 0);
+        const prevA = key && Number(month) !== 1 ? -(sLDI.aPrev.get(key) ?? 0) : 0;
+        const monA = ytdA - prevA;
+
+        setC(drd, PL.monA, monA, NUM_FMT, AMBER, false, DIM_BG);
+        setC(drd, PL.ytdA, ytdA, NUM_FMT, AMBER, false, DIM_BG);
+
+        const dA = (a, b) => a - b;
+        const dP = (a, b) => b !== 0 ? (a - b) / Math.abs(b) : null;
+
+        if (hasB && key) {
+          const bY = -(sLDI.b.get(key) ?? 0);
+          const bP = Number(cmpFilters?.month) === 1 ? 0 : -(sLDI.bPrev.get(key) ?? 0);
+          const bM = bY - bP;
+          setC(drd, PL.monB, bM, NUM_FMT, RED, false, DIM_BG);
+          const dm = dA(monA, bM); setC(drd, PL.monBD, dm, NUM_FMT, devColor(dm), false, DIM_BG);
+          setC(drd, PL.monBP, dP(monA, bM), PCT_FMT, devColor(dm), false, DIM_BG);
+          setC(drd, PL.ytdB, bY, NUM_FMT, RED, false, DIM_BG);
+          const dy = dA(ytdA, bY); setC(drd, PL.ytdBD, dy, NUM_FMT, devColor(dy), false, DIM_BG);
+          setC(drd, PL.ytdBP, dP(ytdA, bY), PCT_FMT, devColor(dy), false, DIM_BG);
+        }
+        if (hasC && key) {
+          const cY = -(sLDI.c.get(key) ?? 0);
+          const cP = Number(cmp2Filters?.month) === 1 ? 0 : -(sLDI.cPrev.get(key) ?? 0);
+          const cM = cY - cP;
+          setC(drd, PL.monC, cM, NUM_FMT, GRN, false, DIM_BG);
+          const dm = dA(monA, cM); setC(drd, PL.monCD, dm, NUM_FMT, devColor(dm), false, DIM_BG);
+          setC(drd, PL.monCP, dP(monA, cM), PCT_FMT, devColor(dm), false, DIM_BG);
+          setC(drd, PL.ytdC, cY, NUM_FMT, GRN, false, DIM_BG);
+          const dy = dA(ytdA, cY); setC(drd, PL.ytdCD, dy, NUM_FMT, devColor(dy), false, DIM_BG);
+          setC(drd, PL.ytdCP, dP(ytdA, cY), PCT_FMT, devColor(dy), false, DIM_BG);
+        }
+if (hasD && key) {
+          const dY = -(sLDI.d.get(key) ?? 0);
+          const dPV = Number(cmp3Filters?.month) === 1 ? 0 : -(sLDI.dPrev.get(key) ?? 0);
+          const dM = dY - dPV;
+          setC(drd, PL.monD, dM, NUM_FMT, PURPLE, false, DIM_BG);
+          const dm = dA(monA, dM); setC(drd, PL.monDD, dm, NUM_FMT, devColor(dm), false, DIM_BG);
+          setC(drd, PL.monDP, dP(monA, dM), PCT_FMT, devColor(dm), false, DIM_BG);
+          setC(drd, PL.ytdD, dY, NUM_FMT, PURPLE, false, DIM_BG);
+          const dy = dA(ytdA, dY); setC(drd, PL.ytdDD, dy, NUM_FMT, devColor(dy), false, DIM_BG);
+          setC(drd, PL.ytdDP, dP(ytdA, dY), PCT_FMT, devColor(dy), false, DIM_BG);
+        }
+        if (hasMultiCo && key) {
+          if (!ws._savedPerCoLeafDimIdx) {
+            const buildLDIco = (rows) => {
+              const m = new Map();
+              (rows || []).forEach(r => {
+                const l = String(getField(r, 'localAccountCode') ?? '');
+                const dcd = String(getField(r, 'dimensionCode') ?? '');
+                if (!l || !dcd || dcd === 'null') return;
+                const a = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+                m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+              });
+              return m;
+            };
+            ws._savedPerCoLeafDimIdx = _selectedCo.map(co => ({
+              cur:  buildLDIco((uploadedAccounts || []).filter(r => getCoF(r) === co)),
+              prev: buildLDIco(((prevUploadedAccountsRaw?.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts) || []).filter(r => getCoF(r) === co)),
+            }));
+          }
+          ws._savedPerCoLeafDimIdx.forEach((idx, i) => {
+            const ytdC = -(idx.cur.get(key) ?? 0);
+            const prevC = Number(month) === 1 ? 0 : -(idx.prev.get(key) ?? 0);
+            const val = _ytdOnly ? ytdC : (ytdC - prevC);
+            if (PL.co[i]) setC(drd, PL.co[i], val, NUM_FMT, AMBER, false, DIM_BG);
+          });
+        }
+      });
+    });
+
+// ── Journal entries at node level (PL saved-mapping) — matches app: only AJE/RJE ──
+    if (node.code && jrnByCode.has(String(node.code))) {
+      const jrns = (jrnByCode.get(String(node.code)) || []).filter(j => {
+        const jt = String(j.JournalType ?? j.journalType ?? '').toUpperCase();
+        return jt === 'AJE' || jt === 'RJE';
+      });
+      if (jrns.length > 0) {
+        // Header row
+        ws.addRow([]);
+        const jhr = ws.lastRow;
+        jhr.height = 15;
+        jhr.outlineLevel = Math.min(depth + 1, 7);
+        jhr.hidden = true;
+        const jnc = jhr.getCell(PL.name);
+        jnc.value = `📋 Journal entries (${jrns.length})`;
+        jnc.font = mkFont(true, INDIGO, 9);
+        jnc.fill = mkFill(JRN_BG);
+        jnc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 2 };
+        jnc.border = mkBorder();
+        for (let c = 2; c <= plCols; c++) {
+          jhr.getCell(c).fill = mkFill(JRN_BG);
+          jhr.getCell(c).border = mkBorder();
+        }
+jrns.forEach(j => {
+          const amt = parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
+          ws.addRow([]);
+          const jr = ws.lastRow;
+          jr.height = 14;
+          jr.outlineLevel = Math.min(depth + 2, 7);
+          jr.hidden = true;
+          const jec = jr.getCell(PL.name);
+          const jnum = j.JournalNumber ?? j.journalNumber ?? '';
+          const jhdr = j.JournalHeader ?? j.journalHeader ?? '';
+          jec.value = `📄 ${jnum}${jhdr ? ' · ' + jhdr : ''}`;
+          jec.font = mkFont(false, INDIGO, 9);
+          jec.fill = mkFill(JRN_BG);
+          jec.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 3 };
+          jec.border = mkBorder();
+setC(jr, PL.monA, -amt, NUM_FMT, INDIGO, false, JRN_BG);
+          setC(jr, PL.ytdA, -amt, NUM_FMT, INDIGO, false, JRN_BG);
+          if (hasMultiCo) {
+            const jrnCo = String(j.CompanyShortName ?? j.companyShortName ?? '');
+            _selectedCo.forEach((co, i) => {
+              const v = jrnCo === co ? -amt : 0;
+              if (PL.co[i]) setC(jr, PL.co[i], v, NUM_FMT, INDIGO, false, JRN_BG);
+            });
+          }
+          // Cross-period cells blank
+          [PL.monB, PL.monBD, PL.monBP, PL.monC, PL.monCD, PL.monCP, PL.monD, PL.monDD, PL.monDP,
+           ...PL.histMon,
+           PL.ytdB, PL.ytdBD, PL.ytdBP, PL.ytdC, PL.ytdCD, PL.ytdCP, PL.ytdD, PL.ytdDD, PL.ytdDP,
+           ...PL.histYtd,
+           ...(hasMultiCo ? [] : PL.co)].forEach(ci => {
+            if (ci) { const c = jr.getCell(ci); c.value = ''; c.fill = mkFill(JRN_BG); c.border = mkBorder(); }
+          });
+        });
+
+// ── Compare-period-only journals (B/C/D not in A) ──
+        if (hasB || hasC || hasD) {
+          const aNums = new Set(jrns.map(j => j.JournalNumber ?? j.journalNumber));
+          const seen = new Map();
+          const collect = (idx, period) => {
+            (idx.get(String(node.code)) || []).forEach(j => {
+              const num = j.JournalNumber ?? j.journalNumber;
+              if (aNums.has(num)) return;
+              if (!seen.has(num)) seen.set(num, { jrn: j, periods: { B: null, C: null, D: null } });
+              seen.get(num).periods[period] = -parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
+            });
+          };
+          if (hasB) collect(jrnByCodeCmp,  'B');
+          if (hasC) collect(jrnByCodeCmp2, 'C');
+          if (hasD) collect(jrnByCodeCmp3, 'D');
+          seen.forEach((entry, num) => {
+            ['B','C','D'].forEach(p => {
+              if (entry.periods[p] != null) return;
+              const idx = p === 'B' ? jrnByCodeCmp : p === 'C' ? jrnByCodeCmp2 : jrnByCodeCmp3;
+              const match = (idx.get(String(node.code)) || []).find(j => (j.JournalNumber ?? j.journalNumber) === num);
+              if (match) entry.periods[p] = -parseAmt(match.AmountYTD ?? match.amountYTD ?? 0);
+            });
+          });
+          if (seen.size > 0) {
+            ws.addRow([]);
+            const xhr = ws.lastRow;
+            xhr.height = 14;
+            xhr.outlineLevel = Math.min(depth + 2, 7);
+            xhr.hidden = true;
+            const xnc = xhr.getCell(PL.name);
+            xnc.value = `↳ B/C/D only (${seen.size})`;
+            xnc.font = mkFont(true, INDIGO, 9);
+            xnc.fill = mkFill(JRN_BG);
+            xnc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 3 };
+            xnc.border = mkBorder();
+            for (let c = 2; c <= plCols; c++) { xhr.getCell(c).fill = mkFill(JRN_BG); xhr.getCell(c).border = mkBorder(); }
+            seen.forEach((entry, num) => {
+              ws.addRow([]);
+              const xr = ws.lastRow;
+              xr.height = 14;
+              xr.outlineLevel = Math.min(depth + 3, 7);
+              xr.hidden = true;
+              const xec = xr.getCell(PL.name);
+              const jhdr = entry.jrn.JournalHeader ?? entry.jrn.journalHeader ?? '';
+              xec.value = `📄 ${num}${jhdr ? ' · ' + jhdr : ''}`;
+              xec.font = mkFont(false, INDIGO, 9);
+              xec.fill = mkFill(JRN_BG);
+              xec.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 4 };
+              xec.border = mkBorder();
+              if (hasB && entry.periods.B != null) { setC(xr, PL.monB, entry.periods.B, NUM_FMT, INDIGO, false, JRN_BG); setC(xr, PL.ytdB, entry.periods.B, NUM_FMT, INDIGO, false, JRN_BG); }
+              if (hasC && entry.periods.C != null) { setC(xr, PL.monC, entry.periods.C, NUM_FMT, INDIGO, false, JRN_BG); setC(xr, PL.ytdC, entry.periods.C, NUM_FMT, INDIGO, false, JRN_BG); }
+              if (hasD && entry.periods.D != null) { setC(xr, PL.monD, entry.periods.D, NUM_FMT, INDIGO, false, JRN_BG); setC(xr, PL.ytdD, entry.periods.D, NUM_FMT, INDIGO, false, JRN_BG); }
+              [PL.monA, PL.ytdA, PL.monBD, PL.monBP, PL.monCD, PL.monCP, PL.monDD, PL.monDP,
+               PL.ytdBD, PL.ytdBP, PL.ytdCD, PL.ytdCP, PL.ytdDD, PL.ytdDP,
+               ...PL.histMon, ...PL.histYtd, ...PL.co].forEach(ci => {
+                if (ci && !xr.getCell(ci).value) { const c = xr.getCell(ci); c.value = ''; c.fill = mkFill(JRN_BG); c.border = mkBorder(); }
+              });
+            });
+          }
+        }
+      }
+    }
+
+    // Recurse mapping children (preserve literal hierarchy)
+    (node.children || []).forEach(child => writeNode(child, depth + 1));
+  };
+
+  // ── Render sections exactly as savedPlLiteral describes them ──
+console.log('[Export] savedPlLiteral sections', savedPlLiteral?.map(s => ({
+    keys: Object.keys(s || {}),
+    label: s?.label, name: s?.name, title: s?.title, breaker: s?.breaker, breakerLabel: s?.breakerLabel,
+    color: s?.color, colour: s?.colour, bg: s?.bg, background: s?.background,
+    nodes: s?.nodes?.length,
+  })));
+
+  savedPlLiteral.forEach((section) => {
+    const lbl = section.label ?? section.name ?? section.title ?? section.breaker ?? section.breakerLabel ?? section.heading;
+    const col = section.color ?? section.colour ?? section.bg ?? section.background ?? section.fill;
+    if (lbl) {
+      ws.addRow([]);
+      const dr = ws.lastRow;
+      dr.height = 22;
+      const raw = String(col || '').trim();
+      const hex = raw.startsWith('#') ? raw.slice(1) : raw.startsWith('FF') && raw.length === 8 ? raw.slice(2) : raw;
+      const divColor = /^[0-9a-fA-F]{6}$/.test(hex) ? `FF${hex.toUpperCase()}` : DIV_BLUE;
+      for (let c = 1; c <= plCols; c++) {
+        dr.getCell(c).fill = mkFill(divColor);
+        dr.getCell(c).border = { bottom: { style: 'thin', color: { argb: divColor } } };
+      }
+      dr.getCell(1).value = String(lbl).toUpperCase();
+      dr.getCell(1).font = mkFont(true, WHITE, 11);
+      dr.getCell(1).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+      ws.mergeCells(dr.number, 1, dr.number, plCols);
+      zebra = 0;
+    }
+    (section.nodes || []).forEach(n => writeNode(n, 0));
+  });
+};
+
+// ═══════════════════════════════════════════════════════════
+// SAVED LITERAL BALANCE SHEET — single sheet, matches app
+// ═══════════════════════════════════════════════════════════
+const buildSavedBSSheet = (ws) => {
+  ws.views = [{ state: 'frozen', ySplit: bsHasB ? 4 : 3, showOutlineSymbols: true }];
+  ws.properties.outlineLevelRow = 0;
+
+  // ── Title ──
+  ws.addRow([]);
+  const r1 = ws.lastRow;
+  r1.height = 32;
+  r1.getCell(1).value = `Balance Sheet`;
+  r1.getCell(1).font = mkFont(true, WHITE, 14);
+  r1.getCell(1).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+  for (let c = 1; c <= bsCols; c++) r1.getCell(c).fill = mkFill(NAVY);
+  ws.mergeCells(r1.number, 1, r1.number, bsCols);
+
+  ws.addRow([]);
+  const r2 = ws.lastRow;
+  r2.height = 16;
+  r2.getCell(1).value = `A: ${aLabel}`;
+  r2.getCell(1).font = mkFont(false, 'FFB4C6EE', 9);
+  r2.getCell(1).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+  for (let c = 1; c <= bsCols; c++) r2.getCell(c).fill = mkFill(NAVY);
+  ws.mergeCells(r2.number, 1, r2.number, bsCols);
+
+  if (bsHasB) {
+    ws.addRow([]);
+    const r3 = ws.lastRow;
+    r3.height = 15;
+    const parts = [`B: ${bsBLabel}`];
+    if (bsHasC) parts.push(`C: ${bsCLabel}`);
+    if (bsHasD) parts.push(`D: ${bsDLabel}`);
+    r3.getCell(1).value = parts.join('    |    ');
+    r3.getCell(1).font = mkFont(false, 'FFFCD34D', 9);
+    r3.getCell(1).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+    for (let c = 1; c <= bsCols; c++) r3.getCell(c).fill = mkFill(NAVY);
+    ws.mergeCells(r3.number, 1, r3.number, bsCols);
+  }
+
+  // ── Headers ──
+  ws.addRow([]);
+  const rh = ws.lastRow;
+  rh.height = 22;
+  const headers = [[BS.name, 'ACCOUNT', 'left', NAVY], [BS.act, 'ACTUAL', 'right', NAVY]];
+  if (bsHasB) headers.push([BS.cmp, 'B', 'right', RED], [BS.cmpD, 'Δ', 'right', RED], [BS.cmpP, 'Δ%', 'right', RED]);
+  if (bsHasC) headers.push([BS.cmp2, 'C', 'right', GRN], [BS.cmp2D, 'Δ', 'right', GRN], [BS.cmp2P, 'Δ%', 'right', GRN]);
+  if (bsHasD) headers.push([BS.cmp3, 'D', 'right', PURPLE], [BS.cmp3D, 'Δ', 'right', PURPLE], [BS.cmp3P, 'Δ%', 'right', PURPLE]);
+  if (hasHistoryBS) bsHistMaps.forEach((h, i) => {
+    const moLbl = MONTHS.find(m => String(m.value) === String(h.month))?.label?.slice(0, 3).toUpperCase() ?? String(h.month);
+    headers.push([BS.hist[i], `${moLbl} ${h.year}`, 'right', NAVY_DK]);
+  });
+if (hasMultiCo) perCoMaps.forEach((c, i) => headers.push([BS.co[i], c.legal, 'right', NAVY]));
+
+  headers.filter(h => Array.isArray(h) && Number.isFinite(h[0]) && h[0] > 0).forEach(([ci, lbl, align, fillArgb]) => {
+    const c = rh.getCell(ci);
+    c.value = lbl;
+    c.font = mkFont(true, WHITE, 9);
+    c.fill = mkFill(fillArgb);
+    c.alignment = { horizontal: align, vertical: 'middle', indent: align === 'left' ? 1 : 0 };
+    c.border = { bottom: { style: 'medium', color: { argb: NAVY_DK } } };
+  });
+
+ws.getColumn(BS.name).width = 56;
+  if (BS.act) ws.getColumn(BS.act).width = 16;
+  if (bsHasB) [BS.cmp, BS.cmpD, BS.cmpP].forEach(ci => { ws.getColumn(ci).width = ci === BS.cmp ? 16 : ci === BS.cmpD ? 13 : 10; });
+  if (bsHasC) [BS.cmp2, BS.cmp2D, BS.cmp2P].forEach(ci => { ws.getColumn(ci).width = ci === BS.cmp2 ? 16 : ci === BS.cmp2D ? 13 : 10; });
+  if (bsHasD) [BS.cmp3, BS.cmp3D, BS.cmp3P].forEach(ci => { ws.getColumn(ci).width = ci === BS.cmp3 ? 16 : ci === BS.cmp3D ? 13 : 10; });
+  if (hasHistoryBS) BS.hist.forEach(ci => { ws.getColumn(ci).width = 15; });
+  if (hasMultiCo) BS.co.forEach(ci => { ws.getColumn(ci).width = 20; });
+
+  // ── BS literal sum: flat (no monthly delta), with dim filter support ──
+  const buildBsAccIdx = (rows) => {
+    const acc = new Map();
+    const dim = new Map();
+    (rows || []).forEach(row => {
+      const code = String(getField(row, 'accountCode') ?? '');
+      if (!code) return;
+      const amt = parseAmt(getField(row, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+      acc.set(code, (acc.get(code) ?? 0) + amt);
+      const dimsStr = String(getField(row, 'Dimensions', 'dimensions') ?? '');
+      if (!dimsStr) return;
+      dimsStr.split('||').map(s => s.trim()).filter(Boolean).forEach(pair => {
+        const i = pair.indexOf(':'); if (i === -1) return;
+        const g = pair.slice(0, i).trim();
+        const v = pair.slice(i + 1).trim();
+        dim.set(`${code}|${g}:${v}`, (dim.get(`${code}|${g}:${v}`) ?? 0) + amt);
+      });
+    });
+    return { acc, dim };
+  };
+
+const aBs = buildBsAccIdx(uploadedAccounts);
+  const bBs = bsHasB ? buildBsAccIdx(bsCmpUploadedAccounts) : null;
+  const cBs = bsHasC ? buildBsAccIdx(bsCmp2UploadedAccounts) : null;
+  const dBs = bsHasD ? buildBsAccIdx(bsCmp3UploadedAccounts) : null;
+
+  // Per-company trees for multi-co BS (built once)
+  const bsTreeByCode = (rows) => {
+    const m = new Map();
+    (function w(nodes) { nodes.forEach(n => { m.set(String(n.code), n); w(n.children || []); }); })(buildTree(groupAccounts, rows || []));
+    return m;
+  };
+  const perCoBsTrees = hasMultiCo ? _selectedCo.map(co => ({
+    tree: bsTreeByCode((uploadedAccounts || []).filter(r => getCoF(r) === co)),
+  })) : [];
+
+  const sumBsLit = (node, src) => {
+    if (!src) return 0;
+    if (node.dims && node.dims.length > 0) {
+      let total = 0;
+      node.dims.forEach(d => { total += src.dim.get(`${node.code}|${d}`) ?? 0; });
+      return total;
+    }
+    return src.acc.get(String(node.code)) ?? 0;
+  };
+
+  const sumBsWithKids = (node, src) => {
+    let total = sumBsLit(node, src);
+    if (node.isSum && Array.isArray(node.children) && node.children.length > 0) {
+      node.children.forEach(c => { total += sumBsLit(c, src); });
+    }
+    return total;
+  };
+
+  const isHl = (node) => savedHighlightedIds && (
+    savedHighlightedIds.has?.(node.id) || savedHighlightedIds.has?.(node.originalId)
+  );
+
+  const dA = (a, b) => a - b;
+  const dP = (a, b) => b !== 0 ? (a - b) / Math.abs(b) : null;
+
+// Pre-build leaf indexes + tree ONCE
+  const buildBsLeafOnce = (rows) => {
+    const m = new Map();
+    (rows || []).forEach(r => {
+      const lac = String(getField(r, 'localAccountCode') ?? '');
+      if (!lac) return;
+      m.set(lac, (m.get(lac) ?? 0) + parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod')));
+    });
+    return m;
+  };
+  const bsBLeafIdxOnce = bsHasB ? buildBsLeafOnce(bsCmpUploadedAccounts) : new Map();
+  const bsCLeafIdxOnce = bsHasC ? buildBsLeafOnce(bsCmp2UploadedAccounts) : new Map();
+  const bsDLeafIdxOnce = bsHasD ? buildBsLeafOnce(bsCmp3UploadedAccounts) : new Map();
+
+  const bsTreeByCodeOnce = (function build() {
+    const m = new Map();
+    (function w(nodes) { nodes.forEach(n => { m.set(String(n.code), n); w(n.children || []); }); })(buildTree(groupAccounts, uploadedAccounts || []));
+    return m;
+  })();
+
+  const bsRowsByLac = new Map();
+  (uploadedAccounts || []).forEach(r => {
+    const lac = String(getField(r, 'localAccountCode', 'LocalAccountCode') ?? '');
+    if (!lac) return;
+    if (!bsRowsByLac.has(lac)) bsRowsByLac.set(lac, []);
+    bsRowsByLac.get(lac).push(r);
+  });
+
+  let zebra = 0;
+
+  const writeBsNode = (node, depth) => {
+    const a = sumBsWithKids(node, aBs);
+    const bv = bsHasB ? sumBsWithKids(node, bBs) : null;
+    const cv = bsHasC ? sumBsWithKids(node, cBs) : null;
+    const dv = bsHasD ? sumBsWithKids(node, dBs) : null;
+
+    const hl = isHl(node);
+    const bg = hl ? LIGHT : (zebra % 2 === 0 ? WHITE : STRIPE);
+    zebra++;
+    const nameColor = hl ? NAVY : (depth === 0 ? NAVY : TEXT_DK);
+    const valColor = hl ? NAVY : TEXT_DK;
+    const bold = hl || depth === 0;
+
+    ws.addRow([]);
+    const dr = ws.lastRow;
+    dr.height = hl ? 19 : 17;
+
+    const nc = dr.getCell(BS.name);
+    const txt = depth === 0 ? (node.name || '').toUpperCase() : (node.name || '');
+    if (node.code) {
+      nc.value = { richText: [
+        { text: `${node.code}    `, font: { name: 'Consolas', color: { argb: 'FF9CA3AF' }, size: 9 } },
+        { text: txt, font: { name: 'Calibri', color: { argb: nameColor }, size: 10, bold } },
+      ]};
+    } else {
+      nc.value = txt;
+      nc.font = mkFont(bold, nameColor, 10);
+    }
+    nc.fill = mkFill(bg);
+    nc.alignment = { horizontal: 'left', vertical: 'middle', indent: Math.max(1, depth + 1) };
+    nc.border = mkBorder();
+
+    setC(dr, BS.act, a, NUM_FMT, valColor, bold, bg);
+    if (bsHasB) {
+      setC(dr, BS.cmp, bv, NUM_FMT, RED, bold, bg);
+      const diff = dA(a, bv);
+      setC(dr, BS.cmpD, diff, NUM_FMT, devColor(diff), bold, bg);
+      setC(dr, BS.cmpP, dP(a, bv), PCT_FMT, devColor(diff), bold, bg);
+    }
+    if (bsHasC) {
+      setC(dr, BS.cmp2, cv, NUM_FMT, GRN, bold, bg);
+      const diff = dA(a, cv);
+      setC(dr, BS.cmp2D, diff, NUM_FMT, devColor(diff), bold, bg);
+      setC(dr, BS.cmp2P, dP(a, cv), PCT_FMT, devColor(diff), bold, bg);
+    }
+    if (bsHasD) {
+      setC(dr, BS.cmp3, dv, NUM_FMT, PURPLE, bold, bg);
+      const diff = dA(a, dv);
+      setC(dr, BS.cmp3D, diff, NUM_FMT, devColor(diff), bold, bg);
+      setC(dr, BS.cmp3P, dP(a, dv), PCT_FMT, devColor(diff), bold, bg);
+    }
+    if (hasHistoryBS) bsHistMaps.forEach((h, i) => {
+      const n = h.map.get(String(node.code));
+      const raw = n ? sumNode(n) : 0;
+      setC(dr, BS.hist[i], raw, NUM_FMT, valColor, bold, bg);
+    });
+if (hasMultiCo) perCoBsTrees.forEach((cot, i) => {
+      const ga = cot.tree.get(String(node.code));
+      let total = ga ? sumNode(ga) : 0;
+      if (node.isSum && Array.isArray(node.children) && node.children.length > 0) {
+        node.children.forEach(ch => {
+          const g = cot.tree.get(String(ch.code));
+          if (g) total += sumNode(g);
+        });
+      }
+      setC(dr, BS.co[i], total, NUM_FMT, valColor, bold, bg);
+    });
+
+// ── Drill-down: uploadLeaves + dimensions ──
+    const gaNodeB = bsTreeByCodeOnce.get(String(node.code));
+    let leavesB = (gaNodeB?.uploadLeaves || []).filter(l => l.type !== 'plain');
+
+    if (node.dims && node.dims.length > 0 && leavesB.length > 0) {
+      const accepted = new Set(node.dims.map(d => String(d)));
+      const filtered = leavesB.filter(leaf => {
+        const leafRows = bsRowsByLac.get(String(leaf.code ?? '')) || [];
+        return leafRows.some(r => {
+          const dimsStr = String(getField(r, 'Dimensions', 'dimensions') ?? '');
+          if (!dimsStr) return false;
+          return dimsStr.split('||').map(s => s.trim()).filter(Boolean).some(pair => {
+            const i = pair.indexOf(':'); if (i === -1) return false;
+            const g = pair.slice(0, i).trim();
+            const v = pair.slice(i + 1).trim();
+            return accepted.has(`${g}:${v}`) || [...accepted].some(sk => {
+              const colon = sk.indexOf(':');
+              const sv = colon === -1 ? sk : sk.slice(colon + 1);
+              return sv === v;
+            });
+          });
+        });
+      });
+      if (filtered.length > 0) leavesB = filtered;
+    }
+
+    leavesB.forEach((leaf, li) => {
+      const amt = leaf.amount ?? 0;
+      ws.addRow([]);
+      const dr2 = ws.lastRow;
+      dr2.height = 15;
+      dr2.outlineLevel = Math.min(depth + 1, 7);
+      dr2.hidden = true;
+
+      const lnc = dr2.getCell(BS.name);
+      lnc.value = `${leaf.code || ''}  ${leaf.name || ''}`.trim();
+      lnc.font = mkFont(false, TEXT_MUT, 9, true);
+      lnc.fill = mkFill(LEAF_BG);
+      lnc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 2 };
+      lnc.border = mkBorder();
+      setC(dr2, BS.act, amt, NUM_FMT, TEXT_MUT, false, LEAF_BG);
+if (bsHasB && leaf.code) {
+        const bV = bsBLeafIdxOnce.get(String(leaf.code)) ?? 0;
+        setC(dr2, BS.cmp, bV, NUM_FMT, RED, false, LEAF_BG);
+        const d = dA(amt, bV); setC(dr2, BS.cmpD, d, NUM_FMT, devColor(d), false, LEAF_BG);
+        setC(dr2, BS.cmpP, dP(amt, bV), PCT_FMT, devColor(d), false, LEAF_BG);
+      }
+if (bsHasC && leaf.code) {
+        const cV = bsCLeafIdxOnce.get(String(leaf.code)) ?? 0;
+        setC(dr2, BS.cmp2, cV, NUM_FMT, GRN, false, LEAF_BG);
+        const d = dA(amt, cV); setC(dr2, BS.cmp2D, d, NUM_FMT, devColor(d), false, LEAF_BG);
+        setC(dr2, BS.cmp2P, dP(amt, cV), PCT_FMT, devColor(d), false, LEAF_BG);
+      }
+if (bsHasD && leaf.code) {
+        const dV = bsDLeafIdxOnce.get(String(leaf.code)) ?? 0;
+        setC(dr2, BS.cmp3, dV, NUM_FMT, PURPLE, false, LEAF_BG);
+        const d = dA(amt, dV); setC(dr2, BS.cmp3D, d, NUM_FMT, devColor(d), false, LEAF_BG);
+        setC(dr2, BS.cmp3P, dP(amt, dV), PCT_FMT, devColor(d), false, LEAF_BG);
+      }
+
+      let dimChildrenB = leaf.children || [];
+      if (node.dims && node.dims.length > 0) {
+        const accepted = new Set(node.dims.map(d => String(d)));
+        dimChildrenB = dimChildrenB.filter(dim => {
+          const dc = String(dim.code ?? ''); const dn = String(dim.name ?? '');
+          return [...accepted].some(sk => {
+            const colon = sk.indexOf(':');
+            const sv = colon === -1 ? sk : sk.slice(colon + 1);
+            return sv === dc || sv === dn;
+          });
+        });
+      }
+if (!ws._savedBsLeafDimIdx) {
+        const buildBDI = (rows) => {
+          const m = new Map();
+          (rows || []).forEach(r => {
+            const l = String(getField(r, 'localAccountCode') ?? '');
+            const dcd = String(getField(r, 'dimensionCode') ?? '');
+            if (!l || !dcd || dcd === 'null') return;
+            const a = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+            m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+          });
+          return m;
+        };
+        ws._savedBsLeafDimIdx = {
+          b: bsHasB ? buildBDI(bsCmpUploadedAccounts) : new Map(),
+          c: bsHasC ? buildBDI(bsCmp2UploadedAccounts) : new Map(),
+          d: bsHasD ? buildBDI(bsCmp3UploadedAccounts) : new Map(),
+        };
+      }
+      const sBLDI = ws._savedBsLeafDimIdx;
+      const bsdA = (a, b) => a - b;
+      const bsdP = (a, b) => b !== 0 ? (a - b) / Math.abs(b) : null;
+
+      dimChildrenB.forEach(dim => {
+        ws.addRow([]);
+        const drd = ws.lastRow;
+        drd.height = 15;
+        drd.outlineLevel = Math.min(depth + 2, 7);
+        drd.hidden = true;
+        const dnc = drd.getCell(BS.name);
+        dnc.value = `◆  ${dim.name || dim.code || ''}`;
+        dnc.font = mkFont(false, AMBER, 9);
+        dnc.fill = mkFill(DIM_BG);
+        dnc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 3 };
+        dnc.border = mkBorder();
+
+        const lac = String(leaf.code ?? '');
+        const dc  = String(dim.code ?? '');
+        const key = lac && dc ? `${lac}|${dc}` : null;
+        const amtA = dim.amount ?? 0;
+
+        setC(drd, BS.act, amtA, NUM_FMT, AMBER, false, DIM_BG);
+
+        if (bsHasB && key) {
+          const v = sBLDI.b.get(key) ?? 0;
+          setC(drd, BS.cmp, v, NUM_FMT, RED, false, DIM_BG);
+          const d = bsdA(amtA, v); setC(drd, BS.cmpD, d, NUM_FMT, devColor(d), false, DIM_BG);
+          setC(drd, BS.cmpP, bsdP(amtA, v), PCT_FMT, devColor(d), false, DIM_BG);
+        }
+        if (bsHasC && key) {
+          const v = sBLDI.c.get(key) ?? 0;
+          setC(drd, BS.cmp2, v, NUM_FMT, GRN, false, DIM_BG);
+          const d = bsdA(amtA, v); setC(drd, BS.cmp2D, d, NUM_FMT, devColor(d), false, DIM_BG);
+          setC(drd, BS.cmp2P, bsdP(amtA, v), PCT_FMT, devColor(d), false, DIM_BG);
+        }
+if (bsHasD && key) {
+          const v = sBLDI.d.get(key) ?? 0;
+          setC(drd, BS.cmp3, v, NUM_FMT, PURPLE, false, DIM_BG);
+          const d = bsdA(amtA, v); setC(drd, BS.cmp3D, d, NUM_FMT, devColor(d), false, DIM_BG);
+          setC(drd, BS.cmp3P, bsdP(amtA, v), PCT_FMT, devColor(d), false, DIM_BG);
+        }
+        if (hasMultiCo && key) {
+          if (!ws._savedBsPerCoLeafDimIdx) {
+            const buildBDIco = (rows) => {
+              const m = new Map();
+              (rows || []).forEach(r => {
+                const l = String(getField(r, 'localAccountCode') ?? '');
+                const dcd = String(getField(r, 'dimensionCode') ?? '');
+                if (!l || !dcd || dcd === 'null') return;
+                const a = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+                m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+              });
+              return m;
+            };
+            ws._savedBsPerCoLeafDimIdx = _selectedCo.map(co =>
+              buildBDIco((uploadedAccounts || []).filter(r => getCoF(r) === co))
+            );
+          }
+          ws._savedBsPerCoLeafDimIdx.forEach((idx, i) => {
+            const v = idx.get(key) ?? 0;
+            if (BS.co[i]) setC(drd, BS.co[i], v, NUM_FMT, AMBER, false, DIM_BG);
+          });
+        }
+      });
+    });
+
+// ── Journal entries at node level (BS saved-mapping) — matches app: only AJE/RJE ──
+    if (node.code && jrnByCode.has(String(node.code))) {
+      const jrns = (jrnByCode.get(String(node.code)) || []).filter(j => {
+        const jt = String(j.JournalType ?? j.journalType ?? '').toUpperCase();
+        return jt === 'AJE' || jt === 'RJE';
+      });
+      if (jrns.length > 0) {
+        ws.addRow([]);
+        const jhr = ws.lastRow;
+        jhr.height = 15;
+        jhr.outlineLevel = Math.min(depth + 1, 7);
+        jhr.hidden = true;
+        const jnc = jhr.getCell(BS.name);
+        jnc.value = `📋 Journal entries (${jrns.length})`;
+        jnc.font = mkFont(true, INDIGO, 9);
+        jnc.fill = mkFill(JRN_BG);
+        jnc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 2 };
+        jnc.border = mkBorder();
+        for (let c = 2; c <= bsCols; c++) {
+          jhr.getCell(c).fill = mkFill(JRN_BG);
+          jhr.getCell(c).border = mkBorder();
+        }
+jrns.forEach(j => {
+          const amt = parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
+          ws.addRow([]);
+          const jr = ws.lastRow;
+          jr.height = 14;
+          jr.outlineLevel = Math.min(depth + 2, 7);
+          jr.hidden = true;
+          const jec = jr.getCell(BS.name);
+          const jnum = j.JournalNumber ?? j.journalNumber ?? '';
+          const jhdr = j.JournalHeader ?? j.journalHeader ?? '';
+          jec.value = `📄 ${jnum}${jhdr ? ' · ' + jhdr : ''}`;
+          jec.font = mkFont(false, INDIGO, 9);
+          jec.fill = mkFill(JRN_BG);
+          jec.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 3 };
+          jec.border = mkBorder();
+setC(jr, BS.act, amt, NUM_FMT, INDIGO, false, JRN_BG);
+          if (hasMultiCo) {
+            const jrnCo = String(j.CompanyShortName ?? j.companyShortName ?? '');
+            _selectedCo.forEach((co, i) => {
+              const v = jrnCo === co ? amt : 0;
+              if (BS.co[i]) setC(jr, BS.co[i], v, NUM_FMT, INDIGO, false, JRN_BG);
+            });
+          }
+          [...(bsHasB ? [BS.cmp, BS.cmpD, BS.cmpP] : []),
+           ...(bsHasC ? [BS.cmp2, BS.cmp2D, BS.cmp2P] : []),
+           ...(bsHasD ? [BS.cmp3, BS.cmp3D, BS.cmp3P] : []),
+           ...BS.hist,
+           ...(hasMultiCo ? [] : BS.co)].forEach(ci => {
+            if (ci) { const c = jr.getCell(ci); c.value = ''; c.fill = mkFill(JRN_BG); c.border = mkBorder(); }
+          });
+        });
+
+if (bsHasB || bsHasC || bsHasD) {
+          const aNums = new Set(jrns.map(j => j.JournalNumber ?? j.journalNumber));
+          const seen = new Map();
+          const collect = (idx, period) => {
+            (idx.get(String(node.code)) || []).forEach(j => {
+              const num = j.JournalNumber ?? j.journalNumber;
+              if (aNums.has(num)) return;
+              if (!seen.has(num)) seen.set(num, { jrn: j, periods: { B: null, C: null, D: null } });
+              seen.get(num).periods[period] = parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
+            });
+          };
+          if (bsHasB) collect(jrnByCodeCmp,  'B');
+          if (bsHasC) collect(jrnByCodeCmp2, 'C');
+          if (bsHasD) collect(jrnByCodeCmp3, 'D');
+          seen.forEach((entry, num) => {
+            ['B','C','D'].forEach(p => {
+              if (entry.periods[p] != null) return;
+              const idx = p === 'B' ? jrnByCodeCmp : p === 'C' ? jrnByCodeCmp2 : jrnByCodeCmp3;
+              const match = (idx.get(String(node.code)) || []).find(j => (j.JournalNumber ?? j.journalNumber) === num);
+              if (match) entry.periods[p] = parseAmt(match.AmountYTD ?? match.amountYTD ?? 0);
+            });
+          });
+          if (seen.size > 0) {
+            ws.addRow([]);
+            const xhr = ws.lastRow;
+            xhr.height = 14;
+            xhr.outlineLevel = Math.min(depth + 2, 7);
+            xhr.hidden = true;
+            const xnc = xhr.getCell(BS.name);
+            xnc.value = `↳ B/C/D only (${seen.size})`;
+            xnc.font = mkFont(true, INDIGO, 9);
+            xnc.fill = mkFill(JRN_BG);
+            xnc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 3 };
+            xnc.border = mkBorder();
+            for (let c = 2; c <= bsCols; c++) { xhr.getCell(c).fill = mkFill(JRN_BG); xhr.getCell(c).border = mkBorder(); }
+            seen.forEach((entry, num) => {
+              ws.addRow([]);
+              const xr = ws.lastRow;
+              xr.height = 14;
+              xr.outlineLevel = Math.min(depth + 3, 7);
+              xr.hidden = true;
+              const xec = xr.getCell(BS.name);
+              const jhdr = entry.jrn.JournalHeader ?? entry.jrn.journalHeader ?? '';
+              xec.value = `📄 ${num}${jhdr ? ' · ' + jhdr : ''}`;
+              xec.font = mkFont(false, INDIGO, 9);
+              xec.fill = mkFill(JRN_BG);
+              xec.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 4 };
+              xec.border = mkBorder();
+              if (bsHasB && entry.periods.B != null) setC(xr, BS.cmp,  entry.periods.B, NUM_FMT, INDIGO, false, JRN_BG);
+              if (bsHasC && entry.periods.C != null) setC(xr, BS.cmp2, entry.periods.C, NUM_FMT, INDIGO, false, JRN_BG);
+              if (bsHasD && entry.periods.D != null) setC(xr, BS.cmp3, entry.periods.D, NUM_FMT, INDIGO, false, JRN_BG);
+              [BS.act, BS.cmpD, BS.cmpP, BS.cmp2D, BS.cmp2P, BS.cmp3D, BS.cmp3P, ...BS.hist, ...BS.co].forEach(ci => {
+                if (ci && !xr.getCell(ci).value) { const c = xr.getCell(ci); c.value = ''; c.fill = mkFill(JRN_BG); c.border = mkBorder(); }
+              });
+            });
+          }
+        }
+      }
+    }
+
+    (node.children || []).forEach(child => writeBsNode(child, depth + 1));
+  };
+
+console.log('[Export] savedBsLiteral sections', savedBsLiteral?.map(s => ({
+    keys: Object.keys(s || {}),
+    label: s?.label, name: s?.name, title: s?.title, breaker: s?.breaker, breakerLabel: s?.breakerLabel,
+    color: s?.color, colour: s?.colour, bg: s?.bg, background: s?.background,
+    nodes: s?.nodes?.length,
+  })));
+
+  savedBsLiteral.forEach((section) => {
+    const lbl = section.label ?? section.name ?? section.title ?? section.breaker ?? section.breakerLabel ?? section.heading;
+    const col = section.color ?? section.colour ?? section.bg ?? section.background ?? section.fill;
+    if (lbl) {
+      ws.addRow([]);
+      const dr = ws.lastRow;
+      dr.height = 22;
+      const raw = String(col || '').trim();
+      const hex = raw.startsWith('#') ? raw.slice(1) : raw.startsWith('FF') && raw.length === 8 ? raw.slice(2) : raw;
+      const divColor = /^[0-9a-fA-F]{6}$/.test(hex) ? `FF${hex.toUpperCase()}` : DIV_BLUE;
+      for (let c = 1; c <= bsCols; c++) {
+        dr.getCell(c).fill = mkFill(divColor);
+        dr.getCell(c).border = { bottom: { style: 'thin', color: { argb: divColor } } };
+      }
+      dr.getCell(1).value = String(lbl).toUpperCase();
+      dr.getCell(1).font = mkFont(true, WHITE, 11);
+      dr.getCell(1).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+      ws.mergeCells(dr.number, 1, dr.number, bsCols);
+      zebra = 0;
+    }
+    (section.nodes || []).forEach(n => writeBsNode(n, 0));
+  });
+};
 
     // ═══════════════════════════════════════════════════════════
     // BS SHEET BUILDER
@@ -2087,12 +3860,21 @@ if (bsHasC) {
         headers.push([BS.cmp2D, 'Δ',  'right', GRN]);
         headers.push([BS.cmp2P, 'Δ%', 'right', GRN]);
       }
-      if (bsHasD) {
+if (bsHasD) {
         headers.push([BS.cmp3,  'D',  'right', PURPLE]);
         headers.push([BS.cmp3D, 'Δ',  'right', PURPLE]);
         headers.push([BS.cmp3P, 'Δ%', 'right', PURPLE]);
       }
-      headers.forEach(([ci, lbl, align, fillArgb]) => {
+if (hasHistoryBS) {
+        bsHistMaps.forEach((h, i) => {
+          const moLbl = MONTHS.find(m => String(m.value) === String(h.month))?.label?.slice(0, 3).toUpperCase() ?? String(h.month);
+          headers.push([BS.hist[i], `${moLbl} ${h.year}`, 'right', NAVY_DK]);
+        });
+      }
+if (hasMultiCo) {
+        perCoMaps.forEach((c, i) => headers.push([BS.co[i], c.legal, 'right', NAVY]));
+      }
+      headers.filter(h => Array.isArray(h) && Number.isFinite(h[0]) && h[0] > 0).forEach(([ci, lbl, align, fillArgb]) => {
         const c = rh.getCell(ci);
         c.value = lbl;
         c.font = mkFont(true, WHITE, 9);
@@ -2101,9 +3883,9 @@ if (bsHasC) {
         c.border = { bottom: { style: 'medium', color: { argb: NAVY_DK } } };
       });
 
-      // Widths + grouping on compare columns
+// Widths + grouping on compare columns
       ws.getColumn(BS.name).width = 52;
-      ws.getColumn(BS.act).width = 16;
+      if (BS.act) ws.getColumn(BS.act).width = 16;
       if (bsHasB) {
         [BS.cmp, BS.cmpD, BS.cmpP].forEach(ci => {
           const col = ws.getColumn(ci);
@@ -2118,22 +3900,71 @@ if (bsHasC) {
           col.outlineLevel = 2;
         });
       }
-      if (bsHasD) {
+if (bsHasD) {
         [BS.cmp3, BS.cmp3D, BS.cmp3P].forEach(ci => {
           const col = ws.getColumn(ci);
           col.width = ci === BS.cmp3 ? 16 : ci === BS.cmp3D ? 13 : 10;
           col.outlineLevel = 3;
         });
       }
+    if (hasHistoryBS) BS.hist.forEach(ci => { ws.getColumn(ci).width = 15; });
+      if (hasMultiCo) BS.co.forEach(ci => { ws.getColumn(ci).width = 20; });
 
-      const BS_DIVIDERS = {
-        '399999': { label: 'ACTIVO',          argb: DIV_BLUE },
-        '499999': { label: 'PATRIMONIO NETO', argb: DIV_GRAY },
-        '699999': { label: 'PASIVO',          argb: DIV_RED  },
-        'C.ACT':  { label: 'ACTIVO',          argb: DIV_BLUE },
-        'D.S':    { label: 'PATRIMONIO NETO', argb: DIV_GRAY },
-        'E.S':    { label: 'PASIVO',          argb: DIV_RED  },
+// ── Build real BS breakers from mapping/Supabase (matches BalanceSheet.effectiveBreakersBs) ──
+      const hexToArgbBs = (h) => {
+        const s = String(h || '').replace('#', '').replace(/^FF/i, '').toUpperCase();
+        return /^[0-9A-F]{6}$/.test(s) ? `FF${s}` : DIV_BLUE;
       };
+      const paletteArgbBs = [hexToArgbBs(colors.primary), hexToArgbBs(colors.secondary), hexToArgbBs(colors.tertiary)];
+
+      const BS_DIVIDERS = (() => {
+        // PGC BS mapping path
+        if (pgcBsMapping?.rows && pgcBsMapping?.sections) {
+          const flatNodes = [];
+          (function walk(nodes) {
+            nodes.forEach(n => {
+              if (hasData(n) && n.accountType === 'B/S') {
+                const m = pgcBsMapping.rows.get(String(n.code));
+                if (m && m.isSum) flatNodes.push({ node: n, sortOrder: m.sortOrder, section: m.section });
+              }
+              walk(n.children || []);
+            });
+          })(tree);
+          flatNodes.sort((a,b) => a.sortOrder - b.sortOrder);
+          const seen = new Set();
+          const out = {};
+          let i = 0;
+          for (const { node, section } of flatNodes) {
+            if (seen.has(section)) continue;
+            seen.add(section);
+            const sec = pgcBsMapping.sections.get(section);
+            if (sec) {
+              out[String(node.code)] = { label: sec.label, argb: paletteArgbBs[i] ?? hexToArgbBs(sec.color) };
+              i++;
+            }
+          }
+          if (Object.keys(out).length > 0) return out;
+        }
+        // Legacy Supabase breakers
+        const legacy = breakers.bs ?? {};
+        const codes = Object.keys(legacy).sort((a,b) => String(a).localeCompare(String(b), undefined, {numeric:true}));
+        if (codes.length > 0) {
+          const out = {};
+          codes.forEach((code, i) => {
+            out[code] = { label: legacy[code].label, argb: paletteArgbBs[i] ?? hexToArgbBs(legacy[code].color) };
+          });
+          return out;
+        }
+        // Hardcoded fallback
+        return {
+          '399999': { label: 'ACTIVO',          argb: DIV_BLUE },
+          '499999': { label: 'PATRIMONIO NETO', argb: DIV_GRAY },
+          '699999': { label: 'PASIVO',          argb: DIV_RED  },
+          'C.ACT':  { label: 'ACTIVO',          argb: DIV_BLUE },
+          'D.S':    { label: 'PATRIMONIO NETO', argb: DIV_GRAY },
+          'E.S':    { label: 'PASIVO',          argb: DIV_RED  },
+        };
+      })();
 
       const writeBSDivider = (div) => {
         ws.addRow([]);
@@ -2209,10 +4040,24 @@ if (bsHasC) {
           setC(dr, BS.cmp2D, dC,    NUM_FMT, devColor(dC), isHighlighted, bg);
           setC(dr, BS.cmp2P, dCP,   PCT_FMT, devColor(dC), isHighlighted, bg);
         }
-        if (bsHasD) {
+if (bsHasD) {
           setC(dr, BS.cmp3,  c3Val, NUM_FMT, PURPLE, isHighlighted, bg);
           setC(dr, BS.cmp3D, dD,    NUM_FMT, devColor(dD), isHighlighted, bg);
           setC(dr, BS.cmp3P, dDP,   PCT_FMT, devColor(dD), isHighlighted, bg);
+        }
+if (hasHistoryBS) {
+          bsHistMaps.forEach((h, i) => {
+            const hRaw = getYtd(h.map, node.code);
+            const hVal = Number(node.code) >= 599999 ? -hRaw : hRaw;
+            setC(dr, BS.hist[i], hVal, NUM_FMT, nameColor, isHighlighted, bg);
+          });
+        }
+        if (hasMultiCo) {
+          perCoMaps.forEach((c, i) => {
+            const raw = getYtd(c.map, node.code);
+            const val = Number(node.code) >= 599999 ? -raw : raw;
+            setC(dr, BS.co[i], val, NUM_FMT, nameColor, isHighlighted, bg);
+          });
         }
 
         // Recurse children — structural rows stay visible
@@ -2220,10 +4065,34 @@ if (bsHasC) {
           .filter(c => hasData(c) && c.accountType === 'B/S')
           .forEach(c => writeBSRow(c, depth + 1, 0));
 
-        // Drill-down: local accounts (collapsed)
+// Drill-down: local accounts (collapsed) — fully populated with compare/history/multi-co values
+        const bsLeafIdxOf = (rows) => {
+          const m = new Map();
+          (rows || []).forEach(r => {
+            const lac = String(getField(r, 'localAccountCode') ?? '');
+            if (!lac) return;
+            m.set(lac, (m.get(lac) ?? 0) + parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod')));
+          });
+          return m;
+        };
+        // Cache leaf indexes on the worksheet so we build them once per sheet
+        if (!ws._bsLeafIdxCache) {
+          ws._bsLeafIdxCache = {
+            b:  bsHasB ? bsLeafIdxOf(bsCmpUploadedAccounts) : new Map(),
+            c:  bsHasC ? bsLeafIdxOf(bsCmp2UploadedAccounts) : new Map(),
+            d:  bsHasD ? bsLeafIdxOf(bsCmp3UploadedAccounts) : new Map(),
+            hist: hasHistoryBS ? bsHist.map(h => bsLeafIdxOf(h.data || [])) : [],
+            co:   hasMultiCo ? _selectedCo.map(co => bsLeafIdxOf((uploadedAccounts || []).filter(r => getCoF(r) === co))) : [],
+          };
+        }
+        const bsIdx = ws._bsLeafIdxCache;
+        const dA = (a, b) => a - b;
+        const dP = (a, b) => b !== 0 ? (a - b) / Math.abs(b) : null;
+
         (node.uploadLeaves || []).forEach(leaf => {
           if (leaf.type === 'plain') return;
           const lbg = LEAF_BG;
+          const lac = String(leaf.code ?? '');
           ws.addRow([]);
           const lr = ws.lastRow;
           lr.height = 15;
@@ -2235,10 +4104,68 @@ if (bsHasC) {
           lnc.fill = mkFill(lbg);
           lnc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 2 };
           lnc.border = mkBorder();
-          setC(lr, BS.act, leaf.amount, NUM_FMT, TEXT_MUT, false, lbg);
-if (bsHasB) { [BS.cmp, BS.cmpD, BS.cmpP].forEach(ci => { if (ci) { const c = lr.getCell(ci); c.value = ''; c.fill = mkFill(lbg); c.border = mkBorder(); }}); }
-          if (bsHasC) { [BS.cmp2, BS.cmp2D, BS.cmp2P].forEach(ci => { if (ci) { const c = lr.getCell(ci); c.value = ''; c.fill = mkFill(lbg); c.border = mkBorder(); }}); }
-          if (bsHasD) { [BS.cmp3, BS.cmp3D, BS.cmp3P].forEach(ci => { if (ci) { const c = lr.getCell(ci); c.value = ''; c.fill = mkFill(lbg); c.border = mkBorder(); }}); }
+          const amtA = leaf.amount ?? 0;
+          setC(lr, BS.act, amtA, NUM_FMT, TEXT_MUT, false, lbg);
+
+          if (bsHasB && lac) {
+            const bV = bsIdx.b.get(lac) ?? 0;
+            setC(lr, BS.cmp, bV, NUM_FMT, RED, false, lbg);
+            const d = dA(amtA, bV); setC(lr, BS.cmpD, d, NUM_FMT, devColor(d), false, lbg);
+            setC(lr, BS.cmpP, dP(amtA, bV), PCT_FMT, devColor(d), false, lbg);
+          } else if (bsHasB) {
+            [BS.cmp, BS.cmpD, BS.cmpP].forEach(ci => { if (ci) { const c = lr.getCell(ci); c.value = ''; c.fill = mkFill(lbg); c.border = mkBorder(); }});
+          }
+          if (bsHasC && lac) {
+            const cV = bsIdx.c.get(lac) ?? 0;
+            setC(lr, BS.cmp2, cV, NUM_FMT, GRN, false, lbg);
+            const d = dA(amtA, cV); setC(lr, BS.cmp2D, d, NUM_FMT, devColor(d), false, lbg);
+            setC(lr, BS.cmp2P, dP(amtA, cV), PCT_FMT, devColor(d), false, lbg);
+          } else if (bsHasC) {
+            [BS.cmp2, BS.cmp2D, BS.cmp2P].forEach(ci => { if (ci) { const c = lr.getCell(ci); c.value = ''; c.fill = mkFill(lbg); c.border = mkBorder(); }});
+          }
+          if (bsHasD && lac) {
+            const dV = bsIdx.d.get(lac) ?? 0;
+            setC(lr, BS.cmp3, dV, NUM_FMT, PURPLE, false, lbg);
+            const d = dA(amtA, dV); setC(lr, BS.cmp3D, d, NUM_FMT, devColor(d), false, lbg);
+            setC(lr, BS.cmp3P, dP(amtA, dV), PCT_FMT, devColor(d), false, lbg);
+          } else if (bsHasD) {
+            [BS.cmp3, BS.cmp3D, BS.cmp3P].forEach(ci => { if (ci) { const c = lr.getCell(ci); c.value = ''; c.fill = mkFill(lbg); c.border = mkBorder(); }});
+          }
+          if (hasHistoryBS) {
+            BS.hist.forEach((ci, i) => {
+              const v = lac ? (bsIdx.hist[i]?.get(lac) ?? 0) : 0;
+              setC(lr, ci, v, NUM_FMT, TEXT_MUT, false, lbg);
+            });
+          }
+          if (hasMultiCo) {
+            BS.co.forEach((ci, i) => {
+              const v = lac ? (bsIdx.co[i]?.get(lac) ?? 0) : 0;
+              setC(lr, ci, v, NUM_FMT, TEXT_MUT, false, lbg);
+            });
+          }
+
+// Build BS leaf+dim indexes once per sheet (cached on ws)
+          if (!ws._bsDimIdxCache) {
+            const buildBsLeafDimIdx = (rows) => {
+              const m = new Map();
+              (rows || []).forEach(r => {
+                const l = String(getField(r, 'localAccountCode') ?? '');
+                const dcd = String(getField(r, 'dimensionCode') ?? '');
+                if (!l || !dcd || dcd === 'null') return;
+                const a = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+                m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+              });
+              return m;
+            };
+            ws._bsDimIdxCache = {
+              b: bsHasB ? buildBsLeafDimIdx(bsCmpUploadedAccounts) : new Map(),
+              c: bsHasC ? buildBsLeafDimIdx(bsCmp2UploadedAccounts) : new Map(),
+              d: bsHasD ? buildBsLeafDimIdx(bsCmp3UploadedAccounts) : new Map(),
+            };
+          }
+          const bsDimIdx = ws._bsDimIdxCache;
+          const dimDA = (a, b) => a - b;
+          const dimDP = (a, b) => b !== 0 ? (a - b) / Math.abs(b) : null;
 
           (leaf.children || []).forEach(dim => {
             const dbg = DIM_BG;
@@ -2253,17 +4180,72 @@ if (bsHasB) { [BS.cmp, BS.cmpD, BS.cmpP].forEach(ci => { if (ci) { const c = lr.
             dnc.fill = mkFill(dbg);
             dnc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 3 };
             dnc.border = mkBorder();
+
+            const lac = String(leaf.code ?? '');
+            const dc  = String(dim.code ?? '');
+            const key = lac && dc ? `${lac}|${dc}` : null;
+
             setC(dr2, BS.act, dim.amount, NUM_FMT, AMBER, false, dbg);
-if (bsHasB) { [BS.cmp, BS.cmpD, BS.cmpP].forEach(ci => { if (ci) { const c = dr2.getCell(ci); c.value = ''; c.fill = mkFill(dbg); c.border = mkBorder(); }}); }
-            if (bsHasC) { [BS.cmp2, BS.cmp2D, BS.cmp2P].forEach(ci => { if (ci) { const c = dr2.getCell(ci); c.value = ''; c.fill = mkFill(dbg); c.border = mkBorder(); }}); }
-            if (bsHasD) { [BS.cmp3, BS.cmp3D, BS.cmp3P].forEach(ci => { if (ci) { const c = dr2.getCell(ci); c.value = ''; c.fill = mkFill(dbg); c.border = mkBorder(); }}); }
+
+            if (bsHasB && key) {
+              const bV = bsDimIdx.b.get(key) ?? 0;
+              setC(dr2, BS.cmp, bV, NUM_FMT, RED, false, dbg);
+              const d = dimDA(dim.amount, bV); setC(dr2, BS.cmpD, d, NUM_FMT, devColor(d), false, dbg);
+              setC(dr2, BS.cmpP, dimDP(dim.amount, bV), PCT_FMT, devColor(d), false, dbg);
+            } else if (bsHasB) {
+              [BS.cmp, BS.cmpD, BS.cmpP].forEach(ci => { if (ci) { const c = dr2.getCell(ci); c.value = ''; c.fill = mkFill(dbg); c.border = mkBorder(); }});
+            }
+            if (bsHasC && key) {
+              const cV = bsDimIdx.c.get(key) ?? 0;
+              setC(dr2, BS.cmp2, cV, NUM_FMT, GRN, false, dbg);
+              const d = dimDA(dim.amount, cV); setC(dr2, BS.cmp2D, d, NUM_FMT, devColor(d), false, dbg);
+              setC(dr2, BS.cmp2P, dimDP(dim.amount, cV), PCT_FMT, devColor(d), false, dbg);
+            } else if (bsHasC) {
+              [BS.cmp2, BS.cmp2D, BS.cmp2P].forEach(ci => { if (ci) { const c = dr2.getCell(ci); c.value = ''; c.fill = mkFill(dbg); c.border = mkBorder(); }});
+            }
+            if (bsHasD && key) {
+              const dV = bsDimIdx.d.get(key) ?? 0;
+              setC(dr2, BS.cmp3, dV, NUM_FMT, PURPLE, false, dbg);
+              const d = dimDA(dim.amount, dV); setC(dr2, BS.cmp3D, d, NUM_FMT, devColor(d), false, dbg);
+              setC(dr2, BS.cmp3P, dimDP(dim.amount, dV), PCT_FMT, devColor(d), false, dbg);
+            } else if (bsHasD) {
+              [BS.cmp3, BS.cmp3D, BS.cmp3P].forEach(ci => { if (ci) { const c = dr2.getCell(ci); c.value = ''; c.fill = mkFill(dbg); c.border = mkBorder(); }});
+            }
+if (hasHistoryBS) { BS.hist.forEach(ci => { const c = dr2.getCell(ci); c.value = ''; c.fill = mkFill(dbg); c.border = mkBorder(); }); }
+            if (hasMultiCo && key) {
+              if (!ws._bsPerCoLeafDimIdx) {
+                const buildBsLeafDimIdxCo = (rows) => {
+                  const m = new Map();
+                  (rows || []).forEach(r => {
+                    const l = String(getField(r, 'localAccountCode') ?? '');
+                    const dcd = String(getField(r, 'dimensionCode') ?? '');
+                    if (!l || !dcd || dcd === 'null') return;
+                    const a = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+                    m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+                  });
+                  return m;
+                };
+                ws._bsPerCoLeafDimIdx = _selectedCo.map(co =>
+                  buildBsLeafDimIdxCo((uploadedAccounts || []).filter(r => getCoF(r) === co))
+                );
+              }
+              BS.co.forEach((ci, i) => {
+                const v = ws._bsPerCoLeafDimIdx[i]?.get(key) ?? 0;
+                setC(dr2, ci, v, NUM_FMT, AMBER, false, dbg);
+              });
+            } else if (hasMultiCo) { BS.co.forEach(ci => { const c = dr2.getCell(ci); c.value = ''; c.fill = mkFill(dbg); c.border = mkBorder(); }); }
           });
         });
 
-        // Journal entries
+// Journal entries
         const jrns = jrnByCode.get(String(node.code)) || [];
         if (jrns.length > 0) {
           const hbg = JRN_BG;
+          const findMatchBs = (idx, accCode, jnum) => {
+            if (!accCode || jnum === '') return null;
+            const m = (idx.get(accCode) || []).find(jj => (jj.JournalNumber ?? jj.journalNumber) === jnum);
+            return m ? parseAmt(m.AmountYTD ?? m.amountYTD ?? 0) : null;
+          };
           ws.addRow([]);
           const hr = ws.lastRow;
           hr.height = 15;
@@ -2281,24 +4263,100 @@ if (bsHasB) { [BS.cmp, BS.cmpD, BS.cmpP].forEach(ci => { if (ci) { const c = dr2
           }
           jrns.forEach(j => {
             const amt = parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
+            const accCode = String(j.AccountCode ?? j.accountCode ?? node.code);
+            const jnum = j.JournalNumber ?? j.journalNumber ?? '';
+            const bVal = bsHasB ? findMatchBs(jrnByCodeCmp,  accCode, jnum) : null;
+            const cVal = bsHasC ? findMatchBs(jrnByCodeCmp2, accCode, jnum) : null;
+            const dVal = bsHasD ? findMatchBs(jrnByCodeCmp3, accCode, jnum) : null;
             ws.addRow([]);
             const jr = ws.lastRow;
             jr.height = 14;
             jr.outlineLevel = 2;
             jr.hidden = true;
             const jnc = jr.getCell(BS.name);
-            const jnum = j.JournalNumber ?? j.journalNumber ?? '';
             const jhdr = j.JournalHeader ?? j.journalHeader ?? '';
             jnc.value = `📄 ${jnum}${jhdr ? ' · ' + jhdr : ''}`;
             jnc.font = mkFont(false, INDIGO, 9);
             jnc.fill = mkFill(hbg);
             jnc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 3 };
             jnc.border = mkBorder();
-            setC(jr, BS.act, amt, NUM_FMT, INDIGO, false, hbg);
-if (bsHasB) { [BS.cmp, BS.cmpD, BS.cmpP].forEach(ci => { if (ci) { const c = jr.getCell(ci); c.value = ''; c.fill = mkFill(hbg); c.border = mkBorder(); }}); }
-            if (bsHasC) { [BS.cmp2, BS.cmp2D, BS.cmp2P].forEach(ci => { if (ci) { const c = jr.getCell(ci); c.value = ''; c.fill = mkFill(hbg); c.border = mkBorder(); }}); }
-            if (bsHasD) { [BS.cmp3, BS.cmp3D, BS.cmp3P].forEach(ci => { if (ci) { const c = jr.getCell(ci); c.value = ''; c.fill = mkFill(hbg); c.border = mkBorder(); }}); }
+setC(jr, BS.act, amt, NUM_FMT, INDIGO, false, hbg);
+            if (bsHasB && bVal != null) setC(jr, BS.cmp,  bVal, NUM_FMT, INDIGO, false, hbg);
+            if (bsHasC && cVal != null) setC(jr, BS.cmp2, cVal, NUM_FMT, INDIGO, false, hbg);
+            if (bsHasD && dVal != null) setC(jr, BS.cmp3, dVal, NUM_FMT, INDIGO, false, hbg);
+            if (hasMultiCo) {
+              const jrnCo = String(j.CompanyShortName ?? j.companyShortName ?? '');
+              _selectedCo.forEach((co, i) => {
+                const v = jrnCo === co ? amt : 0;
+                if (BS.co[i]) setC(jr, BS.co[i], v, NUM_FMT, INDIGO, false, hbg);
+              });
+            }
+            const blankBs = [
+              ...(bsHasB ? [BS.cmpD, BS.cmpP, ...(bVal == null ? [BS.cmp] : [])] : []),
+              ...(bsHasC ? [BS.cmp2D, BS.cmp2P, ...(cVal == null ? [BS.cmp2] : [])] : []),
+              ...(bsHasD ? [BS.cmp3D, BS.cmp3P, ...(dVal == null ? [BS.cmp3] : [])] : []),
+              ...(hasHistoryBS ? BS.hist : []),
+            ];
+            blankBs.forEach(ci => { if (ci) { const c = jr.getCell(ci); c.value = ''; c.fill = mkFill(hbg); c.border = mkBorder(); }});
           });
+          // B/C/D-only journals
+          if (bsHasB || bsHasC || bsHasD) {
+            const aNums = new Set(jrns.map(j => j.JournalNumber ?? j.journalNumber));
+            const seen = new Map();
+            const collect = (idx, period) => {
+              (idx.get(String(node.code)) || []).forEach(j => {
+                const num = j.JournalNumber ?? j.journalNumber;
+                if (aNums.has(num)) return;
+                if (!seen.has(num)) seen.set(num, { jrn: j, periods: { B: null, C: null, D: null } });
+                seen.get(num).periods[period] = parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
+              });
+            };
+            if (bsHasB) collect(jrnByCodeCmp, 'B');
+            if (bsHasC) collect(jrnByCodeCmp2, 'C');
+            if (bsHasD) collect(jrnByCodeCmp3, 'D');
+            seen.forEach((entry, num) => {
+              ['B','C','D'].forEach(p => {
+                if (entry.periods[p] != null) return;
+                const idx = p === 'B' ? jrnByCodeCmp : p === 'C' ? jrnByCodeCmp2 : jrnByCodeCmp3;
+                const match = (idx.get(String(node.code)) || []).find(j => (j.JournalNumber ?? j.journalNumber) === num);
+                if (match) entry.periods[p] = parseAmt(match.AmountYTD ?? match.amountYTD ?? 0);
+              });
+            });
+            if (seen.size > 0) {
+              ws.addRow([]);
+              const xhr = ws.lastRow;
+              xhr.height = 14;
+              xhr.outlineLevel = 2;
+              xhr.hidden = true;
+              const xnc = xhr.getCell(BS.name);
+              xnc.value = `↳ B/C/D only (${seen.size})`;
+              xnc.font = mkFont(true, INDIGO, 9);
+              xnc.fill = mkFill(JRN_BG);
+              xnc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 3 };
+              xnc.border = mkBorder();
+              for (let c = 2; c <= bsCols; c++) { xhr.getCell(c).fill = mkFill(JRN_BG); xhr.getCell(c).border = mkBorder(); }
+              seen.forEach((entry, num) => {
+                ws.addRow([]);
+                const xr = ws.lastRow;
+                xr.height = 14;
+                xr.outlineLevel = 3;
+                xr.hidden = true;
+                const xec = xr.getCell(BS.name);
+                const jhdr = entry.jrn.JournalHeader ?? entry.jrn.journalHeader ?? '';
+                xec.value = `📄 ${num}${jhdr ? ' · ' + jhdr : ''}`;
+                xec.font = mkFont(false, INDIGO, 9);
+                xec.fill = mkFill(JRN_BG);
+                xec.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 4 };
+                xec.border = mkBorder();
+                if (bsHasB && entry.periods.B != null) setC(xr, BS.cmp,  entry.periods.B, NUM_FMT, INDIGO, false, JRN_BG);
+                if (bsHasC && entry.periods.C != null) setC(xr, BS.cmp2, entry.periods.C, NUM_FMT, INDIGO, false, JRN_BG);
+                if (bsHasD && entry.periods.D != null) setC(xr, BS.cmp3, entry.periods.D, NUM_FMT, INDIGO, false, JRN_BG);
+                [BS.act, BS.cmpD, BS.cmpP, BS.cmp2D, BS.cmp2P, BS.cmp3D, BS.cmp3P, ...BS.hist, ...BS.co].forEach(ci => {
+                  if (ci && !xr.getCell(ci).value) { const c = xr.getCell(ci); c.value = ''; c.fill = mkFill(JRN_BG); c.border = mkBorder(); }
+                });
+              });
+            }
+          }
         }
       };
 
@@ -2316,11 +4374,22 @@ if (bsHasB) { [BS.cmp, BS.cmpD, BS.cmpP].forEach(ci => { if (ci) { const c = jr.
       return name.includes('asset') || name.includes('activo');
     };
 
-    if (opts.plSummary !== false) buildPLSheet(wb.addWorksheet('P&L Summary'), true);
-    if (opts.plDetailed !== false) buildPLSheet(wb.addWorksheet('P&L Detailed'), false);
-    if (opts.bsSummary !== false) buildBSSheet(wb.addWorksheet('BS Summary'), 'Summary', null);
-    if (opts.bsAssets !== false) buildBSSheet(wb.addWorksheet('BS Assets'), 'Assets', n => isAssetsRoot(n));
-    if (opts.bsEquity !== false) buildBSSheet(wb.addWorksheet('BS Equity & Liab'), 'Equity & Liabilities', n => !isAssetsRoot(n));
+const hasSavedBsLiteral = Array.isArray(savedBsLiteral) && savedBsLiteral.length > 0;
+
+if (hasSavedLiteral) {
+  if (opts.plSaved !== false) buildSavedPLSheet(wb.addWorksheet('Profit & Loss'));
+} else {
+  if (opts.plSummary !== false) buildPLSheet(wb.addWorksheet('P&L Summary'), true);
+  if (opts.plDetailed !== false) buildPLSheet(wb.addWorksheet('P&L Detailed'), false);
+}
+
+if (hasSavedBsLiteral) {
+  if (opts.bsSaved !== false) buildSavedBSSheet(wb.addWorksheet('Balance Sheet'));
+} else {
+  if (opts.bsSummary !== false) buildBSSheet(wb.addWorksheet('BS Summary'), 'Summary', null);
+  if (opts.bsAssets !== false) buildBSSheet(wb.addWorksheet('BS Assets'), 'Assets', n => isAssetsRoot(n));
+  if (opts.bsEquity !== false) buildBSSheet(wb.addWorksheet('BS Equity & Liab'), 'Equity & Liabilities', n => !isAssetsRoot(n));
+}
 
     // ═══════════════════════════════════════════════════════════
     // DIMENSIONS & JOURNAL SHEET
@@ -2506,545 +4575,1713 @@ function generateKonsolidatorPdf({
   compareMode,
   cmpUploadedAccounts, cmpPrevUploadedAccounts, cmpFilters,
   cmp2UploadedAccounts, cmp2PrevUploadedAccounts, cmp2Filters,
- bsCompareMode = false,
+  cmp2Enabled = true,
+  cmp3UploadedAccounts = [], cmp3PrevUploadedAccounts = [], cmp3Filters = {},
+  cmp3Enabled = false,
+  bsCompareMode = false,
   bsCmpUploadedAccounts = [], bsCmpFilters = {},
   bsCmp2UploadedAccounts = [], bsCmp2Filters = {},
-  cmp2Enabled = true,
   bsCmp2Enabled = true,
+bsCmp3UploadedAccounts = [], bsCmp3Filters = {},
+  bsCmp3Enabled = false,
+plHistoryMonths = [],
+  bsHistoryMonths = [],
+  selectedCompanies = [],
+  ytdOnly = false,
+  savedPlLiteral = null,
+  savedBsLiteral = null,
+  savedHighlightedIds = null,
+  prevUploadedAccountsRaw = [],
   month, year, source, structure,
-  journalEntries = [],
+  aFilters = {},
+  companies = [],
+  dimensions = [],
+  dimGroups = [],
+journalEntries = [],
+  journalEntriesCmp = [],
+  journalEntriesCmp2 = [],
+  journalEntriesCmp3 = [],
+  summaryRows = [],
+  breakers = { pl: {}, bs: {}, cf: {} },
+  pgcMapping = null,
+  pgcBsMapping = null,
+  colors = { primary: '#1a2f8a', secondary: '#CF305D', tertiary: '#57aa78' },
   opts = {},
 }) {
   function doGenerate(jsPDF, autoTable) {
-    const NAVY=[20,36,112],NAVYDK=[10,20,70],NAVYMID=[30,50,140];
-    const RED=[207,48,93],REDDK=[160,30,65];
-    const GRN=[52,168,113],GRNDK=[30,110,70];
+    const buildJrnByCodePdf = (entries) => {
+      const m = new Map();
+      (entries || []).forEach(j => {
+        const code = String(j.AccountCode ?? j.accountCode ?? '');
+        const jt = String(j.JournalType ?? j.journalType ?? '').toUpperCase();
+        if (!code || (jt !== 'AJE' && jt !== 'RJE')) return;
+        if (!m.has(code)) m.set(code, []);
+        m.get(code).push(j);
+      });
+      return m;
+    };
+    const jrnByCodeCmpPdf  = buildJrnByCodePdf(journalEntriesCmp);
+    const jrnByCodeCmp2Pdf = buildJrnByCodePdf(journalEntriesCmp2);
+    const jrnByCodeCmp3Pdf = buildJrnByCodePdf(journalEntriesCmp3);
+    // Palette
+    const NAVY=[26,47,138], NAVYDK=[15,31,94], NAVYMID=[30,50,140];
+    const RED=[207,48,93], REDDK=[160,30,65];
+    const GRN=[87,170,120], GRNDK=[40,120,80];
+    const PURPLE=[168,85,247], PURPLEDK=[124,58,202];
     const AMBER=[220,120,40];
-    const LIGHT=[238,241,251],STRIPE=[248,249,255],WHITE=[255,255,255];
-    const GRAY=[140,150,175],GRAYLT=[210,215,230],TEXTDK=[20,35,80];
+const LIGHT=[238,241,251], STRIPE=[248,249,255], WHITE=[255,255,255];
+    const GRAY=[140,150,175], GRAYLT=[210,215,230], TEXTDK=[20,35,80], TEXT_MUT=[107,114,128];
+    const hexToRgb = (h) => {
+      const s = String(h || '').replace('#', '').replace(/^FF/i, '');
+      if (!/^[0-9a-fA-F]{6}$/.test(s)) return NAVYDK;
+      return [parseInt(s.slice(0,2),16), parseInt(s.slice(2,4),16), parseInt(s.slice(4,6),16)];
+    };
 
-    const monthLabel=MONTHS.find(m=>String(m.value)===String(month))?.label??month;
-    const cmpMoLabel=MONTHS.find(m=>String(m.value)===String(cmpFilters?.month))?.label??cmpFilters?.month;
-    const cmp2MoLabel=MONTHS.find(m=>String(m.value)===String(cmp2Filters?.month))?.label??cmp2Filters?.month;
-    const cmpLabel=compareMode?[cmpMoLabel,cmpFilters?.year,cmpFilters?.source,cmpFilters?.structure,cmpFilters?.company].filter(Boolean).join(' · '):'';
-    const cmp2Label=compareMode?[cmp2MoLabel,cmp2Filters?.year,cmp2Filters?.source,cmp2Filters?.structure,cmp2Filters?.company].filter(Boolean).join(' · '):'';
+    // Resolvers
+    const resolveCompany = (code) => {
+      if (!code) return null;
+      const lookup = (c) => {
+        const m = companies.find(co => String(typeof co === 'object' ? (co.companyShortName ?? co.CompanyShortName ?? co.company ?? co.Company ?? '') : co) === String(c));
+        return (m && typeof m === 'object' ? (m.companyLegalName ?? m.CompanyLegalName) : null) ?? c;
+      };
+      return Array.isArray(code) ? code.map(lookup).join(', ') : lookup(code);
+    };
+    const resolveDims = (codes) => {
+      if (!Array.isArray(codes) || codes.length === 0) return null;
+      return codes.map(c => {
+        const d = dimensions.find(dd => String(typeof dd === 'object' ? (dd.dimensionCode ?? dd.DimensionCode ?? dd.code ?? '') : dd) === String(c));
+        return (d && typeof d === 'object' ? (d.dimensionName ?? d.DimensionName ?? d.name) : null) ?? c;
+      }).join(', ');
+    };
+    const buildFilterLabel = (f) => {
+      if (!f) return '';
+      const mo = MONTHS.find(m => String(m.value) === String(f.month))?.label ?? f.month;
+      const co = resolveCompany(f.company);
+      const dgTxt = Array.isArray(f.dimGroups) && f.dimGroups.length > 0 ? `Groups: ${f.dimGroups.join(', ')}` : null;
+      const dTxt = resolveDims(f.dimensions);
+      return [mo && f.year ? `${mo} ${f.year}` : null, f.source, f.structure, co, dgTxt, dTxt ? `Dims: ${dTxt}` : null].filter(Boolean).join('  ·  ');
+    };
 
-    // ── Build trees ──────────────────────────────────────────
-    const tree=buildTree(groupAccounts,uploadedAccounts);
-    const prevTree=buildTree(groupAccounts,prevUploadedAccounts);
-    const cmpTree=compareMode?buildTree(groupAccounts,cmpUploadedAccounts):[];
-    const cmpPrevTree=compareMode?buildTree(groupAccounts,cmpPrevUploadedAccounts):[];
-    const cmp2Tree=compareMode?buildTree(groupAccounts,cmp2UploadedAccounts):[];
-    const cmp2PrevTree=compareMode?buildTree(groupAccounts,cmp2PrevUploadedAccounts):[];
+    const aLabel = buildFilterLabel({ year: aFilters?.year ?? year, month: aFilters?.month ?? month, source: aFilters?.source ?? source, structure: aFilters?.structure ?? structure, company: aFilters?.company, dimGroups: aFilters?.dimGroups, dimensions: aFilters?.dimensions });
+    const bLabel = compareMode ? buildFilterLabel(cmpFilters) : '';
+    const cLabel = compareMode && cmp2Enabled ? buildFilterLabel(cmp2Filters) : '';
+    const dLabel = compareMode && cmp2Enabled && cmp3Enabled ? buildFilterLabel(cmp3Filters) : '';
+    const bsBLabel = bsCompareMode ? buildFilterLabel(bsCmpFilters) : '';
+    const bsCLabel = bsCompareMode && bsCmp2Enabled ? buildFilterLabel(bsCmp2Filters) : '';
+    const bsDLabel = bsCompareMode && bsCmp2Enabled && bsCmp3Enabled ? buildFilterLabel(bsCmp3Filters) : '';
 
-    const nodeMapF=t=>{const m=new Map();const w=n=>{m.set(n.code,n);n.children?.forEach(w);};t.forEach(w);return m;};
-    const prevMap=nodeMapF(prevTree),cmpMap=nodeMapF(cmpTree),cmpPrevMap=nodeMapF(cmpPrevTree),cmp2Map=nodeMapF(cmp2Tree),cmp2PrevMap=nodeMapF(cmp2PrevTree);
-    const getYtd=(map,code)=>{const n=map.get(code);return n?sumNode(n):0;};
-    const getPrev=(map,code,mo)=>Number(mo)===1?0:getYtd(map,code);
-    const fmtN=n=>typeof n==='number'&&!isNaN(n)?n.toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';
-    const plAmt=n=>n===0?'—':n<0?`(${fmtN(Math.abs(n))})`:fmtN(n);
-    const devPct=(a,b)=>{if(!b)return'—';const p=(a-b)/Math.abs(b)*100;return`${p>=0?'+':''}${p.toFixed(1)}%`;};
-    const devAmt=(a,b)=>{const d=a-b;return d===0?'—':d<0?`(${fmtN(Math.abs(d))})`:fmtN(d);};
+    // Trees and maps
+    const tree = buildTree(groupAccounts, uploadedAccounts);
+    const prevTree = buildTree(groupAccounts, prevUploadedAccounts);
+    const nodeMapF = t => { const m = new Map(); const w = n => { m.set(n.code, n); n.children?.forEach(w); }; t.forEach(w); return m; };
+    const prevMap = nodeMapF(prevTree);
+    const cmpMap = compareMode ? nodeMapF(buildTree(groupAccounts, cmpUploadedAccounts)) : new Map();
+    const cmpPrevMap = compareMode ? nodeMapF(buildTree(groupAccounts, cmpPrevUploadedAccounts)) : new Map();
+    const cmp2Map = compareMode && cmp2Enabled ? nodeMapF(buildTree(groupAccounts, cmp2UploadedAccounts)) : new Map();
+    const cmp2PrevMap = compareMode && cmp2Enabled ? nodeMapF(buildTree(groupAccounts, cmp2PrevUploadedAccounts)) : new Map();
+    const cmp3Map = compareMode && cmp2Enabled && cmp3Enabled ? nodeMapF(buildTree(groupAccounts, cmp3UploadedAccounts)) : new Map();
+    const cmp3PrevMap = compareMode && cmp2Enabled && cmp3Enabled ? nodeMapF(buildTree(groupAccounts, cmp3PrevUploadedAccounts)) : new Map();
+    const bsCmpMap = bsCompareMode ? nodeMapF(buildTree(groupAccounts, bsCmpUploadedAccounts)) : new Map();
+    const bsCmp2Map = bsCompareMode && bsCmp2Enabled ? nodeMapF(buildTree(groupAccounts, bsCmp2UploadedAccounts)) : new Map();
+    const bsCmp3Map = bsCompareMode && bsCmp2Enabled && bsCmp3Enabled ? nodeMapF(buildTree(groupAccounts, bsCmp3UploadedAccounts)) : new Map();
 
-    const isLandscape=compareMode||bsCompareMode;
-    const doc=new jsPDF({orientation:isLandscape?'landscape':'portrait',unit:'mm',format:'a4'});
-    const W=doc.internal.pageSize.getWidth();
-    const H=doc.internal.pageSize.getHeight();
-    let pageNum=0;
-    let currentSection='';
+    const getYtd = (m, c) => { const n = m.get(c); return n ? sumNode(n) : 0; };
+    const getPrev = (m, c, mo) => Number(mo) === 1 ? 0 : getYtd(m, c);
+    const fmtN = n => typeof n === 'number' && !isNaN(n) ? n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+    const plAmt = n => n == null ? '' : n === 0 ? '—' : n < 0 ? `(${fmtN(Math.abs(n))})` : fmtN(n);
+    const devPct = (a, b) => { if (!b) return '—'; const p = (a - b) / Math.abs(b) * 100; return `${p >= 0 ? '+' : ''}${p.toFixed(1)}%`; };
+    const devAmt = (a, b) => { const d = a - b; return d === 0 ? '—' : d < 0 ? `(${fmtN(Math.abs(d))})` : fmtN(d); };
 
-// ── Page header ──────────────────────────────────────────
-    const drawHeader=(sectionTitle,isFirst,useCmp=null,useL1=null,useL2=null)=>{
-      if(!isFirst)doc.addPage();
-      pageNum++;
-      currentSection=sectionTitle;
-      const activeCmp=useCmp??compareMode;
-      const activeL1=useL1??cmpLabel;
-      const activeL2=useL2??cmp2Label;
+// History view
+    const plHist = Array.isArray(plHistoryMonths) ? plHistoryMonths.filter(h => h?.year && h?.month) : [];
+    const bsHist = Array.isArray(bsHistoryMonths) ? bsHistoryMonths.filter(h => h?.year && h?.month) : [];
+    const hasHistoryPL = !compareMode && plHist.length > 0;
+    const hasHistoryBS = !bsCompareMode && bsHist.length > 0;
+    const plHistMaps = hasHistoryPL ? plHist.map(h => ({
+      year: h.year, month: h.month,
+      map: nodeMapF(buildTree(groupAccounts, h.data || [])),
+      prevMap: nodeMapF(buildTree(groupAccounts, h.prevData || [])),
+    })) : [];
+    const bsHistMaps = hasHistoryBS ? bsHist.map(h => ({
+      year: h.year, month: h.month,
+      map: nodeMapF(buildTree(groupAccounts, h.data || [])),
+    })) : [];
 
-      // Full navy band
-      doc.setFillColor(...NAVY);
-      doc.rect(0,0,W,activeCmp?38:32,'F');
+// Multi-company view
+    const hasMultiCo = Array.isArray(selectedCompanies) && selectedCompanies.length > 1;
+    const MULTI_CO_CHUNK = 7;
+    const coChunksAll = hasMultiCo
+      ? Array.from({ length: Math.ceil(selectedCompanies.length / MULTI_CO_CHUNK) },
+          (_, i) => selectedCompanies.slice(i * MULTI_CO_CHUNK, (i + 1) * MULTI_CO_CHUNK))
+      : [selectedCompanies];
+    const getCoF = r => String(r.companyShortName ?? r.CompanyShortName ?? '');
+const buildPerCoMaps = (coList) => coList.map(co => {
+      const f = (uploadedAccounts || []).filter(r => getCoF(r) === co);
+      const pf = (prevUploadedAccounts || []).filter(r => getCoF(r) === co);
+      const legal = (() => {
+        const m = (companies || []).find(c => String(typeof c === 'object' ? (c.companyShortName ?? c.CompanyShortName) : c) === co);
+        return (m && typeof m === 'object' ? (m.companyLegalName ?? m.CompanyLegalName) : null) ?? co;
+      })();
+      return { co, legal, map: nodeMapF(buildTree(groupAccounts, f)), prevMap: nodeMapF(buildTree(groupAccounts, pf)) };
+    });
+    let perCoMaps = hasMultiCo ? buildPerCoMaps(selectedCompanies) : [];
 
-      // Accent bar
-      doc.setFillColor(...RED);
-      doc.rect(0,0,3,activeCmp?38:32,'F');
+    const hasB = compareMode && !hasHistoryPL && !hasMultiCo;
+    const hasC = compareMode && cmp2Enabled && !hasHistoryPL && !hasMultiCo;
+    const hasD = compareMode && cmp2Enabled && cmp3Enabled && !hasHistoryPL && !hasMultiCo;
+    const bsHasB = bsCompareMode && !hasHistoryBS && !hasMultiCo;
+    const bsHasC = bsCompareMode && bsCmp2Enabled && !hasHistoryBS && !hasMultiCo;
+    const bsHasD = bsCompareMode && bsCmp2Enabled && bsCmp3Enabled && !hasHistoryBS && !hasMultiCo;
 
-      // Title
-      doc.setFont('helvetica','bold');
-      doc.setFontSize(14);
-      doc.setTextColor(...WHITE);
-      doc.text(sectionTitle,9,12);
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const W = doc.internal.pageSize.getWidth();
+    const H = doc.internal.pageSize.getHeight();
 
-      // Period A
-      doc.setFont('helvetica','normal');
-      doc.setFontSize(7.5);
-      doc.setTextColor(180,200,255);
-      doc.text(`A: ${monthLabel} ${year}  ·  ${source}  ·  ${structure}`,9,20);
+const sections = [];
+    let currentSection = '';
 
-      if(activeCmp){
-        // Period B
-        doc.setFillColor(...REDDK);
-        doc.roundedRect(9,23,W-18,5,1,1,'F');
-        doc.setFont('helvetica','bold');doc.setFontSize(6.5);doc.setTextColor(...WHITE);
-        doc.text('B',12,26.8);
-        doc.setFont('helvetica','normal');doc.setFontSize(6.5);
-        doc.text(activeL1||'—',18,26.8);
-        // Period C
-        doc.setFillColor(...GRNDK);
-        doc.roundedRect(9,30,W-18,5,1,1,'F');
-        doc.setFont('helvetica','bold');doc.setFontSize(6.5);doc.setTextColor(...WHITE);
-        doc.text('C',12,33.8);
-        doc.setFont('helvetica','normal');doc.setFontSize(6.5);
-        doc.text(activeL2||'—',18,33.8);
+const drawHeader = (sectionTitle, isFirst, useCmpFlag = null, useLabels = null) => {
+      if (!isFirst) doc.addPage();
+      const actualPage = doc.internal.getNumberOfPages();
+      currentSection = sectionTitle;
+      const activeCmp = useCmpFlag ?? hasB;
+      const labels = useLabels ?? { b: bLabel, c: cLabel, d: dLabel };
+      const hasCActive = !!(labels.c && labels.c.length);
+      const hasDActive = !!(labels.d && labels.d.length);
+      const cmpCount = activeCmp ? (1 + (hasCActive ? 1 : 0) + (hasDActive ? 1 : 0)) : 0;
+      const headerH = 22 + cmpCount * 7;
+
+      doc.setFillColor(...NAVY); doc.rect(0, 0, W, headerH, 'F');
+      doc.setFillColor(...RED);  doc.rect(0, 0, 3, headerH, 'F');
+
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(14); doc.setTextColor(...WHITE);
+      doc.text(sectionTitle, 9, 11);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(180, 200, 255);
+      doc.text(`A:  ${aLabel}`, 9, 17);
+
+      if (activeCmp) {
+        let y = 21;
+        const pill = (letter, txt, fill) => {
+          doc.setFillColor(...fill);
+          doc.roundedRect(9, y, W - 18, 5.5, 1.2, 1.2, 'F');
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5); doc.setTextColor(...WHITE);
+          doc.text(letter, 12, y + 3.9);
+          doc.setFont('helvetica', 'normal'); doc.setFontSize(6.5);
+          doc.text(txt || '—', 18, y + 3.9);
+          y += 7;
+        };
+        pill('B', labels.b, REDDK);
+        if (hasCActive) pill('C', labels.c, GRNDK);
+        if (hasDActive) pill('D', labels.d, PURPLEDK);
       }
 
-      // Page badge top-right
-      doc.setFillColor(...NAVYDK);
-      doc.roundedRect(W-22,4,18,7,1.5,1.5,'F');
-      doc.setFont('helvetica','bold');doc.setFontSize(6.5);doc.setTextColor(160,185,255);
-      doc.text(`p. ${pageNum}`,W-13,8.2,{align:'center'});
+      doc.setDrawColor(...NAVYMID); doc.setLineWidth(0.3);
+      doc.line(0, headerH, W, headerH);
 
-      // Separator
-      doc.setDrawColor(...NAVYMID);doc.setLineWidth(0.3);
-      doc.line(0,activeCmp?38:32,W,activeCmp?38:32);
-
-      return (activeCmp?38:32)+4;
+if (!sections.find(s => s.title === sectionTitle)) {
+        sections.push({ title: sectionTitle, page: actualPage });
+        try { doc.outline.add(null, sectionTitle, { pageNumber: actualPage }); } catch {}
+      }
+      return headerH + 4;
     };
 
-    // ── Footer ───────────────────────────────────────────────
-    const drawFooter=()=>{
-      doc.setFillColor(...LIGHT);
-      doc.rect(0,H-8,W,8,'F');
-      doc.setDrawColor(...GRAYLT);doc.setLineWidth(0.2);
-      doc.line(0,H-8,W,H-8);
-      doc.setFont('helvetica','bold');doc.setFontSize(6);doc.setTextColor(...NAVY);
-      doc.text('KONSOLIDATOR',8,H-3.5);
-      doc.setFont('helvetica','normal');doc.setTextColor(...GRAY);
-      doc.text(`${currentSection}  ·  ${monthLabel} ${year}  ·  ${source}`,30,H-3.5);
-      doc.setFont('helvetica','bold');doc.setFontSize(6.5);doc.setTextColor(...NAVY);
-      doc.text(String(pageNum),W-8,H-3.5,{align:'right'});
+    const drawFooterBrand = () => {
+      doc.setFillColor(...LIGHT); doc.rect(0, H - 7, W, 7, 'F');
+      doc.setDrawColor(...GRAYLT); doc.setLineWidth(0.2);
+      doc.line(0, H - 7, W, H - 7);
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(6); doc.setTextColor(...NAVY);
+      doc.text('KONSOLIDATOR', 8, H - 2.8);
+      doc.setFont('helvetica', 'normal'); doc.setTextColor(...GRAY);
+      doc.text(currentSection, 30, H - 2.8);
     };
 
+// ── Build PL breakers (matches Excel buildEffectivePlBreakers / app effectiveBreakersPl) ──
+    const hexToRgbLocal = (h) => {
+      const s = String(h || '').replace('#', '').replace(/^FF/i, '');
+      if (!/^[0-9a-fA-F]{6}$/.test(s)) return NAVYDK;
+      return [parseInt(s.slice(0,2),16), parseInt(s.slice(2,4),16), parseInt(s.slice(4,6),16)];
+    };
+    const palettePl = [hexToRgbLocal(colors.primary), hexToRgbLocal(colors.secondary), hexToRgbLocal(colors.tertiary)];
 
+    const buildPlBreakersForPdf = (isSummary, treeArg) => {
+      if (pgcMapping?.rows && pgcMapping?.sections) {
+        const rowsToScan = isSummary ? summaryRows : (() => {
+          const all = [];
+          const walkS = n => {
+            if (!hasData(n) || !['P/L','DIS'].includes(n.accountType)) return;
+            (n.children || []).forEach(walkS);
+            if (n.isSumAccount) all.push(n);
+          };
+          treeArg.filter(n => ['P/L','DIS'].includes(n.accountType)).forEach(walkS);
+          return all.sort((a,b) => String(a.code).localeCompare(String(b.code), undefined, {numeric:true}));
+        })();
+        const seen = new Set();
+        const out = {};
+        let i = 0;
+        for (const node of rowsToScan) {
+          const m = pgcMapping.rows.get(String(node.code));
+          if (!m) continue;
+          if (seen.has(m.section)) continue;
+          seen.add(m.section);
+          const sec = pgcMapping.sections.get(m.section);
+          if (sec) { out[String(node.code)] = { label: sec.label, color: palettePl[i] ?? hexToRgbLocal(sec.color) }; i++; }
+        }
+        return out;
+      }
+      const legacy = breakers.pl ?? {};
+      const codes = Object.keys(legacy).sort((a,b) => String(a).localeCompare(String(b), undefined, {numeric:true}));
+      if (codes.length > 0) {
+        const out = {};
+        codes.forEach((code, i) => {
+          out[code] = { label: legacy[code].label, color: palettePl[i] ?? hexToRgbLocal(legacy[code].color) };
+        });
+        return out;
+      }
+      return {};
+    };
 
-    // ── PL flat rows (same logic as xlsx) ───────────────────
-    const plFlatRows=(nodes)=>{
-      const rows=[];
-      const walk=(node,d)=>{
-        if(!hasData(node)||!['P/L','DIS'].includes(node.accountType))return;
-        const ytd=-sumNode(node),prev=-getPrev(prevMap,node.code,month),mon=ytd-prev;
-        const cmpYtd=compareMode?-getYtd(cmpMap,node.code):null;
-        const cmpPrev=compareMode?-getPrev(cmpPrevMap,node.code,cmpFilters?.month):null;
-        const cmpMon=compareMode?cmpYtd-cmpPrev:null;
-        const cmp2Ytd=compareMode?-getYtd(cmp2Map,node.code):null;
-        const cmp2Prev=compareMode?-getPrev(cmp2PrevMap,node.code,cmp2Filters?.month):null;
-        const cmp2Mon=compareMode?cmp2Ytd-cmp2Prev:null;
-        rows.push({label:'  '.repeat(d)+node.name,mon,ytd,cmpMon,cmpYtd,cmp2Mon,cmp2Ytd,isBold:node.isSumAccount,depth:d,isLeaf:false,isDim:false,isJrn:false});
-        if(opts.drillDown){
-          node.uploadLeaves?.forEach(leaf=>{
-            if(leaf.type==='plain')return;
-            rows.push({label:'  '.repeat(d+1)+' '+( leaf.name||leaf.code||''),mon:-(leaf.amount),ytd:-(leaf.amount),cmpMon:null,cmpYtd:null,cmp2Mon:null,cmp2Ytd:null,isBold:false,depth:d+1,isLeaf:true,isDim:false,isJrn:false});
-            leaf.children?.forEach(dim=>{
-              rows.push({label:'  '.repeat(d+2)+'◆ '+(dim.name||dim.code),mon:-(dim.amount),ytd:-(dim.amount),cmpMon:null,cmpYtd:null,cmp2Mon:null,cmp2Ytd:null,isBold:false,depth:d+2,isLeaf:false,isDim:true,isJrn:false});
+// Build leaf indexes once for PDF drill-down
+    const buildLeafIdxPdf = (rows) => {
+      const m = new Map();
+      (rows || []).forEach(r => {
+        const lac = String(getField(r, 'localAccountCode') ?? '');
+        if (!lac) return;
+        m.set(lac, (m.get(lac) ?? 0) + parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod')));
+      });
+      return m;
+    };
+    const pdfPrevLeafIdx  = buildLeafIdxPdf(prevUploadedAccounts);
+    const pdfBLeafIdx     = hasB ? buildLeafIdxPdf(cmpUploadedAccounts) : new Map();
+    const pdfBPrevLeafIdx = hasB ? buildLeafIdxPdf(cmpPrevUploadedAccounts) : new Map();
+    const pdfCLeafIdx     = hasC ? buildLeafIdxPdf(cmp2UploadedAccounts) : new Map();
+    const pdfCPrevLeafIdx = hasC ? buildLeafIdxPdf(cmp2PrevUploadedAccounts) : new Map();
+    const pdfDLeafIdx     = hasD ? buildLeafIdxPdf(cmp3UploadedAccounts) : new Map();
+    const pdfDPrevLeafIdx = hasD ? buildLeafIdxPdf(cmp3PrevUploadedAccounts) : new Map();
+    const pdfPlHistLeafIdx = hasHistoryPL ? plHist.map(h => ({
+      cur: buildLeafIdxPdf(h.data || []),
+      prev: buildLeafIdxPdf(h.prevData || []),
+      month: h.month,
+    })) : [];
+    const pdfPerCoLeafIdx = hasMultiCo ? selectedCompanies.map(co => ({
+      cur: buildLeafIdxPdf((uploadedAccounts || []).filter(r => getCoF(r) === co)),
+      prev: buildLeafIdxPdf((prevUploadedAccounts || []).filter(r => getCoF(r) === co)),
+    })) : [];
+
+    // Per-leaf+dim indexes for PDF compare periods
+    const buildLeafDimIdxPdf = (rows) => {
+      const m = new Map();
+      (rows || []).forEach(r => {
+        const lac = String(getField(r, 'localAccountCode') ?? '');
+        const dc  = String(getField(r, 'dimensionCode') ?? '');
+        if (!lac || !dc || dc === 'null') return;
+        const amt = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+        m.set(`${lac}|${dc}`, (m.get(`${lac}|${dc}`) ?? 0) + amt);
+      });
+      return m;
+    };
+    const pdfPrevLeafDimIdx  = buildLeafDimIdxPdf(prevUploadedAccounts);
+    const pdfBLeafDimIdx     = hasB ? buildLeafDimIdxPdf(cmpUploadedAccounts) : new Map();
+    const pdfBPrevLeafDimIdx = hasB ? buildLeafDimIdxPdf(cmpPrevUploadedAccounts) : new Map();
+    const pdfCLeafDimIdx     = hasC ? buildLeafDimIdxPdf(cmp2UploadedAccounts) : new Map();
+    const pdfCPrevLeafDimIdx = hasC ? buildLeafDimIdxPdf(cmp2PrevUploadedAccounts) : new Map();
+const pdfDLeafDimIdx     = hasD ? buildLeafDimIdxPdf(cmp3UploadedAccounts) : new Map();
+    const pdfDPrevLeafDimIdx = hasD ? buildLeafDimIdxPdf(cmp3PrevUploadedAccounts) : new Map();
+    const pdfPerCoLeafDimIdx = hasMultiCo ? selectedCompanies.map(co => ({
+      cur:  buildLeafDimIdxPdf((uploadedAccounts || []).filter(r => getCoF(r) === co)),
+      prev: buildLeafDimIdxPdf((prevUploadedAccounts || []).filter(r => getCoF(r) === co)),
+    })) : [];
+
+    // Build PL rows — fully expanded, all leaves/dims/journals
+    const buildPlRows = (treeArg) => {
+      const rows = [];
+      const breakerMap = buildPlBreakersForPdf(false, treeArg);
+      const walk = (node, d) => {
+        if (!hasData(node) || !['P/L', 'DIS'].includes(node.accountType)) return;
+        // Emit breaker row before this node if applicable (and only when d === 0)
+        if (d === 0 && breakerMap[String(node.code)]) {
+          const br = breakerMap[String(node.code)];
+          rows.push({
+            code: '', label: String(br.label).toUpperCase(),
+            mon: null, ytd: null, cMon: null, cYtd: null, c2Mon: null, c2Ytd: null, c3Mon: null, c3Ytd: null,
+            _isSectionHeader: true, _sectionColor: br.color,
+          });
+        }
+        const ytd = -sumNode(node);
+        const prev = -getPrev(prevMap, node.code, month);
+        const mon = ytd - prev;
+        const cYtd = hasB ? -getYtd(cmpMap, node.code) : null;
+        const cMon = hasB ? cYtd - (-getPrev(cmpPrevMap, node.code, cmpFilters?.month)) : null;
+        const c2Ytd = hasC ? -getYtd(cmp2Map, node.code) : null;
+        const c2Mon = hasC ? c2Ytd - (-getPrev(cmp2PrevMap, node.code, cmp2Filters?.month)) : null;
+        const c3Ytd = hasD ? -getYtd(cmp3Map, node.code) : null;
+        const c3Mon = hasD ? c3Ytd - (-getPrev(cmp3PrevMap, node.code, cmp3Filters?.month)) : null;
+        const isHl = PL_HIGHLIGHTED_CODES.has(String(node.code)) || String(node.code).endsWith('.S') || String(node.code).endsWith('.PL');
+        const histVals = plHistMaps.map(h => {
+          const hYtd = -getYtd(h.map, node.code);
+          const hPrev = -getPrev(h.prevMap, node.code, h.month);
+          return { mon: hYtd - hPrev, ytd: hYtd };
+        });
+        const coVals = perCoMaps.map(c => {
+          const ytdC = -getYtd(c.map, node.code);
+          const prevC = Number(month) === 1 ? 0 : -getYtd(c.prevMap, node.code);
+          return ytdOnly ? ytdC : (ytdC - prevC);
+        });
+        rows.push({ code: String(node.code ?? ''), label: '  '.repeat(d) + (node.name || ''), mon, ytd, cMon, cYtd, c2Mon, c2Ytd, c3Mon, c3Ytd, histVals, coVals, isBold: node.isSumAccount, depth: d, isHighlighted: isHl });
+        node.children?.forEach(c => walk(c, d + 1));
+(node.uploadLeaves || []).forEach(leaf => {
+          if (leaf.type === 'plain') return;
+          const lac = String(leaf.code ?? '');
+          const amt = leaf.amount ?? 0;
+          const ytdA = -amt;
+          const prevA = lac && Number(month) !== 1 ? (pdfPrevLeafIdx.get(lac) ?? 0) : 0;
+          const monA = -(amt - prevA);
+          const bY = hasB && lac ? -(pdfBLeafIdx.get(lac) ?? 0) : null;
+          const bP = hasB && lac ? (Number(cmpFilters?.month) === 1 ? 0 : -(pdfBPrevLeafIdx.get(lac) ?? 0)) : null;
+          const cY = hasC && lac ? -(pdfCLeafIdx.get(lac) ?? 0) : null;
+          const cP = hasC && lac ? (Number(cmp2Filters?.month) === 1 ? 0 : -(pdfCPrevLeafIdx.get(lac) ?? 0)) : null;
+          const dY = hasD && lac ? -(pdfDLeafIdx.get(lac) ?? 0) : null;
+          const dPV = hasD && lac ? (Number(cmp3Filters?.month) === 1 ? 0 : -(pdfDPrevLeafIdx.get(lac) ?? 0)) : null;
+          const leafHistVals = hasHistoryPL ? pdfPlHistLeafIdx.map(h => {
+            const hY = lac ? -(h.cur.get(lac) ?? 0) : 0;
+            const hP = lac && Number(h.month) !== 1 ? -(h.prev.get(lac) ?? 0) : 0;
+            return { mon: hY - hP, ytd: hY };
+          }) : [];
+          const leafCoVals = hasMultiCo ? pdfPerCoLeafIdx.map(idx => {
+            const ytdC = lac ? -(idx.cur.get(lac) ?? 0) : 0;
+            const prevC = lac && Number(month) !== 1 ? -(idx.prev.get(lac) ?? 0) : 0;
+            return ytdOnly ? ytdC : (ytdC - prevC);
+          }) : [];
+          rows.push({
+            code: lac, label: '  '.repeat(d + 1) + (leaf.name || leaf.code || ''),
+            mon: monA, ytd: ytdA,
+            cMon: bY != null ? bY - bP : null, cYtd: bY,
+            c2Mon: cY != null ? cY - cP : null, c2Ytd: cY,
+            c3Mon: dY != null ? dY - dPV : null, c3Ytd: dY,
+            histVals: leafHistVals, coVals: leafCoVals,
+            isBold: false, depth: d + 1, isLeaf: true,
+          });
+(leaf.children || []).forEach(dim => {
+            const lac = String(leaf.code ?? '');
+            const dc  = String(dim.code ?? '');
+            const key = lac && dc ? `${lac}|${dc}` : null;
+            const ytdAdim = -(dim.amount ?? 0);
+            const prevAdim = key && Number(month) !== 1 ? -(pdfPrevLeafDimIdx.get(key) ?? 0) : 0;
+            const monAdim = ytdAdim - prevAdim;
+            const bYdim = hasB && key ? -(pdfBLeafDimIdx.get(key) ?? 0) : null;
+            const bPdim = hasB && key ? (Number(cmpFilters?.month) === 1 ? 0 : -(pdfBPrevLeafDimIdx.get(key) ?? 0)) : null;
+            const cYdim = hasC && key ? -(pdfCLeafDimIdx.get(key) ?? 0) : null;
+            const cPdim = hasC && key ? (Number(cmp2Filters?.month) === 1 ? 0 : -(pdfCPrevLeafDimIdx.get(key) ?? 0)) : null;
+            const dYdim = hasD && key ? -(pdfDLeafDimIdx.get(key) ?? 0) : null;
+            const dPdimV = hasD && key ? (Number(cmp3Filters?.month) === 1 ? 0 : -(pdfDPrevLeafDimIdx.get(key) ?? 0)) : null;
+const dimCoVals = hasMultiCo && key ? pdfPerCoLeafDimIdx.map(idx => {
+              const ytdC = -(idx.cur.get(key) ?? 0);
+              const prevC = Number(month) === 1 ? 0 : -(idx.prev.get(key) ?? 0);
+              return ytdOnly ? ytdC : (ytdC - prevC);
+            }) : [];
+            rows.push({
+              code: dc, label: '  '.repeat(d + 2) + (dim.name || dim.code || ''),
+              mon: monAdim, ytd: ytdAdim,
+              cMon: bYdim != null ? bYdim - bPdim : null, cYtd: bYdim,
+              c2Mon: cYdim != null ? cYdim - cPdim : null, c2Ytd: cYdim,
+              c3Mon: dYdim != null ? dYdim - dPdimV : null, c3Ytd: dYdim,
+              coVals: dimCoVals,
+              isBold: false, depth: d + 2, isDim: true,
             });
           });
-          const jrns=(journalEntries||[]).filter(j=>String(j.AccountCode??j.accountCode??'')=== node.code);
-          if(jrns.length>0){
-            rows.push({label:'  '.repeat(d+1)+'📋 Journal entries ('+jrns.length+')',mon:null,ytd:null,cmpMon:null,cmpYtd:null,cmp2Mon:null,cmp2Ytd:null,isBold:false,depth:d+1,isLeaf:false,isDim:false,isJrn:true,isJrnHeader:true});
-            jrns.forEach(j=>{
-              const amt=parseAmt(j.AmountYTD??j.amountYTD??0);
-              rows.push({label:'  '.repeat(d+2)+'📄 '+(j.JournalNumber??j.journalNumber??'')+(j.JournalHeader??j.journalHeader?' · '+(j.JournalHeader??j.journalHeader):''),mon:-amt,ytd:-amt,cmpMon:null,cmpYtd:null,cmp2Mon:null,cmp2Ytd:null,isBold:false,depth:d+2,isLeaf:false,isDim:false,isJrn:true});
-            });
-          }
-        }
-        node.children?.filter(c=>hasData(c)&&['P/L','DIS'].includes(c.accountType)).forEach(c=>walk(c,d+1));
-      };
-      nodes.filter(n=>hasData(n)&&['P/L','DIS'].includes(n.accountType)).sort((a,b)=>String(a.code).localeCompare(String(b.code),undefined,{numeric:true})).forEach(n=>walk(n,0));
-      return rows;
-    };
-
-    // ── BS flat rows ─────────────────────────────────────────
-    const bsFlatRows=(nodes,filterFn=null,summaryOnly=false)=>{
-      const rows=[];
-      const walk=(node,d)=>{
-        if(!hasData(node)||node.accountType!=='B/S')return;
-        const total=Number(node.code)>=599999?-sumNode(node):sumNode(node);
-        rows.push({label:'  '.repeat(d)+node.name,total,isBold:BS_HIGHLIGHTED_CODES.has(String(node.code)),depth:d,isDim:false,isJrn:false});
-        if(!summaryOnly){
-          if(opts.drillDown){
-            node.uploadLeaves?.forEach(leaf=>{
-              if(leaf.type==='plain')return;
-              rows.push({label:'  '.repeat(d+1)+' '+(leaf.name||leaf.code||''),total:leaf.amount,isBold:false,depth:d+1,isDim:false,isJrn:false,isLeaf:true});
-              leaf.children?.forEach(dim=>{
-                rows.push({label:'  '.repeat(d+2)+'◆ '+(dim.name||dim.code),total:dim.amount,isBold:false,depth:d+2,isDim:true,isJrn:false});
+        });
+const jrns = (journalEntries || []).filter(j => {
+          const acc = String(j.AccountCode ?? j.accountCode ?? '');
+          const jt = String(j.JournalType ?? j.journalType ?? '').toUpperCase();
+          return acc === String(node.code) && (jt === 'AJE' || jt === 'RJE');
+        });
+        if (jrns.length > 0) {
+          rows.push({ code: '', label: '  '.repeat(d + 1) + `Journal entries (${jrns.length})`, mon: null, ytd: null, cMon: null, cYtd: null, c2Mon: null, c2Ytd: null, c3Mon: null, c3Ytd: null, isBold: false, depth: d + 1, isJrn: true, isJrnHeader: true });
+          const findMatchPl = (idx, jnum) => {
+            const m = (idx.get(String(node.code)) || []).find(jj => (jj.JournalNumber ?? jj.journalNumber) === jnum);
+            return m ? -parseAmt(m.AmountYTD ?? m.amountYTD ?? 0) : null;
+          };
+jrns.forEach(j => {
+            const amt = parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
+            const jnum = j.JournalNumber ?? j.journalNumber ?? '';
+            const bV = hasB ? findMatchPl(jrnByCodeCmpPdf,  jnum) : null;
+            const cV = hasC ? findMatchPl(jrnByCodeCmp2Pdf, jnum) : null;
+            const dV = hasD ? findMatchPl(jrnByCodeCmp3Pdf, jnum) : null;
+            const jrnCo = String(j.CompanyShortName ?? j.companyShortName ?? '');
+            const coVals = hasMultiCo ? selectedCompanies.map(co => jrnCo === co ? -amt : 0) : [];
+            rows.push({ code: String(jnum), label: '  '.repeat(d + 2) + (j.JournalHeader ?? j.journalHeader ?? ''), mon: -amt, ytd: -amt, cMon: bV, cYtd: bV, c2Mon: cV, c2Ytd: cV, c3Mon: dV, c3Ytd: dV, coVals, isBold: false, depth: d + 2, isJrn: true });
+          });
+          if (hasB || hasC || hasD) {
+            const aNums = new Set(jrns.map(j => j.JournalNumber ?? j.journalNumber));
+            const seen = new Map();
+            const collect = (idx, period) => {
+              (idx.get(String(node.code)) || []).forEach(j => {
+                const num = j.JournalNumber ?? j.journalNumber;
+                if (aNums.has(num)) return;
+                if (!seen.has(num)) seen.set(num, { jrn: j, periods: { B: null, C: null, D: null } });
+                seen.get(num).periods[period] = -parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
+              });
+            };
+            if (hasB) collect(jrnByCodeCmpPdf, 'B');
+            if (hasC) collect(jrnByCodeCmp2Pdf, 'C');
+            if (hasD) collect(jrnByCodeCmp3Pdf, 'D');
+            seen.forEach((entry, num) => {
+              ['B','C','D'].forEach(p => {
+                if (entry.periods[p] != null) return;
+                const idx = p === 'B' ? jrnByCodeCmpPdf : p === 'C' ? jrnByCodeCmp2Pdf : jrnByCodeCmp3Pdf;
+                const match = (idx.get(String(node.code)) || []).find(j => (j.JournalNumber ?? j.journalNumber) === num);
+                if (match) entry.periods[p] = -parseAmt(match.AmountYTD ?? match.amountYTD ?? 0);
               });
             });
-            const jrns=(journalEntries||[]).filter(j=>String(j.AccountCode??j.accountCode??'')=== node.code);
-            if(jrns.length>0){
-              rows.push({label:'  '.repeat(d+1)+'📋 Journal entries ('+jrns.length+')',total:null,isBold:false,depth:d+1,isDim:false,isJrn:true,isJrnHeader:true});
-              jrns.forEach(j=>{
-                const amt=parseAmt(j.AmountYTD??j.amountYTD??0);
-                rows.push({label:'  '.repeat(d+2)+'📄 '+(j.JournalNumber??j.journalNumber??''),total:amt,isBold:false,depth:d+2,isDim:false,isJrn:true});
+            if (seen.size > 0) {
+              rows.push({ code: '', label: '  '.repeat(d + 1) + `↳ B/C/D only (${seen.size})`, mon: null, ytd: null, cMon: null, cYtd: null, c2Mon: null, c2Ytd: null, c3Mon: null, c3Ytd: null, depth: d + 1, isJrn: true, isJrnHeader: true });
+              seen.forEach((entry, num) => {
+                const jhdr = entry.jrn.JournalHeader ?? entry.jrn.journalHeader ?? '';
+                rows.push({ code: String(num), label: '  '.repeat(d + 2) + jhdr, mon: null, ytd: null, cMon: entry.periods.B, cYtd: entry.periods.B, c2Mon: entry.periods.C, c2Ytd: entry.periods.C, c3Mon: entry.periods.D, c3Ytd: entry.periods.D, depth: d + 2, isJrn: true });
               });
             }
           }
-          node.children?.filter(hasData).forEach(c=>walk(c,d+1));
         }
       };
-      nodes.filter(n=>!filterFn||filterFn(n)).sort((a,b)=>String(a.code).localeCompare(String(b.code),undefined,{numeric:true})).forEach(n=>walk(n,0));
+      treeArg.filter(n => hasData(n) && ['P/L', 'DIS'].includes(n.accountType)).sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true })).forEach(n => walk(n, 0));
       return rows;
     };
 
-const isAssetsRoot=n=>(n.name??'').toLowerCase().includes('asset')||(n.name??'').toLowerCase().includes('activo');
-    const bsRoots=tree.filter(n=>hasData(n)&&n.accountType==='B/S').sort((a,b)=>String(a.code).localeCompare(String(b.code),undefined,{numeric:true}));
-    const bsCmpRoots=bsCompareMode?buildTree(groupAccounts,bsCmpUploadedAccounts).filter(n=>hasData(n)&&n.accountType==='B/S'):[];
-    const bsCmp2Roots=bsCompareMode?buildTree(groupAccounts,bsCmp2UploadedAccounts).filter(n=>hasData(n)&&n.accountType==='B/S'):[];
-    const bsCmpLabel=bsCompareMode?[bsCmpFilters?.month?MONTHS.find(m=>String(m.value)===String(bsCmpFilters.month))?.label:'',bsCmpFilters?.year,bsCmpFilters?.source,bsCmpFilters?.structure,bsCmpFilters?.company].filter(Boolean).join(' · '):'';
-    const bsCmp2Label=bsCompareMode?[bsCmp2Filters?.month?MONTHS.find(m=>String(m.value)===String(bsCmp2Filters.month))?.label:'',bsCmp2Filters?.year,bsCmp2Filters?.source,bsCmp2Filters?.structure,bsCmp2Filters?.company].filter(Boolean).join(' · '):'';
-
-    // ── PL columns ───────────────────────────────────────────
-const makePLCols=()=>compareMode?[
-      {header:'Account',dataKey:'label'},
-      {header:'Monthly',dataKey:'mon'},
-      {header:'B Mon',dataKey:'cmpMon'},
-      {header:'Diff',dataKey:'devMon'},
-      {header:'Diff%',dataKey:'devMonP'},
-      ...(cmp2Enabled?[
-        {header:'C Mon',dataKey:'cmp2Mon'},
-        {header:'Diff',dataKey:'devMon2'},
-        {header:'Diff%',dataKey:'devMon2P'},
-      ]:[]),
-      {header:'YTD',dataKey:'ytd'},
-      {header:'B YTD',dataKey:'cmpYtd'},
-      {header:'Diff',dataKey:'devYtd'},
-      {header:'Diff%',dataKey:'devYtdP'},
-      ...(cmp2Enabled?[
-        {header:'C YTD',dataKey:'cmp2Ytd'},
-        {header:'Diff',dataKey:'devYtd2'},
-        {header:'Diff%',dataKey:'devYtd2P'},
-      ]:[]),
-    ]:[
-      {header:'Account',dataKey:'label'},
-      {header:'Monthly',dataKey:'mon'},
-      {header:'YTD',dataKey:'ytd'},
-    ];
-
-    const toPLRow=r=>{
-      const base={label:r.label,mon:r.mon!=null?plAmt(r.mon):'',ytd:r.ytd!=null?plAmt(r.ytd):'',_r:r};
-      if(!compareMode)return base;
-      return{...base,
-        cmpMon:r.cmpMon!=null?plAmt(r.cmpMon):'',devMon:r.cmpMon!=null?devAmt(r.mon??0,r.cmpMon):'',devMonP:r.cmpMon!=null?devPct(r.mon??0,r.cmpMon):'',
-        cmp2Mon:r.cmp2Mon!=null?plAmt(r.cmp2Mon):'',devMon2:r.cmp2Mon!=null?devAmt(r.mon??0,r.cmp2Mon):'',devMon2P:r.cmp2Mon!=null?devPct(r.mon??0,r.cmp2Mon):'',
-        cmpYtd:r.cmpYtd!=null?plAmt(r.cmpYtd):'',devYtd:r.cmpYtd!=null?devAmt(r.ytd??0,r.cmpYtd):'',devYtdP:r.cmpYtd!=null?devPct(r.ytd??0,r.cmpYtd):'',
-        cmp2Ytd:r.cmp2Ytd!=null?plAmt(r.cmp2Ytd):'',devYtd2:r.cmp2Ytd!=null?devAmt(r.ytd??0,r.cmp2Ytd):'',devYtd2P:r.cmp2Ytd!=null?devPct(r.ytd??0,r.cmp2Ytd):'',
-      };
-    };
-
-    const plDidParse=(data)=>{
-      if(data.section==='head'){
-        data.cell.styles.halign=data.column.dataKey==='label'?'left':'right';
-        if(['cmpMon','devMon','devMonP','cmpYtd','devYtd','devYtdP'].includes(data.column.dataKey))data.cell.styles.fillColor=REDDK;
-        if(['cmp2Mon','devMon2','devMon2P','cmp2Ytd','devYtd2','devYtd2P'].includes(data.column.dataKey))data.cell.styles.fillColor=GRNDK;
-        return;
-      }
-      const r=data.row.raw._r;
-      if(!r)return;
-      const col=data.column.dataKey;
-      if(r.isBold){data.cell.styles.fillColor=LIGHT;data.cell.styles.fontStyle='bold';if(col==='label')data.cell.styles.textColor=NAVY;}
-      if(r.isDim){data.cell.styles.textColor=AMBER;}
-      if(r.isJrn&&!r.isJrnHeader){data.cell.styles.textColor=[100,110,200];}
-      if(r.isJrnHeader){data.cell.styles.textColor=[80,90,180];data.cell.styles.fontStyle='bold';}
-      if(r.isLeaf){data.cell.styles.textColor=GRAY;}
-      if(col!=='label')data.cell.styles.halign='right';
-      const isPos=v=>typeof v==='string'&&!v.startsWith('(')&&v!=='—'&&v!=='';
-      const isNeg=v=>typeof v==='string'&&v.startsWith('(');
-      if(['devMon','devYtd','devMon2','devYtd2'].includes(col)){
-        const v=data.cell.text[0];
-        data.cell.styles.textColor=isPos(v)?GRN:isNeg(v)?RED:GRAY;
-      }
-      if(['devMonP','devYtdP','devMon2P','devYtd2P'].includes(col)){
-        const v=data.cell.text[0];
-        data.cell.styles.textColor=isPos(v)?GRN:isNeg(v)?RED:GRAY;
-        data.cell.styles.fontStyle='bold';
-      }
-      if(['cmpMon','cmpYtd'].includes(col))data.cell.styles.textColor=r.isBold?REDDK:RED;
-      if(['cmp2Mon','cmp2Ytd'].includes(col))data.cell.styles.textColor=r.isBold?GRNDK:GRN;
-    };
-
-    // ── BS columns ───────────────────────────────────────────
-const makeBSCols=()=>bsCompareMode?[
-      {header:'Account',dataKey:'label'},
-      {header:'Actual',dataKey:'total'},
-      {header:'B',dataKey:'cmp'},
-      {header:'Diff',dataKey:'devB'},
-      {header:'Diff%',dataKey:'devBP'},
-      ...(bsCmp2Enabled?[
-        {header:'C',dataKey:'cmp2'},
-        {header:'Diff',dataKey:'devC'},
-        {header:'Diff%',dataKey:'devCP'},
-      ]:[]),
-    ]:[
-      {header:'Account',dataKey:'label'},
-      {header:'Amount',dataKey:'total'},
-    ];
-
-    const makeBSRowLookup=(rows)=>{
-      const m=new Map();rows.forEach(r=>m.set(`${r.depth}|${r.label.trim()}`,r.total));return m;
-    };
-
-const toBSRow=(r,cmpLookup,cmp2Lookup)=>{
-      const base={label:r.label,total:r.total!=null?fmtN(r.total):'',_r:r};
-      if(!bsCompareMode)return base;
-      const key=`${r.depth}|${r.label.trim()}`;
-      const cv=cmpLookup?.get(key)??null;const c2v=cmp2Lookup?.get(key)??null;
-      return{...base,
-        cmp:cv!=null?fmtN(cv):'',devB:cv!=null?devAmt(r.total??0,cv):'',devBP:cv!=null?devPct(r.total??0,cv):'',
-        cmp2:c2v!=null?fmtN(c2v):'',devC:c2v!=null?devAmt(r.total??0,c2v):'',devCP:c2v!=null?devPct(r.total??0,c2v):'',
-      };
-    };
-
-    const bsDidParse=(data)=>{
-      if(data.section==='head'){
-        data.cell.styles.halign=data.column.dataKey==='label'?'left':'right';
-        if(['cmp','devB','devBP'].includes(data.column.dataKey))data.cell.styles.fillColor=REDDK;
-        if(['cmp2','devC','devCP'].includes(data.column.dataKey))data.cell.styles.fillColor=GRNDK;
-        return;
-      }
-      const r=data.row.raw._r;if(!r)return;
-      const col=data.column.dataKey;
-      if(r.isBold){data.cell.styles.fillColor=LIGHT;data.cell.styles.fontStyle='bold';if(col==='label')data.cell.styles.textColor=NAVY;}
-      if(r.isDim)data.cell.styles.textColor=AMBER;
-      if(r.isJrn&&!r.isJrnHeader)data.cell.styles.textColor=[100,110,200];
-      if(r.isJrnHeader){data.cell.styles.textColor=[80,90,180];data.cell.styles.fontStyle='bold';}
-      if(col!=='label')data.cell.styles.halign='right';
-      const isPos=v=>typeof v==='string'&&!v.startsWith('(')&&v!=='—'&&v!=='';
-      const isNeg=v=>typeof v==='string'&&v.startsWith('(');
-      if(['devB','devC'].includes(col)){const v=data.cell.text[0];data.cell.styles.textColor=isPos(v)?GRN:isNeg(v)?RED:GRAY;}
-      if(['devBP','devCP'].includes(col)){const v=data.cell.text[0];data.cell.styles.textColor=isPos(v)?GRN:isNeg(v)?RED:GRAY;data.cell.styles.fontStyle='bold';}
-      if(col==='cmp')data.cell.styles.textColor=r.isBold?REDDK:RED;
-      if(col==='cmp2')data.cell.styles.textColor=r.isBold?GRNDK:GRN;
-    };
-
-const plColStyles=()=>{
-      const usable=W-16;
-      if(!compareMode)return{label:{cellWidth:usable*0.60},mon:{cellWidth:usable*0.20,halign:'right'},ytd:{cellWidth:usable*0.20,halign:'right'}};
-      // 15 cols: label + 6 value cols (mon,B,C,ytd,Bytd,Cytd) + 4 diff cols + 4 pct cols
-      // Total must = usable. Let's be explicit in mm for A4 landscape (281mm usable)
-      // label=68, each value=22, each diff=18, each pct=14 → 68+6*22+4*18+4*14=68+132+72+56=328 too wide
-      // Reduce: label=60, value=19, diff=15, pct=12 → 60+6*19+4*15+4*12=60+114+60+48=282 ✓
-      const lw=usable*0.213,vw=usable*0.0676,dw=usable*0.0534,pw=usable*0.0427;
-      return{
-        label:{cellWidth:lw},
-        mon:{cellWidth:vw,halign:'right'},
-        cmpMon:{cellWidth:vw,halign:'right'},
-        devMon:{cellWidth:dw,halign:'right'},
-        devMonP:{cellWidth:pw,halign:'right'},
-        cmp2Mon:{cellWidth:vw,halign:'right'},
-        devMon2:{cellWidth:dw,halign:'right'},
-        devMon2P:{cellWidth:pw,halign:'right'},
-        ytd:{cellWidth:vw,halign:'right'},
-        cmpYtd:{cellWidth:vw,halign:'right'},
-        devYtd:{cellWidth:dw,halign:'right'},
-        devYtdP:{cellWidth:pw,halign:'right'},
-        cmp2Ytd:{cellWidth:vw,halign:'right'},
-        devYtd2:{cellWidth:dw,halign:'right'},
-        devYtd2P:{cellWidth:pw,halign:'right'},
-      };
-    };
-    const bsColStyles=()=>{
-      const usable=W-16;
-      if(!bsCompareMode)return{label:{cellWidth:usable*0.62},total:{cellWidth:usable*0.38,halign:'right'}};
-      // 8 cols: label + actual + B + diffB + pctB + C + diffC + pctC
-      // label=30%, 3 values=13%, 2 diffs=9%, 2 pcts=6.5% → 30+39+18+13=100 ✓
-      const lw=usable*0.30,vw=usable*0.130,dw=usable*0.090,pw=usable*0.065;
-      return{
-        label:{cellWidth:lw},
-        total:{cellWidth:vw,halign:'right'},
-        cmp:{cellWidth:vw,halign:'right'},
-        devB:{cellWidth:dw,halign:'right'},
-        devBP:{cellWidth:pw,halign:'right'},
-        cmp2:{cellWidth:vw,halign:'right'},
-        devC:{cellWidth:dw,halign:'right'},
-        devCP:{cellWidth:pw,halign:'right'},
-      };
-    };
-
-// ── Render a table page ──────────────────────────────────
-const renderPage=(sectionTitle,isFirst,cols,body,didParse,colStyles,useCmp=null,useL1=null,useL2=null)=>{
-      const startY=drawHeader(sectionTitle,isFirst,useCmp,useL1,useL2);
-      const isCompact=compareMode||(useCmp??false);
-      autoTable(doc,{
-        startY,columns:cols,body,
-        margin:{left:8,right:8,bottom:12},
-        tableWidth:'auto',
-        styles:{fontSize:isCompact?5.8:7.5,cellPadding:{top:isCompact?1.8:3,bottom:isCompact?1.8:3,left:isCompact?2:4,right:isCompact?2:4},overflow:'ellipsize',lineColor:GRAYLT,lineWidth:0.1,font:'helvetica',textColor:TEXTDK},
-        headStyles:{fillColor:NAVY,textColor:WHITE,fontStyle:'bold',fontSize:isCompact?5.5:7,cellPadding:{top:3,bottom:3,left:isCompact?2:4,right:isCompact?2:4},lineWidth:0,overflow:'ellipsize'},
-        columnStyles:colStyles,
-        alternateRowStyles:{fillColor:STRIPE},
-        didParseCell:didParse,
-        didDrawPage:()=>drawFooter(),
-      });
-    };
-
-    let isFirst=true;
-
-    // ── P&L Summary ──────────────────────────────────────────
-    if(opts.plSummary){
-      const sumRows=[];
-      const walkSum=node=>{
-        if(!hasData(node)||!['P/L','DIS'].includes(node.accountType))return;
-        node.children?.forEach(c=>walkSum(c));
-        if(node.isSumAccount)sumRows.push(node);
-      };
-      tree.filter(n=>hasData(n)&&['P/L','DIS'].includes(n.accountType)).sort((a,b)=>String(a.code).localeCompare(String(b.code),undefined,{numeric:true})).forEach(n=>walkSum(n));
-      const byLevel={};
-      sumRows.filter(n=>n.accountType==='P/L').forEach(n=>{if(!byLevel[n.level]||Number(n.code)<Number(byLevel[n.level].code))byLevel[n.level]=n;});
-      const summaryNodes=Object.values(byLevel).sort((a,b)=>String(a.code).localeCompare(String(b.code),undefined,{numeric:true}));
-      const flatRows=summaryNodes.map(node=>{
-        const ytd=-sumNode(node),prev=-getPrev(prevMap,node.code,month),mon=ytd-prev;
-        const cmpYtd=compareMode?-getYtd(cmpMap,node.code):null,cmpPrev=compareMode?-getPrev(cmpPrevMap,node.code,cmpFilters?.month):null,cmpMon=compareMode?cmpYtd-cmpPrev:null;
-        const cmp2Ytd=compareMode?-getYtd(cmp2Map,node.code):null,cmp2Prev=compareMode?-getPrev(cmp2PrevMap,node.code,cmp2Filters?.month):null,cmp2Mon=compareMode?cmp2Ytd-cmp2Prev:null;
-        return{label:node.name,mon,ytd,cmpMon,cmpYtd,cmp2Mon,cmp2Ytd,isBold:true,depth:0,isLeaf:false,isDim:false,isJrn:false};
-      });
-      renderPage('P&L — Summary',isFirst,makePLCols(),flatRows.map(toPLRow),plDidParse,plColStyles());
-      isFirst=false;
-    }
-
-    // ── P&L Detailed ─────────────────────────────────────────
-    if(opts.plDetailed){
-      renderPage('P&L — Detailed',isFirst,makePLCols(),plFlatRows(tree).map(toPLRow),plDidParse,plColStyles());
-      isFirst=false;
-    }
-
-
-    // ── BS Summary ───────────────────────────────────────────
-    if(opts.bsSummary){
-      const bsSumFl=[];
-      const walkBSSum=(node,d)=>{
-        if(!hasData(node)||node.accountType!=='B/S')return;
-        const total=Number(node.code)>=599999?-sumNode(node):sumNode(node);
-        bsSumFl.push({label:'  '.repeat(d)+node.name,total,isBold:BS_HIGHLIGHTED_CODES.has(String(node.code)),depth:d,isDim:false,isJrn:false});
-        node.children?.filter(hasData).forEach(c=>walkBSSum(c,d+1));
-      };
-      bsRoots.forEach(n=>walkBSSum(n,0));
-const cmpFL=bsCompareMode?bsFlatRows(bsCmpRoots):[];
-const cmp2FL=bsCompareMode?bsFlatRows(bsCmp2Roots):[];
-      const cmpLookup=makeBSRowLookup(cmpFL),cmp2Lookup=makeBSRowLookup(cmp2FL);
-renderPage('Balance Sheet — Summary',isFirst,makeBSCols(),bsSumFl.map(r=>toBSRow(r,cmpLookup,cmp2Lookup)),bsDidParse,bsColStyles(),bsCompareMode,bsCmpLabel,bsCmp2Label);
-      isFirst=false;
-    }
-
-    // ── BS Assets ────────────────────────────────────────────
-    if(opts.bsAssets){
-      const rows=bsFlatRows(bsRoots,isAssetsRoot);
-      const cmpFL=bsCompareMode?bsFlatRows(bsCmpRoots,isAssetsRoot):[];
-      const cmp2FL=bsCompareMode?bsFlatRows(bsCmp2Roots,isAssetsRoot):[];
-      const cmpLookup=makeBSRowLookup(cmpFL),cmp2Lookup=makeBSRowLookup(cmp2FL);
-      renderPage('Balance Sheet — Assets',isFirst,makeBSCols(),rows.map(r=>toBSRow(r,cmpLookup,cmp2Lookup)),bsDidParse,bsColStyles(),bsCompareMode,bsCmpLabel,bsCmp2Label);
-      isFirst=false;
-    }
-
-    // ── BS Equity & Liabilities ───────────────────────────────
-    if(opts.bsEquity){
-      const rows=bsFlatRows(bsRoots,n=>!isAssetsRoot(n));
-      const cmpFL=bsCompareMode?bsFlatRows(bsCmpRoots,n=>!isAssetsRoot(n)):[];
-      const cmp2FL=bsCompareMode?bsFlatRows(bsCmp2Roots,n=>!isAssetsRoot(n)):[];
-      const cmpLookup=makeBSRowLookup(cmpFL),cmp2Lookup=makeBSRowLookup(cmp2FL);
-      renderPage('Balance Sheet — Equity & Liab.',isFirst,makeBSCols(),rows.map(r=>toBSRow(r,cmpLookup,cmp2Lookup)),bsDidParse,bsColStyles(),bsCompareMode,bsCmpLabel,bsCmp2Label);
-      isFirst=false;
-    }
-
-    // ── Dimensions & Journal ─────────────────────────────────
-    if(opts.dimJournal!==false){
-      const startY=drawHeader('Dimensions & Journal',isFirst);
-      // Dims table
-      if(uploadedAccounts.length>0){
-        const dimCols=[
-          {header:'Account',dataKey:'acc'},
-          {header:'Dimension',dataKey:'dim'},
-          {header:'Local Account',dataKey:'lac'},
-          {header:'Amount YTD',dataKey:'amt'},
-          {header:'Company',dataKey:'co'},
-          {header:'Currency',dataKey:'cur'},
-        ];
-        const dimBody=uploadedAccounts.filter(r=>getField(r,'dimensionCode')).map(r=>({
-          acc:String(getField(r,'accountName')??(getField(r,'accountCode')??'')),
-          dim:String(getField(r,'dimensionName')??getField(r,'dimensionCode')??''),
-          lac:String(getField(r,'localAccountCode')??'')+(getField(r,'localAccountName')?' '+getField(r,'localAccountName'):''),
-          amt:fmtN(parseAmt(getField(r,'AmountYTD','amountYTD','AmountPeriod','amountPeriod'))),
-          co:String(getField(r,'companyShortName','CompanyShortName')??''),
-          cur:String(getField(r,'CurrencyCode','currencyCode')??''),
-          _r:{isDim:true,isJrn:false,isBold:false},
-        }));
-        if(dimBody.length>0){
-          autoTable(doc,{
-            startY,columns:dimCols,body:dimBody,
-            margin:{left:8,right:8,bottom:12},tableWidth:W-16,
-            styles:{fontSize:6.5,cellPadding:{top:2,bottom:2,left:3,right:3},overflow:'ellipsize',lineColor:GRAYLT,lineWidth:0.1,font:'helvetica',textColor:TEXTDK},
-            headStyles:{fillColor:[180,100,20],textColor:WHITE,fontStyle:'bold',fontSize:6,lineWidth:0},
-            alternateRowStyles:{fillColor:[255,248,235]},
-            columnStyles:{acc:{cellWidth:45},dim:{cellWidth:38},lac:{cellWidth:45},amt:{cellWidth:22,halign:'right'},co:{cellWidth:18},cur:{cellWidth:12}},
-            didParseCell:data=>{if(data.section!=='head'&&data.column.dataKey==='amt')data.cell.styles.halign='right';},
-            didDrawPage:()=>drawFooter(),
+const buildPlSummaryRows = () => {
+      if (!Array.isArray(summaryRows) || summaryRows.length === 0) return [];
+      const breakerMap = buildPlBreakersForPdf(true, tree);
+      const sorted = summaryRows.filter(n => hasData(n) && ['P/L', 'DIS'].includes(n.accountType))
+        .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
+      const out = [];
+      sorted.forEach(node => {
+        if (breakerMap[String(node.code)]) {
+          const br = breakerMap[String(node.code)];
+          out.push({
+            code: '', label: String(br.label).toUpperCase(),
+            mon: null, ytd: null, cMon: null, cYtd: null, c2Mon: null, c2Ytd: null, c3Mon: null, c3Ytd: null,
+            _isSectionHeader: true, _sectionColor: br.color,
           });
         }
+        out.push((() => {
+          const ytd = -sumNode(node);
+          const mon = ytd - (-getPrev(prevMap, node.code, month));
+          const cYtd = hasB ? -getYtd(cmpMap, node.code) : null;
+          const cMon = hasB ? cYtd - (-getPrev(cmpPrevMap, node.code, cmpFilters?.month)) : null;
+          const c2Ytd = hasC ? -getYtd(cmp2Map, node.code) : null;
+          const c2Mon = hasC ? c2Ytd - (-getPrev(cmp2PrevMap, node.code, cmp2Filters?.month)) : null;
+          const c3Ytd = hasD ? -getYtd(cmp3Map, node.code) : null;
+          const c3Mon = hasD ? c3Ytd - (-getPrev(cmp3PrevMap, node.code, cmp3Filters?.month)) : null;
+          const histVals = plHistMaps.map(h => {
+            const hYtd = -getYtd(h.map, node.code);
+            const hPrev = -getPrev(h.prevMap, node.code, h.month);
+            return { mon: hYtd - hPrev, ytd: hYtd };
+          });
+          const coVals = perCoMaps.map(c => {
+            const ytdC = -getYtd(c.map, node.code);
+            const prevC = Number(month) === 1 ? 0 : -getYtd(c.prevMap, node.code);
+            return ytdOnly ? ytdC : (ytdC - prevC);
+          });
+return { code: String(node.code ?? ''), label: node.name || '', mon, ytd, cMon, cYtd, c2Mon, c2Ytd, c3Mon, c3Ytd, histVals, coVals, isBold: true, depth: 0, isHighlighted: true };
+        })());
+      });
+      return out;
+    };
+
+// BS leaf indexes for PDF drill-down
+    const pdfBsBLeafIdx = bsHasB ? buildLeafIdxPdf(bsCmpUploadedAccounts) : new Map();
+    const pdfBsCLeafIdx = bsHasC ? buildLeafIdxPdf(bsCmp2UploadedAccounts) : new Map();
+    const pdfBsDLeafIdx = bsHasD ? buildLeafIdxPdf(bsCmp3UploadedAccounts) : new Map();
+    const pdfBsHistLeafIdx = hasHistoryBS ? bsHist.map(h => buildLeafIdxPdf(h.data || [])) : [];
+    const pdfBsPerCoLeafIdx = hasMultiCo ? selectedCompanies.map(co => buildLeafIdxPdf((uploadedAccounts || []).filter(r => getCoF(r) === co))) : [];
+const pdfBsBLeafDimIdx = bsHasB ? buildLeafDimIdxPdf(bsCmpUploadedAccounts) : new Map();
+    const pdfBsCLeafDimIdx = bsHasC ? buildLeafDimIdxPdf(bsCmp2UploadedAccounts) : new Map();
+   const pdfBsDLeafDimIdx = bsHasD ? buildLeafDimIdxPdf(bsCmp3UploadedAccounts) : new Map();
+    const pdfBsPerCoLeafDimIdx = hasMultiCo ? selectedCompanies.map(co =>
+      buildLeafDimIdxPdf((uploadedAccounts || []).filter(r => getCoF(r) === co))
+    ) : [];
+    const buildBsBreakersForPdf = () => {
+      const paletteBsLocal = [hexToRgbLocal(colors.primary), hexToRgbLocal(colors.secondary), hexToRgbLocal(colors.tertiary)];
+      if (pgcBsMapping?.rows && pgcBsMapping?.sections) {
+        const flatNodes = [];
+        (function walk(nodes) {
+          nodes.forEach(n => {
+            if (hasData(n) && n.accountType === 'B/S') {
+              const m = pgcBsMapping.rows.get(String(n.code));
+              if (m && m.isSum) flatNodes.push({ node: n, sortOrder: m.sortOrder, section: m.section });
+            }
+            walk(n.children || []);
+          });
+        })(tree);
+        flatNodes.sort((a,b) => a.sortOrder - b.sortOrder);
+        const seen = new Set();
+        const out = {};
+        let i = 0;
+        for (const { node, section } of flatNodes) {
+          if (seen.has(section)) continue;
+          seen.add(section);
+          const sec = pgcBsMapping.sections.get(section);
+          if (sec) { out[String(node.code)] = { label: sec.label, color: paletteBsLocal[i] ?? hexToRgbLocal(sec.color) }; i++; }
+        }
+        if (Object.keys(out).length > 0) return out;
       }
-      // Journal table
-      if(journalEntries?.length>0){
-        const jY=(doc.lastAutoTable?.finalY??startY)+6;
-        doc.setFont('helvetica','bold');doc.setFontSize(7);doc.setTextColor(...NAVY);
-        doc.text('Journal Entries',8,jY+4);
-        const jCols=[
-          {header:'Journal #',dataKey:'jn'},
-          {header:'Header',dataKey:'jh'},
-          {header:'Account',dataKey:'acc'},
-          {header:'Type',dataKey:'jt'},
-          {header:'Dimension',dataKey:'dim'},
-          {header:'Counterparty',dataKey:'cp'},
-          {header:'Amount YTD',dataKey:'amt'},
-          {header:'Currency',dataKey:'cur'},
-        ];
-        const jBody=journalEntries.map(j=>({
-          jn:String(j.JournalNumber??j.journalNumber??''),
-          jh:String(j.JournalHeader??j.journalHeader??''),
-          acc:String(j.AccountName??j.accountName??''),
-          jt:String(j.JournalType??j.journalType??''),
-          dim:String(j.DimensionName??j.dimensionName??''),
-          cp:String(j.CounterpartyShortName??j.counterpartyShortName??''),
-          amt:fmtN(parseAmt(j.AmountYTD??j.amountYTD??0)),
-          cur:String(j.CurrencyCode??j.currencyCode??''),
-          _r:{isJrn:true,isDim:false,isBold:false},
+      const legacy = breakers.bs ?? {};
+      const codes = Object.keys(legacy).sort((a,b) => String(a).localeCompare(String(b), undefined, {numeric:true}));
+      if (codes.length > 0) {
+        const out = {};
+        codes.forEach((code, i) => {
+          out[code] = { label: legacy[code].label, color: paletteBsLocal[i] ?? hexToRgbLocal(legacy[code].color) };
+        });
+        return out;
+      }
+      return {};
+    };
+
+    const buildBsRows = (filterFn = null) => {
+      const rows = [];
+      const breakerMap = buildBsBreakersForPdf();
+      const walk = (node, d) => {
+        if (!hasData(node) || node.accountType !== 'B/S') return;
+        if (d === 0 && breakerMap[String(node.code)]) {
+          const br = breakerMap[String(node.code)];
+          rows.push({
+            code: '', label: String(br.label).toUpperCase(),
+            total: null, cVal: null, c2Val: null, c3Val: null,
+            _isSectionHeader: true, _sectionColor: br.color,
+          });
+        }
+        const isHl = BS_HIGHLIGHTED_CODES.has(String(node.code));
+        const isNeg = Number(node.code) >= 599999;
+        const total = isNeg ? -sumNode(node) : sumNode(node);
+        const cRaw = bsHasB ? getYtd(bsCmpMap, node.code) : 0;
+        const cVal = bsHasB ? (isNeg ? -cRaw : cRaw) : null;
+        const c2Raw = bsHasC ? getYtd(bsCmp2Map, node.code) : 0;
+        const c2Val = bsHasC ? (isNeg ? -c2Raw : c2Raw) : null;
+        const c3Raw = bsHasD ? getYtd(bsCmp3Map, node.code) : 0;
+        const c3Val = bsHasD ? (isNeg ? -c3Raw : c3Raw) : null;
+        const histVals = bsHistMaps.map(h => {
+          const hRaw = getYtd(h.map, node.code);
+          return isNeg ? -hRaw : hRaw;
+        });
+        const coVals = perCoMaps.map(c => {
+          const raw = getYtd(c.map, node.code);
+          return isNeg ? -raw : raw;
+        });
+        rows.push({ code: String(node.code ?? ''), label: '  '.repeat(d) + (node.name || ''), total, cVal, c2Val, c3Val, histVals, coVals, isBold: isHl, depth: d, isHighlighted: isHl });
+        node.children?.filter(hasData).forEach(c => walk(c, d + 1));
+(node.uploadLeaves || []).forEach(leaf => {
+          if (leaf.type === 'plain') return;
+          const lac = String(leaf.code ?? '');
+          const amtA = leaf.amount ?? 0;
+          const bV = bsHasB && lac ? (pdfBsBLeafIdx.get(lac) ?? 0) : null;
+          const cV = bsHasC && lac ? (pdfBsCLeafIdx.get(lac) ?? 0) : null;
+          const dV = bsHasD && lac ? (pdfBsDLeafIdx.get(lac) ?? 0) : null;
+          const histVals = hasHistoryBS && lac ? pdfBsHistLeafIdx.map(idx => idx.get(lac) ?? 0) : [];
+          const coVals = hasMultiCo && lac ? pdfBsPerCoLeafIdx.map(idx => idx.get(lac) ?? 0) : [];
+          rows.push({
+            code: lac, label: '  '.repeat(d + 1) + (leaf.name || leaf.code || ''),
+            total: amtA, cVal: bV, c2Val: cV, c3Val: dV, histVals, coVals,
+            isBold: false, depth: d + 1, isLeaf: true,
+          });
+(leaf.children || []).forEach(dim => {
+            const lac = String(leaf.code ?? '');
+            const dc  = String(dim.code ?? '');
+            const key = lac && dc ? `${lac}|${dc}` : null;
+rows.push({
+              code: dc, label: '  '.repeat(d + 2) + (dim.name || dim.code || ''),
+              total: dim.amount,
+              cVal:  bsHasB && key ? (pdfBsBLeafDimIdx.get(key) ?? 0) : null,
+              c2Val: bsHasC && key ? (pdfBsCLeafDimIdx.get(key) ?? 0) : null,
+              c3Val: bsHasD && key ? (pdfBsDLeafDimIdx.get(key) ?? 0) : null,
+              coVals: hasMultiCo && key ? pdfBsPerCoLeafDimIdx.map(idx => idx.get(key) ?? 0) : [],
+              isBold: false, depth: d + 2, isDim: true,
+            });
+          });
+        });
+const jrns = (journalEntries || []).filter(j => {
+          const acc = String(j.AccountCode ?? j.accountCode ?? '');
+          const jt = String(j.JournalType ?? j.journalType ?? '').toUpperCase();
+          return acc === String(node.code) && (jt === 'AJE' || jt === 'RJE');
+        });
+        if (jrns.length > 0) {
+          rows.push({ code: '', label: '  '.repeat(d + 1) + `📋 Journal (${jrns.length})`, total: null, cVal: null, c2Val: null, c3Val: null, isBold: false, depth: d + 1, isJrn: true, isJrnHeader: true });
+          const findMatchBs = (idx, jnum) => {
+            const m = (idx.get(String(node.code)) || []).find(jj => (jj.JournalNumber ?? jj.journalNumber) === jnum);
+            return m ? parseAmt(m.AmountYTD ?? m.amountYTD ?? 0) : null;
+          };
+jrns.forEach(j => {
+            const amt = parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
+            const jnum = j.JournalNumber ?? j.journalNumber ?? '';
+            const bV = bsHasB ? findMatchBs(jrnByCodeCmpPdf,  jnum) : null;
+            const cV = bsHasC ? findMatchBs(jrnByCodeCmp2Pdf, jnum) : null;
+            const dV = bsHasD ? findMatchBs(jrnByCodeCmp3Pdf, jnum) : null;
+            const jrnCo = String(j.CompanyShortName ?? j.companyShortName ?? '');
+            const coVals = hasMultiCo ? selectedCompanies.map(co => jrnCo === co ? amt : 0) : [];
+            rows.push({ code: String(jnum), label: '  '.repeat(d + 2) + (j.JournalHeader ?? j.journalHeader ?? ''), total: amt, cVal: bV, c2Val: cV, c3Val: dV, coVals, isBold: false, depth: d + 2, isJrn: true });
+          });
+          if (bsHasB || bsHasC || bsHasD) {
+            const aNums = new Set(jrns.map(j => j.JournalNumber ?? j.journalNumber));
+            const seen = new Map();
+            const collect = (idx, period) => {
+              (idx.get(String(node.code)) || []).forEach(j => {
+                const num = j.JournalNumber ?? j.journalNumber;
+                if (aNums.has(num)) return;
+                if (!seen.has(num)) seen.set(num, { jrn: j, periods: { B: null, C: null, D: null } });
+                seen.get(num).periods[period] = parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
+              });
+            };
+            if (bsHasB) collect(jrnByCodeCmpPdf, 'B');
+            if (bsHasC) collect(jrnByCodeCmp2Pdf, 'C');
+            if (bsHasD) collect(jrnByCodeCmp3Pdf, 'D');
+            seen.forEach((entry, num) => {
+              ['B','C','D'].forEach(p => {
+                if (entry.periods[p] != null) return;
+                const idx = p === 'B' ? jrnByCodeCmpPdf : p === 'C' ? jrnByCodeCmp2Pdf : jrnByCodeCmp3Pdf;
+                const match = (idx.get(String(node.code)) || []).find(j => (j.JournalNumber ?? j.journalNumber) === num);
+                if (match) entry.periods[p] = parseAmt(match.AmountYTD ?? match.amountYTD ?? 0);
+              });
+            });
+            if (seen.size > 0) {
+              rows.push({ code: '', label: '  '.repeat(d + 1) + `↳ B/C/D only (${seen.size})`, total: null, cVal: null, c2Val: null, c3Val: null, depth: d + 1, isJrn: true, isJrnHeader: true });
+              seen.forEach((entry, num) => {
+                const jhdr = entry.jrn.JournalHeader ?? entry.jrn.journalHeader ?? '';
+                rows.push({ code: String(num), label: '  '.repeat(d + 2) + jhdr, total: null, cVal: entry.periods.B, c2Val: entry.periods.C, c3Val: entry.periods.D, depth: d + 2, isJrn: true });
+              });
+            }
+          }
+        }
+      };
+tree.filter(n => hasData(n) && n.accountType === 'B/S').filter(n => !filterFn || filterFn(n)).sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true })).forEach(n => walk(n, 0));
+      return rows;
+    };
+
+    // ── Saved literal P&L row builder ──
+const buildSavedPlRowsLit = () => {
+      if (!Array.isArray(savedPlLiteral) || savedPlLiteral.length === 0) return [];
+
+      // Per-leaf+dim indexes for compare periods (saved-mapping)
+      const buildSavedLDI = (rowsArg) => {
+        const m = new Map();
+        (rowsArg || []).forEach(r => {
+          const l = String(getField(r, 'localAccountCode') ?? '');
+          const dcd = String(getField(r, 'dimensionCode') ?? '');
+          if (!l || !dcd || dcd === 'null') return;
+          const a = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+          m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+        });
+        return m;
+      };
+      const savedDimAprev = buildSavedLDI(prevUploadedAccountsRaw?.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts);
+      const savedDimB     = hasB ? buildSavedLDI(cmpUploadedAccounts) : new Map();
+      const savedDimBprev = hasB ? buildSavedLDI(cmpPrevUploadedAccounts) : new Map();
+      const savedDimC     = hasC ? buildSavedLDI(cmp2UploadedAccounts) : new Map();
+      const savedDimCprev = hasC ? buildSavedLDI(cmp2PrevUploadedAccounts) : new Map();
+      const savedDimD     = hasD ? buildSavedLDI(cmp3UploadedAccounts) : new Map();
+      const savedDimDprev = hasD ? buildSavedLDI(cmp3PrevUploadedAccounts) : new Map();
+
+      const buildDimIdx = (rowsArg) => {
+        const fullIdx = new Map(), valIdx = new Map();
+        (rowsArg || []).forEach(row => {
+          const code = String(getField(row, 'accountCode') ?? '');
+          if (!code) return;
+          const amt = parseAmt(getField(row, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+          const dimsStr = String(getField(row, 'Dimensions', 'dimensions') ?? '');
+          if (!dimsStr) return;
+          dimsStr.split('||').map(s => s.trim()).filter(Boolean).forEach(pair => {
+            const i = pair.indexOf(':'); if (i === -1) return;
+            const g = pair.slice(0, i).trim(), v = pair.slice(i + 1).trim();
+            fullIdx.set(`${code}|${g}:${v}`, (fullIdx.get(`${code}|${g}:${v}`) ?? 0) + amt);
+            valIdx.set(`${code}|${v}`, (valIdx.get(`${code}|${v}`) ?? 0) + amt);
+          });
+        });
+        if (Array.isArray(dimensions) && dimensions.length > 0) {
+          const nameToCode = new Map();
+          dimensions.forEach(d => {
+            const g = String(d.dimensionGroup ?? d.DimensionGroup ?? '').trim();
+            const cd = String(d.dimensionCode ?? d.DimensionCode ?? '').trim();
+            const nm = String(d.dimensionName ?? d.DimensionName ?? '').trim();
+            if (g && cd && nm) nameToCode.set(`${g}:${nm}`, cd);
+          });
+          [...fullIdx.entries()].forEach(([k, v]) => {
+            const pipe = k.indexOf('|'); const acc = k.slice(0, pipe);
+            const rest = k.slice(pipe + 1); const colon = rest.indexOf(':');
+            if (colon === -1) return;
+            const g = rest.slice(0, colon); const cv = rest.slice(colon + 1);
+            for (const [nk, mc] of nameToCode.entries()) {
+              if (mc === cv && nk.startsWith(`${g}:`)) {
+                const nm = nk.slice(g.length + 1);
+                fullIdx.set(`${acc}|${g}:${nm}`, v);
+                valIdx.set(`${acc}|${nm}`, v);
+                break;
+              }
+            }
+          });
+        }
+        return { fullIdx, valIdx };
+      };
+
+      const tbc = (rowsArg) => {
+        const m = new Map();
+        (function w(nodes) { nodes.forEach(n => { m.set(String(n.code), n); w(n.children || []); }); })(buildTree(groupAccounts, rowsArg || []));
+        return m;
+      };
+
+      const aTree = tbc(uploadedAccounts);
+      const aPrevTree = tbc(prevUploadedAccountsRaw?.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts);
+      const aIdx = buildDimIdx(uploadedAccounts);
+      const aPrevIdx = buildDimIdx(prevUploadedAccountsRaw?.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts);
+      const bTree = hasB ? tbc(cmpUploadedAccounts) : null;
+      const bPrevTree = hasB ? tbc(cmpPrevUploadedAccounts) : null;
+      const bIdx = hasB ? buildDimIdx(cmpUploadedAccounts) : null;
+      const bPrevIdx = hasB ? buildDimIdx(cmpPrevUploadedAccounts) : null;
+      const cTree = hasC ? tbc(cmp2UploadedAccounts) : null;
+      const cPrevTree = hasC ? tbc(cmp2PrevUploadedAccounts) : null;
+      const cIdx = hasC ? buildDimIdx(cmp2UploadedAccounts) : null;
+      const cPrevIdx = hasC ? buildDimIdx(cmp2PrevUploadedAccounts) : null;
+      const dTree = hasD ? tbc(cmp3UploadedAccounts) : null;
+      const dPrevTree = hasD ? tbc(cmp3PrevUploadedAccounts) : null;
+      const dIdx = hasD ? buildDimIdx(cmp3UploadedAccounts) : null;
+      const dPrevIdx = hasD ? buildDimIdx(cmp3PrevUploadedAccounts) : null;
+
+      const sumDimRec = (gaNode, dimStr, idx) => {
+        if (!gaNode || !idx) return 0;
+        let total = 0;
+        const code = String(gaNode.code);
+        total += dimStr.includes(':') ? (idx.fullIdx.get(`${code}|${dimStr}`) ?? 0) : (idx.valIdx.get(`${code}|${dimStr}`) ?? 0);
+        (gaNode.children || []).forEach(c => { total += sumDimRec(c, dimStr, idx); });
+        return total;
+      };
+      const sumLit = (node, treeM, prevTreeM, idx, prevIdx, periodMonth) => {
+        const ga = treeM?.get(String(node.code));
+        if (!ga) return { ytd: 0, mon: 0 };
+        if (!node.dims || node.dims.length === 0) {
+          const ytd = -sumNode(ga);
+          const prevGa = prevTreeM?.get(String(node.code));
+          const prevYtd = prevGa && Number(periodMonth) !== 1 ? -sumNode(prevGa) : 0;
+          return { ytd, mon: ytd - prevYtd };
+        }
+        let total = 0, prevTotal = 0;
+        node.dims.forEach(d => { total += sumDimRec(ga, String(d), idx); });
+        if (Number(periodMonth) !== 1 && prevIdx) {
+          node.dims.forEach(d => { prevTotal += sumDimRec(ga, String(d), prevIdx); });
+        }
+        return { ytd: -total, mon: -total - (-prevTotal) };
+      };
+      const sumLitWithKids = (node, treeM, prevTreeM, idx, prevIdx, periodMonth) => {
+        const self = sumLit(node, treeM, prevTreeM, idx, prevIdx, periodMonth);
+        let ytd = self.ytd, mon = self.mon;
+        if (node.isSum && Array.isArray(node.children) && node.children.length > 0) {
+          node.children.forEach(c => {
+            const ch = sumLit(c, treeM, prevTreeM, idx, prevIdx, periodMonth);
+            ytd += ch.ytd; mon += ch.mon;
+          });
+        }
+        return { ytd, mon };
+      };
+      const isHl = (node) => savedHighlightedIds && (savedHighlightedIds.has?.(node.id) || savedHighlightedIds.has?.(node.originalId));
+
+      const buildLeafOnce = (rowsArg) => {
+        const m = new Map();
+        (rowsArg || []).forEach(r => {
+          const lac = String(getField(r, 'localAccountCode') ?? '');
+          if (!lac) return;
+          m.set(lac, (m.get(lac) ?? 0) + parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod')));
+        });
+        return m;
+      };
+      const aPrevLeafIdx = buildLeafOnce(prevUploadedAccountsRaw?.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts);
+      const bLeafIdx = hasB ? buildLeafOnce(cmpUploadedAccounts) : new Map();
+      const bPrevLeafIdx = hasB ? buildLeafOnce(cmpPrevUploadedAccounts) : new Map();
+      const cLeafIdx = hasC ? buildLeafOnce(cmp2UploadedAccounts) : new Map();
+      const cPrevLeafIdx = hasC ? buildLeafOnce(cmp2PrevUploadedAccounts) : new Map();
+const dLeafIdx = hasD ? buildLeafOnce(cmp3UploadedAccounts) : new Map();
+      const dPrevLeafIdx = hasD ? buildLeafOnce(cmp3PrevUploadedAccounts) : new Map();
+
+// Per-company trees for multi-co — fully defensive
+      let perCoTreesLit = [];
+      try {
+        if (hasMultiCo) {
+          const cos = Array.isArray(selectedCompanies) ? selectedCompanies : [];
+          const ua = Array.isArray(uploadedAccounts) ? uploadedAccounts : [];
+          const puaRaw = Array.isArray(prevUploadedAccountsRaw) && prevUploadedAccountsRaw.length > 0 ? prevUploadedAccountsRaw : (Array.isArray(prevUploadedAccounts) ? prevUploadedAccounts : []);
+          const pua = Array.isArray(prevUploadedAccounts) ? prevUploadedAccounts : [];
+perCoTreesLit = cos.map(co => {
+            const coStr = String(co);
+            const fA = ua.filter(r => getCoF(r) === coStr);
+            const fPRaw = puaRaw.filter(r => getCoF(r) === coStr);
+            const fP = pua.filter(r => getCoF(r) === coStr);
+            return {
+              _co: coStr,
+              tree: tbc(fA),
+              prevTree: tbc(fPRaw),
+              leafIdx: buildLeafOnce(fA),
+              prevLeafIdx: buildLeafOnce(fP),
+            };
+          });
+        }
+      } catch (err) {
+        console.error('[Export] perCoTreesLit build failed', err);
+        perCoTreesLit = [];
+      }
+
+      const coValFor = (node) => {
+        if (!hasMultiCo || perCoTreesLit.length === 0) return [];
+        try {
+          return perCoTreesLit.map(cot => {
+            if (!cot || !cot.tree) return 0;
+            const ga = cot.tree.get(String(node.code));
+            let ytdC = ga ? -sumNode(ga) : 0;
+            let prevC = 0;
+            if (Number(month) !== 1 && cot.prevTree) {
+              const pg = cot.prevTree.get(String(node.code));
+              if (pg) prevC = -sumNode(pg);
+            }
+            if (node.isSum && Array.isArray(node.children) && node.children.length > 0) {
+              node.children.forEach(ch => {
+                const g = cot.tree.get(String(ch.code));
+                if (g) ytdC += -sumNode(g);
+                if (Number(month) !== 1 && cot.prevTree) {
+                  const pg2 = cot.prevTree.get(String(ch.code));
+                  if (pg2) prevC += -sumNode(pg2);
+                }
+              });
+            }
+            return ytdOnly ? ytdC : (ytdC - prevC);
+          });
+        } catch (err) {
+          console.error('[Export] coValFor failed for node', node?.code, err);
+          return perCoTreesLit.map(() => 0);
+        }
+      };
+
+      const out = [];
+      const pushNode = (node, depth) => {
+        const a = sumLitWithKids(node, aTree, aPrevTree, aIdx, aPrevIdx, month);
+        const b = hasB ? sumLitWithKids(node, bTree, bPrevTree, bIdx, bPrevIdx, cmpFilters?.month) : null;
+        const c = hasC ? sumLitWithKids(node, cTree, cPrevTree, cIdx, cPrevIdx, cmp2Filters?.month) : null;
+        const d = hasD ? sumLitWithKids(node, dTree, dPrevTree, dIdx, dPrevIdx, cmp3Filters?.month) : null;
+        const hl = isHl(node);
+        out.push({
+          code: String(node.code ?? ''),
+          label: '  '.repeat(depth) + (depth === 0 ? (node.name || '').toUpperCase() : (node.name || '')),
+          mon: a.mon, ytd: a.ytd,
+          cMon: b?.mon ?? null, cYtd: b?.ytd ?? null,
+          c2Mon: c?.mon ?? null, c2Ytd: c?.ytd ?? null,
+          c3Mon: d?.mon ?? null, c3Ytd: d?.ytd ?? null,
+          coVals: hasMultiCo ? coValFor(node) : [],
+          isBold: hl || depth === 0, isHighlighted: hl || depth === 0, depth,
+        });
+
+        const gaNode = aTree.get(String(node.code));
+        const leaves = (gaNode?.uploadLeaves || []).filter(l => l.type !== 'plain');
+        leaves.forEach(leaf => {
+          const ytdA = -(leaf.amount ?? 0);
+          const prevA = leaf.code && Number(month) !== 1 ? (aPrevLeafIdx.get(String(leaf.code)) ?? 0) : 0;
+          const monA = -((leaf.amount ?? 0) - prevA);
+          const bY = hasB && leaf.code ? -(bLeafIdx.get(String(leaf.code)) ?? 0) : null;
+          const bP = hasB && leaf.code ? (Number(cmpFilters?.month) === 1 ? 0 : -(bPrevLeafIdx.get(String(leaf.code)) ?? 0)) : null;
+          const cY = hasC && leaf.code ? -(cLeafIdx.get(String(leaf.code)) ?? 0) : null;
+          const cP = hasC && leaf.code ? (Number(cmp2Filters?.month) === 1 ? 0 : -(cPrevLeafIdx.get(String(leaf.code)) ?? 0)) : null;
+          const dY = hasD && leaf.code ? -(dLeafIdx.get(String(leaf.code)) ?? 0) : null;
+          const dPV = hasD && leaf.code ? (Number(cmp3Filters?.month) === 1 ? 0 : -(dPrevLeafIdx.get(String(leaf.code)) ?? 0)) : null;
+out.push({
+            code: String(leaf.code || ''),
+            label: '  '.repeat(depth + 1) + (leaf.name || ''),
+            mon: monA, ytd: ytdA,
+            cMon: bY != null ? bY - bP : null, cYtd: bY,
+            c2Mon: cY != null ? cY - cP : null, c2Ytd: cY,
+            c3Mon: dY != null ? dY - dPV : null, c3Ytd: dY,
+            coVals: hasMultiCo && leaf.code ? perCoTreesLit.map(cot => {
+              const lAmt = cot.leafIdx.get(String(leaf.code)) ?? 0;
+              const lPrev = cot.prevLeafIdx.get(String(leaf.code)) ?? 0;
+              return ytdOnly ? -lAmt : -(lAmt - lPrev);
+            }) : [],
+            depth: depth + 1, isLeaf: true,
+          });
+(leaf.children || []).forEach(dim => {
+            const lac = String(leaf.code ?? '');
+            const dc  = String(dim.code ?? '');
+            const key = lac && dc ? `${lac}|${dc}` : null;
+            const ytdAdim = -(dim.amount ?? 0);
+            const prevAdim = key && Number(month) !== 1 ? -(savedDimAprev.get(key) ?? 0) : 0;
+            const monAdim = ytdAdim - prevAdim;
+            const bYdim = hasB && key ? -(savedDimB.get(key) ?? 0) : null;
+            const bPdim = hasB && key ? (Number(cmpFilters?.month) === 1 ? 0 : -(savedDimBprev.get(key) ?? 0)) : null;
+            const cYdim = hasC && key ? -(savedDimC.get(key) ?? 0) : null;
+            const cPdim = hasC && key ? (Number(cmp2Filters?.month) === 1 ? 0 : -(savedDimCprev.get(key) ?? 0)) : null;
+            const dYdim = hasD && key ? -(savedDimD.get(key) ?? 0) : null;
+            const dPdimV = hasD && key ? (Number(cmp3Filters?.month) === 1 ? 0 : -(savedDimDprev.get(key) ?? 0)) : null;
+const dimCoValsLit = hasMultiCo && key ? perCoTreesLit.map(cot => {
+              if (!cot._leafDimIdx) {
+                const buildLDIcoPdf = (rows) => {
+                  const m = new Map();
+                  (rows || []).forEach(r => {
+                    const l = String(getField(r, 'localAccountCode') ?? '');
+                    const dcd = String(getField(r, 'dimensionCode') ?? '');
+                    if (!l || !dcd || dcd === 'null') return;
+                    const a = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+                    m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+                  });
+                  return m;
+                };
+                cot._leafDimIdx = buildLDIcoPdf((uploadedAccounts || []).filter(r => getCoF(r) === cot._co));
+                cot._prevLeafDimIdx = buildLDIcoPdf(((prevUploadedAccountsRaw?.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts) || []).filter(r => getCoF(r) === cot._co));
+              }
+              const ytdC = -(cot._leafDimIdx.get(key) ?? 0);
+              const prevC = Number(month) === 1 ? 0 : -(cot._prevLeafDimIdx.get(key) ?? 0);
+              return ytdOnly ? ytdC : (ytdC - prevC);
+            }) : [];
+            out.push({
+              code: dc, label: '  '.repeat(depth + 2) + '◆ ' + (dim.name || dim.code || ''),
+              mon: monAdim, ytd: ytdAdim,
+              cMon: bYdim != null ? bYdim - bPdim : null, cYtd: bYdim,
+              c2Mon: cYdim != null ? cYdim - cPdim : null, c2Ytd: cYdim,
+              c3Mon: dYdim != null ? dYdim - dPdimV : null, c3Ytd: dYdim,
+              coVals: dimCoValsLit,
+              depth: depth + 2, isDim: true,
+            });
+          });
+        });
+
+// Journal entries at node level (PL saved PDF) — matches app: only AJE/RJE
+        if (node.code) {
+          const jrns = (journalEntries || []).filter(j => {
+            const acc = String(j.AccountCode ?? j.accountCode ?? '');
+            const jt = String(j.JournalType ?? j.journalType ?? '').toUpperCase();
+            return acc === String(node.code) && (jt === 'AJE' || jt === 'RJE');
+          });
+          if (jrns.length > 0) {
+            out.push({
+              code: '', label: '  '.repeat(depth + 1) + `Journal entries (${jrns.length})`,
+              mon: null, ytd: null, cMon: null, cYtd: null, c2Mon: null, c2Ytd: null, c3Mon: null, c3Ytd: null,
+              depth: depth + 1, isJrn: true, isJrnHeader: true,
+            });
+jrns.forEach(j => {
+              const amt = parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
+              const jrnCo = String(j.CompanyShortName ?? j.companyShortName ?? '');
+              const coVals = hasMultiCo ? selectedCompanies.map(co => jrnCo === co ? -amt : 0) : [];
+              out.push({
+                code: String(j.JournalNumber ?? j.journalNumber ?? ''),
+                label: '  '.repeat(depth + 2) + (j.JournalHeader ?? j.journalHeader ?? ''),
+                mon: -amt, ytd: -amt,
+                cMon: null, cYtd: null, c2Mon: null, c2Ytd: null, c3Mon: null, c3Ytd: null,
+                coVals,
+                depth: depth + 2, isJrn: true,
+              });
+            });
+if (hasB || hasC || hasD) {
+              const aNums = new Set(jrns.map(j => j.JournalNumber ?? j.journalNumber));
+              const seen = new Map();
+              const collect = (idx, period) => {
+                (idx.get(String(node.code)) || []).forEach(j => {
+                  const num = j.JournalNumber ?? j.journalNumber;
+                  if (aNums.has(num)) return;
+                  if (!seen.has(num)) seen.set(num, { jrn: j, periods: { B: null, C: null, D: null } });
+                  seen.get(num).periods[period] = -parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
+                });
+              };
+              if (hasB) collect(jrnByCodeCmpPdf,  'B');
+              if (hasC) collect(jrnByCodeCmp2Pdf, 'C');
+              if (hasD) collect(jrnByCodeCmp3Pdf, 'D');
+              seen.forEach((entry, num) => {
+                ['B','C','D'].forEach(p => {
+                  if (entry.periods[p] != null) return;
+                  const idx = p === 'B' ? jrnByCodeCmpPdf : p === 'C' ? jrnByCodeCmp2Pdf : jrnByCodeCmp3Pdf;
+                  const match = (idx.get(String(node.code)) || []).find(j => (j.JournalNumber ?? j.journalNumber) === num);
+                  if (match) entry.periods[p] = -parseAmt(match.AmountYTD ?? match.amountYTD ?? 0);
+                });
+              });
+              if (seen.size > 0) {
+                out.push({
+                  code: '', label: '  '.repeat(depth + 1) + `↳ B/C/D only (${seen.size})`,
+                  mon: null, ytd: null, cMon: null, cYtd: null, c2Mon: null, c2Ytd: null, c3Mon: null, c3Ytd: null,
+                  depth: depth + 1, isJrn: true, isJrnHeader: true,
+                });
+                seen.forEach((entry, num) => {
+                  const jhdr = entry.jrn.JournalHeader ?? entry.jrn.journalHeader ?? '';
+                  out.push({
+                    code: String(num ?? ''),
+                    label: '  '.repeat(depth + 2) + jhdr,
+                    mon: null, ytd: null,
+                    cMon: entry.periods.B, cYtd: entry.periods.B,
+                    c2Mon: entry.periods.C, c2Ytd: entry.periods.C,
+                    c3Mon: entry.periods.D, c3Ytd: entry.periods.D,
+                    depth: depth + 2, isJrn: true,
+                  });
+                });
+              }
+            }
+          }
+        }
+
+        (node.children || []).forEach(child => pushNode(child, depth + 1));
+      };
+
+      savedPlLiteral.forEach((section) => {
+        const lbl = section.label ?? section.name ?? section.title ?? section.breaker ?? section.breakerLabel ?? section.heading;
+        const col = section.color ?? section.colour ?? section.bg ?? section.background ?? section.fill;
+        if (lbl) {
+          out.push({
+            code: '', label: String(lbl).toUpperCase(),
+            mon: null, ytd: null, cMon: null, cYtd: null, c2Mon: null, c2Ytd: null, c3Mon: null, c3Ytd: null,
+            _isSectionHeader: true, _sectionColor: hexToRgb(col),
+          });
+        }
+        (section.nodes || []).forEach(n => pushNode(n, 0));
+      });
+      return out;
+    };
+
+    // ── Saved literal Balance Sheet row builder ──
+const buildSavedBsRowsLit = () => {
+      if (!Array.isArray(savedBsLiteral) || savedBsLiteral.length === 0) return [];
+
+      const buildSavedBsLDI = (rowsArg) => {
+        const m = new Map();
+        (rowsArg || []).forEach(r => {
+          const l = String(getField(r, 'localAccountCode') ?? '');
+          const dcd = String(getField(r, 'dimensionCode') ?? '');
+          if (!l || !dcd || dcd === 'null') return;
+          const a = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+          m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+        });
+        return m;
+      };
+      const savedBsDimB = bsHasB ? buildSavedBsLDI(bsCmpUploadedAccounts) : new Map();
+      const savedBsDimC = bsHasC ? buildSavedBsLDI(bsCmp2UploadedAccounts) : new Map();
+      const savedBsDimD = bsHasD ? buildSavedBsLDI(bsCmp3UploadedAccounts) : new Map();
+
+      const buildBsAccIdx = (rowsArg) => {
+        const acc = new Map(), dim = new Map();
+        (rowsArg || []).forEach(row => {
+          const code = String(getField(row, 'accountCode') ?? '');
+          if (!code) return;
+          const amt = parseAmt(getField(row, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+          acc.set(code, (acc.get(code) ?? 0) + amt);
+          const dimsStr = String(getField(row, 'Dimensions', 'dimensions') ?? '');
+          if (!dimsStr) return;
+          dimsStr.split('||').map(s => s.trim()).filter(Boolean).forEach(pair => {
+            const i = pair.indexOf(':'); if (i === -1) return;
+            const g = pair.slice(0, i).trim(), v = pair.slice(i + 1).trim();
+            dim.set(`${code}|${g}:${v}`, (dim.get(`${code}|${g}:${v}`) ?? 0) + amt);
+          });
+        });
+        return { acc, dim };
+      };
+      const aBs = buildBsAccIdx(uploadedAccounts);
+      const bBs = bsHasB ? buildBsAccIdx(bsCmpUploadedAccounts) : null;
+      const cBs = bsHasC ? buildBsAccIdx(bsCmp2UploadedAccounts) : null;
+      const dBs = bsHasD ? buildBsAccIdx(bsCmp3UploadedAccounts) : null;
+
+      const sumBsLit = (node, src) => {
+        if (!src) return 0;
+        if (node.dims && node.dims.length > 0) {
+          let total = 0;
+          node.dims.forEach(d => { total += src.dim.get(`${node.code}|${d}`) ?? 0; });
+          return total;
+        }
+        return src.acc.get(String(node.code)) ?? 0;
+      };
+      const sumBsWithKids = (node, src) => {
+        let total = sumBsLit(node, src);
+        if (node.isSum && Array.isArray(node.children) && node.children.length > 0) {
+          node.children.forEach(c => { total += sumBsLit(c, src); });
+        }
+        return total;
+      };
+      const isHl = (node) => savedHighlightedIds && (savedHighlightedIds.has?.(node.id) || savedHighlightedIds.has?.(node.originalId));
+
+      const buildLeafOnce = (rowsArg) => {
+        const m = new Map();
+        (rowsArg || []).forEach(r => {
+          const lac = String(getField(r, 'localAccountCode') ?? '');
+          if (!lac) return;
+          m.set(lac, (m.get(lac) ?? 0) + parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod')));
+        });
+        return m;
+      };
+      const bsBLeaf = bsHasB ? buildLeafOnce(bsCmpUploadedAccounts) : new Map();
+      const bsCLeaf = bsHasC ? buildLeafOnce(bsCmp2UploadedAccounts) : new Map();
+const bsDLeaf = bsHasD ? buildLeafOnce(bsCmp3UploadedAccounts) : new Map();
+
+      const bsTreeByCode = (rows) => {
+        const m = new Map();
+        (function w(nodes) { nodes.forEach(n => { m.set(String(n.code), n); w(n.children || []); }); })(buildTree(groupAccounts, rows || []));
+        return m;
+      };
+
+      const aTreeBs = bsTreeByCode(uploadedAccounts);
+
+// Per-company trees for multi-co BS — defensive
+      const _selectedCoBs = Array.isArray(selectedCompanies) ? selectedCompanies : [];
+      const _uaListBs = Array.isArray(uploadedAccounts) ? uploadedAccounts : [];
+const buildBsLDIcoPdf = (rows) => {
+        const m = new Map();
+        (rows || []).forEach(r => {
+          const l = String(getField(r, 'localAccountCode') ?? '');
+          const dcd = String(getField(r, 'dimensionCode') ?? '');
+          if (!l || !dcd || dcd === 'null') return;
+          const a = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+          m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+        });
+        return m;
+      };
+      const perCoBsTreesLit = hasMultiCo ? _selectedCoBs.map(co => ({
+        tree: bsTreeByCode(_uaListBs.filter(r => getCoF(r) === co)),
+        leafIdx: buildLeafOnce(_uaListBs.filter(r => getCoF(r) === co)),
+        leafDimIdx: buildBsLDIcoPdf(_uaListBs.filter(r => getCoF(r) === co)),
+      })) : [];
+
+      const coValBsFor = (node) => perCoBsTreesLit.map(cot => {
+        const ga = cot.tree.get(String(node.code));
+        let total = ga ? sumNode(ga) : 0;
+        if (node.isSum && Array.isArray(node.children) && node.children.length > 0) {
+          node.children.forEach(ch => {
+            const g = cot.tree.get(String(ch.code));
+            if (g) total += sumNode(g);
+          });
+        }
+        return total;
+      });
+
+      const out = [];
+      const pushNode = (node, depth) => {
+        const a = sumBsWithKids(node, aBs);
+        const bv = bsHasB ? sumBsWithKids(node, bBs) : null;
+        const cv = bsHasC ? sumBsWithKids(node, cBs) : null;
+        const dv = bsHasD ? sumBsWithKids(node, dBs) : null;
+        const hl = isHl(node);
+        out.push({
+          code: String(node.code ?? ''),
+          label: '  '.repeat(depth) + (depth === 0 ? (node.name || '').toUpperCase() : (node.name || '')),
+          total: a, cVal: bv, c2Val: cv, c3Val: dv,
+          coVals: hasMultiCo ? coValBsFor(node) : [],
+          isBold: hl || depth === 0, isHighlighted: hl || depth === 0, depth,
+        });
+
+        const gaNode = aTreeBs.get(String(node.code));
+        const leaves = (gaNode?.uploadLeaves || []).filter(l => l.type !== 'plain');
+        leaves.forEach(leaf => {
+out.push({
+            code: String(leaf.code || ''),
+            label: '  '.repeat(depth + 1) + (leaf.name || ''),
+            total: leaf.amount ?? 0,
+            cVal: bsHasB && leaf.code ? (bsBLeaf.get(String(leaf.code)) ?? 0) : null,
+            c2Val: bsHasC && leaf.code ? (bsCLeaf.get(String(leaf.code)) ?? 0) : null,
+            c3Val: bsHasD && leaf.code ? (bsDLeaf.get(String(leaf.code)) ?? 0) : null,
+            coVals: hasMultiCo && leaf.code ? perCoBsTreesLit.map(cot => cot.leafIdx.get(String(leaf.code)) ?? 0) : [],
+            depth: depth + 1, isLeaf: true,
+          });
+(leaf.children || []).forEach(dim => {
+            const lac = String(leaf.code ?? '');
+            const dc  = String(dim.code ?? '');
+            const key = lac && dc ? `${lac}|${dc}` : null;
+out.push({
+              code: dc, label: '  '.repeat(depth + 2) + '◆ ' + (dim.name || dim.code || ''),
+              total: dim.amount ?? 0,
+              cVal:  bsHasB && key ? (savedBsDimB.get(key) ?? 0) : null,
+              c2Val: bsHasC && key ? (savedBsDimC.get(key) ?? 0) : null,
+              c3Val: bsHasD && key ? (savedBsDimD.get(key) ?? 0) : null,
+              coVals: hasMultiCo && key ? perCoBsTreesLit.map(cot => cot.leafDimIdx.get(key) ?? 0) : [],
+              depth: depth + 2, isDim: true,
+            });
+          });
+        });
+
+// Journal entries at node level (BS saved PDF) — matches app: only AJE/RJE
+        if (node.code) {
+          const jrns = (journalEntries || []).filter(j => {
+            const acc = String(j.AccountCode ?? j.accountCode ?? '');
+            const jt = String(j.JournalType ?? j.journalType ?? '').toUpperCase();
+            return acc === String(node.code) && (jt === 'AJE' || jt === 'RJE');
+          });
+          if (jrns.length > 0) {
+            out.push({
+              code: '', label: '  '.repeat(depth + 1) + `📋 Journal (${jrns.length})`,
+              total: null, cVal: null, c2Val: null, c3Val: null,
+              depth: depth + 1, isJrn: true, isJrnHeader: true,
+            });
+jrns.forEach(j => {
+              const amt = parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
+              const jrnCo = String(j.CompanyShortName ?? j.companyShortName ?? '');
+              const coVals = hasMultiCo ? selectedCompanies.map(co => jrnCo === co ? amt : 0) : [];
+              out.push({
+                code: String(j.JournalNumber ?? j.journalNumber ?? ''),
+                label: '  '.repeat(depth + 2) + (j.JournalHeader ?? j.journalHeader ?? ''),
+                total: amt, cVal: null, c2Val: null, c3Val: null,
+                coVals,
+                depth: depth + 2, isJrn: true,
+              });
+            });
+if (bsHasB || bsHasC || bsHasD) {
+              const aNums = new Set(jrns.map(j => j.JournalNumber ?? j.journalNumber));
+              const seen = new Map();
+              const collect = (idx, period) => {
+                (idx.get(String(node.code)) || []).forEach(j => {
+                  const num = j.JournalNumber ?? j.journalNumber;
+                  if (aNums.has(num)) return;
+                  if (!seen.has(num)) seen.set(num, { jrn: j, periods: { B: null, C: null, D: null } });
+                  seen.get(num).periods[period] = parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
+                });
+              };
+              if (bsHasB) collect(jrnByCodeCmpPdf,  'B');
+              if (bsHasC) collect(jrnByCodeCmp2Pdf, 'C');
+              if (bsHasD) collect(jrnByCodeCmp3Pdf, 'D');
+              seen.forEach((entry, num) => {
+                ['B','C','D'].forEach(p => {
+                  if (entry.periods[p] != null) return;
+                  const idx = p === 'B' ? jrnByCodeCmpPdf : p === 'C' ? jrnByCodeCmp2Pdf : jrnByCodeCmp3Pdf;
+                  const match = (idx.get(String(node.code)) || []).find(j => (j.JournalNumber ?? j.journalNumber) === num);
+                  if (match) entry.periods[p] = parseAmt(match.AmountYTD ?? match.amountYTD ?? 0);
+                });
+              });
+              if (seen.size > 0) {
+                out.push({
+                  code: '', label: '  '.repeat(depth + 1) + `↳ B/C/D only (${seen.size})`,
+                  total: null, cVal: null, c2Val: null, c3Val: null,
+                  depth: depth + 1, isJrn: true, isJrnHeader: true,
+                });
+                seen.forEach((entry, num) => {
+                  const jhdr = entry.jrn.JournalHeader ?? entry.jrn.journalHeader ?? '';
+                  out.push({
+                    code: String(num ?? ''),
+                    label: '  '.repeat(depth + 2) + jhdr,
+                    total: null,
+                    cVal: entry.periods.B,
+                    c2Val: entry.periods.C,
+                    c3Val: entry.periods.D,
+                    depth: depth + 2, isJrn: true,
+                  });
+                });
+              }
+            }
+          }
+        }
+
+        (node.children || []).forEach(child => pushNode(child, depth + 1));
+      };
+
+      savedBsLiteral.forEach((section) => {
+        const lbl = section.label ?? section.name ?? section.title ?? section.breaker ?? section.breakerLabel ?? section.heading;
+        const col = section.color ?? section.colour ?? section.bg ?? section.background ?? section.fill;
+        if (lbl) {
+          out.push({
+            code: '', label: String(lbl).toUpperCase(),
+            total: null, cVal: null, c2Val: null, c3Val: null,
+            _isSectionHeader: true, _sectionColor: hexToRgb(col),
+          });
+        }
+        (section.nodes || []).forEach(n => pushNode(n, 0));
+      });
+      return out;
+    };
+
+const makePlCols = (view) => {
+      // Multi-company: ONLY per-company columns
+      if (hasMultiCo) {
+        const cols = [{ header: 'Code', dataKey: 'code' }, { header: 'Account', dataKey: 'label' }];
+        perCoMaps.forEach((c, i) => cols.push({ header: c.legal, dataKey: `co${i}` }));
+        return cols;
+      }
+      // History: current month + 5 historic months, one col each (uses ytdOnly metric)
+      if (hasHistoryPL) {
+        const cols = [{ header: 'Code', dataKey: 'code' }, { header: 'Account', dataKey: 'label' }];
+        const curLbl = MONTHS.find(m => String(m.value) === String(month))?.label?.slice(0, 3) ?? String(month);
+        cols.push({ header: `${curLbl} ${year}`, dataKey: ytdOnly ? 'ytd' : 'mon' });
+        plHistMaps.forEach((h, i) => {
+          const moLbl = MONTHS.find(m => String(m.value) === String(h.month))?.label?.slice(0, 3) ?? String(h.month);
+          cols.push({ header: `${moLbl} ${h.year}`, dataKey: ytdOnly ? `histYtd${i}` : `histMon${i}` });
+        });
+        return cols;
+      }
+// Default: compare/main (view='monthly' | 'ytd' | undefined for both)
+      const cols = [{ header: 'Code', dataKey: 'code' }, { header: 'Account', dataKey: 'label' }];
+      if (view !== 'ytd') {
+        cols.push({ header: 'Monthly', dataKey: 'mon' });
+        if (hasB) cols.push({ header: 'B Mon', dataKey: 'cMon' }, { header: '±', dataKey: 'devM' }, { header: '± %', dataKey: 'devMP' });
+        if (hasC) cols.push({ header: 'C Mon', dataKey: 'c2Mon' }, { header: '±', dataKey: 'devM2' }, { header: '± %', dataKey: 'devM2P' });
+        if (hasD) cols.push({ header: 'D Mon', dataKey: 'c3Mon' }, { header: '±', dataKey: 'devM3' }, { header: '± %', dataKey: 'devM3P' });
+      }
+      if (view !== 'monthly') {
+        cols.push({ header: 'YTD', dataKey: 'ytd' });
+        if (hasB) cols.push({ header: 'B YTD', dataKey: 'cYtd' }, { header: '±', dataKey: 'devY' }, { header: '± %', dataKey: 'devYP' });
+        if (hasC) cols.push({ header: 'C YTD', dataKey: 'c2Ytd' }, { header: '±', dataKey: 'devY2' }, { header: '± %', dataKey: 'devY2P' });
+        if (hasD) cols.push({ header: 'D YTD', dataKey: 'c3Ytd' }, { header: '±', dataKey: 'devY3' }, { header: '± %', dataKey: 'devY3P' });
+      }
+      return cols;
+    };
+
+const makeBsCols = () => {
+      if (hasMultiCo) {
+        const cols = [{ header: 'Code', dataKey: 'code' }, { header: 'Account', dataKey: 'label' }];
+        perCoMaps.forEach((c, i) => cols.push({ header: c.legal, dataKey: `co${i}` }));
+        return cols;
+      }
+      if (hasHistoryBS) {
+        const cols = [{ header: 'Code', dataKey: 'code' }, { header: 'Account', dataKey: 'label' }];
+        const curLbl = MONTHS.find(m => String(m.value) === String(month))?.label?.slice(0, 3) ?? String(month);
+        cols.push({ header: `${curLbl} ${year}`, dataKey: 'total' });
+        bsHistMaps.forEach((h, i) => {
+          const moLbl = MONTHS.find(m => String(m.value) === String(h.month))?.label?.slice(0, 3) ?? String(h.month);
+          cols.push({ header: `${moLbl} ${h.year}`, dataKey: `hist${i}` });
+        });
+        return cols;
+      }
+      const cols = [{ header: 'Code', dataKey: 'code' }, { header: 'Account', dataKey: 'label' }, { header: 'Actual', dataKey: 'total' }];
+      if (bsHasB) cols.push({ header: 'B', dataKey: 'cVal' }, { header: '±', dataKey: 'devB' }, { header: '± %', dataKey: 'devBP' });
+      if (bsHasC) cols.push({ header: 'C', dataKey: 'c2Val' }, { header: '±', dataKey: 'devC' }, { header: '± %', dataKey: 'devCP' });
+      if (bsHasD) cols.push({ header: 'D', dataKey: 'c3Val' }, { header: '±', dataKey: 'devD' }, { header: '± %', dataKey: 'devDP' });
+      return cols;
+    };
+
+    const toPlRowBody = (r) => {
+      const o = { code: r.code || '', label: r.label, mon: r.mon != null ? plAmt(r.mon) : '', ytd: r.ytd != null ? plAmt(r.ytd) : '', _r: r };
+      if (hasB) { o.cMon = r.cMon != null ? plAmt(r.cMon) : ''; o.devM = r.cMon != null && r.mon != null ? devAmt(r.mon, r.cMon) : ''; o.devMP = r.cMon != null && r.mon != null ? devPct(r.mon, r.cMon) : ''; o.cYtd = r.cYtd != null ? plAmt(r.cYtd) : ''; o.devY = r.cYtd != null && r.ytd != null ? devAmt(r.ytd, r.cYtd) : ''; o.devYP = r.cYtd != null && r.ytd != null ? devPct(r.ytd, r.cYtd) : ''; }
+      if (hasC) { o.c2Mon = r.c2Mon != null ? plAmt(r.c2Mon) : ''; o.devM2 = r.c2Mon != null && r.mon != null ? devAmt(r.mon, r.c2Mon) : ''; o.devM2P = r.c2Mon != null && r.mon != null ? devPct(r.mon, r.c2Mon) : ''; o.c2Ytd = r.c2Ytd != null ? plAmt(r.c2Ytd) : ''; o.devY2 = r.c2Ytd != null && r.ytd != null ? devAmt(r.ytd, r.c2Ytd) : ''; o.devY2P = r.c2Ytd != null && r.ytd != null ? devPct(r.ytd, r.c2Ytd) : ''; }
+if (hasD) { o.c3Mon = r.c3Mon != null ? plAmt(r.c3Mon) : ''; o.devM3 = r.c3Mon != null && r.mon != null ? devAmt(r.mon, r.c3Mon) : ''; o.devM3P = r.c3Mon != null && r.mon != null ? devPct(r.mon, r.c3Mon) : ''; o.c3Ytd = r.c3Ytd != null ? plAmt(r.c3Ytd) : ''; o.devY3 = r.c3Ytd != null && r.ytd != null ? devAmt(r.ytd, r.c3Ytd) : ''; o.devY3P = r.c3Ytd != null && r.ytd != null ? devPct(r.ytd, r.c3Ytd) : ''; }
+      if (Array.isArray(r.histVals)) r.histVals.forEach((h, i) => { o[`histMon${i}`] = h.mon != null ? plAmt(h.mon) : ''; o[`histYtd${i}`] = h.ytd != null ? plAmt(h.ytd) : ''; });
+      if (Array.isArray(r.coVals)) r.coVals.forEach((v, i) => { o[`co${i}`] = v != null ? plAmt(v) : ''; });
+      return o;
+    };
+
+    const toBsRowBody = (r) => {
+      const o = { code: r.code || '', label: r.label, total: r.total != null ? fmtN(r.total) : '', _r: r };
+      if (bsHasB) { o.cVal = r.cVal != null ? fmtN(r.cVal) : ''; o.devB = r.cVal != null && r.total != null ? devAmt(r.total, r.cVal) : ''; o.devBP = r.cVal != null && r.total != null ? devPct(r.total, r.cVal) : ''; }
+      if (bsHasC) { o.c2Val = r.c2Val != null ? fmtN(r.c2Val) : ''; o.devC = r.c2Val != null && r.total != null ? devAmt(r.total, r.c2Val) : ''; o.devCP = r.c2Val != null && r.total != null ? devPct(r.total, r.c2Val) : ''; }
+if (bsHasD) { o.c3Val = r.c3Val != null ? fmtN(r.c3Val) : ''; o.devD = r.c3Val != null && r.total != null ? devAmt(r.total, r.c3Val) : ''; o.devDP = r.c3Val != null && r.total != null ? devPct(r.total, r.c3Val) : ''; }
+      if (Array.isArray(r.histVals)) r.histVals.forEach((v, i) => { o[`hist${i}`] = v != null ? fmtN(v) : ''; });
+      if (Array.isArray(r.coVals)) r.coVals.forEach((v, i) => { o[`co${i}`] = v != null ? fmtN(v) : ''; });
+      return o;
+    };
+
+    const styleRowCell = (data, isPL) => {
+      if (data.section === 'head') {
+        data.cell.styles.halign = ['code','label'].includes(data.column.dataKey) ? 'left' : 'right';
+        const k = data.column.dataKey;
+        if (isPL) {
+          if (['cMon','devM','devMP','cYtd','devY','devYP'].includes(k)) data.cell.styles.fillColor = REDDK;
+          if (['c2Mon','devM2','devM2P','c2Ytd','devY2','devY2P'].includes(k)) data.cell.styles.fillColor = GRNDK;
+          if (['c3Mon','devM3','devM3P','c3Ytd','devY3','devY3P'].includes(k)) data.cell.styles.fillColor = PURPLEDK;
+        } else {
+          if (['cVal','devB','devBP'].includes(k)) data.cell.styles.fillColor = REDDK;
+          if (['c2Val','devC','devCP'].includes(k)) data.cell.styles.fillColor = GRNDK;
+          if (['c3Val','devD','devDP'].includes(k)) data.cell.styles.fillColor = PURPLEDK;
+        }
+        return;
+      }
+const r = data.row.raw._r; if (!r) return;
+      const col = data.column.dataKey;
+      if (r._isSectionHeader) {
+        data.cell.styles.fillColor = r._sectionColor || NAVYDK;
+        data.cell.styles.textColor = WHITE;
+        data.cell.styles.fontStyle = 'bold';
+        data.cell.styles.fontSize = 7.5;
+        if (col === 'label') data.cell.styles.halign = 'left';
+        return;
+      }
+      if (r.isHighlighted) { data.cell.styles.fillColor = LIGHT; data.cell.styles.fontStyle = 'bold'; if (['code','label'].includes(col)) data.cell.styles.textColor = NAVY; }
+      else if (r.isBold) data.cell.styles.fontStyle = 'bold';
+      if (r.isDim) data.cell.styles.textColor = AMBER;
+      if (r.isJrn && !r.isJrnHeader) data.cell.styles.textColor = [100,110,200];
+      if (r.isJrnHeader) { data.cell.styles.textColor = [80,90,180]; data.cell.styles.fontStyle = 'bold'; }
+      if (r.isLeaf) data.cell.styles.textColor = TEXT_MUT;
+      if (col === 'code') { data.cell.styles.font = 'courier'; data.cell.styles.textColor = r.isHighlighted ? NAVY : GRAY; data.cell.styles.fontStyle = 'normal'; data.cell.styles.fontSize = 5.5; }
+      if (!['code','label'].includes(col)) data.cell.styles.halign = 'right';
+      const isPos = v => typeof v === 'string' && !v.startsWith('(') && v !== '—' && v !== '';
+      const isNeg = v => typeof v === 'string' && v.startsWith('(');
+      const v = data.cell.text[0];
+      if (isPL) {
+        if (['devM','devY','devM2','devY2','devM3','devY3'].includes(col)) data.cell.styles.textColor = isPos(v) ? GRN : isNeg(v) ? RED : GRAY;
+        if (['devMP','devYP','devM2P','devY2P','devM3P','devY3P'].includes(col)) { data.cell.styles.textColor = isPos(v) ? GRN : isNeg(v) ? RED : GRAY; data.cell.styles.fontStyle = 'bold'; }
+        if (['cMon','cYtd'].includes(col)) data.cell.styles.textColor = r.isBold ? REDDK : RED;
+        if (['c2Mon','c2Ytd'].includes(col)) data.cell.styles.textColor = r.isBold ? GRNDK : GRN;
+        if (['c3Mon','c3Ytd'].includes(col)) data.cell.styles.textColor = r.isBold ? PURPLEDK : PURPLE;
+      } else {
+        if (['devB','devC','devD'].includes(col)) data.cell.styles.textColor = isPos(v) ? GRN : isNeg(v) ? RED : GRAY;
+        if (['devBP','devCP','devDP'].includes(col)) { data.cell.styles.textColor = isPos(v) ? GRN : isNeg(v) ? RED : GRAY; data.cell.styles.fontStyle = 'bold'; }
+        if (col === 'cVal') data.cell.styles.textColor = r.isBold ? REDDK : RED;
+        if (col === 'c2Val') data.cell.styles.textColor = r.isBold ? GRNDK : GRN;
+        if (col === 'c3Val') data.cell.styles.textColor = r.isBold ? PURPLEDK : PURPLE;
+      }
+    };
+
+const plColStyles = (view) => {
+      const usable = W - 16;
+      const codeW = 22;
+      if (hasMultiCo) {
+        const n = perCoMaps.length;
+        const labelW = Math.max(60, usable * 0.32);
+        const valW = (usable - codeW - labelW) / n;
+        const s = { code: { cellWidth: codeW, halign: 'left' }, label: { cellWidth: labelW, halign: 'left' } };
+        for (let i = 0; i < n; i++) s[`co${i}`] = { cellWidth: valW, halign: 'right' };
+        return s;
+      }
+      if (hasHistoryPL) {
+        const n = 1 + plHistMaps.length;
+        const labelW = Math.max(60, usable * 0.30);
+        const valW = (usable - codeW - labelW) / n;
+        const s = { code: { cellWidth: codeW, halign: 'left' }, label: { cellWidth: labelW, halign: 'left' } };
+        s.mon = { cellWidth: valW, halign: 'right' };
+        s.ytd = { cellWidth: valW, halign: 'right' };
+        for (let i = 0; i < plHistMaps.length; i++) {
+          s[`histMon${i}`] = { cellWidth: valW, halign: 'right' };
+          s[`histYtd${i}`] = { cellWidth: valW, halign: 'right' };
+        }
+        return s;
+      }
+const cc = (hasB ? 1 : 0) + (hasC ? 1 : 0) + (hasD ? 1 : 0);
+      const sides = view ? 1 : 2;
+      const valW = view ? 22 : (cc === 0 ? usable * 0.18 : 13);
+      const diffW = view ? 18 : 11;
+      const pctW = view ? 14 : 9;
+      const labelW = usable - codeW - (cc === 0 ? valW * sides : (valW * sides + sides * cc * (valW + diffW + pctW)));
+      const s = { code: { cellWidth: codeW, halign: 'left' }, label: { cellWidth: Math.max(40, labelW), halign: 'left' }, mon: { cellWidth: valW, halign: 'right' }, ytd: { cellWidth: valW, halign: 'right' } };
+      [['B','cMon','devM','devMP','cYtd','devY','devYP', hasB],['C','c2Mon','devM2','devM2P','c2Ytd','devY2','devY2P', hasC],['D','c3Mon','devM3','devM3P','c3Ytd','devY3','devY3P', hasD]].forEach(([,a,b,c,d,e,f,en]) => { if (en) { s[a] = { cellWidth: valW, halign: 'right' }; s[b] = { cellWidth: diffW, halign: 'right' }; s[c] = { cellWidth: pctW, halign: 'right' }; s[d] = { cellWidth: valW, halign: 'right' }; s[e] = { cellWidth: diffW, halign: 'right' }; s[f] = { cellWidth: pctW, halign: 'right' }; }});
+      return s;
+    };
+
+const bsColStyles = () => {
+      const usable = W - 16;
+      const codeW = 22;
+      if (hasMultiCo) {
+        const n = perCoMaps.length;
+        const labelW = Math.max(70, usable * 0.32);
+        const valW = (usable - codeW - labelW) / n;
+        const s = { code: { cellWidth: codeW, halign: 'left' }, label: { cellWidth: labelW, halign: 'left' } };
+        for (let i = 0; i < n; i++) s[`co${i}`] = { cellWidth: valW, halign: 'right' };
+        return s;
+      }
+      if (hasHistoryBS) {
+        const n = 1 + bsHistMaps.length;
+        const labelW = Math.max(70, usable * 0.30);
+        const valW = (usable - codeW - labelW) / n;
+        const s = { code: { cellWidth: codeW, halign: 'left' }, label: { cellWidth: labelW, halign: 'left' } };
+        s.total = { cellWidth: valW, halign: 'right' };
+        for (let i = 0; i < bsHistMaps.length; i++) s[`hist${i}`] = { cellWidth: valW, halign: 'right' };
+        return s;
+      }
+      const cc = (bsHasB ? 1 : 0) + (bsHasC ? 1 : 0) + (bsHasD ? 1 : 0);
+      const valW = 18, diffW = 14, pctW = 11;
+      const labelW = usable - codeW - valW - cc * (valW + diffW + pctW);
+      const s = { code: { cellWidth: codeW, halign: 'left' }, label: { cellWidth: Math.max(50, labelW), halign: 'left' }, total: { cellWidth: valW, halign: 'right' } };
+      [['cVal','devB','devBP', bsHasB],['c2Val','devC','devCP', bsHasC],['c3Val','devD','devDP', bsHasD]].forEach(([a,b,c,en]) => { if (en) { s[a] = { cellWidth: valW, halign: 'right' }; s[b] = { cellWidth: diffW, halign: 'right' }; s[c] = { cellWidth: pctW, halign: 'right' }; }});
+      for (let i = 0; i < bsHistMaps.length; i++) s[`hist${i}`] = { cellWidth: valW, halign: 'right' };
+      return s;
+    };
+
+    const renderPage = (title, isFirst, cols, body, isPL, colStyles, useCmpFlag = null, useLabels = null) => {
+      const startY = drawHeader(title, isFirst, useCmpFlag, useLabels);
+      const isCompact = (useCmpFlag ?? hasB) || (useCmpFlag === null && bsHasB && title.startsWith('Balance'));
+      autoTable(doc, {
+        startY, columns: cols, body,
+        margin: { left: 8, right: 8, bottom: 10 },
+        tableWidth: 'auto',
+        styles: { fontSize: isCompact ? 5.8 : 7.5, cellPadding: { top: isCompact ? 1.6 : 2.5, bottom: isCompact ? 1.6 : 2.5, left: isCompact ? 1.6 : 3, right: isCompact ? 1.6 : 3 }, overflow: 'linebreak', lineColor: GRAYLT, lineWidth: 0.1, font: 'helvetica', textColor: TEXTDK },
+        headStyles: { fillColor: NAVY, textColor: WHITE, fontStyle: 'bold', fontSize: isCompact ? 5.5 : 7, cellPadding: { top: 3, bottom: 3, left: isCompact ? 2 : 3, right: isCompact ? 2 : 3 }, lineWidth: 0 },
+        columnStyles: colStyles,
+        alternateRowStyles: { fillColor: STRIPE },
+        didParseCell: (d) => styleRowCell(d, isPL),
+        didDrawPage: () => drawFooterBrand(),
+      });
+    };
+
+let isFirst = true;
+    const hasSavedPlLit = Array.isArray(savedPlLiteral) && savedPlLiteral.length > 0;
+    const hasSavedBsLit = Array.isArray(savedBsLiteral) && savedBsLiteral.length > 0;
+
+    const renderPlForChunk = (chunkIdx) => {
+      if (hasMultiCo) perCoMaps = buildPerCoMaps(coChunksAll[chunkIdx]);
+      const chunkSuffix = hasMultiCo && coChunksAll.length > 1
+        ? ` (cos ${chunkIdx * MULTI_CO_CHUNK + 1}–${chunkIdx * MULTI_CO_CHUNK + coChunksAll[chunkIdx].length})`
+        : '';
+
+      if (hasSavedPlLit) {
+        if (opts.plSaved !== false) {
+          const savedPlBody = buildSavedPlRowsLit().map(toPlRowBody);
+          if (hasB || hasC || hasD) {
+            renderPage(`Profit & Loss — Monthly${chunkSuffix}`, isFirst, makePlCols('monthly'), savedPlBody, true, plColStyles('monthly')); isFirst = false;
+            renderPage(`Profit & Loss — YTD${chunkSuffix}`,     isFirst, makePlCols('ytd'),     savedPlBody, true, plColStyles('ytd'));     isFirst = false;
+          } else {
+            renderPage(`Profit & Loss${chunkSuffix}`, isFirst, makePlCols(), savedPlBody, true, plColStyles()); isFirst = false;
+          }
+        }
+      } else {
+        if (opts.plSummary !== false) {
+          if (hasB || hasC || hasD) {
+            renderPage(`P&L — Summary — Monthly${chunkSuffix}`, isFirst, makePlCols('monthly'), buildPlSummaryRows().map(toPlRowBody), true, plColStyles('monthly')); isFirst = false;
+            renderPage(`P&L — Summary — YTD${chunkSuffix}`,     isFirst, makePlCols('ytd'),     buildPlSummaryRows().map(toPlRowBody), true, plColStyles('ytd'));     isFirst = false;
+          } else {
+            renderPage(`P&L — Summary${chunkSuffix}`, isFirst, makePlCols(), buildPlSummaryRows().map(toPlRowBody), true, plColStyles()); isFirst = false;
+          }
+        }
+        if (opts.plDetailed !== false) {
+          if (hasB || hasC || hasD) {
+            renderPage(`P&L — Detailed — Monthly${chunkSuffix}`, isFirst, makePlCols('monthly'), buildPlRows(tree).map(toPlRowBody), true, plColStyles('monthly')); isFirst = false;
+            renderPage(`P&L — Detailed — YTD${chunkSuffix}`,     isFirst, makePlCols('ytd'),     buildPlRows(tree).map(toPlRowBody), true, plColStyles('ytd'));     isFirst = false;
+          } else {
+            renderPage(`P&L — Detailed${chunkSuffix}`, isFirst, makePlCols(), buildPlRows(tree).map(toPlRowBody), true, plColStyles()); isFirst = false;
+          }
+        }
+      }
+    };
+
+    if (hasMultiCo && coChunksAll.length > 1) {
+      coChunksAll.forEach((_, i) => renderPlForChunk(i));
+    } else {
+      renderPlForChunk(0);
+    }
+
+    const isAssetsRoot = n => (n.name ?? '').toLowerCase().includes('asset') || (n.name ?? '').toLowerCase().includes('activo');
+
+const renderBsForChunk = (chunkIdx) => {
+      if (hasMultiCo) perCoMaps = buildPerCoMaps(coChunksAll[chunkIdx]);
+      const chunkSuffix = hasMultiCo && coChunksAll.length > 1 ? ` (cos ${chunkIdx * MULTI_CO_CHUNK + 1}–${chunkIdx * MULTI_CO_CHUNK + coChunksAll[chunkIdx].length})` : '';
+
+      if (hasSavedBsLit) {
+        if (opts.bsSaved !== false) { renderPage(`Balance Sheet${chunkSuffix}`, isFirst, makeBsCols(), buildSavedBsRowsLit().map(toBsRowBody), false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
+      } else {
+        if (opts.bsSummary !== false) { renderPage(`Balance Sheet — Summary${chunkSuffix}`, isFirst, makeBsCols(), buildBsRows().map(toBsRowBody),                       false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
+        if (opts.bsAssets  !== false) { renderPage(`Balance Sheet — Assets${chunkSuffix}`,   isFirst, makeBsCols(), buildBsRows(isAssetsRoot).map(toBsRowBody),          false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
+        if (opts.bsEquity  !== false) { renderPage(`Balance Sheet — Equity & Liabilities${chunkSuffix}`, isFirst, makeBsCols(), buildBsRows(n => !isAssetsRoot(n)).map(toBsRowBody), false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
+      }
+    };
+
+    if (hasMultiCo && coChunksAll.length > 1) {
+      coChunksAll.forEach((_, i) => renderBsForChunk(i));
+    } else {
+      renderBsForChunk(0);
+    }
+
+    // Dims & Journal
+    if (opts.dimJournal !== false && (uploadedAccounts.some(r => getField(r, 'dimensionCode')) || (journalEntries?.length > 0))) {
+      const startY = drawHeader('Dimensions & Journal', isFirst); isFirst = false;
+      const dimBody = uploadedAccounts.filter(r => getField(r, 'dimensionCode')).map(r => ({
+        acc: `${String(getField(r, 'accountCode') ?? '')}  ${String(getField(r, 'accountName') ?? '')}`.trim(),
+        dim: `${String(getField(r, 'dimensionCode') ?? '')}  ${String(getField(r, 'dimensionName') ?? '')}`.trim(),
+        lac: String(getField(r, 'localAccountCode') ?? '') + (getField(r, 'localAccountName') ? ' ' + getField(r, 'localAccountName') : ''),
+        amt: fmtN(parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'))),
+        co: String(getField(r, 'companyShortName', 'CompanyShortName') ?? ''),
+        cur: String(getField(r, 'CurrencyCode', 'currencyCode') ?? ''),
+      }));
+      if (dimBody.length > 0) {
+        autoTable(doc, { startY, columns: [{ header: 'Account', dataKey: 'acc' }, { header: 'Dimension', dataKey: 'dim' }, { header: 'Local Account', dataKey: 'lac' }, { header: 'Amount YTD', dataKey: 'amt' }, { header: 'Company', dataKey: 'co' }, { header: 'Currency', dataKey: 'cur' }],
+          body: dimBody, margin: { left: 8, right: 8, bottom: 10 }, tableWidth: W - 16,
+          styles: { fontSize: 6.5, cellPadding: 2, overflow: 'ellipsize', lineColor: GRAYLT, lineWidth: 0.1, font: 'helvetica', textColor: TEXTDK },
+          headStyles: { fillColor: AMBER, textColor: WHITE, fontStyle: 'bold', fontSize: 6, lineWidth: 0 },
+          alternateRowStyles: { fillColor: [255, 248, 235] },
+          didParseCell: (d) => { if (d.section !== 'head' && d.column.dataKey === 'amt') d.cell.styles.halign = 'right'; },
+          didDrawPage: () => drawFooterBrand(),
+        });
+      }
+      if (journalEntries?.length > 0) {
+        const jY = (doc.lastAutoTable?.finalY ?? startY) + 6;
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(...NAVY);
+        doc.text('Journal Entries', 8, jY + 4);
+        const jBody = journalEntries.map(j => ({
+          jn: String(j.JournalNumber ?? j.journalNumber ?? ''), jh: String(j.JournalHeader ?? j.journalHeader ?? ''),
+          acc: `${String(j.AccountCode ?? j.accountCode ?? '')}  ${String(j.AccountName ?? j.accountName ?? '')}`.trim(),
+          jt: String(j.JournalType ?? j.journalType ?? ''), dim: String(j.DimensionName ?? j.dimensionName ?? ''),
+          cp: String(j.CounterpartyShortName ?? j.counterpartyShortName ?? ''),
+          amt: fmtN(parseAmt(j.AmountYTD ?? j.amountYTD ?? 0)),
+          cur: String(j.CurrencyCode ?? j.currencyCode ?? ''),
         }));
-        autoTable(doc,{
-          startY:jY+7,columns:jCols,body:jBody,
-          margin:{left:8,right:8,bottom:12},tableWidth:W-16,
-          styles:{fontSize:6.5,cellPadding:{top:2,bottom:2,left:3,right:3},overflow:'ellipsize',lineColor:GRAYLT,lineWidth:0.1,font:'helvetica',textColor:TEXTDK},
-          headStyles:{fillColor:[60,50,160],textColor:WHITE,fontStyle:'bold',fontSize:6,lineWidth:0},
-          alternateRowStyles:{fillColor:[245,243,255]},
-          columnStyles:{jn:{cellWidth:18},jh:{cellWidth:35},acc:{cellWidth:38},jt:{cellWidth:12},dim:{cellWidth:20},cp:{cellWidth:20},amt:{cellWidth:20,halign:'right'},cur:{cellWidth:10}},
-          didParseCell:data=>{if(data.section!=='head'&&data.column.dataKey==='amt')data.cell.styles.halign='right';},
-          didDrawPage:()=>drawFooter(),
+        autoTable(doc, { startY: jY + 7, columns: [{ header: 'Journal #', dataKey: 'jn' }, { header: 'Header', dataKey: 'jh' }, { header: 'Account', dataKey: 'acc' }, { header: 'Type', dataKey: 'jt' }, { header: 'Dimension', dataKey: 'dim' }, { header: 'Counterparty', dataKey: 'cp' }, { header: 'Amount YTD', dataKey: 'amt' }, { header: 'Currency', dataKey: 'cur' }],
+          body: jBody, margin: { left: 8, right: 8, bottom: 10 }, tableWidth: W - 16,
+          styles: { fontSize: 6.5, cellPadding: 2, overflow: 'ellipsize', lineColor: GRAYLT, lineWidth: 0.1, font: 'helvetica', textColor: TEXTDK },
+          headStyles: { fillColor: [60, 50, 160], textColor: WHITE, fontStyle: 'bold', fontSize: 6, lineWidth: 0 },
+          alternateRowStyles: { fillColor: [245, 243, 255] },
+          didParseCell: (d) => { if (d.section !== 'head' && d.column.dataKey === 'amt') d.cell.styles.halign = 'right'; },
+          didDrawPage: () => drawFooterBrand(),
         });
       }
     }
 
-    doc.save(`Konsolidator_${year}_${String(month).padStart(2,'0')}.pdf`);
+    // ── Insert Cover at page 1 ──
+    doc.insertPage(1); doc.setPage(1);
+    doc.setFillColor(...NAVY); doc.rect(0, 0, W, H, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(38); doc.setTextColor(...WHITE);
+    doc.text('KONSOLIDATOR', W / 2, H / 4, { align: 'center' });
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(14); doc.setTextColor(180, 200, 255);
+    doc.text('Financial Report', W / 2, H / 4 + 12, { align: 'center' });
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(...WHITE);
+    doc.text('PRIMARY PERIOD', W / 2, H / 4 + 28, { align: 'center' });
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(200, 215, 255);
+    const aLines = doc.splitTextToSize(aLabel, W - 40);
+    let aY = H / 4 + 34;
+    aLines.forEach(l => { doc.text(l, W / 2, aY, { align: 'center' }); aY += 5; });
+    if (hasB || bsHasB) {
+      let cY = aY + 6;
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(...WHITE);
+      doc.text('COMPARE PERIODS', W / 2, cY, { align: 'center' });
+      cY += 6;
+      const cmpLine = (letter, label, color) => {
+        if (!label) return;
+        doc.setFillColor(...color); doc.roundedRect(20, cY, W - 40, 5, 1, 1, 'F');
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(6); doc.setTextColor(...WHITE);
+        doc.text(letter, 23, cY + 3.5);
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(6);
+        doc.text(label, 29, cY + 3.5);
+        cY += 6.5;
+      };
+      if (hasB) cmpLine('B', bLabel, REDDK);
+      if (hasC) cmpLine('C', cLabel, GRNDK);
+      if (hasD) cmpLine('D', dLabel, PURPLEDK);
+      if (bsHasB && !hasB) cmpLine('B (BS)', bsBLabel, REDDK);
+      if (bsHasC && !hasC) cmpLine('C (BS)', bsCLabel, GRNDK);
+      if (bsHasD && !hasD) cmpLine('D (BS)', bsDLabel, PURPLEDK);
+    }
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(150, 175, 230);
+    const dateStr = new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
+    doc.text(`Generated  ·  ${dateStr}`, W / 2, H - 12, { align: 'center' });
+
+    // ── Insert TOC at page 2 ──
+    doc.insertPage(2); doc.setPage(2);
+    doc.setFillColor(...WHITE); doc.rect(0, 0, W, H, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(22); doc.setTextColor(...NAVY);
+    doc.text('Table of Contents', W / 2, 30, { align: 'center' });
+    doc.setDrawColor(...NAVY); doc.setLineWidth(0.5);
+    doc.line(W / 2 - 22, 33, W / 2 + 22, 33);
+    let tocY = 55;
+    sections.forEach((s, i) => {
+      const adjustedPage = s.page + 2;
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...NAVY);
+      doc.text(`${String(i + 1).padStart(2, '0')}`, 30, tocY);
+      doc.setFont('helvetica', 'normal'); doc.setTextColor(...TEXTDK);
+      doc.text(s.title, 45, tocY);
+      doc.setDrawColor(...GRAYLT); doc.setLineWidth(0.3); doc.setLineDashPattern([0.5, 1], 0);
+      doc.line(45 + doc.getTextWidth(s.title) + 4, tocY - 1, W - 50, tocY - 1);
+      doc.setLineDashPattern([], 0);
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(...NAVY);
+      doc.text(String(adjustedPage), W - 30, tocY, { align: 'right' });
+      try { doc.link(30, tocY - 5, W - 60, 7, { pageNumber: adjustedPage }); } catch {}
+      tocY += 11;
+    });
+
+    // ── Stamp page numbers on all content pages (3+) ──
+    const totalPages = doc.internal.getNumberOfPages();
+    for (let i = 3; i <= totalPages; i++) {
+      doc.setPage(i);
+      doc.setFillColor(...NAVYDK); doc.roundedRect(W - 26, 4, 22, 6, 1.2, 1.2, 'F');
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(6); doc.setTextColor(160, 185, 255);
+      doc.text(`p. ${i} / ${totalPages}`, W - 15, 8, { align: 'center' });
+      doc.setFillColor(...LIGHT); doc.rect(W - 35, H - 7, 35, 7, 'F');
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5); doc.setTextColor(...NAVY);
+      doc.text(`${i} / ${totalPages}`, W - 8, H - 2.8, { align: 'right' });
+    }
+
+    doc.save(`Konsolidator_${year}_${String(month).padStart(2, '0')}.pdf`);
   }
 
-  const load=src=>new Promise((res,rej)=>{
-    if(document.querySelector(`script[src="${src}"]`)){res();return;}
-    const s=document.createElement('script');s.src=src;s.onload=res;s.onerror=rej;document.head.appendChild(s);
+  const load = src => new Promise((res, rej) => {
+    if (document.querySelector(`script[src="${src}"]`)) { res(); return; }
+    const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej;
+    document.head.appendChild(s);
   });
-
   load('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
-    .then(()=>load('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js'))
-    .then(()=>{
-      const{jsPDF}=window.jspdf;
-      doGenerate(jsPDF,window.jspdf.jsPDF.autoTable??((d,opts)=>d.autoTable(opts)));
-    })
-    .catch(e=>alert('Could not load PDF library: '+e.message));
+    .then(() => load('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js'))
+    .then(() => { const { jsPDF } = window.jspdf; doGenerate(jsPDF, window.jspdf.jsPDF.autoTable ?? ((d, opts) => d.autoTable(opts))); })
+    .catch(e => alert('Could not load PDF library: ' + e.message));
 }
+
+
 function PLStatement({
   externalExpandedMap, externalSetExpandedMap,
   multiCompany = false,
@@ -3155,23 +6392,27 @@ const [historyMonthsInternal, setHistoryMonthsInternal] = useState([]);
     onHistoryMonthsChange?.(next);
   }, [onHistoryMonthsChange]);
   const [historyLoading, setHistoryLoading] = useState(false);
-
-  const fetchHistoryMonth = useCallback(async (y, mo) => {
-    if (!token || !source || !structure || !y || !mo) return { data: [], prevData: [] };
+const fetchHistoryMonth = useCallback(async (y, mo) => {
+    if (!token || !source || !structure || !y || !mo) return { data: [], prevData: [], journals: [] };
     const h = { Authorization: `Bearer ${token}`, Accept: "application/json" };
     const buildFilter = (yy, mm) => `Year eq ${yy} and Month eq ${mm} and Source eq '${source}' and GroupStructure eq '${structure}'`;
     try {
-      const resA = await fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(buildFilter(y, mo))}`, { headers: h });
+      const [resA, resJ] = await Promise.all([
+        fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(buildFilter(y, mo))}`, { headers: h }),
+        fetch(`${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(buildFilter(y, mo))}`, { headers: h }),
+      ]);
       const jsonA = resA.ok ? await resA.json() : { value: [] };
       const data = jsonA.value ?? (Array.isArray(jsonA) ? jsonA : []);
+      const jsonJ = resJ.ok ? await resJ.json() : { value: [] };
+      const journals = jsonJ.value ?? (Array.isArray(jsonJ) ? jsonJ : []);
       let prev = [];
       if (Number(mo) !== 1) {
         const resB = await fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(buildFilter(y, Number(mo) - 1))}`, { headers: h });
         const jsonB = resB.ok ? await resB.json() : { value: [] };
         prev = jsonB.value ?? (Array.isArray(jsonB) ? jsonB : []);
       }
-      return { data, prevData: prev };
-    } catch { return { data: [], prevData: [] }; }
+      return { data, prevData: prev, journals };
+    } catch { return { data: [], prevData: [], journals: [] }; }
   }, [token, source, structure]);
 
 const toggleHistory = useCallback(async () => {
@@ -3192,9 +6433,9 @@ const targets = [];
       targets.push({ year: y, month: m });
     }
     // Fetch sequentially, push as each resolves
-    for (const t of targets) {
-      const { data, prevData } = await fetchHistoryMonth(t.year, t.month);
-      setHistoryMonths(prev => [...prev, { year: t.year, month: t.month, data, prevData }]);
+for (const t of targets) {
+      const { data, prevData, journals } = await fetchHistoryMonth(t.year, t.month);
+      setHistoryMonths(prev => [...prev, { year: t.year, month: t.month, data, prevData, journals }]);
     }
 setHistoryLoading(false);
   }, [compareMode, multiCompany, historyExpanded, year, month, fetchHistoryMonth]);
@@ -3270,6 +6511,42 @@ const getPrevDimAmt = useCallback((localCode, dimCode) => {
   if (!dimMap) return 0;
   return dimMap.get(String(dimCode ?? "__none__")) ?? 0;
 }, [prevLeafIndex, month]);
+
+const cmpLeafDimIndex = useMemo(() => {
+  const idx = new Map();
+  (cmpUploadedAccounts || []).forEach(row => {
+    const lac = String(getField(row, "localAccountCode") ?? "");
+    const dc  = String(getField(row, "dimensionCode") ?? "");
+    if (!lac || !dc || dc === "null") return;
+    const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+    idx.set(`${lac}|${dc}`, (idx.get(`${lac}|${dc}`) ?? 0) + amt);
+  });
+  return idx;
+}, [cmpUploadedAccounts]);
+
+const cmp2LeafDimIndex = useMemo(() => {
+  const idx = new Map();
+  (cmp2UploadedAccounts || []).forEach(row => {
+    const lac = String(getField(row, "localAccountCode") ?? "");
+    const dc  = String(getField(row, "dimensionCode") ?? "");
+    if (!lac || !dc || dc === "null") return;
+    const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+    idx.set(`${lac}|${dc}`, (idx.get(`${lac}|${dc}`) ?? 0) + amt);
+  });
+  return idx;
+}, [cmp2UploadedAccounts]);
+
+const cmp3LeafDimIndex = useMemo(() => {
+  const idx = new Map();
+  (cmp3UploadedAccounts || []).forEach(row => {
+    const lac = String(getField(row, "localAccountCode") ?? "");
+    const dc  = String(getField(row, "dimensionCode") ?? "");
+    if (!lac || !dc || dc === "null") return;
+    const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+    idx.set(`${lac}|${dc}`, (idx.get(`${lac}|${dc}`) ?? 0) + amt);
+  });
+  return idx;
+}, [cmp3UploadedAccounts]);
 
 const cmpLeafIndex = useMemo(() => {
   const idx = new Map();
@@ -3431,6 +6708,48 @@ const getLeafValForCompany = useCallback((localCode, co, isYtd) => {
   const prev = perCompanyPrevLeafIdx?.get(co)?.get(String(localCode)) ?? 0;
   return -(ytd - prev);
 }, [perCompanyLeafIdx, perCompanyPrevLeafIdx, month]);
+
+const perCompanyLeafDimIdx = useMemo(() => {
+  if (!multiCompany) return null;
+  const result = new Map();
+  selectedCompanies.forEach(co => {
+    const idx = new Map();
+    (perCompanyData?.get(co) || []).forEach(row => {
+      const lac = String(getField(row, "localAccountCode") ?? "");
+      const dc  = String(getField(row, "dimensionCode") ?? "");
+      if (!lac || !dc || dc === "null") return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      idx.set(`${lac}|${dc}`, (idx.get(`${lac}|${dc}`) ?? 0) + amt);
+    });
+    result.set(co, idx);
+  });
+  return result;
+}, [multiCompany, perCompanyData, selectedCompanies]);
+
+const perCompanyPrevLeafDimIdx = useMemo(() => {
+  if (!multiCompany) return null;
+  const result = new Map();
+  selectedCompanies.forEach(co => {
+    const idx = new Map();
+    (perCompanyPrevData?.get(co) || []).forEach(row => {
+      const lac = String(getField(row, "localAccountCode") ?? "");
+      const dc  = String(getField(row, "dimensionCode") ?? "");
+      if (!lac || !dc || dc === "null") return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      idx.set(`${lac}|${dc}`, (idx.get(`${lac}|${dc}`) ?? 0) + amt);
+    });
+    result.set(co, idx);
+  });
+  return result;
+}, [multiCompany, perCompanyPrevData, selectedCompanies]);
+
+const getDimValForCompany = useCallback((localCode, dimCode, co, isYtd) => {
+  const ytd = perCompanyLeafDimIdx?.get(co)?.get(`${String(localCode)}|${String(dimCode)}`) ?? 0;
+  if (isYtd) return -ytd;
+  if (Number(month) === 1) return -ytd;
+  const prev = perCompanyPrevLeafDimIdx?.get(co)?.get(`${String(localCode)}|${String(dimCode)}`) ?? 0;
+  return -(ytd - prev);
+}, [perCompanyLeafDimIdx, perCompanyPrevLeafDimIdx, month]);
 
 const journalByCode = useMemo(() => {
   const idx = new Map();
@@ -3621,21 +6940,39 @@ const historyMonthsProcessed = useMemo(() => {
     tree.forEach(walk(map));
     prevTree.forEach(walk(prevMap));
     // Leaf index: localAccountCode → YTD amount
-    const leafIdx = new Map();
-    const prevLeafIdx = new Map();
+const leafIdx = new Map();
+    const aPrevLeafIdxOnce = new Map();
+    const leafDimIdx = new Map();
+    const prevLeafDimIdx = new Map();
     filteredData.forEach(row => {
       const lac = String(getField(row, "localAccountCode") ?? "");
       if (!lac) return;
       const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
       leafIdx.set(lac, (leafIdx.get(lac) ?? 0) + amt);
+      const dc = String(getField(row, "dimensionCode") ?? "");
+      if (dc && dc !== "null") {
+        leafDimIdx.set(`${lac}|${dc}`, (leafDimIdx.get(`${lac}|${dc}`) ?? 0) + amt);
+      }
     });
     filteredPrev.forEach(row => {
       const lac = String(getField(row, "localAccountCode") ?? "");
       if (!lac) return;
       const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
-      prevLeafIdx.set(lac, (prevLeafIdx.get(lac) ?? 0) + amt);
+      aPrevLeafIdxOnce.set(lac, (aPrevLeafIdxOnce.get(lac) ?? 0) + amt);
+      const dc = String(getField(row, "dimensionCode") ?? "");
+      if (dc && dc !== "null") {
+        prevLeafDimIdx.set(`${lac}|${dc}`, (prevLeafDimIdx.get(`${lac}|${dc}`) ?? 0) + amt);
+      }
     });
-    return { year: h.year, month: h.month, map, prevMap, leafIdx, prevLeafIdx };
+const jrnByCode = new Map();
+    (h.journals || []).forEach(j => {
+      const code = String(j.accountCode ?? j.AccountCode ?? "");
+      const jt = String(j.journalType ?? j.JournalType ?? "").toUpperCase();
+      if (!code || (jt !== "AJE" && jt !== "RJE")) return;
+      if (!jrnByCode.has(code)) jrnByCode.set(code, []);
+      jrnByCode.get(code).push(j);
+    });
+    return { year: h.year, month: h.month, map, prevMap, leafIdx, aPrevLeafIdxOnce, leafDimIdx, prevLeafDimIdx, jrnByCode };
   });
 }, [historyMonths, upDimGroups, upDimensions, groupAccounts]);
 
@@ -3721,10 +7058,31 @@ const searchExpansionMap = useMemo(() => {
   // Saved-mapping literal path: keys are `saved-${secIdx}-${parentPath}-${node.id}` and `${rowKey}-leaf-${i}`
   if (savedPlLiteral) {
     // Build group-account lookup so we can inspect uploadLeaves for each literal node's code
-    const treeByCode = new Map();
+const treeByCode = new Map();
     (function indexTree(nodes) {
       nodes.forEach(n => { treeByCode.set(String(n.code), n); indexTree(n.children || []); });
     })(tree);
+
+    // Per-leaf+dim indexes for compare periods (saved-mapping path)
+    const buildSavedLeafDimIdx = (rows) => {
+      const m = new Map();
+      (rows || []).forEach(row => {
+        const lac = String(getField(row, "localAccountCode") ?? "");
+        const dc  = String(getField(row, "dimensionCode") ?? "");
+        if (!lac || !dc || dc === "null") return;
+        const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+        m.set(`${lac}|${dc}`, (m.get(`${lac}|${dc}`) ?? 0) + amt);
+      });
+      return m;
+    };
+    const aLeafDimIdxSaved     = buildSavedLeafDimIdx(uploadedAccounts);
+    const aPrevLeafDimIdxSaved = buildSavedLeafDimIdx(prevUploadedAccountsRaw?.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts);
+    const bLeafDimIdxSaved     = compareMode ? buildSavedLeafDimIdx(cmpUploadedAccounts) : new Map();
+    const bPrevLeafDimIdxSaved = compareMode ? buildSavedLeafDimIdx(cmpPrevUploadedAccounts) : new Map();
+    const cLeafDimIdxSaved     = compareMode && cmp2Enabled ? buildSavedLeafDimIdx(cmp2UploadedAccounts) : new Map();
+    const cPrevLeafDimIdxSaved = compareMode && cmp2Enabled ? buildSavedLeafDimIdx(cmp2PrevUploadedAccounts) : new Map();
+    const dLeafDimIdxSaved     = compareMode && cmp2Enabled && cmp3Enabled ? buildSavedLeafDimIdx(cmp3UploadedAccounts) : new Map();
+    const dPrevLeafDimIdxSaved = compareMode && cmp2Enabled && cmp3Enabled ? buildSavedLeafDimIdx(cmp3PrevUploadedAccounts) : new Map();
 
     savedPlLiteral.forEach((section, secIdx) => {
       const walk = (node, parentPath) => {
@@ -4607,8 +7965,28 @@ return (
                 </tr>
               </thead>
 <tbody>
-                {savedPlLiteral.map((section, secIdx) => {
+{savedPlLiteral.map((section, secIdx) => {
                   const sectionRows = [];
+
+                  // Per-leaf+dim indexes for compare periods (saved-mapping path)
+                  const buildSavedLeafDimIdx = (rows) => {
+                    const m = new Map();
+                    (rows || []).forEach(row => {
+                      const lac = String(getField(row, "localAccountCode") ?? "");
+                      const dc  = String(getField(row, "dimensionCode") ?? "");
+                      if (!lac || !dc || dc === "null") return;
+                      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+                      m.set(`${lac}|${dc}`, (m.get(`${lac}|${dc}`) ?? 0) + amt);
+                    });
+                    return m;
+                  };
+                  const aPrevLeafDimIdxSaved = buildSavedLeafDimIdx(prevUploadedAccounts);
+                  const bLeafDimIdxSaved     = compareMode ? buildSavedLeafDimIdx(cmpUploadedAccounts) : new Map();
+                  const bPrevLeafDimIdxSaved = compareMode ? buildSavedLeafDimIdx(cmpPrevUploadedAccounts) : new Map();
+                  const cLeafDimIdxSaved     = compareMode && cmp2Enabled ? buildSavedLeafDimIdx(cmp2UploadedAccounts) : new Map();
+                  const cPrevLeafDimIdxSaved = compareMode && cmp2Enabled ? buildSavedLeafDimIdx(cmp2PrevUploadedAccounts) : new Map();
+                  const dLeafDimIdxSaved     = compareMode && cmp2Enabled && cmp3Enabled ? buildSavedLeafDimIdx(cmp3UploadedAccounts) : new Map();
+                  const dPrevLeafDimIdxSaved = compareMode && cmp2Enabled && cmp3Enabled ? buildSavedLeafDimIdx(cmp3PrevUploadedAccounts) : new Map();
 
 // Section header (breaker)
 if (section.label) {
@@ -4893,7 +8271,7 @@ const leafIsMatch = (() => {
                             )}
 {historyExpanded && historyMonthsProcessed.map((h) => {
                               const leafAmt = leaf.code ? (h.leafIdx.get(String(leaf.code)) ?? 0) : 0;
-                              const leafPrev = leaf.code ? (h.prevLeafIdx.get(String(leaf.code)) ?? 0) : 0;
+                              const leafPrev = leaf.code ? (h.aPrevLeafIdxOnce.get(String(leaf.code)) ?? 0) : 0;
                               const leafVal = ytdOnly ? -leafAmt : -(leafAmt - leafPrev);
                               return <PLAmountCell key={`hist-saved-leaf-${h.year}-${h.month}-${i}`} value={leafVal} typoStyle={subbody1Style} centered />;
                             })}
@@ -4933,40 +8311,200 @@ const dimIsMatch = (() => {
                                     <span style={subbody2Style}>{dim.name || dim.code}</span>
                                   </div>
                                 </td>
-{(() => {
-                                  let prevDimVal = 0;
-                                 if (Number(month) !== 1) {
-                                    const leafRawRows = (uploadedAccounts || []).filter(r =>
-                                      String(getField(r, "localAccountCode", "LocalAccountCode") ?? "") === String(leaf.code)
-                                    );
-                                    const dimsOnLeaf = new Set();
-                                    leafRawRows.forEach(r => {
-                                      const dimsStr = String(getField(r, "Dimensions", "dimensions") ?? "");
-                                      if (dimsStr) dimsOnLeaf.add(dimsStr);
-                                    });
-for (const dimsStr of dimsOnLeaf) {
-  const key = `${node.code}|${dimsStr}`;
-  if (prevDimFullIdx.has(key)) {
-    prevDimVal = prevDimFullIdx.get(key) ?? 0;
-    break;
-  }
-}
-                                  }
-                                  return <PLAmountCell value={ytdOnly ? -dim.amount : -(dim.amount - prevDimVal)} typoStyle={subbody2Style} />;
+{multiCompany ? selectedCompanies.map(co => (
+                                  <PLAmountCell key={`mc-saved-dim-${dim.code ?? "nocode"}-${co}-${j}`} value={leaf.code ? getDimValForCompany(leaf.code, dim.code, co, ytdOnly) : 0} typoStyle={subbody2Style} centered />
+                                )) : (() => {
+                                  const k = `${leaf.code}|${dim.code}`;
+                                  const ytdA = -(dim.amount ?? 0);
+                                  const prevA = Number(month) !== 1 ? -(aPrevLeafDimIdxSaved.get(k) ?? 0) : 0;
+                                  const monA = ytdA - prevA;
+                                  const displayA = ytdOnly ? ytdA : monA;
+                                  return <PLAmountCell value={displayA} typoStyle={subbody2Style} />;
                                 })()}
-{compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-                            {compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-                            {compareMode && cmp2Enabled && cmp3Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-                            {historyExpanded && historyMonthsProcessed.map((h) => (
-                              <td key={`hist-saved-dim-leaf-${h.year}-${h.month}-${j}`} />
-                            ))}
+{compareMode && (() => {
+  const k = `${leaf.code}|${dim.code}`;
+  const ytdA = -(dim.amount ?? 0);
+  const prevA = Number(month) !== 1 ? -(aPrevLeafDimIdxSaved.get(k) ?? 0) : 0;
+  const monA = ytdA - prevA;
+  const displayA = ytdOnly ? ytdA : monA;
+  const bY = -(bLeafDimIdxSaved.get(k) ?? 0);
+  const bP = Number(cmpFilters?.month) === 1 ? 0 : -(bPrevLeafDimIdxSaved.get(k) ?? 0);
+  const displayB = ytdOnly ? bY : (bY - bP);
+  return <><PLAmountCell value={displayB} typoStyle={subbody2Style} divider /><DeviationCells a={displayA} b={displayB} typoStyle={subbody2Style} /></>;
+})()}
+{compareMode && cmp2Enabled && (() => {
+  const k = `${leaf.code}|${dim.code}`;
+  const ytdA = -(dim.amount ?? 0);
+  const prevA = Number(month) !== 1 ? -(aPrevLeafDimIdxSaved.get(k) ?? 0) : 0;
+  const displayA = ytdOnly ? ytdA : (ytdA - prevA);
+  const cY = -(cLeafDimIdxSaved.get(k) ?? 0);
+  const cP = Number(cmp2Filters?.month) === 1 ? 0 : -(cPrevLeafDimIdxSaved.get(k) ?? 0);
+  const displayC = ytdOnly ? cY : (cY - cP);
+  return <><PLAmountCell value={displayC} typoStyle={subbody2Style} divider /><DeviationCells a={displayA} b={displayC} typoStyle={subbody2Style} /></>;
+})()}
+{compareMode && cmp2Enabled && cmp3Enabled && (() => {
+  const k = `${leaf.code}|${dim.code}`;
+  const ytdA = -(dim.amount ?? 0);
+  const prevA = Number(month) !== 1 ? -(aPrevLeafDimIdxSaved.get(k) ?? 0) : 0;
+  const displayA = ytdOnly ? ytdA : (ytdA - prevA);
+  const dY = -(dLeafDimIdxSaved.get(k) ?? 0);
+  const dPV = Number(cmp3Filters?.month) === 1 ? 0 : -(dPrevLeafDimIdxSaved.get(k) ?? 0);
+  const displayD = ytdOnly ? dY : (dY - dPV);
+  return <><PLAmountCell value={displayD} typoStyle={subbody2Style} divider /><DeviationCells a={displayA} b={displayD} typoStyle={subbody2Style} /></>;
+})()}
+{historyExpanded && historyMonthsProcessed.map((h) => {
+                              const k = `${leaf.code}|${dim.code}`;
+                              const hYtd = -(h.leafDimIdx.get(k) ?? 0);
+                              const hPrev = Number(h.month) === 1 ? 0 : -(h.prevLeafDimIdx.get(k) ?? 0);
+                              const v = ytdOnly ? hYtd : hYtd - hPrev;
+                              return <PLAmountCell key={`hist-saved-dim-leaf-${h.year}-${h.month}-${j}`} value={v} typoStyle={subbody2Style} centered />;
+                            })}
                                 <td />
                               </tr>
                             );
                           });
                         }
-                      });
+});
                     }
+
+                    // ── Journal entries at NODE level (saved-mapping path) ──
+                    if (node.code) {
+                      const nodeJrns = journalByCode.get(String(node.code)) || [];
+                      if (nodeJrns.length > 0) {
+                        const jrnKey = `${rowKey}-jrn`;
+                        const jrnExpanded = isOpen(jrnKey);
+                        sectionRows.push(
+                          <tr key={jrnKey}
+                            className="border-b border-[#1a2f8a]/5 bg-white cursor-pointer hover:bg-indigo-50/40 transition-colors"
+                            onClick={(e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [jrnKey]: !isOpen(jrnKey) })); }}>
+                            <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
+                              <div className="flex items-center gap-1.5">
+                                <div className="w-2 h-px bg-indigo-200 flex-shrink-0" />
+                                <span className="text-[#1a2f8a]/40 flex-shrink-0">
+                                  {jrnExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>}
+                                </span>
+                                <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded flex-shrink-0">{t("label_journal")}</span>
+                                <span style={subbody2Style}>{nodeJrns.length} {nodeJrns.length === 1 ? t("entry") : t("entries")}</span>
+                              </div>
+                            </td>
+                            {multiCompany ? selectedCompanies.map(co => <td key={`mc-jhdr-${node.code}-${co}`} />) : <td />}
+                            {!multiCompany && compareMode && <><td /><td /><td /></>}
+                            {!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
+                            {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
+                          </tr>
+                        );
+if (jrnExpanded) {
+                          nodeJrns.forEach((jrn, k) => {
+                            const amt = parseAmt(jrn.amountYTD ?? jrn.AmountYTD ?? 0);
+                            const jnum = jrn.journalNumber ?? jrn.JournalNumber;
+                            const cmpJrn = (journalByCodeCmp.get(String(node.code)) || []).find(j => (j.journalNumber ?? j.JournalNumber) === jnum);
+                            const cmp2Jrn = (journalByCodeCmp2.get(String(node.code)) || []).find(j => (j.journalNumber ?? j.JournalNumber) === jnum);
+                            const cmp3Jrn = (journalByCodeCmp3.get(String(node.code)) || []).find(j => (j.journalNumber ?? j.JournalNumber) === jnum);
+                            const cmpAmt = cmpJrn ? -parseAmt(cmpJrn.amountYTD ?? cmpJrn.AmountYTD ?? 0) : 0;
+                            const cmp2Amt = cmp2Jrn ? -parseAmt(cmp2Jrn.amountYTD ?? cmp2Jrn.AmountYTD ?? 0) : 0;
+                            const cmp3Amt = cmp3Jrn ? -parseAmt(cmp3Jrn.amountYTD ?? cmp3Jrn.AmountYTD ?? 0) : 0;
+                            sectionRows.push(
+                              <tr key={`${jrnKey}-entry-${k}`}
+                                className="border-b border-[#1a2f8a]/5 bg-white hover:bg-indigo-50/40 transition-colors cursor-pointer"
+                                onClick={(e) => { e.stopPropagation(); setJrnPopup(jrn); }}>
+                                <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 2) * 20}px` }}>
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-indigo-200 flex-shrink-0" />
+                                    <span className="flex-shrink-0 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded" style={subbody2Style}>{jnum ?? ""}</span>
+                                    {(jrn.journalHeader ?? jrn.JournalHeader) && <span className="flex-shrink-0" style={subbody2Style}>{jrn.journalHeader ?? jrn.JournalHeader}</span>}
+                                    {(jrn.rowText ?? jrn.RowText) && <span className="truncate max-w-[250px]" style={subbody2Style}>— {jrn.rowText ?? jrn.RowText}</span>}
+                                  </div>
+                                </td>
+                              {multiCompany ? selectedCompanies.map(co => {
+                                  const jrnCo = String(jrn.companyShortName ?? jrn.CompanyShortName ?? "");
+                                  const v = jrnCo === co ? -amt : 0;
+                                  return <PLAmountCell key={`mc-jentry-${node.code}-${co}-${k}`} value={v} typoStyle={subbody2Style} centered />;
+                                }) : <PLAmountCell value={-amt} typoStyle={subbody2Style} />}
+                                {!multiCompany && compareMode && <><PLAmountCell value={cmpAmt} typoStyle={subbody2Style} divider /><DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody2Style} /></>}
+                                {!multiCompany && compareMode && cmp2Enabled && <><PLAmountCell value={cmp2Amt} typoStyle={subbody2Style} divider /><DeviationCells a={-amt} b={cmp2Amt} typoStyle={subbody2Style} /></>}
+{!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><PLAmountCell value={cmp3Amt} typoStyle={subbody2Style} divider /><DeviationCells a={-amt} b={cmp3Amt} typoStyle={subbody2Style} /></>}
+                                {!multiCompany && historyExpanded && historyMonthsProcessed.map((h) => {
+                                  const histJrn = (h.jrnByCode?.get(String(node.code)) || []).find(j => (j.journalNumber ?? j.JournalNumber) === jnum);
+                                  const histAmt = histJrn ? -parseAmt(histJrn.amountYTD ?? histJrn.AmountYTD ?? 0) : 0;
+                                  return <PLAmountCell key={`hist-saved-jrn-${h.year}-${h.month}-${k}`} value={histAmt} typoStyle={subbody2Style} centered />;
+                                })}
+                              </tr>
+                            );
+                          });
+
+                          // ── Compare-period-only journals (exist in B/C/D but not A) ──
+                          if (compareMode) {
+                            const aNums = new Set(nodeJrns.map(j => j.journalNumber ?? j.JournalNumber));
+                            const extraJrns = [];
+                            const collect = (idx, period) => {
+                              (idx.get(String(node.code)) || []).forEach(j => {
+                                const num = j.journalNumber ?? j.JournalNumber;
+                                if (!aNums.has(num)) extraJrns.push({ jrn: j, period, num });
+                              });
+                            };
+                            collect(journalByCodeCmp, 'B');
+                            if (cmp2Enabled) collect(journalByCodeCmp2, 'C');
+                            if (cmp2Enabled && cmp3Enabled) collect(journalByCodeCmp3, 'D');
+                            // Dedupe by JournalNumber across periods (one row each, populated per matching period)
+                            const seen = new Map();
+                            extraJrns.forEach(e => {
+                              if (!seen.has(e.num)) seen.set(e.num, { jrn: e.jrn, periods: { B: null, C: null, D: null } });
+                              seen.get(e.num).periods[e.period] = -parseAmt(e.jrn.amountYTD ?? e.jrn.AmountYTD ?? 0);
+                            });
+                            // Now fill periods properly: re-scan to populate values from each available period
+                            seen.forEach((entry, num) => {
+                              ['B','C','D'].forEach(p => {
+                                if (entry.periods[p] != null) return;
+                                const idx = p === 'B' ? journalByCodeCmp : p === 'C' ? journalByCodeCmp2 : journalByCodeCmp3;
+                                const match = (idx.get(String(node.code)) || []).find(j => (j.journalNumber ?? j.JournalNumber) === num);
+                                if (match) entry.periods[p] = -parseAmt(match.amountYTD ?? match.AmountYTD ?? 0);
+                              });
+                            });
+                            const extras = [...seen.entries()];
+                            if (extras.length > 0) {
+                              sectionRows.push(
+                                <tr key={`${jrnKey}-extra-hdr`}
+                                  className="border-b border-[#1a2f8a]/5 bg-indigo-50/30">
+                                  <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 2) * 20}px` }}>
+                                    <div className="flex items-center gap-1.5">
+                                      <div className="w-2 h-px bg-indigo-300 flex-shrink-0" />
+                                      <span className="text-[9px] font-bold text-indigo-600 uppercase tracking-widest bg-indigo-100 border border-indigo-200 px-1.5 py-0.5 rounded flex-shrink-0">B/C/D only</span>
+                                      <span style={subbody2Style}>{extras.length} {extras.length === 1 ? t("entry") : t("entries")}</span>
+                                    </div>
+                                  </td>
+                                  {multiCompany ? selectedCompanies.map(co => <td key={`mc-jextra-hdr-${node.code}-${co}`} />) : <td />}
+                                  {!multiCompany && compareMode && <><td /><td /><td /></>}
+                                  {!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
+                                  {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
+                                </tr>
+                              );
+                              extras.forEach(([num, entry], xi) => {
+                                const jrn = entry.jrn;
+                                sectionRows.push(
+                                  <tr key={`${jrnKey}-extra-${xi}`}
+                                    className="border-b border-[#1a2f8a]/5 bg-indigo-50/10 hover:bg-indigo-50/40 transition-colors cursor-pointer"
+                                    onClick={(e) => { e.stopPropagation(); setJrnPopup(jrn); }}>
+                                    <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 3) * 20}px` }}>
+                                      <div className="flex items-center gap-2">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-indigo-300 flex-shrink-0" />
+                                        <span className="flex-shrink-0 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded" style={subbody2Style}>{num ?? ""}</span>
+                                        {(jrn.journalHeader ?? jrn.JournalHeader) && <span className="flex-shrink-0" style={subbody2Style}>{jrn.journalHeader ?? jrn.JournalHeader}</span>}
+                                        {(jrn.rowText ?? jrn.RowText) && <span className="truncate max-w-[250px]" style={subbody2Style}>— {jrn.rowText ?? jrn.RowText}</span>}
+                                      </div>
+                                    </td>
+                                    {multiCompany ? selectedCompanies.map(co => <td key={`mc-jextra-${node.code}-${co}-${xi}`} />) : <td className="text-right pr-6 py-1 text-gray-300" style={subbody2Style}>—</td>}
+                                    {!multiCompany && compareMode && <><PLAmountCell value={entry.periods.B ?? 0} typoStyle={subbody2Style} divider /><td /><td /></>}
+                                    {!multiCompany && compareMode && cmp2Enabled && <><PLAmountCell value={entry.periods.C ?? 0} typoStyle={subbody2Style} divider /><td /><td /></>}
+                                    {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><PLAmountCell value={entry.periods.D ?? 0} typoStyle={subbody2Style} divider /><td /><td /></>}
+                                  </tr>
+                                );
+                              });
+                            }
+                          }
+                        }
+                      }
+                    }
+
 // Mapping children: only render if this row is expanded
                     if (expanded && node.children && node.children.length > 0) {
                       (node.children || []).forEach(c => renderNode(c, depth + 1, `${parentPath}-${node.id}`));
@@ -5772,7 +9310,11 @@ if (jrnExpanded) {
             {(jrn.counterpartyShortName ?? jrn.CounterpartyShortName) && <span className="ml-auto flex-shrink-0" style={subbody2Style}>{jrn.counterpartyShortName ?? jrn.CounterpartyShortName}</span>}
           </div>
         </td>
-{(() => {
+{multiCompany ? selectedCompanies.map(co => {
+  const jrnCo = String(jrn.companyShortName ?? jrn.CompanyShortName ?? "");
+  const v = jrnCo === co ? -parseAmt(jrn.amountYTD ?? jrn.AmountYTD ?? 0) : 0;
+  return <PLAmountCell key={`mc-jentry-${child.code}-${co}-${k}`} value={v} typoStyle={subbody2Style} centered />;
+}) : (() => {
   const jrnNum = jrn.journalNumber ?? jrn.JournalNumber;
   const cmpJrn = (journalByCodeCmp.get(child.code) || []).find(j => (j.journalNumber ?? j.JournalNumber) === jrnNum);
   const cmp2Jrn = (journalByCodeCmp2.get(child.code) || []).find(j => (j.journalNumber ?? j.JournalNumber) === jrnNum);
@@ -5794,17 +9336,88 @@ if (jrnExpanded) {
       {ytdOnly && compareMode && <DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody2Style} />}
 {ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cmp2Amt} typoStyle={subbody2Style} divider />}
       {ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={-amt} b={cmp2Amt} typoStyle={subbody2Style} />}
-      {ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && <PLAmountCell value={cmp3Amt} typoStyle={subbody2Style} divider />}
+{ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && <PLAmountCell value={cmp3Amt} typoStyle={subbody2Style} divider />}
       {ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && <DeviationCells a={-amt} b={cmp3Amt} typoStyle={subbody2Style} />}
-      {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => (
-        <td key={`hist-jrn-${h.year}-${h.month}-${k}`} />
-      ))}
+{historyExpanded && !compareMode && historyMonthsProcessed.map((h) => {
+        const histJrn = (h.jrnByCode?.get(String(child.code)) || []).find(j => String(j.journalNumber ?? j.JournalNumber) === String(jrnNum));
+        const histAmt = histJrn ? -parseAmt(histJrn.amountYTD ?? histJrn.AmountYTD ?? 0) : 0;
+        return <PLAmountCell key={`hist-jrn-${h.year}-${h.month}-${k}`} value={histAmt} typoStyle={subbody2Style} centered />;
+      })}
     </>
   );
 })()}
       </tr>
     );
   });
+
+  // ── Compare-period-only journals (B/C/D not in A) — standard path ──
+  if (compareMode) {
+    const aNums = new Set(jrnRows.map(j => j.journalNumber ?? j.JournalNumber));
+    const seen = new Map();
+    const collect = (idx, period) => {
+      (idx.get(child.code) || []).forEach(j => {
+        const num = j.journalNumber ?? j.JournalNumber;
+        if (aNums.has(num)) return;
+        if (!seen.has(num)) seen.set(num, { jrn: j, periods: { B: null, C: null, D: null } });
+        seen.get(num).periods[period] = -parseAmt(j.amountYTD ?? j.AmountYTD ?? 0);
+      });
+    };
+    collect(journalByCodeCmp, 'B');
+    if (cmp2Enabled) collect(journalByCodeCmp2, 'C');
+    if (cmp2Enabled && cmp3Enabled) collect(journalByCodeCmp3, 'D');
+    // Fill cross-period values
+    seen.forEach((entry, num) => {
+      ['B','C','D'].forEach(p => {
+        if (entry.periods[p] != null) return;
+        const idx = p === 'B' ? journalByCodeCmp : p === 'C' ? journalByCodeCmp2 : journalByCodeCmp3;
+        const match = (idx.get(child.code) || []).find(j => (j.journalNumber ?? j.JournalNumber) === num);
+        if (match) entry.periods[p] = -parseAmt(match.amountYTD ?? match.AmountYTD ?? 0);
+      });
+    });
+    const extras = [...seen.entries()];
+    if (extras.length > 0) {
+      const extraHdrKey = `jrn-child-extra-hdr-${node.code}-${child.code}`;
+      rows.push(
+        <tr key={extraHdrKey} className="border-b border-[#1a2f8a]/5 bg-indigo-50/30">
+          <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
+            <div className="flex items-center gap-1.5">
+              <div className="w-2 h-px bg-indigo-300 flex-shrink-0" />
+              <span className="text-[9px] font-bold text-indigo-600 uppercase tracking-widest bg-indigo-100 border border-indigo-200 px-1.5 py-0.5 rounded flex-shrink-0">B/C/D only</span>
+              <span style={subbody2Style}>{extras.length} {extras.length === 1 ? t("entry") : t("entries")}</span>
+            </div>
+          </td>
+          {multiCompany ? selectedCompanies.map(co => <td key={`mc-jxhdr-${child.code}-${co}`} />) : <td />}
+          {!multiCompany && compareMode && <><td /><td /><td /></>}
+          {!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
+          {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
+          {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => (
+            <td key={`hist-jxhdr-${h.year}-${h.month}-${child.code}`} />
+          ))}
+        </tr>
+      );
+      extras.forEach(([num, entry], xi) => {
+        const jrn = entry.jrn;
+        rows.push(
+          <tr key={`jrn-child-extra-${node.code}-${child.code}-${xi}`}
+            className="border-b border-[#1a2f8a]/5 bg-indigo-50/10 hover:bg-indigo-50/40 transition-colors cursor-pointer"
+            onClick={(e) => { e.stopPropagation(); setJrnPopup(jrn); }}>
+            <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 2) * 20}px` }}>
+              <div className="flex items-center gap-2">
+                <div className="w-1.5 h-1.5 rounded-full bg-indigo-300 flex-shrink-0" />
+                <span className="flex-shrink-0 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded" style={subbody2Style}>{num ?? ""}</span>
+                {(jrn.journalHeader ?? jrn.JournalHeader) && <span className="flex-shrink-0" style={subbody2Style}>{jrn.journalHeader ?? jrn.JournalHeader}</span>}
+                {(jrn.rowText ?? jrn.RowText) && <span className="truncate max-w-[250px]" style={subbody2Style}>— {jrn.rowText ?? jrn.RowText}</span>}
+              </div>
+            </td>
+            {multiCompany ? selectedCompanies.map(co => <td key={`mc-jx-${child.code}-${co}-${xi}`} />) : <td className="text-right pr-6 py-1 text-gray-300" style={subbody2Style}>—</td>}
+            {!multiCompany && compareMode && <><PLAmountCell value={entry.periods.B ?? 0} typoStyle={subbody2Style} divider /><td /><td /></>}
+            {!multiCompany && compareMode && cmp2Enabled && <><PLAmountCell value={entry.periods.C ?? 0} typoStyle={subbody2Style} divider /><td /><td /></>}
+            {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><PLAmountCell value={entry.periods.D ?? 0} typoStyle={subbody2Style} divider /><td /><td /></>}
+          </tr>
+        );
+      });
+    }
+  }
 }
       }
     }
@@ -5872,7 +9485,7 @@ const leafIsMatch = (() => {
 
 {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => {
       const leafYtd = -(h.leafIdx.get(String(leaf.code ?? "")) ?? 0);
-      const leafPrevYtd = -(h.prevLeafIdx.get(String(leaf.code ?? "")) ?? 0);
+      const leafPrevYtd = -(h.aPrevLeafIdxOnce.get(String(leaf.code ?? "")) ?? 0);
       const leafMon = leafYtd - leafPrevYtd;
       return <PLAmountCell key={`hist-leaf-${h.year}-${h.month}-${i}`} value={ytdOnly ? leafYtd : leafMon} typoStyle={subbody1Style} centered />;
     })}
@@ -5885,7 +9498,7 @@ if (leafExpanded && hasDims) {
       String(dim.code ?? "").toLowerCase().includes(q)||
       String(dim.name ?? "").toLowerCase().includes(q));
     rows.push(
-    <tr key={`dim-${parentCode ?? node.code}-${depth}-${i}-${j}`}
+<tr key={`dim-${parentCode ?? node.code}-${depth}-${i}-${j}`}
       className={`border-b border-[#1a2f8a]/5 ${dimIsMatch ? "bg-[#fef3c7]" : "bg-white"} hover:bg-amber-50/40 transition-colors cursor-pointer`}
       onClick={(e) => { e.stopPropagation(); setDimPopup(dim); }}>
       <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
@@ -5896,17 +9509,30 @@ if (leafExpanded && hasDims) {
         </div>
       </td>
 {multiCompany ? selectedCompanies.map(co => (
-        <td key={`mc-dim-${dim.code ?? "nocode"}-${co}-${depth}-${i}-${j}`} />
+        <PLAmountCell key={`mc-dim-${dim.code ?? "nocode"}-${co}-${depth}-${i}-${j}`} value={leaf.code ? getDimValForCompany(leaf.code, dim.code, co, ytdOnly) : 0} typoStyle={subbody2Style} centered />
       )) : <PLAmountCell value={-dim.amount} typoStyle={subbody2Style} />}
-      {!multiCompany && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-{!multiCompany && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-      {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
-      {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => (
-        <td key={`hist-dim-${h.year}-${h.month}-${j}`} />
-      ))}
-      {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => (
-        <td key={`hist-dim-${h.year}-${h.month}-${j}`} />
-      ))}
+      {!multiCompany && compareMode && (() => {
+        const k = `${leaf.code}|${dim.code}`;
+        const cmpDimAmt = -(cmpLeafDimIndex.get(k) ?? 0);
+        return <><PLAmountCell value={cmpDimAmt} typoStyle={subbody2Style} divider /><DeviationCells a={-dim.amount} b={cmpDimAmt} typoStyle={subbody2Style} /></>;
+      })()}
+      {!multiCompany && compareMode && cmp2Enabled && (() => {
+        const k = `${leaf.code}|${dim.code}`;
+        const cmp2DimAmt = -(cmp2LeafDimIndex.get(k) ?? 0);
+        return <><PLAmountCell value={cmp2DimAmt} typoStyle={subbody2Style} divider /><DeviationCells a={-dim.amount} b={cmp2DimAmt} typoStyle={subbody2Style} /></>;
+      })()}
+      {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && (() => {
+        const k = `${leaf.code}|${dim.code}`;
+        const cmp3DimAmt = -(cmp3LeafDimIndex.get(k) ?? 0);
+        return <><PLAmountCell value={cmp3DimAmt} typoStyle={subbody2Style} divider /><DeviationCells a={-dim.amount} b={cmp3DimAmt} typoStyle={subbody2Style} /></>;
+      })()}
+{historyExpanded && !compareMode && historyMonthsProcessed.map((h) => {
+        const k = `${leaf.code}|${dim.code}`;
+        const hYtd = -(h.leafDimIdx.get(k) ?? 0);
+        const hPrev = Number(h.month) === 1 ? 0 : -(h.prevLeafDimIdx.get(k) ?? 0);
+        const v = ytdOnly ? hYtd : hYtd - hPrev;
+        return <PLAmountCell key={`hist-dim-${h.year}-${h.month}-${j}`} value={v} typoStyle={subbody2Style} centered />;
+      })}
     </tr>
     );
   });
@@ -6257,7 +9883,7 @@ function BSDeviationCells({ a, b, typoStyle }) {
 
 
 
-function BalanceSheet({ multiCompany = false, selectedCompanies = [], externalBsDrillMap, externalSetBsDrillMap, onHistoryExpandedChange, externalHistoryExpanded, externalHistoryMonths, onHistoryMonthsChange, groupAccounts, uploadedAccounts,dimensions = [], loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], onCompareChange, dimensionActive = false, upDimGroup = "", upDimension = "", filteredDims = [], externalCmp2Enabled, onBsCmp2EnabledChange, breakers = { pl: {}, bs: {}, cf: {} }, pgcBsMapping = null, savedBsLiteral = null,
+function BalanceSheet({ multiCompany = false, selectedCompanies = [], externalBsDrillMap, externalSetBsDrillMap, onHistoryExpandedChange, externalHistoryExpanded, externalHistoryMonths, onHistoryMonthsChange, groupAccounts, uploadedAccounts,dimensions = [], loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], journalEntriesCmp = [], journalEntriesCmp2 = [], journalEntriesCmp3 = [], onCompareChange, dimensionActive = false,upDimGroup = "", upDimension = "", filteredDims = [], externalCmp2Enabled, onBsCmp2EnabledChange, breakers = { pl: {}, bs: {}, cf: {} }, pgcBsMapping = null, savedBsLiteral = null,
   compareMode, setCompareMode,
   cmpYear, setCmpYear, cmpMonth, setCmpMonth, cmpSource, setCmpSource, cmpStructure, setCmpStructure, cmpCompany, setCmpCompany,
   cmpData, setCmpData,
@@ -6301,22 +9927,22 @@ const [historyMonthsInternal, setHistoryMonthsInternal] = useState([]);
     if (!token || !source || !structure || !y || !mo) return { data: [] };
     const h = { Authorization: `Bearer ${token}`, Accept: "application/json" };
     const filter = `Year eq ${y} and Month eq ${mo} and Source eq '${source}' and GroupStructure eq '${structure}'`;
-    try {
-      const res = await fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h });
-      const json = res.ok ? await res.json() : { value: [] };
-      return { data: json.value ?? (Array.isArray(json) ? json : []) };
-    } catch { return { data: [] }; }
+try {
+      const [resA, resJ] = await Promise.all([
+        fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h }),
+        fetch(`${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(filter)}`, { headers: h }),
+      ]);
+      const jsonA = resA.ok ? await resA.json() : { value: [] };
+      const jsonJ = resJ.ok ? await resJ.json() : { value: [] };
+      const data = jsonA.value ?? (Array.isArray(jsonA) ? jsonA : []);
+      const journals = jsonJ.value ?? (Array.isArray(jsonJ) ? jsonJ : []);
+      return { data, journals };
+    } catch { return { data: [], journals: [] }; }
   }, [token, source, structure]);
 
-const toggleBSHistory = useCallback(async () => {
-    if (compareMode || multiCompany) return;
-if (historyExpanded) {
-      setHistoryExpanded(false);
-      setHistoryMonths([]);
-      return;
-    }
-    setHistoryExpanded(true);
+const loadBSHistory = useCallback(async () => {
     setHistoryLoading(true);
+    setHistoryMonths([]);
     const targets = [];
     let y = Number(year), m = Number(month);
     for (let i = 0; i < 5; i++) {
@@ -6325,11 +9951,30 @@ if (historyExpanded) {
       targets.push({ year: y, month: m });
     }
     for (const target of targets) {
-      const { data } = await fetchBSHistoryMonth(target.year, target.month);
-      setHistoryMonths(prev => [...prev, { year: target.year, month: target.month, data }]);
+      const { data, journals } = await fetchBSHistoryMonth(target.year, target.month);
+      setHistoryMonths(prev => [...prev, { year: target.year, month: target.month, data, journals }]);
     }
     setHistoryLoading(false);
-  }, [compareMode, historyExpanded, year, month, fetchBSHistoryMonth, onHistoryExpandedChange]);
+  }, [year, month, fetchBSHistoryMonth]);
+
+  const toggleBSHistory = useCallback(async () => {
+    if (compareMode || multiCompany) return;
+    if (historyExpanded) {
+      setHistoryExpanded(false);
+      setHistoryMonths([]);
+      return;
+    }
+    setHistoryExpanded(true);
+    await loadBSHistory();
+  }, [compareMode, multiCompany, historyExpanded, loadBSHistory]);
+
+  // Auto-refresh history when year/month change while history is expanded
+  useEffect(() => {
+    if (historyExpanded && !compareMode && !multiCompany) {
+      loadBSHistory();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [year, month]);
 
 const localName = useCallback((node) => {
     return pgcBsMapping?.names?.get(String(node.code)) ?? node.name;
@@ -6421,6 +10066,45 @@ const journalByCode = useMemo(() => {
   return idx;
 }, [journalEntries]);
 
+const journalByCodeCmp = useMemo(() => {
+  const idx = new Map();
+  (journalEntriesCmp || []).forEach(row => {
+    const code = String(row.accountCode ?? row.AccountCode ?? "");
+    if (!code) return;
+    const jt = String(row.journalType ?? row.JournalType ?? "").toUpperCase();
+    if (jt !== "AJE" && jt !== "RJE") return;
+    if (!idx.has(code)) idx.set(code, []);
+    idx.get(code).push(row);
+  });
+  return idx;
+}, [journalEntriesCmp]);
+
+const journalByCodeCmp2 = useMemo(() => {
+  const idx = new Map();
+  (journalEntriesCmp2 || []).forEach(row => {
+    const code = String(row.accountCode ?? row.AccountCode ?? "");
+    if (!code) return;
+    const jt = String(row.journalType ?? row.JournalType ?? "").toUpperCase();
+    if (jt !== "AJE" && jt !== "RJE") return;
+    if (!idx.has(code)) idx.set(code, []);
+    idx.get(code).push(row);
+  });
+  return idx;
+}, [journalEntriesCmp2]);
+
+const journalByCodeCmp3 = useMemo(() => {
+  const idx = new Map();
+  (journalEntriesCmp3 || []).forEach(row => {
+    const code = String(row.accountCode ?? row.AccountCode ?? "");
+    if (!code) return;
+    const jt = String(row.journalType ?? row.JournalType ?? "").toUpperCase();
+    if (jt !== "AJE" && jt !== "RJE") return;
+    if (!idx.has(code)) idx.set(code, []);
+    idx.get(code).push(row);
+  });
+  return idx;
+}, [journalEntriesCmp3]);
+
 const bsCmpLeafIndex = useMemo(() => {
   const idx = new Map();
   (cmpData || []).forEach(row => {
@@ -6441,6 +10125,41 @@ const bsCmp2LeafIndex = useMemo(() => {
   });
   return idx;
 }, [cmp2Data]);
+const bsCmpLeafDimIndex = useMemo(() => {
+  const idx = new Map();
+  (cmpData || []).forEach(row => {
+    const lac = String(getField(row, "localAccountCode") ?? "");
+    const dc  = String(getField(row, "dimensionCode") ?? "");
+    if (!lac || !dc || dc === "null") return;
+    const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+    idx.set(`${lac}|${dc}`, (idx.get(`${lac}|${dc}`) ?? 0) + amt);
+  });
+  return idx;
+}, [cmpData]);
+
+const bsCmp2LeafDimIndex = useMemo(() => {
+  const idx = new Map();
+  (cmp2Data || []).forEach(row => {
+    const lac = String(getField(row, "localAccountCode") ?? "");
+    const dc  = String(getField(row, "dimensionCode") ?? "");
+    if (!lac || !dc || dc === "null") return;
+    const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+    idx.set(`${lac}|${dc}`, (idx.get(`${lac}|${dc}`) ?? 0) + amt);
+  });
+  return idx;
+}, [cmp2Data]);
+
+const bsCmp3LeafDimIndex = useMemo(() => {
+  const idx = new Map();
+  (cmp3Data || []).forEach(row => {
+    const lac = String(getField(row, "localAccountCode") ?? "");
+    const dc  = String(getField(row, "dimensionCode") ?? "");
+    if (!lac || !dc || dc === "null") return;
+    const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+    idx.set(`${lac}|${dc}`, (idx.get(`${lac}|${dc}`) ?? 0) + amt);
+  });
+  return idx;
+}, [cmp3Data]);
 const bsCmp3LeafIndex = useMemo(() => {
   const idx = new Map();
   (cmp3Data || []).forEach(row => {
@@ -6505,9 +10224,26 @@ const perCompanyBsLeafIdx = useMemo(() => {
   return result;
 }, [multiCompany, perCompanyBsData, selectedCompanies]);
 
-const getBsLeafValForCompany = useCallback((localCode, co) => {
-  return perCompanyBsLeafIdx?.get(co)?.get(String(localCode)) ?? 0;
-}, [perCompanyBsLeafIdx]);
+const perCompanyBsLeafDimIdx = useMemo(() => {
+  if (!multiCompany) return null;
+  const result = new Map();
+  selectedCompanies.forEach(co => {
+    const idx = new Map();
+    (perCompanyBsData?.get(co) || []).forEach(row => {
+      const lac = String(getField(row, "localAccountCode") ?? "");
+      const dc  = String(getField(row, "dimensionCode") ?? "");
+      if (!lac || !dc || dc === "null") return;
+      const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      idx.set(`${lac}|${dc}`, (idx.get(`${lac}|${dc}`) ?? 0) + amt);
+    });
+    result.set(co, idx);
+  });
+  return result;
+}, [multiCompany, perCompanyBsData, selectedCompanies]);
+
+const getBsDimValForCompany = useCallback((localCode, dimCode, co) => {
+  return perCompanyBsLeafDimIdx?.get(co)?.get(`${String(localCode)}|${String(dimCode)}`) ?? 0;
+}, [perCompanyBsLeafDimIdx]);
 
 const [allCompaniesData, setAllCompaniesData] = useState([]);
 const [allCompaniesLoading, setAllCompaniesLoading] = useState(false);
@@ -6744,16 +10480,93 @@ if (childExpanded && hasMore) {
                       {(jrn.counterpartyShortName ?? jrn.CounterpartyShortName) && <span className="text-[10px] text-gray-300 ml-1">· {jrn.counterpartyShortName ?? jrn.CounterpartyShortName}</span>}
                     </div>
                   </td>
-{multiCompany ? selectedCompanies.map(co => (
-                    <td key={`bsmc-jrn-${jrn.journalNumber ?? jrn.JournalNumber ?? k}-${co}`} />
-                  )) : <td className="text-right pr-4 py-1 font-mono text-xs text-indigo-400">
+{multiCompany ? selectedCompanies.map(co => {
+                    const jrnCo = String(jrn.companyShortName ?? jrn.CompanyShortName ?? "");
+                    const v = jrnCo === co ? amt : 0;
+                    return <td key={`bsmc-jrn-${jrn.journalNumber ?? jrn.JournalNumber ?? k}-${co}`} className="text-right pr-4 py-1 font-mono text-xs text-indigo-400">
+                      {v === 0 ? "—" : fmtAmt(v)}
+                    </td>;
+                  }) : <td className="text-right pr-4 py-1 font-mono text-xs text-indigo-400">
                     {amt === 0 ? "—" : fmtAmt(amt)}
                   </td>}
-                  {!multiCompany && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+{!multiCompany && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
                   {!multiCompany && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
+                  {historyExpanded && !compareMode && bsHistoryProcessed.map(h => {
+                    const jrnNum = jrn.journalNumber ?? jrn.JournalNumber;
+                    const histJrn = (h.jrnByCode?.get(child.code) || []).find(j => (j.journalNumber ?? j.JournalNumber) === jrnNum);
+                    const v = histJrn ? parseAmt(histJrn.amountYTD ?? histJrn.AmountYTD ?? 0) : 0;
+                    return <td key={`bshist-jrn-${h.year}-${h.month}-${k}`} className="text-right pr-4 py-1 font-mono text-xs text-indigo-400">
+                      {v === 0 ? "—" : fmtAmt(v)}
+                    </td>;
+                  })}
                 </tr>
               );
-            });
+});
+
+            // ── Compare-period-only journals (B/C/D not in A) ──
+            if (compareMode) {
+              const aNums = new Set(jrnRows.map(j => j.journalNumber ?? j.JournalNumber));
+              const seen = new Map();
+              const collect = (idx, period) => {
+                (idx.get(child.code) || []).forEach(j => {
+                  const num = j.journalNumber ?? j.JournalNumber;
+                  if (aNums.has(num)) return;
+                  if (!seen.has(num)) seen.set(num, { jrn: j, periods: { B: null, C: null, D: null } });
+                  seen.get(num).periods[period] = parseAmt(j.amountYTD ?? j.AmountYTD ?? 0);
+                });
+              };
+              collect(journalByCodeCmp, 'B');
+              if (cmp2Enabled) collect(journalByCodeCmp2, 'C');
+              if (cmp2Enabled && cmp3Enabled) collect(journalByCodeCmp3, 'D');
+              seen.forEach((entry, num) => {
+                ['B','C','D'].forEach(p => {
+                  if (entry.periods[p] != null) return;
+                  const idx = p === 'B' ? journalByCodeCmp : p === 'C' ? journalByCodeCmp2 : journalByCodeCmp3;
+                  const match = (idx.get(child.code) || []).find(j => (j.journalNumber ?? j.JournalNumber) === num);
+                  if (match) entry.periods[p] = parseAmt(match.amountYTD ?? match.AmountYTD ?? 0);
+                });
+              });
+              const extras = [...seen.entries()];
+              if (extras.length > 0) {
+                rows.push(
+                  <tr key={`bsjrn-child-extra-hdr-${contextKey}-${child.code}`}
+                    className="border-b border-[#1a2f8a]/5 bg-indigo-50/30">
+                    <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-2 h-px bg-indigo-300 flex-shrink-0" />
+                        <span className="text-[9px] font-bold text-indigo-600 uppercase tracking-widest bg-indigo-100 border border-indigo-200 px-1.5 py-0.5 rounded flex-shrink-0">B/C/D only</span>
+                        <span className="text-[10px] text-gray-400">{extras.length} {extras.length === 1 ? t("entry") : t("entries")}</span>
+                      </div>
+                    </td>
+                    {multiCompany ? selectedCompanies.map(co => <td key={`bsmc-jxhdr-${child.code}-${co}`} />) : <td />}
+                    {!multiCompany && compareMode && <><td /><td /><td /></>}
+                    {!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
+                    {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
+                  </tr>
+                );
+                extras.forEach(([num, entry], xi) => {
+                  const jrn = entry.jrn;
+                  rows.push(
+                    <tr key={`bsjrn-child-extra-${contextKey}-${child.code}-${xi}`}
+                      className="border-b border-[#1a2f8a]/5 bg-indigo-50/10 hover:bg-indigo-50/40 transition-colors cursor-pointer"
+                      onClick={() => setJrnPopup(jrn)}>
+                      <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 2) * 20}px` }}>
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-2 h-px bg-indigo-100 flex-shrink-0" />
+                          <span className="text-[10px] font-mono text-indigo-400 flex-shrink-0">{num ?? ""}</span>
+                          <span className="text-[10px] text-gray-400 flex-shrink-0">{jrn.journalHeader ?? jrn.JournalHeader ?? ""}</span>
+                          {(jrn.rowText ?? jrn.RowText) && <span className="text-[10px] text-gray-300 italic truncate max-w-[200px]">{jrn.rowText ?? jrn.RowText}</span>}
+                        </div>
+                      </td>
+                      {multiCompany ? selectedCompanies.map(co => <td key={`bsmc-jx-${child.code}-${co}-${xi}`} />) : <td className="text-right pr-4 py-1 font-mono text-xs text-gray-300">—</td>}
+                      {!multiCompany && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} className="text-right pr-4 py-1 font-mono text-xs text-indigo-400">{entry.periods.B == null || entry.periods.B === 0 ? "—" : fmtAmt(entry.periods.B)}</td><td /><td /></>}
+                      {!multiCompany && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} className="text-right pr-4 py-1 font-mono text-xs text-indigo-400">{entry.periods.C == null || entry.periods.C === 0 ? "—" : fmtAmt(entry.periods.C)}</td><td /><td /></>}
+                      {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} className="text-right pr-4 py-1 font-mono text-xs text-indigo-400">{entry.periods.D == null || entry.periods.D === 0 ? "—" : fmtAmt(entry.periods.D)}</td><td /><td /></>}
+                    </tr>
+                  );
+                });
+              }
+            }
           }
         }
       }
@@ -6834,11 +10647,28 @@ if (childExpanded && hasMore) {
                 </div>
               </td>
 {multiCompany ? selectedCompanies.map(co => (
-                  <td key={`bsmc-dim-${dim.code ?? "nocode"}-${co}-${depth}-${i}-${j}`} />
+                  <BSAmountCell key={`bsmc-dim-${dim.code ?? "nocode"}-${co}-${depth}-${i}-${j}`} value={leaf.code ? getBsDimValForCompany(leaf.code, dim.code, co) : 0} typoStyle={subbody2Style} centered />
                 )) : <BSAmountCell value={dim.amount} typoStyle={subbody2Style} />}
-{!multiCompany && compareMode && <><td /><td /><td /></>}
-{!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
-{!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
+{!multiCompany && compareMode && (() => {
+  const k = `${leaf.code}|${dim.code}`;
+  const cmpDimVal = bsCmpLeafDimIndex.get(k) ?? 0;
+  return <><BSAmountCell value={cmpDimVal} typoStyle={subbody2Style} divider /><BSDeviationCells a={dim.amount} b={cmpDimVal} typoStyle={subbody2Style} /></>;
+})()}
+{!multiCompany && compareMode && cmp2Enabled && (() => {
+  const k = `${leaf.code}|${dim.code}`;
+  const cmp2DimVal = bsCmp2LeafDimIndex.get(k) ?? 0;
+  return <><BSAmountCell value={cmp2DimVal} typoStyle={subbody2Style} divider /><BSDeviationCells a={dim.amount} b={cmp2DimVal} typoStyle={subbody2Style} /></>;
+})()}
+{!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && (() => {
+  const k = `${leaf.code}|${dim.code}`;
+  const cmp3DimVal = bsCmp3LeafDimIndex.get(k) ?? 0;
+  return <><BSAmountCell value={cmp3DimVal} typoStyle={subbody2Style} divider /><BSDeviationCells a={dim.amount} b={cmp3DimVal} typoStyle={subbody2Style} /></>;
+})()}
+{historyExpanded && !compareMode && bsHistoryProcessed.map(h => {
+  const k = `${leaf.code}|${dim.code}`;
+  const v = h.dimIdx?.get(k) ?? 0;
+  return <BSAmountCell key={`bshist-dim-${h.year}-${h.month}-${i}-${j}`} value={v} typoStyle={subbody2Style} centered />;
+})}
             </tr>
           );
         });
@@ -7266,13 +11096,27 @@ const bsHistoryProcessed = useMemo(() => {
     const walk = (n) => { map.set(n.code, n); n.children?.forEach(walk); };
     t.forEach(walk);
     const leafIdx = new Map();
-    h.data.forEach(row => {
+    const dimIdx = new Map();
+    (h.data || []).forEach(row => {
       const lac = String(getField(row, "localAccountCode") ?? "");
-      if (!lac) return;
+      const dc  = String(getField(row, "dimensionCode") ?? "");
       const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
-      leafIdx.set(lac, (leafIdx.get(lac) ?? 0) + amt);
+      if (lac) leafIdx.set(lac, (leafIdx.get(lac) ?? 0) + amt);
+      if (lac && dc && dc !== "null") {
+        const k = `${lac}|${dc}`;
+        dimIdx.set(k, (dimIdx.get(k) ?? 0) + amt);
+      }
     });
-    return { year: h.year, month: h.month, map, leafIdx };
+const jrnByCode = new Map();
+    console.log('[BS Hist]', h.year, h.month, 'journals count:', (h.journals || []).length);
+    (h.journals || []).forEach(j => {
+      const code = String(j.AccountCode ?? j.accountCode ?? "");
+      const jt = String(j.JournalType ?? j.journalType ?? "").toUpperCase();
+      if (!code || (jt !== "AJE" && jt !== "RJE")) return;
+      if (!jrnByCode.has(code)) jrnByCode.set(code, []);
+      jrnByCode.get(code).push(j);
+    });
+    return { year: h.year, month: h.month, map, leafIdx, dimIdx, jrnByCode };
   });
 }, [historyMonths, groupAccounts, dimensionActive]);
 
@@ -7322,10 +11166,27 @@ const searchExpansionMap = useMemo(() => {
 
   // Saved-mapping literal path
   if (savedBsLiteral) {
-    const treeByCode = new Map();
+const treeByCode = new Map();
     (function indexTree(nodes) {
       nodes.forEach(n => { treeByCode.set(String(n.code), n); indexTree(n.children || []); });
     })(tree);
+
+    // Per-leaf+dim indexes for compare periods (saved-mapping path)
+    const buildSavedLeafDimIdx = (rows) => {
+      const m = new Map();
+      (rows || []).forEach(row => {
+        const lac = String(getField(row, "localAccountCode") ?? "");
+        const dc  = String(getField(row, "dimensionCode") ?? "");
+        if (!lac || !dc || dc === "null") return;
+        const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+        m.set(`${lac}|${dc}`, (m.get(`${lac}|${dc}`) ?? 0) + amt);
+      });
+      return m;
+    };
+    const aPrevLeafDimIdxSaved = buildSavedLeafDimIdx(prevUploadedAccounts);
+    const bLeafDimIdxSaved     = compareMode ? buildSavedLeafDimIdx(cmpUploadedAccounts) : new Map();
+    const bPrevLeafDimIdxSaved = compareMode ? buildSavedLeafDimIdx(cmpPrevUploadedAccounts) : new Map();
+    const cLeafDimIdxSaved     = compareM
 
     savedBsLiteral.forEach((section, secIdx) => {
       const walk = (node, parentPath) => {
@@ -7808,6 +11669,22 @@ const sumLiteral = (node) => {
       }
       return total;
     };
+
+    // Per-leaf+dim indexes for BS saved-mapping compare periods
+    const buildBsSavedLeafDimIdx = (rows) => {
+      const m = new Map();
+      (rows || []).forEach(row => {
+        const lac = String(getField(row, "localAccountCode") ?? "");
+        const dc  = String(getField(row, "dimensionCode") ?? "");
+        if (!lac || !dc || dc === "null") return;
+        const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+        m.set(`${lac}|${dc}`, (m.get(`${lac}|${dc}`) ?? 0) + amt);
+      });
+      return m;
+    };
+    const bsBLeafDimIdxSaved = compareMode ? buildBsSavedLeafDimIdx(cmpData) : new Map();
+    const bsCLeafDimIdxSaved = compareMode && cmp2Enabled ? buildBsSavedLeafDimIdx(cmp2Data) : new Map();
+    const bsDLeafDimIdxSaved = compareMode && cmp2Enabled && cmp3Enabled ? buildBsSavedLeafDimIdx(cmp3Data) : new Map();
 
     // ── Compare period indexes for BS ───────────────────────────────
     const cmpAccIdxBs = new Map();
@@ -8341,7 +12218,7 @@ const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
                             return String(dim.code ?? "").toLowerCase().includes(q) || String(dim.name ?? "").toLowerCase().includes(q);
                           })();
                           rows.push(
-                            <tr key={`${leafKey}-dim-${j}`}
+<tr key={`${leafKey}-dim-${j}`}
                               className={`border-b border-[#1a2f8a]/5 ${dimIsMatch ? "bg-[#fef3c7]" : "bg-amber-50/10"} hover:bg-amber-50/40 transition-colors cursor-pointer`}
                               onClick={() => setDimPopup(dim)}>
                               <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 2) * 18}px` }}>
@@ -8352,13 +12229,25 @@ const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
                                 </div>
                               </td>
 {multiCompany ? selectedCompanies.map(co => (
-                                <td key={`bsmc-saved-dim-${dim.code ?? "nocode"}-${co}-${j}`} />
+                                <BSAmountCell key={`bsmc-saved-dim-${dim.code ?? "nocode"}-${co}-${j}`} value={leaf.code ? getBsDimValForCompany(leaf.code, dim.code, co) : 0} typoStyle={subbody2Style} centered />
                               )) : (
                                 <>
                                   <BSAmountCell value={dim.amount} typoStyle={subbody2Style} />
-{compareMode && <><td /><td /><td /></>}
-                                  {compareMode && cmp2Enabled && <><td /><td /><td /></>}
-                                  {compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
+{compareMode && (() => {
+  const k = `${leaf.code}|${dim.code}`;
+  const v = bsBLeafDimIdxSaved.get(k) ?? 0;
+  return <><BSAmountCell value={v} typoStyle={subbody2Style} divider /><BSDeviationCells a={dim.amount} b={v} typoStyle={subbody2Style} /></>;
+})()}
+{compareMode && cmp2Enabled && (() => {
+  const k = `${leaf.code}|${dim.code}`;
+  const v = bsCLeafDimIdxSaved.get(k) ?? 0;
+  return <><BSAmountCell value={v} typoStyle={subbody2Style} divider /><BSDeviationCells a={dim.amount} b={v} typoStyle={subbody2Style} /></>;
+})()}
+{compareMode && cmp2Enabled && cmp3Enabled && (() => {
+  const k = `${leaf.code}|${dim.code}`;
+  const v = bsDLeafDimIdxSaved.get(k) ?? 0;
+  return <><BSAmountCell value={v} typoStyle={subbody2Style} divider /><BSDeviationCells a={dim.amount} b={v} typoStyle={subbody2Style} /></>;
+})()}
                                   {historyExpanded && !compareMode && bsHistoryProcessed.map(h => (
                                     <td key={`bshist-saved-dim-${h.year}-${h.month}-${j}`} />
                                   ))}
@@ -8367,8 +12256,127 @@ const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
                             </tr>
                           );
                         });
-                      }
+}
                     });
+
+                    // ── Journal entries at NODE level (BS saved-mapping path) ──
+                    if (node.code) {
+                      const nodeJrns = journalByCode.get(String(node.code)) || [];
+                      if (nodeJrns.length > 0) {
+                        const jrnKey = `${rowKey}-jrn`;
+                        const jrnExpanded = isOpen(jrnKey);
+                        rows.push(
+                          <tr key={jrnKey}
+                            className="border-b border-[#1a2f8a]/5 cursor-pointer hover:bg-indigo-50/50 transition-colors bg-indigo-50/20"
+                            onClick={() => bsDrill(jrnKey)}>
+                            <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 18}px` }}>
+                              <div className="flex items-center gap-1.5">
+                                <div className="w-2 h-px bg-indigo-200 flex-shrink-0" />
+                                <span className="text-[#1a2f8a]/40 flex-shrink-0">{jrnExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>}</span>
+                                <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded flex-shrink-0">{t("label_journal")}</span>
+                                <span className="text-[10px] text-gray-400">{nodeJrns.length} entries</span>
+                              </div>
+                            </td>
+                            {multiCompany ? selectedCompanies.map(co => <td key={`bsmc-saved-jhdr-${node.code}-${co}`} />) : <td />}
+                            {!multiCompany && compareMode && <><td /><td /><td /></>}
+                            {!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
+                            {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
+                          </tr>
+                        );
+                        if (jrnExpanded) {
+                          nodeJrns.forEach((jrn, k) => {
+                            const amt = parseAmt(jrn.amountYTD ?? jrn.AmountYTD ?? 0);
+                            rows.push(
+                              <tr key={`${jrnKey}-entry-${k}`}
+                                className="border-b border-[#1a2f8a]/5 hover:bg-indigo-50/40 transition-colors bg-indigo-50/10 cursor-pointer"
+                                onClick={() => setJrnPopup(jrn)}>
+                                <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 2) * 18}px` }}>
+                                  <div className="flex items-center gap-1.5">
+                                    <div className="w-2 h-px bg-indigo-100 flex-shrink-0" />
+                                    <span className="text-[10px] font-mono text-indigo-400 flex-shrink-0">{jrn.journalNumber ?? jrn.JournalNumber ?? ""}</span>
+                                    <span className="text-[10px] text-gray-400 flex-shrink-0">{jrn.journalHeader ?? jrn.JournalHeader ?? ""}</span>
+                                    {(jrn.rowText ?? jrn.RowText) && <span className="text-[10px] text-gray-300 italic truncate max-w-[200px]">{jrn.rowText ?? jrn.RowText}</span>}
+                                  </div>
+                                </td>
+{multiCompany ? selectedCompanies.map(co => {
+                                  const jrnCo = String(jrn.companyShortName ?? jrn.CompanyShortName ?? "");
+                                  const v = jrnCo === co ? amt : 0;
+                                  return <BSAmountCell key={`bsmc-saved-jentry-${node.code}-${co}-${k}`} value={v} typoStyle={subbody2Style} centered />;
+                                }) : <BSAmountCell value={amt} typoStyle={subbody2Style} />}
+                                {!multiCompany && compareMode && <><td /><td /><td /></>}
+                                {!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
+                                {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
+                              </tr>
+                            );
+});
+
+                          // ── Compare-period-only journals (B/C/D not in A) ──
+                          if (compareMode) {
+                            const aNums = new Set(nodeJrns.map(j => j.journalNumber ?? j.JournalNumber));
+                            const seen = new Map();
+                            const collect = (idx, period) => {
+                              (idx.get(String(node.code)) || []).forEach(j => {
+                                const num = j.journalNumber ?? j.JournalNumber;
+                                if (aNums.has(num)) return;
+                                if (!seen.has(num)) seen.set(num, { jrn: j, periods: { B: null, C: null, D: null } });
+                                seen.get(num).periods[period] = parseAmt(j.amountYTD ?? j.AmountYTD ?? 0);
+                              });
+                            };
+                            collect(journalByCodeCmp, 'B');
+                            if (cmp2Enabled) collect(journalByCodeCmp2, 'C');
+                            if (cmp2Enabled && cmp3Enabled) collect(journalByCodeCmp3, 'D');
+                            seen.forEach((entry, num) => {
+                              ['B','C','D'].forEach(p => {
+                                if (entry.periods[p] != null) return;
+                                const idx = p === 'B' ? journalByCodeCmp : p === 'C' ? journalByCodeCmp2 : journalByCodeCmp3;
+                                const match = (idx.get(String(node.code)) || []).find(j => (j.journalNumber ?? j.JournalNumber) === num);
+                                if (match) entry.periods[p] = parseAmt(match.amountYTD ?? match.AmountYTD ?? 0);
+                              });
+                            });
+                            const extras = [...seen.entries()];
+                            if (extras.length > 0) {
+                              rows.push(
+                                <tr key={`${jrnKey}-extra-hdr`}
+                                  className="border-b border-[#1a2f8a]/5 bg-indigo-50/30">
+                                  <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 18}px` }}>
+                                    <div className="flex items-center gap-1.5">
+                                      <div className="w-2 h-px bg-indigo-300 flex-shrink-0" />
+                                      <span className="text-[9px] font-bold text-indigo-600 uppercase tracking-widest bg-indigo-100 border border-indigo-200 px-1.5 py-0.5 rounded flex-shrink-0">B/C/D only</span>
+                                      <span className="text-[10px] text-gray-400">{extras.length} entries</span>
+                                    </div>
+                                  </td>
+                                  {multiCompany ? selectedCompanies.map(co => <td key={`bsmc-saved-jxhdr-${node.code}-${co}`} />) : <td />}
+                                  {!multiCompany && compareMode && <><td /><td /><td /></>}
+                                  {!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
+                                  {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
+                                </tr>
+                              );
+                              extras.forEach(([num, entry], xi) => {
+                                const jrn = entry.jrn;
+                                rows.push(
+                                  <tr key={`${jrnKey}-extra-${xi}`}
+                                    className="border-b border-[#1a2f8a]/5 bg-indigo-50/10 hover:bg-indigo-50/40 transition-colors cursor-pointer"
+                                    onClick={() => setJrnPopup(jrn)}>
+                                    <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 2) * 18}px` }}>
+                                      <div className="flex items-center gap-1.5">
+                                        <div className="w-2 h-px bg-indigo-100 flex-shrink-0" />
+                                        <span className="text-[10px] font-mono text-indigo-400 flex-shrink-0">{num ?? ""}</span>
+                                        <span className="text-[10px] text-gray-400 flex-shrink-0">{jrn.journalHeader ?? jrn.JournalHeader ?? ""}</span>
+                                        {(jrn.rowText ?? jrn.RowText) && <span className="text-[10px] text-gray-300 italic truncate max-w-[200px]">{jrn.rowText ?? jrn.RowText}</span>}
+                                      </div>
+                                    </td>
+                                    {multiCompany ? selectedCompanies.map(co => <td key={`bsmc-saved-jx-${node.code}-${co}-${xi}`} />) : <td className="text-right pr-4 py-1 text-gray-300" style={subbody2Style}>—</td>}
+                                    {!multiCompany && compareMode && <><BSAmountCell value={entry.periods.B ?? 0} typoStyle={subbody2Style} divider /><td /><td /></>}
+                                    {!multiCompany && compareMode && cmp2Enabled && <><BSAmountCell value={entry.periods.C ?? 0} typoStyle={subbody2Style} divider /><td /><td /></>}
+                                    {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><BSAmountCell value={entry.periods.D ?? 0} typoStyle={subbody2Style} divider /><td /><td /></>}
+                                  </tr>
+                                );
+                              });
+                            }
+                          }
+                        }
+                      }
+                    }
                   }
                 };
 section.nodes.forEach(n => renderNode(n, 0, "root"));
@@ -9642,6 +13650,7 @@ const handleApplyMapping = useCallback((m) => {
 const [exportOpts, setExportOpts] = useState({
   plSummary: true, plDetailed: true,
   bsSummary: true, bsAssets: true, bsEquity: true,
+  plSaved: true, bsSaved: true,
   drillDown: false,
 });
 
@@ -10328,14 +14337,18 @@ const ExportModal = exportModal ? createPortal(
               <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
             </div>
             <div className="grid grid-cols-2 gap-2">
-              {[
+              {(activeMapping ? [
+                ["plSaved",    "Profit & Loss",     colors.primary],
+                ["bsSaved",    "Balance Sheet",     colors.primary],
+                ["dimJournal", "Dims & Journal",    "#dc7533"],
+              ] : [
                 ["plSummary",  "P&L Summary",       colors.primary],
                 ["plDetailed", "P&L Detailed",      colors.primary],
                 ["bsSummary",  "BS Summary",        colors.primary],
                 ["bsAssets",   "BS Assets",         colors.primary],
                 ["bsEquity",   "BS Equity & Liab.", colors.primary],
                 ["dimJournal", "Dims & Journal",    "#dc7533"],
-              ].map(([k, label, accent]) => {
+              ]).map(([k, label, accent]) => {
                 const checked = k === "dimJournal" ? exportOpts.dimJournal !== false : !!exportOpts[k];
                 return (
                   <label key={k} className="flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all hover:bg-gray-50"
@@ -10411,7 +14424,10 @@ const ExportModal = exportModal ? createPortal(
                 bsCmp3Filters: { year: bsCmp3Year, month: bsCmp3Month, source: bsCmp3Source, structure: bsCmp3Structure, company: bsCmp3Company, dimGroups: bsCmp3DimGroups, dimensions: bsCmp3Dimensions },
                 month: upMonth, year: upYear, source: upSource, structure: upStructure,
                 aFilters: { year: upYear, month: upMonth, source: upSource, structure: upStructure, company: upCompany, dimGroups: upDimGroups, dimensions: upDimensions },
-                journalEntries: jrnData,
+journalEntries: jrnData,
+                journalEntriesCmp: jrnCmpData,
+                journalEntriesCmp2: jrnCmp2Data,
+                journalEntriesCmp3: jrnCmp3Data,
                 cmp2Enabled: plCmp2Enabled,
                 cmp3Enabled: plCmp3Enabled,
                 bsCmp2Enabled: bsCmp2Enabled,
@@ -10419,10 +14435,18 @@ const ExportModal = exportModal ? createPortal(
 selectedCompanies: upCompaniesDebounced,
                 companies: effectiveCompanies,
                 dimensions: effectiveDimensions,
-                dimGroups,
-                plHistoryMonths: plHistoryExpanded ? plHistoryMonths : [],
+dimGroups,
+breakers,
+                pgcMapping: activeMapping?.plConverted ?? pgcMapping ?? danishIfrsPlMapping ?? spanishIfrsEsPlMapping,
+                pgcBsMapping: activeMapping?.bsConverted ?? pgcBsMapping ?? danishIfrsBsMapping ?? spanishIfrsEsBsMapping,
+                colors,
+plHistoryMonths: plHistoryExpanded ? plHistoryMonths : [],
                 bsHistoryMonths: bsHistoryExpanded ? bsHistoryMonths : [],
                 ytdOnly,
+                savedPlLiteral: activeMapping?.plLiteral ?? null,
+                savedBsLiteral: activeMapping?.bsLiteral ?? null,
+                savedHighlightedIds: activeMapping?.highlightedIds ?? null,
+                prevUploadedAccountsRaw: prevData,
                 summaryRows: (() => {
                   const effectivePlMapping = activeMapping?.plConverted ?? pgcMapping ?? danishIfrsPlMapping ?? spanishIfrsEsPlMapping;
                   const localTree = buildTree(grpData, upData);
@@ -11209,7 +15233,10 @@ uploadedAccounts={upData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimens
   structures={effectiveStructures}
    companies={effectiveCompanies}
   dimGroups={dimGroups}
-  journalEntries={jrnData}
+journalEntries={jrnData}
+  journalEntriesCmp={jrnCmpData}
+  journalEntriesCmp2={jrnCmp2Data}
+  journalEntriesCmp3={jrnCmp3Data}
   token={token}
   onCompareChange={(mode, filters1, data1, filters2, data2) => {
     setBsCompareMode(mode);
