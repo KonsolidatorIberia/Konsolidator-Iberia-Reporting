@@ -776,27 +776,51 @@ export default function PageHeader({
   periodToggle,
   compareToggle,
   aiToggle,
-fabActions,
+  fabActions,
   onBack,
-headerSearch,
+  headerSearch,
   headerActions,
   headerExtra,
+  onExportPdf,
+  onExportXlsx,
+  onMappingsClick,
 }) {
 const { colors } = useSettings();
   const headerStyle = useTypo("header1");
   const t = useT();
-// Title is bound STRICTLY to the active tab — hovering a tab no longer
-  // morphs the header text. The change happens on click only.
   const activeTabObj = tabs?.find(t => t.id === activeTab);
   const displayTitle = activeTabObj?.label ?? title;
 
+  // Split filters: primary (Year/Month/Company) always visible, rest behind "More filters"
+  const isPrimary = (f) => {
+    const lbl = String(f?.label ?? "").toLowerCase();
+    return lbl.includes("year") || lbl.includes("month") || lbl.includes("company") || lbl.includes("año") || lbl.includes("mes") || lbl.includes("empresa");
+  };
+  const primaryFilters = filters.filter(isPrimary);
+  const secondaryFilters = filters.filter(f => !isPrimary(f));
+
+const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
+  const [exportMode, setExportMode] = useState(false); // false = [Export, Mappings], true = [PDF, Excel]
+  const exportButtonsRef = useRef(null);
+
+  useEffect(() => {
+    if (!exportMode) return;
+    const handler = (e) => {
+      if (exportButtonsRef.current && !exportButtonsRef.current.contains(e.target)) {
+        setExportMode(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [exportMode]);
 return (
 <div className="relative sticky top-0 z-50 bg-[#f8f9ff] overflow-visible">
       {/* Match sidebar's logo card height (7vh) and rounded card vibe */}
 <div className="flex items-stretch gap-0 relative overflow-visible bg-white rounded-2xl shadow-xl border border-gray-100"
 style={{
           height: "7vh",
-          padding: "0 18px",
+          padding: "0 18px 0 18px",
+          paddingRight: 6,
         }}>
 
         {/* Brand block — title morphs based on hovered tab */}
@@ -851,28 +875,96 @@ style={{
         {/* Divider */}
         {tabs && filters.length > 0 && <SoftDivider />}
 
-        {/* Filters */}
+{/* Filters — primary always visible; secondary revealed on More filters hover */}
 {filters.length > 0 && (
-         <div className="no-scrollbar flex items-center gap-1 px-3 overflow-x-auto" style={{ flexWrap: "nowrap" }}>
-            
-            {filters.map((f, i) =>
-              f.render
-                ? <span key={i}>{f.render()}</span>
-                : f.multiselect
-                  ? <MultiFilterPill key={f.label + i} {...f} />
-                  : <FilterPill key={f.label + i} {...f} />
-            )}
-          </div>
-        )}
+  <div
+    className="no-scrollbar flex items-center gap-1 px-3 overflow-x-auto relative"
+    style={{ flexWrap: "nowrap" }}
+    onMouseEnter={() => setMoreFiltersOpen(true)}
+    onMouseLeave={() => setMoreFiltersOpen(false)}
+  >
+    {primaryFilters.map((f, i) =>
+      f.render
+        ? <span key={i}>{f.render()}</span>
+        : f.multiselect
+          ? <MultiFilterPill key={f.label + i} {...f} />
+          : <FilterPill key={f.label + i} {...f} />
+    )}
+
+{secondaryFilters.length > 0 && (
+      <div className="flex items-center gap-1 flex-shrink-0 relative">
+        {/* More filters button — same look as a FilterPill, collapses when hovered */}
+        <button
+          className="flex items-center gap-2 rounded-xl select-none overflow-hidden flex-shrink-0"
+          style={{
+            padding: "8px 12px",
+            background: moreFiltersOpen ? "transparent" : "transparent",
+            maxWidth: moreFiltersOpen ? 0 : 200,
+            opacity: moreFiltersOpen ? 0 : 1,
+            paddingLeft: moreFiltersOpen ? 0 : 12,
+            paddingRight: moreFiltersOpen ? 0 : 12,
+            transition: `max-width 320ms ${SPRING}, opacity 220ms ${SMOOTH}, padding 320ms ${SPRING}, background 220ms ${SMOOTH}`,
+            pointerEvents: moreFiltersOpen ? "none" : "auto",
+            lineHeight: 1,
+          }}
+          onMouseEnter={e => {
+            if (!moreFiltersOpen) e.currentTarget.style.background = "rgba(26,47,138,0.06)";
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.background = "transparent";
+          }}
+        >
+          <span className="text-[9px] font-black uppercase tracking-[0.18em] leading-none whitespace-nowrap"
+            style={{ color: colors.primary, opacity: 0.55 }}>
+            {t("more filters") || "More filters"}
+          </span>
+          <span className="text-[10px] font-bold leading-none"
+            style={{ color: colors.primary, opacity: 0.4 }}>
+            +{secondaryFilters.length}
+          </span>
+        </button>
+
+        {/* Secondary filters appear in place of the More button */}
+        <div
+          className="flex items-center gap-1 overflow-hidden"
+          style={{
+            maxWidth: moreFiltersOpen ? 1400 : 0,
+            opacity: moreFiltersOpen ? 1 : 0,
+            transition: `max-width 420ms ${SPRING}, opacity 240ms ${SMOOTH}`,
+            pointerEvents: moreFiltersOpen ? "auto" : "none",
+          }}
+        >
+          {secondaryFilters.map((f, i) =>
+            f.render
+              ? <span key={i}>{f.render()}</span>
+              : f.multiselect
+                ? <MultiFilterPill key={f.label + i} {...f} />
+                : <FilterPill key={f.label + i} {...f} />
+          )}
+        </div>
+      </div>
+    )}
+  </div>
+)}
 
 {/* Spacer pushes FAB to the right edge */}
         <div className="flex-grow" />
 
-{/* Inline toggles (period + compare + AI) — standardized icon buttons */}
-        {(periodToggle || compareToggle || aiToggle) && (
+{/* Inline toggles (period + compare + AI) + Export/Mappings — collapse when More filters hover is active */}
+        {(periodToggle || compareToggle || aiToggle || onExportPdf || onMappingsClick) && (
           <>
             <SoftDivider />
-            <div className="flex items-center gap-1.5 px-3 flex-shrink-0">
+<div
+              className="flex items-center gap-1.5 px-3 flex-shrink-0 overflow-hidden"
+              style={{
+                maxWidth: moreFiltersOpen ? 0 : 1200,
+                opacity: moreFiltersOpen ? 0 : 1,
+                paddingLeft: moreFiltersOpen ? 0 : 12,
+                paddingRight: moreFiltersOpen ? 0 : 12,
+                transition: `max-width 420ms ${SPRING}, opacity 240ms ${SMOOTH}, padding 320ms ${SMOOTH}`,
+                pointerEvents: moreFiltersOpen ? "none" : "auto",
+              }}
+            >
               {aiToggle && (
                 <button
                   onClick={aiToggle.onClick}
@@ -908,7 +1000,7 @@ style={{
                   {periodToggle.value === "ytd"
                     ? <CalendarRange size={13} strokeWidth={2.4} />
                     : <Calendar size={13} strokeWidth={2.4} />}
-                  <span className="text-[10px] font-black uppercase tracking-wider">
+<span className="hidden 2xl:inline text-[10px] font-black uppercase tracking-wider">
                     {periodToggle.value === "ytd" ? t("mode_ytd") : t("mode_monthly")}
                   </span>
                 </button>
@@ -931,10 +1023,90 @@ onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareTog
                   onMouseEnter={e => { if (!compareToggle.active) { e.currentTarget.style.transform = "scale(1.03)"; e.currentTarget.style.background = `${colors.primary}12`; } }}
                   onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; if (!compareToggle.active) e.currentTarget.style.background = "rgba(26,47,138,0.06)"; }}>
                   <GitCompareArrows size={13} strokeWidth={compareToggle.active ? 2.4 : 2} />
-                  <span className="text-[10px] font-black uppercase tracking-wider">
+<span className="hidden 2xl:inline text-[10px] font-black uppercase tracking-wider">
                     {t("btn_compare") ?? "CMP"}
                   </span>
                 </button>
+              )}
+
+{(onExportPdf || onExportXlsx || onMappingsClick) && (
+                <div ref={exportButtonsRef} className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => {
+                      if (exportMode) {
+                        onExportPdf?.();
+                        setExportMode(false);
+                      } else {
+                        setExportMode(true);
+                      }
+                    }}
+                    title={exportMode ? "Download PDF" : "Export"}
+                    className="flex items-center gap-1.5 px-3 h-9 rounded-full flex-shrink-0"
+                    style={{
+                      background: exportMode ? "white" : "rgba(26,47,138,0.06)",
+                      color: exportMode ? "#CD202C" : colors.primary,
+                      border: exportMode ? "1px solid rgba(205,32,44,0.25)" : "1px solid rgba(26,47,138,0.1)",
+                      boxShadow: exportMode
+                        ? "0 4px 12px -2px rgba(205,32,44,0.18)"
+                        : "0 1px 3px -1px rgba(26,47,138,0.1)",
+                      transition: `all 240ms ${SMOOTH}`,
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.03)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; }}
+                  >
+{exportMode ? (
+                      <img src="https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png"
+                        alt="PDF" style={{ width: 16, height: 16, objectFit: "contain", display: "block" }} />
+                    ) : (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                      </svg>
+                    )}
+<span className="hidden 2xl:inline text-[10px] font-black uppercase tracking-wider">
+                      {exportMode ? "PDF" : (t("export") || "Export")}
+                    </span>
+                  </button>
+
+<button
+                    onClick={() => {
+                      if (exportMode) {
+                        onExportXlsx?.();
+                        setExportMode(false);
+                      } else {
+                        onMappingsClick?.();
+                      }
+                    }}
+                    title={exportMode ? "Download Excel" : "Mappings"}
+                    className="flex items-center gap-1.5 px-3 h-9 rounded-full flex-shrink-0"
+                    style={{
+                      background: exportMode ? "white" : "rgba(26,47,138,0.06)",
+                      color: exportMode ? "#217346" : colors.primary,
+                      border: exportMode ? "1px solid rgba(33,115,70,0.25)" : "1px solid rgba(26,47,138,0.1)",
+                      boxShadow: exportMode
+                        ? "0 4px 12px -2px rgba(33,115,70,0.18)"
+                        : "0 1px 3px -1px rgba(26,47,138,0.1)",
+                      transition: `all 240ms ${SMOOTH}`,
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.03)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; }}
+                  >
+{exportMode ? (
+                      <img src="https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png"
+                        alt="Excel" style={{ width: 22, height: 22, objectFit: "contain", display: "block" }} />
+                    ) : (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                        <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+                        <polyline points="2 17 12 22 22 17"/>
+                        <polyline points="2 12 12 17 22 12"/>
+                      </svg>
+                    )}
+<span className="hidden 2xl:inline text-[10px] font-black uppercase tracking-wider">
+                      {exportMode ? "Excel" : (t("mappings") || "Mappings")}
+                    </span>
+                  </button>
+                </div>
               )}
             </div>
           </>
@@ -979,15 +1151,6 @@ onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareTog
           </>
         )}
         
-        {/* FAB embedded at the right edge */}
-        {fabActions && (
-          <>
-            <SoftDivider />
-            <div className="flex items-center pl-3 pr-1">
-              <ActionFAB actions={fabActions} />
-            </div>
-          </>
-        )}
       </div>
 
 <style>{`

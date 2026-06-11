@@ -193,7 +193,7 @@ function DataTable({
       {filtered.length > 0 ? (
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
          <div className="scrollbar-hide" style={{ height: 'calc(100vh - 160px)', overflowY: 'auto' }}>
-            <table className="w-full k-sticky-table">
+          <table className="w-full k-sticky-table">
 <thead>
   <tr className="border-b border-gray-100 bg-[#1a2f8a]/5">
                   <th className="text-left px-4 py-3 text-xs font-black text-gray-400 uppercase tracking-widest w-10 bg-[#eef1fb]">#</th>
@@ -685,7 +685,7 @@ function useCountUp(target, duration = 2000) {
   return display;
 }
 
-function PLAmountCell({ value, divider, typoStyle, centered }) {
+function PLAmountCell({ value, divider, typoStyle, centered = true }) {
   const animated = useCountUp(value ?? 0, 1000);
   const isEmpty = value === 0;
   const isNeg   = animated < 0;
@@ -5322,7 +5322,7 @@ const jrns = (journalEntries || []).filter(j => {
             const m = (idx.get(String(node.code)) || []).find(jj => (jj.JournalNumber ?? jj.journalNumber) === jnum);
             return m ? parseAmt(m.AmountYTD ?? m.amountYTD ?? 0) : null;
           };
-jrns.forEach(j => {
+            jrns.forEach(j => {
             const amt = parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
             const jnum = j.JournalNumber ?? j.journalNumber ?? '';
             const bV = bsHasB ? findMatchBs(jrnByCodeCmpPdf,  jnum) : null;
@@ -6430,6 +6430,7 @@ const renderBsForChunk = (chunkIdx) => {
 
 
 function PLStatement({
+  bsCompareMode = false , externalAccColWidth, onAccColWidthChange,
   externalExpandedMap, externalSetExpandedMap,
   multiCompany = false,
   selectedCompanies = [],
@@ -6518,6 +6519,71 @@ const [searchActive, setSearchActive] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const debouncedQuery = useDeferredValue(searchQuery);
   const searchInputRef = useRef(null);
+const [accColWidthInternal, setAccColWidthInternal] = useState(null);
+const accColWidth = externalAccColWidth !== undefined ? externalAccColWidth : accColWidthInternal;
+const setAccColWidth = onAccColWidthChange ?? setAccColWidthInternal;
+const startAccResize = useCallback((e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const handle = e.currentTarget;
+  const th = handle.parentElement;
+  const startX = e.clientX;
+  const startW = accColWidth ?? th.getBoundingClientRect().width;
+
+  // Medir el min: posición del último botón del header (expand/collapse all) + padding
+const thRect = th.getBoundingClientRect();
+  let maxRight = thRect.left;
+  th.querySelectorAll("button").forEach(b => {
+    const r = b.getBoundingClientRect().right;
+    if (r > maxRight) maxRight = r;
+  });
+const minW = maxRight > thRect.left ? Math.max(60, maxRight - thRect.left + 12) : 220;
+
+  const table = th.closest("table");
+  const col = table?.querySelector("colgroup col:first-child");
+
+  handle.classList.add("is-dragging");
+  let latestW = startW;
+
+  const move = (ev) => {
+    const dx = ev.clientX - startX;
+    latestW = Math.max(minW, Math.min(1200, startW + dx));
+    if (col) col.style.width = `${latestW}px`;
+    th.style.width = `${latestW}px`;
+  };
+  const up = () => {
+    handle.classList.remove("is-dragging");
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    setAccColWidth(latestW);
+  };
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+}, [accColWidth, setAccColWidth]);
+
+useEffect(() => {
+  const clamp = () => {
+    const th = document.querySelector(".k-sticky-acc-head");
+    if (!th) return;
+    const thRect = th.getBoundingClientRect();
+    let maxRight = thRect.left;
+    th.querySelectorAll("button").forEach(b => {
+      const r = b.getBoundingClientRect().right;
+      if (r > maxRight) maxRight = r;
+    });
+    const minW = maxRight > thRect.left ? Math.max(60, maxRight - thRect.left + 12) : 220;
+    const currentW = accColWidth ?? thRect.width;
+    if (currentW < minW) setAccColWidth(minW);
+  };
+const raf = requestAnimationFrame(() => requestAnimationFrame(clamp));
+  return () => cancelAnimationFrame(raf);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [accColWidth, savedPlLiteral, compareMode, multiCompany]);
+
   const searchDebounceRef = useRef(null);
   useEffect(() => () => clearTimeout(searchDebounceRef.current), []);
 const [filtersOpen, setFiltersOpen] = useState(true);
@@ -6542,16 +6608,20 @@ const [historyMonthsInternal, setHistoryMonthsInternal] = useState([]);
 const fetchHistoryMonth = useCallback(async (y, mo) => {
     if (!token || !source || !structure || !y || !mo) return { data: [], prevData: [], journals: [] };
     const h = { Authorization: `Bearer ${token}`, Accept: "application/json" };
-    const buildFilter = (yy, mm) => `Year eq ${yy} and Month eq ${mm} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+    const coClause = selectedCompanies?.[0] ? ` and CompanyShortName eq '${selectedCompanies[0]}'` : '';
+    const buildFilter = (yy, mm) => `Year eq ${yy} and Month eq ${mm} and Source eq '${source}' and GroupStructure eq '${structure}'${coClause}`;
+    const buildJrnFilter = (yy, mm) => `Year eq ${yy} and Month eq ${mm} and Source eq '${source}'${coClause}`;
     try {
       const [resA, resJ] = await Promise.all([
         fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(buildFilter(y, mo))}`, { headers: h }),
-        fetch(`${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(buildFilter(y, mo))}`, { headers: h }),
+        fetch(`${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(buildJrnFilter(y, mo))}`, { headers: h }),
       ]);
+      console.log('[JRN-FETCH]', y, mo, 'status:', resJ.status, 'url:', `${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(buildJrnFilter(y, mo))}`);
       const jsonA = resA.ok ? await resA.json() : { value: [] };
       const data = jsonA.value ?? (Array.isArray(jsonA) ? jsonA : []);
-      const jsonJ = resJ.ok ? await resJ.json() : { value: [] };
+const jsonJ = resJ.ok ? await resJ.json() : { value: [] };
       const journals = jsonJ.value ?? (Array.isArray(jsonJ) ? jsonJ : []);
+      console.log('[PL hist fetch]', y, mo, 'journals:', journals.length, 'resJStatus:', resJ.status, 'sample:', JSON.stringify(journals[0]));
       let prev = [];
       if (Number(mo) !== 1) {
         const resB = await fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(buildFilter(y, Number(mo) - 1))}`, { headers: h });
@@ -6560,7 +6630,7 @@ const fetchHistoryMonth = useCallback(async (y, mo) => {
       }
       return { data, prevData: prev, journals };
     } catch { return { data: [], prevData: [], journals: [] }; }
-  }, [token, source, structure]);
+ }, [token, source, structure, selectedCompanies]);
 
 const toggleHistory = useCallback(() => {
     if (compareMode || multiCompany) return;
@@ -6568,20 +6638,22 @@ const toggleHistory = useCallback(() => {
   }, [compareMode, multiCompany, historyExpanded]);
 // Single sync effect: fetches when expanded turns on or period changes; clears when off.
 // Skips refetch on remount when nothing actually changed.
-const plHistSyncRef = useRef({ expanded: externalHistoryExpanded, period: `${year}-${month}` });
+const plHistSyncRef = useRef({ expanded: externalHistoryExpanded, period: `${year}-${month}`, scope: `${source}|${structure}|${selectedCompanies?.[0] ?? ''}` });
 useEffect(() => {
   const currentPeriod = `${year}-${month}`;
+  const currentScope = `${source}|${structure}|${selectedCompanies?.[0] ?? ''}`;
   const last = plHistSyncRef.current;
   const expandedChanged = last.expanded !== externalHistoryExpanded;
   const periodChanged = last.period !== currentPeriod;
-  plHistSyncRef.current = { expanded: externalHistoryExpanded, period: currentPeriod };
+  const scopeChanged = last.scope !== currentScope;
+  plHistSyncRef.current = { expanded: externalHistoryExpanded, period: currentPeriod, scope: currentScope };
 
   if (!externalHistoryExpanded) {
     if (expandedChanged && historyMonthsRef.current.length > 0) setHistoryMonths([]);
     return;
   }
   if (compareMode || multiCompany) return;
-if (!expandedChanged && !periodChanged && historyMonthsRef.current.length > 0) return; // remount with existing data — keep it
+  if (!expandedChanged && !periodChanged && !scopeChanged && historyMonthsRef.current.length > 0) return;
 
   (async () => {
     setHistoryLoading(true);
@@ -6603,7 +6675,7 @@ if (!expandedChanged && !periodChanged && historyMonthsRef.current.length > 0) r
     setHistoryLoading(false);
   })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [externalHistoryExpanded, year, month]);
+}, [externalHistoryExpanded, year, month, source, structure, selectedCompanies]);
 
 const [jrnPopup, setJrnPopup] = useState(null);
 const [dimPopup, setDimPopup] = useState(null);
@@ -6919,6 +6991,7 @@ const getDimValForCompany = useCallback((localCode, dimCode, co, isYtd) => {
 const journalByCode = useMemo(() => {
   const idx = new Map();
   (journalEntries || []).forEach(row => {
+    if (idx.size === 0) console.log('[A]', JSON.stringify(row));
     const code = String(row.accountCode ?? row.AccountCode ?? row.AccountCode ?? "");
     if (!code) return;
     const jt = String(row.journalType ?? row.JournalType ?? "").toUpperCase();
@@ -7094,11 +7167,17 @@ const journalByCodeCmp3 = useMemo(() => {
 
 // History months: filter raw data by dims, build trees, build code lookups
 const historyMonthsProcessed = useMemo(() => {
-  return historyMonths.map(h => {
-    const filteredData = h.data.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions));
-    const filteredPrev = h.prevData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions));
-    const tree = buildTree(groupAccounts, filteredData, !((upDimGroups?.length > 0) || (upDimensions?.length > 0)));
-    const prevTree = buildTree(groupAccounts, filteredPrev, !((upDimGroups?.length > 0) || (upDimensions?.length > 0)));
+  console.log('[HIST-MONTHS-RAW]', historyMonths.length, historyMonths.map(h => ({ y: h.year, m: h.month, dataLen: h.data?.length, jrnLen: h.journals?.length })));
+return historyMonths.map(hRaw => {
+    const h = {
+      ...hRaw,
+      data: (hRaw.data || []).filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions)),
+      prevData: (hRaw.prevData || []).filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions)),
+      journals: (hRaw.journals || []).filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions)),
+    };
+    console.log('[hist]', h.year, h.month, 'journals:', h.journals?.length ?? 0, 'sample:', JSON.stringify(h.journals?.[0]));
+    const tree = buildTree(groupAccounts, h.data, !((upDimGroups?.length > 0) || (upDimensions?.length > 0)));
+    const prevTree = buildTree(groupAccounts, h.prevData, !((upDimGroups?.length > 0) || (upDimensions?.length > 0)));
     const map = new Map();
     const prevMap = new Map();
     const walk = (m) => (n) => { m.set(n.code, n); n.children?.forEach(walk(m)); };
@@ -7130,8 +7209,8 @@ const historyMonthsProcessed = useMemo(() => {
         });
       });
     };
-    buildDimIdx(filteredData, dimFullIdx, dimValIdx);
-    buildDimIdx(filteredPrev, prevDimFullIdx, prevDimValIdx);
+buildDimIdx(h.data, dimFullIdx, dimValIdx);
+    buildDimIdx(h.prevData, prevDimFullIdx, prevDimValIdx);
     // Mirror by dim NAME using metadata (so saved dims stored as names still match)
     if (Array.isArray(dimensions) && dimensions.length > 0) {
       const nameToCode = new Map();
@@ -7160,7 +7239,7 @@ const historyMonthsProcessed = useMemo(() => {
       mirror(dimFullIdx, dimValIdx);
       mirror(prevDimFullIdx, prevDimValIdx);
     }
-    filteredData.forEach(row => {
+h.data.forEach(row => {
       const lac = String(getField(row, "localAccountCode") ?? "");
       if (!lac) return;
       const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
@@ -7170,10 +7249,13 @@ const historyMonthsProcessed = useMemo(() => {
         leafDimIdx.set(`${lac}|${dc}`, (leafDimIdx.get(`${lac}|${dc}`) ?? 0) + amt);
       }
     });
-    filteredPrev.forEach(row => {
+const prevAccIdx = new Map();
+    h.prevData.forEach(row => {
       const lac = String(getField(row, "localAccountCode") ?? "");
-      if (!lac) return;
+      const accCode = String(getField(row, "accountCode") ?? "");
       const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+      if (accCode) prevAccIdx.set(accCode, (prevAccIdx.get(accCode) ?? 0) + amt);
+      if (!lac) return;
       aPrevLeafIdxOnce.set(lac, (aPrevLeafIdxOnce.get(lac) ?? 0) + amt);
       const dc = String(getField(row, "dimensionCode") ?? "");
       if (dc && dc !== "null") {
@@ -7188,14 +7270,51 @@ const historyMonthsProcessed = useMemo(() => {
       if (!jrnByCode.has(code)) jrnByCode.set(code, []);
       jrnByCode.get(code).push(j);
     });
-    return { year: h.year, month: h.month, map, prevMap, leafIdx, aPrevLeafIdxOnce, leafDimIdx, prevLeafDimIdx, jrnByCode, dimFullIdx, dimValIdx, prevDimFullIdx, prevDimValIdx };
+    return { year: h.year, month: h.month, map, prevMap, leafIdx, aPrevLeafIdxOnce, leafDimIdx, prevLeafDimIdx, jrnByCode, dimFullIdx, dimValIdx, prevDimFullIdx, prevDimValIdx, prevAccIdx };
   });
 }, [historyMonths, upDimGroups, upDimensions, groupAccounts, dimensions]);
 
-const getHistYtd = useCallback((h, code) => { const n = h.map.get(code); return n ? sumNode(n) : 0; }, []);
+const getHistYtd = useCallback((h, code) => {
+  const n = h.map.get(code);
+  if (!n) return 0;
+  // Use uploadLeaves when present (matches current period's sumNode behavior for sum accounts)
+  const sumYtdH = (nd) => {
+    if (!nd) return 0;
+    if (nd.type === "localAccount" || nd.type === "dimension" || nd.type === "plain") {
+      return h.leafIdx?.get(String(nd.code)) ?? 0;
+    }
+    if (nd.uploadLeaves?.length > 0) {
+      let s = 0;
+      nd.uploadLeaves.forEach(l => { s += sumYtdH(l); });
+      (nd.children || []).forEach(c => { s += sumYtdH(c); });
+      return s;
+    }
+    let s = 0;
+    (nd.children || []).forEach(c => { s += sumYtdH(c); });
+    return s;
+  };
+  return sumYtdH(n);
+}, []);
 const getHistPrev = useCallback((h, code) => {
   if (Number(h.month) === 1) return 0;
-  const n = h.prevMap.get(code); return n ? sumNode(n) : 0;
+  const curN = h.map.get(code);
+  if (!curN) return 0;
+  // Mirror sumNode's traversal but read prev amounts from h.aPrevLeafIdxOnce (keyed by localAccountCode)
+  const sumPrevH = (n) => {
+    if (!n) return 0;
+    if (n.type === "localAccount" || n.type === "dimension" || n.type === "plain") {
+      return h.aPrevLeafIdxOnce?.get(String(n.code)) ?? 0;
+    }
+    if (n.uploadLeaves?.length > 0) {
+      let s = 0;
+      n.uploadLeaves.forEach(l => { s += sumPrevH(l); });
+      return s;
+    }
+    let s = 0;
+    n.children?.forEach(c => { s += sumPrevH(c); });
+    return s;
+  };
+  return sumPrevH(curN);
 }, []);
 
 const getCmp2Ytd = useCallback((code) => { const n = cmp2NodeByCode.get(code); return n ? sumNode(n) : 0; }, [cmp2NodeByCode]);
@@ -7858,7 +7977,10 @@ const cmp2TreeLit = buildTree(groupAccounts, cmp2UploadedAccounts);
       return total;
     };
 
-    const sumLiteralForPeriod = (node, treeByCodeMap, prevTreeByCodeMap, fullIdx, valIdx, prevFullIdx, prevValIdx, periodMonth) => {
+const sumLiteralForPeriod = (node, treeByCodeMap, prevTreeByCodeMap, fullIdx, valIdx, prevFullIdx, prevValIdx, periodMonth) => {
+      if (node.isSum && node.children && node.children.length > 0) {
+        return node.children.reduce((s, c) => s + sumLiteralForPeriod(c, treeByCodeMap, prevTreeByCodeMap, fullIdx, valIdx, prevFullIdx, prevValIdx, periodMonth), 0);
+      }
       const gaNode = treeByCodeMap.get(String(node.code));
       if (!gaNode) return 0;
       if (!node.dims || node.dims.length === 0) {
@@ -7897,7 +8019,7 @@ const sumLiteralC = (node) => sumLiteralForPeriod(
     );
 
     // Sum a literal node (YTD or Monthly based on ytdOnly toggle):
-    const sumLiteral = (node) => {
+const sumLiteralLeaf = (node) => {
       const gaNode = treeByCode.get(String(node.code));
       if (!gaNode) return 0;
       if (!node.dims || node.dims.length === 0) {
@@ -7921,6 +8043,12 @@ const sumLiteralC = (node) => sumLiteralForPeriod(
       node.dims.forEach(d => { prevTotal += sumDimRecursivePrev(gaNode, String(d)); });
       const prevYtd = -prevTotal;
       return ytd - prevYtd;
+    };
+    const sumLiteral = (node) => {
+      if (node.isSum && node.children && node.children.length > 0) {
+        return node.children.reduce((s, c) => s + sumLiteral(c), 0);
+      }
+      return sumLiteralLeaf(node);
     };
 
 return (
@@ -7997,16 +8125,16 @@ return (
       )}
       <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col"
         style={{ maxHeight: "100%", minHeight: 0, boxShadow: "0 20px 40px -8px rgba(26, 47, 138, 0.15), 0 4px 12px -2px rgba(26, 47, 138, 0.08)" }}>
-          <div className="overflow-auto scrollbar-hide" style={{ flex: 1, minHeight: 0 }}>
-<table className="k-sticky-table" style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, tableLayout: "auto" }}>
+         <div className="overflow-auto k-scroll k-scroll-overlay" style={{ flex: 1, minHeight: 0, willChange: "scroll-position", transform: "translateZ(0)" }}>
+<table className="w-full k-sticky-table">
 <colgroup>
-                <col style={{ width: "1px" }} />
+  <col style={{ width: accColWidth ? `${accColWidth}px` : "auto" }} />
                 {multiCompany
-                  ? selectedCompanies.map(co => <col key={`mc-saved-col-${co}`} style={{ width: "1px" }} />)
-                  : <col style={{ width: "1px" }} />}
-{!multiCompany && compareMode && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
-                {!multiCompany && compareMode && cmp2Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
-                {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+                  ? selectedCompanies.map(co => <col key={`mc-saved-col-${co}`} style={{ width: "180px" }} />)
+                  : <col style={{ width: "160px" }} />}
+{!multiCompany && compareMode && <><col style={{ width: "160px" }} /><col style={{ width: "110px" }} /><col style={{ width: "75px" }} /></>}
+                {!multiCompany && compareMode && cmp2Enabled && <><col style={{ width: "160px" }} /><col style={{ width: "110px" }} /><col style={{ width: "75px" }} /></>}
+                {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><col style={{ width: "160px" }} /><col style={{ width: "110px" }} /><col style={{ width: "75px" }} /></>}
                 {!multiCompany && historyExpanded && historyMonthsProcessed.map((h) => (
                   <col key={`hist-col-${h.year}-${h.month}`} style={{ width: "140px" }} />
                 ))}
@@ -8018,6 +8146,7 @@ return (
                   boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
                 }}>
 <th className="text-left px-6 whitespace-nowrap k-sticky-acc-head" style={{ height: "64px" }}>
+                    <div className="k-acc-resize-handle" onMouseDown={startAccResize} title="Drag to resize column" />
                     <div className="flex items-center gap-5">
                       <div className="flex items-center gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
                         <button onClick={() => setSearchActive(a => !a)}
@@ -8073,10 +8202,27 @@ return (
                           </>
                         )}
                       </div>
-                      <div style={{ width: 1, height: 18, background: "#e5e7eb" }} />
-                      <button onClick={(e) => {
+<div style={{ width: 1, height: 18, background: "#e5e7eb", flexShrink: 0 }} />
+                      {compareMode && (
+                        <>
+                          <button onClick={() => setFiltersOpen(o => !o)}
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg"
+                            style={{
+                              background: "transparent",
+                              color: filtersOpen ? colors.primary : "#94a3b8",
+                              transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)",
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+                            onMouseLeave={e => { e.currentTarget.style.color = filtersOpen ? colors.primary : "#94a3b8"; }}>
+                            <ChevronDown size={10} style={{ transition: "transform 300ms cubic-bezier(0.34,1.56,0.64,1)", transform: filtersOpen ? "rotate(0deg)" : "rotate(-90deg)" }} />
+                            <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? "Hide" : "Show"}</span>
+                          </button>
+                          <div style={{ width: 1, height: 18, background: "#e5e7eb", flexShrink: 0 }} />
+                        </>
+                      )}
+<button onClick={(e) => {
                         e.stopPropagation();
-                        if (Object.values(expandedMap).some(Boolean)) { setExpandedMap({}); return; }
+                        if (Object.keys(expandedMap).some(k => k.startsWith('saved-') && expandedMap[k])) { setExpandedMap({}); return; }
                         const next = {};
                         savedPlLiteral.forEach((section, secIdx) => {
                           const walk = (node, parentPath) => {
@@ -8097,16 +8243,16 @@ return (
                         style={{ background: "transparent", color: "#94a3b8", padding: 4, transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)" }}
                         onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
                         onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
-                        title={Object.values(expandedMap).some(Boolean) ? t("btn_collapse_all") : t("btn_expand_all")}>
-                        <span key={Object.values(expandedMap).some(Boolean) ? "collapse" : "expand"}
+title={Object.keys(expandedMap).some(k => k.startsWith('saved-') && expandedMap[k]) ? t("btn_collapse_all") : t("btn_expand_all")}>
+                        <span key={Object.keys(expandedMap).some(k => k.startsWith('saved-') && expandedMap[k]) ? "collapse" : "expand"}
                           className="inline-flex"
                           style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
-                          {Object.values(expandedMap).some(Boolean)
+                          {Object.keys(expandedMap).some(k => k.startsWith('saved-') && expandedMap[k])
                             ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
                             : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
                           }
                         </span>
-                      </button>
+</button>
                     </div>
                   </th>
 {multiCompany ? selectedCompanies.map(co => (
@@ -8114,10 +8260,10 @@ return (
                       <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{co}</span>
                     </th>
                   )) : (
-                    <th className="text-right pr-6 py-3 whitespace-nowrap k-sticky-head" style={{ cursor: "pointer" }}
+<th className="text-center py-3 whitespace-nowrap k-sticky-head" style={{ cursor: "pointer" }}
                       onClick={toggleHistory}
                       title={historyExpanded ? "Hide history" : "Show last 6 months"}>
-                      <div className="flex items-center justify-end gap-3">
+                      <div className="flex items-center justify-center gap-3">
                         <span key={ytdOnly ? "ytd" : "monthly"} className="font-black tracking-tight inline-block"
                           style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em" }}>
                           {(ytdOnly ? t("mode_ytd") : t("mode_monthly")).split("").map((ch, i) => (
@@ -8220,12 +8366,21 @@ sectionRows.push(
                   }
 
                   // Walk the literal nodes recursively, respecting mapping hierarchy.
-                  const renderNode = (node, depth, parentPath) => {
-                    const val = sumLiteral(node);
-                    let displayVal = val;
-                    if (node.isSum && node.children && node.children.length > 0) {
-                      displayVal = node.children.reduce((s, c) => s + sumLiteral(c), val);
-                    }
+const renderNode = (node, depth, parentPath) => {
+const displayVal = sumLiteral(node);
+if (node.code === 'A.03' || node.code === 'A.03.a' || node.code === 'A.01') {
+  historyMonthsProcessed.forEach(h => {
+    const histGaNode = h.map.get(String(node.code));
+    console.log('[HIST-RENDER]', node.code, h.year, h.month, {
+      sumNodeResult: histGaNode ? sumNode(histGaNode) : null,
+      uploadLeavesCount: histGaNode?.uploadLeaves?.length ?? 0,
+      uploadLeavesTotal: histGaNode?.uploadLeaves?.reduce((s,l) => s + (l.amount ?? 0), 0) ?? 0,
+      childrenCount: histGaNode?.children?.length ?? 0,
+      childrenSums: histGaNode?.children?.map(c => `${c.code}=${sumNode(c)}`).join(' | ') ?? '',
+      currentPeriodDisplay: displayVal,
+    });
+  });
+}
 // Unique key per literal node (preserves duplicates across sections)
                     const rowKey = `saved-${secIdx}-${parentPath}-${node.id}`;
               const expanded = isOpen(rowKey);
@@ -8330,11 +8485,8 @@ sectionRows.push(
                         )) : (
                           <>
                             <PLAmountCell value={displayVal} typoStyle={depth === 0 ? body1Style : body2Style} />
-                            {compareMode && (() => {
-                              let cmpVal = sumLiteralB(node);
-                              if (node.isSum && node.children && node.children.length > 0) {
-                                cmpVal = node.children.reduce((s, c) => s + sumLiteralB(c), cmpVal);
-                              }
+{compareMode && (() => {
+                              const cmpVal = sumLiteralB(node);
                               return (
                                 <>
                                   <PLAmountCell value={cmpVal} typoStyle={depth === 0 ? body1Style : body2Style} divider />
@@ -8343,10 +8495,7 @@ sectionRows.push(
                               );
                             })()}
 {compareMode && cmp2Enabled && (() => {
-                          let cmp2Val = sumLiteralC(node);
-                          if (node.isSum && node.children && node.children.length > 0) {
-                            cmp2Val = node.children.reduce((s, c) => s + sumLiteralC(c), cmp2Val);
-                          }
+                          const cmp2Val = sumLiteralC(node);
                           return (
                             <>
                               <PLAmountCell value={cmp2Val} typoStyle={depth === 0 ? body1Style : body2Style} divider />
@@ -8354,11 +8503,8 @@ sectionRows.push(
                             </>
                           );
                         })()}
-                        {compareMode && cmp2Enabled && cmp3Enabled && (() => {
-                          let cmp3Val = sumLiteralD(node);
-                          if (node.isSum && node.children && node.children.length > 0) {
-                            cmp3Val = node.children.reduce((s, c) => s + sumLiteralD(c), cmp3Val);
-                          }
+{compareMode && cmp2Enabled && cmp3Enabled && (() => {
+                          const cmp3Val = sumLiteralD(node);
                           return (
                             <>
                               <PLAmountCell value={cmp3Val} typoStyle={depth === 0 ? body1Style : body2Style} divider />
@@ -8369,11 +8515,14 @@ sectionRows.push(
                           </>
                         )}
 {historyExpanded && historyMonthsProcessed.map((h) => {
-                          const histGaNode = h.map.get(String(node.code));
-                          let histVal = 0;
-                          if (histGaNode) {
-                            if (node.dims && node.dims.length > 0) {
-                              // Dim-filtered roll-up (mirrors current-period sumLiteral with dims)
+                          const computeHistForNode = (nd) => {
+                            // Recurse for sum nodes — mirror sumLiteral's behavior
+                            if (nd.isSum && Array.isArray(nd.children) && nd.children.length > 0) {
+                              return nd.children.reduce((s, c) => s + computeHistForNode(c), 0);
+                            }
+                            const histGaNode = h.map.get(String(nd.code));
+                            if (!histGaNode) return 0;
+                            if (nd.dims && nd.dims.length > 0) {
                               const sumDimH = (gaN, dimStr, fullI, valI) => {
                                 if (!gaN) return 0;
                                 let t = 0;
@@ -8384,30 +8533,35 @@ sectionRows.push(
                                 return t;
                               };
                               let total = 0;
-                              node.dims.forEach(d => { total += sumDimH(histGaNode, String(d), h.dimFullIdx, h.dimValIdx); });
+                              nd.dims.forEach(d => { total += sumDimH(histGaNode, String(d), h.dimFullIdx, h.dimValIdx); });
                               const ytd = -total;
-                              if (ytdOnly) {
-                                histVal = ytd;
-                              } else {
-                                let prevTotal = 0;
-                                if (Number(h.month) !== 1) {
-                                  const prevGa = h.prevMap.get(String(node.code));
-                                  node.dims.forEach(d => { prevTotal += sumDimH(prevGa, String(d), h.prevDimFullIdx, h.prevDimValIdx); });
-                                }
-                                const prevYtd = -prevTotal;
-                                histVal = ytd - prevYtd;
+                              if (ytdOnly) return ytd;
+                              let prevTotal = 0;
+                              if (Number(h.month) !== 1) {
+                                nd.dims.forEach(d => { prevTotal += sumDimH(histGaNode, String(d), h.prevDimFullIdx, h.prevDimValIdx); });
                               }
-                            } else {
-                              const ytd = -sumNode(histGaNode);
-                              if (ytdOnly) {
-                                histVal = ytd;
-                              } else {
-                                const prevNode = h.prevMap.get(String(node.code));
-                                const prevYtd = prevNode ? -sumNode(prevNode) : 0;
-                                histVal = ytd - prevYtd;
-                              }
+                              return ytd - (-prevTotal);
                             }
-                          }
+                            const ytd = -sumNode(histGaNode);
+                            if (ytdOnly) return ytd;
+                            const sumPrevH = (n) => {
+                              if (!n) return 0;
+                              if (n.type === "localAccount" || n.type === "dimension" || n.type === "plain") {
+                                return h.aPrevLeafIdxOnce?.get(String(n.code)) ?? 0;
+                              }
+                              if (n.uploadLeaves?.length > 0) {
+                                let s = 0;
+                                n.uploadLeaves.forEach(l => { s += sumPrevH(l); });
+                                return s;
+                              }
+                              let s = 0;
+                              (n.children || []).forEach(c => { s += sumPrevH(c); });
+                              return s;
+                            };
+                            const prevYtd = Number(h.month) === 1 ? 0 : -sumPrevH(histGaNode);
+                            return ytd - prevYtd;
+                          };
+                          const histVal = computeHistForNode(node);
                           return <PLAmountCell key={`hist-saved-cell-${h.year}-${h.month}-${node.id}`} value={histVal} typoStyle={depth === 0 ? body1Style : body2Style} centered />;
                         })}
                         <td />
@@ -8421,7 +8575,7 @@ sectionRows.push(
                         sectionRows.push(
 <tr key={`${rowKey}-hoverdim-${di}`}
                             className="border-b border-amber-100 bg-amber-50/40 transition-colors">
-                            <td className="py-1.5" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
+                            <td className="py-1.5 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
                               <div className="flex items-center gap-1.5">
                                 <div className="w-2 h-px bg-amber-300 flex-shrink-0" />
                                <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded flex-shrink-0">{t("label_dim")}</span>
@@ -8461,7 +8615,7 @@ const leafIsMatch = (() => {
                           <tr key={leafKey}
                             className={`border-b border-[#1a2f8a]/5 ${leafIsMatch ? "bg-[#fef3c7]" : "bg-white"} transition-colors ${hasDims ? "cursor-pointer hover:bg-amber-50/30" : "hover:bg-[#f0f3ff]"}`}
                             onClick={hasDims ? (e) => { e.stopPropagation(); toggle(leafKey); } : undefined}>
-<td className="py-1.5" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
+<td className="py-1.5 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
                               <div className="flex items-center gap-2">
                                 <div className="w-2 h-px bg-[#1a2f8a]/10 flex-shrink-0" />
                                 {hasDims
@@ -8609,14 +8763,19 @@ const dimIsMatch = (() => {
                         }
 });
                     }
-
-                    // ── Journal entries at NODE level (saved-mapping path) ──
+// ── Journal entries at NODE level (saved-mapping path) ──
                     if (node.code) {
                       const nodeJrns = journalByCode.get(String(node.code)) || [];
-                      if (nodeJrns.length > 0) {
+                      const hasHistJrns = historyMonthsProcessed.some(h => (h.jrnByCode?.get(String(node.code)) || []).length > 0);
+                      console.log('[JRN-CHECK]', node.code, 'current:', nodeJrns.length, 'histAny:', hasHistJrns, 'histExp:', historyExpanded, 'histMonths:', historyMonthsProcessed.length, 'detail:', historyMonthsProcessed.map(h => ({ m: `${h.year}-${h.month}`, n: (h.jrnByCode?.get(String(node.code)) || []).length, mapSize: h.jrnByCode?.size })));
+                      if (nodeJrns.length > 0 || hasHistJrns) {
                         const jrnKey = `${rowKey}-jrn`;
                         const jrnExpanded = isOpen(jrnKey);
-                        sectionRows.push(
+                        const histTotalsByMonth = historyMonthsProcessed.map(h => {
+                          const entries = h.jrnByCode?.get(String(node.code)) || [];
+                          return entries.reduce((acc, je) => acc + -parseAmt(je.amountYTD ?? je.AmountYTD ?? 0), 0);
+                        });
+sectionRows.push(
                           <tr key={jrnKey}
                             className="border-b border-[#1a2f8a]/5 bg-white cursor-pointer hover:bg-indigo-50/40 transition-colors"
                             onClick={(e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [jrnKey]: !isOpen(jrnKey) })); }}>
@@ -8627,17 +8786,31 @@ const dimIsMatch = (() => {
                                   {jrnExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>}
                                 </span>
                                 <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded flex-shrink-0">{t("label_journal")}</span>
-                                <span style={subbody2Style}>{nodeJrns.length} {nodeJrns.length === 1 ? t("entry") : t("entries")}</span>
+                                <span style={subbody2Style}>{Math.max(nodeJrns.length, historyMonthsProcessed.reduce((m, h) => Math.max(m, (h.jrnByCode?.get(String(node.code)) || []).length), 0))} {t("entries")}</span>
                               </div>
                             </td>
                             {multiCompany ? selectedCompanies.map(co => <td key={`mc-jhdr-${node.code}-${co}`} />) : <td />}
                             {!multiCompany && compareMode && <><td /><td /><td /></>}
                             {!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
                             {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
+                            {!multiCompany && historyExpanded && historyMonthsProcessed.map((h) => {
+                              const histEntries = h.jrnByCode?.get(String(node.code)) || [];
+                              const histAmt = histEntries.reduce((acc, je) => acc + -parseAmt(je.amountYTD ?? je.AmountYTD ?? 0), 0);
+                              return <PLAmountCell key={`hist-saved-jhdr-${h.year}-${h.month}-${node.code}`} value={histAmt} typoStyle={subbody2Style} centered />;
+                            })}
                           </tr>
                         );
 if (jrnExpanded) {
-                          nodeJrns.forEach((jrn, k) => {
+// Build a unified list: each row = one journal entry. For current period use nodeJrns. For each history month, append its own journals as separate rows.
+                          const allJrnRows = [];
+                          nodeJrns.forEach(jrn => allJrnRows.push({ jrn, source: 'current' }));
+                          if (historyExpanded) {
+                            historyMonthsProcessed.forEach(h => {
+                              const hjrns = h.jrnByCode?.get(String(node.code)) || [];
+                              hjrns.forEach(jrn => allJrnRows.push({ jrn, source: `hist-${h.year}-${h.month}` }));
+                            });
+                          }
+                          allJrnRows.forEach(({ jrn, source: jsrc }, k) => {
                             const amt = parseAmt(jrn.amountYTD ?? jrn.AmountYTD ?? 0);
                             const jnum = jrn.journalNumber ?? jrn.JournalNumber;
                             const cmpJrn = (journalByCodeCmp.get(String(node.code)) || []).find(j => (j.journalNumber ?? j.JournalNumber) === jnum);
@@ -8658,22 +8831,61 @@ if (jrnExpanded) {
                                     {(jrn.rowText ?? jrn.RowText) && <span className="truncate max-w-[250px]" style={subbody2Style}>— {jrn.rowText ?? jrn.RowText}</span>}
                                   </div>
                                 </td>
-                              {multiCompany ? selectedCompanies.map(co => {
+{multiCompany ? selectedCompanies.map(co => {
                                   const jrnCo = String(jrn.companyShortName ?? jrn.CompanyShortName ?? "");
                                   const v = jrnCo === co ? -amt : 0;
                                   return <PLAmountCell key={`mc-jentry-${node.code}-${co}-${k}`} value={v} typoStyle={subbody2Style} centered />;
-                                }) : <PLAmountCell value={-amt} typoStyle={subbody2Style} />}
+                                }) : <PLAmountCell value={jsrc === 'current' ? -amt : 0} typoStyle={subbody2Style} />}
                                 {!multiCompany && compareMode && <><PLAmountCell value={cmpAmt} typoStyle={subbody2Style} divider /><DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody2Style} /></>}
                                 {!multiCompany && compareMode && cmp2Enabled && <><PLAmountCell value={cmp2Amt} typoStyle={subbody2Style} divider /><DeviationCells a={-amt} b={cmp2Amt} typoStyle={subbody2Style} /></>}
 {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><PLAmountCell value={cmp3Amt} typoStyle={subbody2Style} divider /><DeviationCells a={-amt} b={cmp3Amt} typoStyle={subbody2Style} /></>}
 {!multiCompany && historyExpanded && historyMonthsProcessed.map((h) => {
-                                  const entries = h.jrnByCode?.get(String(node.code)) || [];
-                                  const histAmt = entries.reduce((acc, j) => acc + -parseAmt(j.amountYTD ?? j.AmountYTD ?? 0), 0);
-                                  return <PLAmountCell key={`hist-saved-jrn-${h.year}-${h.month}-${k}`} value={histAmt} typoStyle={subbody2Style} centered />;
+                                  // If this row belongs to this history month, show its amount; otherwise blank
+                                  const v = jsrc === `hist-${h.year}-${h.month}` ? -amt : 0;
+                                  return <PLAmountCell key={`hist-saved-jrn-${h.year}-${h.month}-${k}`} value={v} typoStyle={subbody2Style} centered />;
                                 })}
                               </tr>
                             );
                           });
+
+                          // ── Historical-only journals (exist in past months but not current) ──
+                          if (historyExpanded && historyMonthsProcessed.length > 0) {
+                            const currentNums = new Set(nodeJrns.map(j => j.journalNumber ?? j.JournalNumber));
+                            const histSeen = new Map();
+                            historyMonthsProcessed.forEach(h => {
+                              (h.jrnByCode?.get(String(node.code)) || []).forEach(j => {
+                                const num = j.journalNumber ?? j.JournalNumber;
+                                if (currentNums.has(num)) return;
+                                if (!histSeen.has(num)) histSeen.set(num, { jrn: j, byMonth: new Map() });
+                                histSeen.get(num).byMonth.set(`${h.year}-${h.month}`, -parseAmt(j.amountYTD ?? j.AmountYTD ?? 0));
+                              });
+                            });
+                            [...histSeen.entries()].forEach(([num, entry], xi) => {
+                              const jrn = entry.jrn;
+                              sectionRows.push(
+                                <tr key={`${jrnKey}-hist-only-${xi}`}
+                                  className="border-b border-[#1a2f8a]/5 bg-indigo-50/10 hover:bg-indigo-50/40 transition-colors cursor-pointer"
+                                  onClick={(e) => { e.stopPropagation(); setJrnPopup(jrn); }}>
+                                  <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 2) * 20}px` }}>
+                                    <div className="flex items-center gap-2">
+                                      <div className="w-1.5 h-1.5 rounded-full bg-indigo-300 flex-shrink-0" />
+                                      <span className="flex-shrink-0 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded" style={subbody2Style}>{num ?? ""}</span>
+                                      {(jrn.journalHeader ?? jrn.JournalHeader) && <span className="flex-shrink-0" style={subbody2Style}>{jrn.journalHeader ?? jrn.JournalHeader}</span>}
+                                      {(jrn.rowText ?? jrn.RowText) && <span className="truncate max-w-[250px]" style={subbody2Style}>— {jrn.rowText ?? jrn.RowText}</span>}
+                                    </div>
+                                  </td>
+                                  {multiCompany ? selectedCompanies.map(co => <td key={`mc-jhistonly-${node.code}-${co}-${xi}`} />) : <PLAmountCell value={0} typoStyle={subbody2Style} />}
+                                  {!multiCompany && compareMode && <><td /><td /><td /></>}
+                                  {!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
+                                  {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
+                                  {!multiCompany && historyExpanded && historyMonthsProcessed.map(h => {
+                                    const v = entry.byMonth.get(`${h.year}-${h.month}`) ?? 0;
+                                    return <PLAmountCell key={`hist-jrn-only-${h.year}-${h.month}-${xi}`} value={v} typoStyle={subbody2Style} centered />;
+                                  })}
+                                </tr>
+                              );
+                            });
+                          }
 
                           // ── Compare-period-only journals (exist in B/C/D but not A) ──
                           if (compareMode) {
@@ -9078,16 +9290,16 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
 
 
 
-<div className="overflow-auto scrollbar-hide" style={{ flex: 1, minHeight: 0 }}>
-<table className="k-sticky-table" style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, tableLayout: "auto" }}>
-  <colgroup>
-    <col style={{ width: "1px" }} />
+<div className="overflow-auto k-scroll k-scroll-overlay" style={{ flex: 1, minHeight: 0 }}>
+<table className="w-full k-sticky-table">
+<colgroup>
+  <col style={{ width: accColWidth ? `${accColWidth}px` : "auto" }} />
     {multiCompany
-      ? selectedCompanies.map(co => <col key={`mc-col-${co}`} style={{ width: "1px" }} />)
-      : <col style={{ width: "1px" }} />}
-{!multiCompany && compareMode && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
-    {!multiCompany && compareMode && cmp2Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
-    {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+      ? selectedCompanies.map(co => <col key={`mc-col-${co}`} style={{ width: "180px" }} />)
+      : <col style={{ width: "160px" }} />}
+{!multiCompany && compareMode && <><col style={{ width: "160px" }} /><col style={{ width: "110px" }} /><col style={{ width: "75px" }} /></>}
+    {!multiCompany && compareMode && cmp2Enabled && <><col style={{ width: "160px" }} /><col style={{ width: "110px" }} /><col style={{ width: "75px" }} /></>}
+    {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><col style={{ width: "160px" }} /><col style={{ width: "110px" }} /><col style={{ width: "75px" }} /></>}
     <col />
   </colgroup>
 <thead>
@@ -9095,7 +9307,8 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
   background: "rgba(255,255,255,0.98)",
   boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
 }}>
-<th className="text-left px-6 whitespace-nowrap k-sticky-acc-head" style={{ height: "64px" }}>
+<th className="text-left px-6 whitespace-nowrap k-sticky-acc-head" style={{ height: "64px", position: "relative" }}>
+                    <div className="k-acc-resize-handle" onMouseDown={startAccResize} title="Drag to resize column" />
   <div className="flex items-center gap-5">
 <div className="flex items-center gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
       <button onClick={() => setSearchActive(a => !a)}
@@ -9151,10 +9364,10 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
         </>
       )}
     </div>
-<div style={{ width: 1, height: 18, background: "#e5e7eb" }} />
+<div style={{ width: 1, height: 18, background: "#e5e7eb", flexShrink: 0 }} />
     <div className="flex items-center gap-4" style={{ flexDirection: "row-reverse" }}>
 <button onClick={() => {
-        if (Object.values(expandedMap).some(Boolean)) { setExpandedMap({}); return; }
+        if (Object.keys(expandedMap).some(k => !k.startsWith('saved-') && expandedMap[k])) { setExpandedMap({}); return; }
         const next = {};
         const walk = (node, outerCode, depth, parentCode) => {
           (node.uploadLeaves || []).forEach((leaf, i) => {
@@ -9177,11 +9390,11 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
         style={{ background: "transparent", color: "#94a3b8", padding: 4, transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)" }}
         onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
         onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
-        title={Object.values(expandedMap).some(Boolean) ? "Collapse all" : "Expand all"}>
-        <span key={Object.values(expandedMap).some(Boolean) ? "collapse" : "expand"}
+        title={Object.keys(expandedMap).some(k => !k.startsWith('saved-') && expandedMap[k]) ? "Collapse all" : "Expand all"}>
+        <span key={Object.keys(expandedMap).some(k => !k.startsWith('saved-') && expandedMap[k]) ? "collapse" : "expand"}
           className="inline-flex"
           style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
-          {Object.values(expandedMap).some(Boolean)
+          {Object.keys(expandedMap).some(k => !k.startsWith('saved-') && expandedMap[k])
             ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
             : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
           }
@@ -9222,7 +9435,7 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
       </div>
       {compareMode && (
         <>
-          <div style={{ width: 1, height: 18, background: "#e5e7eb" }} />
+          <div style={{ width: 1, height: 18, background: "#e5e7eb", flexShrink: 0 }} />
           <button onClick={() => setFiltersOpen(o => !o)}
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg"
             style={{
@@ -9245,7 +9458,7 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
     <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{co}</span>
   </th>
 )) : (
-<th className="text-right pr-6 py-3 whitespace-nowrap k-sticky-head" style={{ width: "200px", cursor: (compareMode || multiCompany) ? "default" : "pointer" }}
+<th className="text-center py-3 whitespace-nowrap k-sticky-head" style={{ width: "200px", cursor: (compareMode || multiCompany) ? "default" : "pointer" }}
   onClick={toggleHistory}
   title={(compareMode || multiCompany) ? "" : (historyExpanded ? "Hide history" : "Show last 12 months")}>
   <span key={ytdOnly ? "ytd" : "monthly"} className="font-black tracking-tight inline-block"
@@ -9505,9 +9718,10 @@ if (childExpanded && hasMore) {
       rows.push(...renderChildren(grandkids, child.uploadLeaves || [], depth + 1, child.code));
     }
 
-    if (childExpanded) {
+if (childExpanded) {
       const jrnRows = (journalByCode.get(child.code) || []);
-      if (jrnRows.length > 0) {
+      const hasHistJrnsStd = historyMonthsProcessed.some(h => (h.jrnByCode?.get(String(child.code)) || []).length > 0);
+      if (jrnRows.length > 0 || hasHistJrnsStd) {
         const jrnKey = `jrn-child-${node.code}-${child.code}`;
        const jrnExpanded = isOpen(jrnKey);
 rows.push(
@@ -9523,7 +9737,7 @@ rows.push(
 <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded flex-shrink-0">
           {t("label_journal")}
         </span>
-       <span style={subbody2Style}>{jrnRows.length} {jrnRows.length === 1 ? t("entry") : t("entries")}</span>
+<span style={subbody2Style}>{Math.max(jrnRows.length, historyMonthsProcessed.reduce((m, h) => Math.max(m, (h.jrnByCode?.get(String(child.code)) || []).length), 0))} {t("entries")}</span>
       </div>
     </td>
 {multiCompany ? selectedCompanies.map(co => (
@@ -9532,13 +9746,24 @@ rows.push(
 {!multiCompany && compareMode && <><td /><td /><td /></>}
     {!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
     {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
-    {!multiCompany && historyExpanded && !compareMode && historyMonthsProcessed.map((h) => (
-      <td key={`hist-jrnhdr-${h.year}-${h.month}-${child.code}`} />
-    ))}
+    {!multiCompany && historyExpanded && !compareMode && historyMonthsProcessed.map((h) => {
+      const histEntries = h.jrnByCode?.get(String(child.code)) || [];
+      const histAmt = histEntries.reduce((acc, je) => acc + -parseAmt(je.amountYTD ?? je.AmountYTD ?? 0), 0);
+      return <PLAmountCell key={`hist-jrnhdr-${h.year}-${h.month}-${child.code}`} value={histAmt} typoStyle={subbody2Style} centered />;
+    })}
   </tr>
 );
 if (jrnExpanded) {
-  jrnRows.forEach((jrn, k) => {
+  // Unified list: current period entries + each historical month's own entries as separate rows
+  const allJrnRows = [];
+  jrnRows.forEach(jrn => allJrnRows.push({ jrn, source: 'current' }));
+  if (historyExpanded && !compareMode) {
+    historyMonthsProcessed.forEach(h => {
+      const hjrns = h.jrnByCode?.get(String(child.code)) || [];
+      hjrns.forEach(jrn => allJrnRows.push({ jrn, source: `hist-${h.year}-${h.month}` }));
+    });
+  }
+  allJrnRows.forEach(({ jrn, source: jsrc }, k) => {
     const amt = parseAmt(jrn.amountYTD ?? jrn.AmountYTD ?? 0);
     rows.push(
       <tr key={`jrn-child-entry-${node.code}-${child.code}-${k}`}
@@ -9565,26 +9790,26 @@ if (jrnExpanded) {
   const cmpAmt = cmpJrn ? -parseAmt(cmpJrn.amountYTD ?? cmpJrn.AmountYTD ?? 0) : 0;
   const cmp2Amt = cmp2Jrn ? -parseAmt(cmp2Jrn.amountYTD ?? cmp2Jrn.AmountYTD ?? 0) : 0;
   const cmp3Amt = cmp3Jrn ? -parseAmt(cmp3Jrn.amountYTD ?? cmp3Jrn.AmountYTD ?? 0) : 0;
+  const ownVal = jsrc === 'current' ? -amt : 0;
   return (
     <>
-      {!ytdOnly && <PLAmountCell value={-amt} typoStyle={subbody2Style} />}
+      {!ytdOnly && <PLAmountCell value={ownVal} typoStyle={subbody2Style} />}
       {!ytdOnly && compareMode && <PLAmountCell value={cmpAmt} typoStyle={subbody2Style} divider />}
-      {!ytdOnly && compareMode && <DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody2Style} />}
+      {!ytdOnly && compareMode && <DeviationCells a={ownVal} b={cmpAmt} typoStyle={subbody2Style} />}
       {!ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cmp2Amt} typoStyle={subbody2Style} divider />}
-      {!ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={-amt} b={cmp2Amt} typoStyle={subbody2Style} />}
+      {!ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={ownVal} b={cmp2Amt} typoStyle={subbody2Style} />}
       {!ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && <PLAmountCell value={cmp3Amt} typoStyle={subbody2Style} divider />}
-      {!ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && <DeviationCells a={-amt} b={cmp3Amt} typoStyle={subbody2Style} />}
-      {ytdOnly && <PLAmountCell value={-amt} typoStyle={subbody2Style} />}
+      {!ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && <DeviationCells a={ownVal} b={cmp3Amt} typoStyle={subbody2Style} />}
+      {ytdOnly && <PLAmountCell value={ownVal} typoStyle={subbody2Style} />}
       {ytdOnly && compareMode && <PLAmountCell value={cmpAmt} typoStyle={subbody2Style} divider />}
-      {ytdOnly && compareMode && <DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody2Style} />}
+      {ytdOnly && compareMode && <DeviationCells a={ownVal} b={cmpAmt} typoStyle={subbody2Style} />}
 {ytdOnly && compareMode && cmp2Enabled && <PLAmountCell value={cmp2Amt} typoStyle={subbody2Style} divider />}
-      {ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={-amt} b={cmp2Amt} typoStyle={subbody2Style} />}
+      {ytdOnly && compareMode && cmp2Enabled && <DeviationCells a={ownVal} b={cmp2Amt} typoStyle={subbody2Style} />}
 {ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && <PLAmountCell value={cmp3Amt} typoStyle={subbody2Style} divider />}
-      {ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && <DeviationCells a={-amt} b={cmp3Amt} typoStyle={subbody2Style} />}
+      {ytdOnly && compareMode && cmp2Enabled && cmp3Enabled && <DeviationCells a={ownVal} b={cmp3Amt} typoStyle={subbody2Style} />}
 {historyExpanded && !compareMode && historyMonthsProcessed.map((h) => {
-        const entries = h.jrnByCode?.get(String(child.code)) || [];
-        const histAmt = entries.reduce((acc, j) => acc + -parseAmt(j.amountYTD ?? j.AmountYTD ?? 0), 0);
-        return <PLAmountCell key={`hist-jrn-${h.year}-${h.month}-${k}`} value={histAmt} typoStyle={subbody2Style} centered />;
+        const v = jsrc === `hist-${h.year}-${h.month}` ? -amt : 0;
+        return <PLAmountCell key={`hist-jrn-${h.year}-${h.month}-${k}`} value={v} typoStyle={subbody2Style} centered />;
       })}
     </>
   );
@@ -9597,7 +9822,7 @@ if (jrnExpanded) {
   if (compareMode) {
     const aNums = new Set(jrnRows.map(j => j.journalNumber ?? j.JournalNumber));
     const seen = new Map();
-    const collect = (idx, period) => {
+const collect = (idx, period) => {
       (idx.get(child.code) || []).forEach(j => {
         const num = j.journalNumber ?? j.JournalNumber;
         if (aNums.has(num)) return;
@@ -10088,7 +10313,7 @@ function buildSavedMappingLiteral(tree) {
   return cleaned.length === 0 ? null : cleaned;
 }
 
-function BSAmountCell({ value, divider, typoStyle, centered }) {
+function BSAmountCell({ value, divider, typoStyle, centered = true }) {
   const animated = useCountUp(value ?? 0, 1000);
   const isEmpty = value === 0;
   const isNeg = animated < 0;
@@ -10126,7 +10351,7 @@ function BSDeviationCells({ a, b, typoStyle }) {
 
 
 
-function BalanceSheet({ multiCompany = false, selectedCompanies = [], externalBsDrillMap, externalSetBsDrillMap, onHistoryExpandedChange, externalHistoryExpanded, externalHistoryMonths, onHistoryMonthsChange, groupAccounts, uploadedAccounts,dimensions = [], loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], journalEntriesCmp = [], journalEntriesCmp2 = [], journalEntriesCmp3 = [], onCompareChange, dimensionActive = false,upDimGroup = "", upDimension = "", filteredDims = [], externalCmp2Enabled, onBsCmp2EnabledChange, breakers = { pl: {}, bs: {}, cf: {} }, pgcBsMapping = null, savedBsLiteral = null,
+function BalanceSheet({ plCompareMode = false, externalAccColWidth, onAccColWidthChange, multiCompany = false, selectedCompanies = [], externalBsDrillMap, externalSetBsDrillMap, onHistoryExpandedChange, externalHistoryExpanded, externalHistoryMonths, onHistoryMonthsChange, groupAccounts, uploadedAccounts,dimensions = [], loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], journalEntriesCmp = [], journalEntriesCmp2 = [], journalEntriesCmp3 = [], onCompareChange, dimensionActive = false,upDimGroup = "", upDimension = "", upDimGroups = [], upDimensions = [], filteredDims = [], externalCmp2Enabled, onBsCmp2EnabledChange,breakers = { pl: {}, bs: {}, cf: {} }, pgcBsMapping = null, savedBsLiteral = null,
   compareMode, setCompareMode,
   cmpYear, setCmpYear, cmpMonth, setCmpMonth, cmpSource, setCmpSource, cmpStructure, setCmpStructure, cmpCompany, setCmpCompany,
   cmpData, setCmpData,
@@ -10166,22 +10391,25 @@ const [historyMonthsInternal, setHistoryMonthsInternal] = useState([]);
   }, [onHistoryMonthsChange]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
-  const fetchBSHistoryMonth = useCallback(async (y, mo) => {
+const fetchBSHistoryMonth = useCallback(async (y, mo) => {
     if (!token || !source || !structure || !y || !mo) return { data: [] };
     const h = { Authorization: `Bearer ${token}`, Accept: "application/json" };
-    const filter = `Year eq ${y} and Month eq ${mo} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+    const coClause = selectedCompanies?.[0] ? ` and CompanyShortName eq '${selectedCompanies[0]}'` : '';
+    const filter = `Year eq ${y} and Month eq ${mo} and Source eq '${source}' and GroupStructure eq '${structure}'${coClause}`;
+    const jrnFilter = `Year eq ${y} and Month eq ${mo} and Source eq '${source}'${coClause}`;
 try {
       const [resA, resJ] = await Promise.all([
         fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h }),
-        fetch(`${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(filter)}`, { headers: h }),
+        fetch(`${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(jrnFilter)}`, { headers: h }),
       ]);
+      console.log('[BS-JRN-FETCH]', y, mo, 'status:', resJ.status);
       const jsonA = resA.ok ? await resA.json() : { value: [] };
       const jsonJ = resJ.ok ? await resJ.json() : { value: [] };
       const data = jsonA.value ?? (Array.isArray(jsonA) ? jsonA : []);
       const journals = jsonJ.value ?? (Array.isArray(jsonJ) ? jsonJ : []);
       return { data, journals };
     } catch { return { data: [], journals: [] }; }
-  }, [token, source, structure]);
+ }, [token, source, structure, selectedCompanies]);
 
 const loadBSHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -10204,29 +10432,31 @@ for (const target of targets) {
   }, [year, month, fetchBSHistoryMonth]);
 
 const toggleBSHistory = useCallback(() => {
-    if (compareMode || multiCompany) return;
+    if (compareMode || multiCompany || plCompareMode) return;
     setHistoryExpanded(!historyExpanded);
-  }, [compareMode, multiCompany, historyExpanded]);
+  }, [compareMode, multiCompany, plCompareMode, historyExpanded]);
 
 // Single sync effect: fetches when expanded turns on or period changes; clears when off.
   // Skips refetch on remount when nothing actually changed.
-  const bsHistSyncRef = useRef({ expanded: externalHistoryExpanded, period: `${year}-${month}` });
+const bsHistSyncRef = useRef({ expanded: externalHistoryExpanded, period: `${year}-${month}`, scope: `${source}|${structure}|${selectedCompanies?.[0] ?? ''}` });
   useEffect(() => {
     const currentPeriod = `${year}-${month}`;
+    const currentScope = `${source}|${structure}|${selectedCompanies?.[0] ?? ''}`;
     const last = bsHistSyncRef.current;
     const expandedChanged = last.expanded !== externalHistoryExpanded;
     const periodChanged = last.period !== currentPeriod;
-    bsHistSyncRef.current = { expanded: externalHistoryExpanded, period: currentPeriod };
+    const scopeChanged = last.scope !== currentScope;
+    bsHistSyncRef.current = { expanded: externalHistoryExpanded, period: currentPeriod, scope: currentScope };
 
     if (!externalHistoryExpanded) {
       if (expandedChanged && historyMonthsRef.current.length > 0) setHistoryMonths([]);
       return;
     }
-    if (compareMode || multiCompany) return;
-   if (!expandedChanged && !periodChanged && historyMonthsRef.current.length > 0) return;
+if (compareMode || multiCompany) return;
+   if (!expandedChanged && !periodChanged && !scopeChanged && historyMonthsRef.current.length > 0) return;
     loadBSHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [externalHistoryExpanded, year, month]);
+  }, [externalHistoryExpanded, year, month, source, structure, selectedCompanies]);
 
 const localName = useCallback((node) => {
     return pgcBsMapping?.names?.get(String(node.code)) ?? node.name;
@@ -10264,7 +10494,72 @@ const [bsView, setBsView] = useState("summary");
   const [searchActive, setSearchActive] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const debouncedQuery = useDeferredValue(searchQuery);
-  const searchInputRef = useRef(null);
+const searchInputRef = useRef(null);
+const [accColWidthInternal, setAccColWidthInternal] = useState(null);
+const accColWidth = externalAccColWidth !== undefined ? externalAccColWidth : accColWidthInternal;
+const setAccColWidth = onAccColWidthChange ?? setAccColWidthInternal;
+const accTableRef = useRef(null);
+const startAccResize = useCallback((e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const handle = e.currentTarget;
+  const th = handle.parentElement;
+  const startX = e.clientX;
+  const startW = accColWidth ?? th.getBoundingClientRect().width;
+
+  // Medir el min: posición del último botón del header (expand/collapse all) + padding
+const thRect = th.getBoundingClientRect();
+  let maxRight = thRect.left;
+  th.querySelectorAll("button").forEach(b => {
+    const r = b.getBoundingClientRect().right;
+    if (r > maxRight) maxRight = r;
+  });
+const minW = maxRight > thRect.left ? Math.max(60, maxRight - thRect.left + 12) : 220;
+
+  const table = th.closest("table");
+  const col = table?.querySelector("colgroup col:first-child");
+
+  handle.classList.add("is-dragging");
+  let latestW = startW;
+
+  const move = (ev) => {
+    const dx = ev.clientX - startX;
+    latestW = Math.max(minW, Math.min(1200, startW + dx));
+    if (col) col.style.width = `${latestW}px`;
+    th.style.width = `${latestW}px`;
+  };
+  const up = () => {
+    handle.classList.remove("is-dragging");
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    setAccColWidth(latestW);
+  };
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+}, [accColWidth, setAccColWidth]);
+
+useEffect(() => {
+  const clamp = () => {
+    const th = document.querySelector(".k-sticky-acc-head");
+    if (!th) return;
+    const thRect = th.getBoundingClientRect();
+    let maxRight = thRect.left;
+    th.querySelectorAll("button").forEach(b => {
+      const r = b.getBoundingClientRect().right;
+      if (r > maxRight) maxRight = r;
+    });
+    const minW = maxRight > thRect.left ? Math.max(60, maxRight - thRect.left + 12) : 220;
+    const currentW = accColWidth ?? thRect.width;
+    if (currentW < minW) setAccColWidth(minW);
+  };
+const raf = requestAnimationFrame(() => requestAnimationFrame(clamp));
+  return () => cancelAnimationFrame(raf);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [accColWidth, savedBsLiteral, pgcBsMapping, bsView, compareMode, historyExpanded, multiCompany]);
 
 const bsCmpFilteredDims = useMemo(() => {
   if (!bsCmpDimGroups || bsCmpDimGroups.length === 0) return effectiveDimensions;
@@ -10308,6 +10603,7 @@ const bsDrill = useCallback((key) => {
 const journalByCode = useMemo(() => {
   const idx = new Map();
   (journalEntries || []).forEach(row => {
+    if (idx.size === 0) console.log('[A]', JSON.stringify(row));
     const code = String(row.accountCode ?? row.AccountCode ?? "");
     if (!code) return;
     const jt = String(row.journalType ?? row.JournalType ?? "").toUpperCase();
@@ -10688,16 +10984,17 @@ if (childExpanded && hasMore) {
         rows.push(...renderDrillChildren(filteredGrandkids, child.uploadLeaves?.filter(l => l.type !== "plain") || [], depth + 1, childKey));
       }
 
-      if (childExpanded) {
+if (childExpanded) {
         const jrnRows = (journalByCode.get(child.code) || []);
-        if (jrnRows.length > 0) {
+        const hasHistJrnsBsStd = bsHistoryProcessed.some(h => (h.jrnByCode?.get(String(child.code)) || []).length > 0);
+        if (jrnRows.length > 0 || hasHistJrnsBsStd) {
           const jrnKey = `bsjrn-child-${contextKey}-${child.code}`;
           const jrnExpanded = isOpen(jrnKey);
           rows.push(
             <tr key={jrnKey}
               className="border-b border-[#1a2f8a]/5 cursor-pointer hover:bg-indigo-50/50 transition-colors bg-indigo-50/20"
               onClick={() => setBsDrillMap(prev => ({ ...prev, [jrnKey]: !prev[jrnKey] }))}>
-              <td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
+<td className="py-1 k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 20}px` }}>
                 <div className="flex items-center gap-1.5">
                   <div className="w-2 h-px bg-indigo-200 flex-shrink-0" />
 <span className="text-[#1a2f8a]/40 flex-shrink-0">
@@ -10706,7 +11003,7 @@ if (childExpanded && hasMore) {
                   <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded flex-shrink-0">
                     journal
                   </span>
-                  <span className="text-[10px] text-gray-400">{jrnRows.length} {jrnRows.length === 1 ? t("entry") : t("entries")}</span>f
+                  <span className="text-[10px] text-gray-400">{jrnRows.length} {jrnRows.length === 1 ? t("entry") : t("entries")}</span>
                 </div>
               </td>
 {multiCompany ? selectedCompanies.map(co => (
@@ -10714,10 +11011,24 @@ if (childExpanded && hasMore) {
               )) : <td className="text-right pr-4 py-1 font-mono text-xs text-gray-300">—</td>}
               {!multiCompany && compareMode && <><td /><td /><td /></>}
               {!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
+              {!multiCompany && historyExpanded && !compareMode && bsHistoryProcessed.map(h => {
+                const histEntries = h.jrnByCode?.get(String(child.code)) || [];
+                const histAmt = histEntries.reduce((acc, je) => acc + parseAmt(je.amountYTD ?? je.AmountYTD ?? 0), 0);
+                return <BSAmountCell key={`bshist-jrnhdr-${h.year}-${h.month}-${child.code}`} value={histAmt} typoStyle={subbody2Style} centered />;
+              })}
             </tr>
           );
-          if (jrnExpanded) {
-            jrnRows.forEach((jrn, k) => {
+if (jrnExpanded) {
+            // Unified list: current entries + each historical month's own entries
+            const allJrnRowsBs = [];
+            jrnRows.forEach(jrn => allJrnRowsBs.push({ jrn, source: 'current' }));
+            if (historyExpanded && !compareMode) {
+              bsHistoryProcessed.forEach(h => {
+                const hjrns = h.jrnByCode?.get(String(child.code)) || [];
+                hjrns.forEach(jrn => allJrnRowsBs.push({ jrn, source: `hist-${h.year}-${h.month}` }));
+              });
+            }
+            allJrnRowsBs.forEach(({ jrn, source: jsrc }, k) => {
               const amt = parseAmt(jrn.amountYTD ?? jrn.AmountYTD ?? 0);
               rows.push(
               <tr key={`bsjrn-child-entry-${contextKey}-${child.code}-${k}`}
@@ -10739,14 +11050,12 @@ if (childExpanded && hasMore) {
                       {v === 0 ? "—" : fmtAmt(v)}
                     </td>;
                   }) : <td className="text-right pr-4 py-1 font-mono text-xs text-indigo-400">
-                    {amt === 0 ? "—" : fmtAmt(amt)}
+                    {jsrc === 'current' ? (amt === 0 ? "—" : fmtAmt(amt)) : "—"}
                   </td>}
 {!multiCompany && compareMode && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
                   {!multiCompany && compareMode && cmp2Enabled && <><td style={{ borderLeft: "2px solid #e2e8f0" }} /><td /><td /></>}
                   {historyExpanded && !compareMode && bsHistoryProcessed.map(h => {
-                    const jrnNum = jrn.journalNumber ?? jrn.JournalNumber;
-                    const histJrn = (h.jrnByCode?.get(child.code) || []).find(j => (j.journalNumber ?? j.JournalNumber) === jrnNum);
-                    const v = histJrn ? parseAmt(histJrn.amountYTD ?? histJrn.AmountYTD ?? 0) : 0;
+                    const v = jsrc === `hist-${h.year}-${h.month}` ? amt : 0;
                     return <td key={`bshist-jrn-${h.year}-${h.month}-${k}`} className="text-right pr-4 py-1 font-mono text-xs text-indigo-400">
                       {v === 0 ? "—" : fmtAmt(v)}
                     </td>;
@@ -11343,6 +11652,10 @@ const bsRoots = useMemo(() => tree.filter(n => hasData(n) && n.accountType === "
 
 const bsHistoryProcessed = useMemo(() => {
   return historyMonths.map(h => {
+    const filteredData = (h.data || []).filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions));
+    const filteredJournals = (h.journals || []).filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions));
+    h = { ...h, data: filteredData, journals: filteredJournals };
+    console.log('[hist]', h.year, h.month, JSON.stringify(h.journals?.[0]));
     const t = buildTree(groupAccounts, h.data, !dimensionActive);
     const map = new Map();
     const walk = (n) => { map.set(n.code, n); n.children?.forEach(walk); };
@@ -11369,12 +11682,28 @@ const jrnByCode = new Map();
       jrnByCode.get(code).push(j);
     });
     return { year: h.year, month: h.month, map, leafIdx, dimIdx, jrnByCode };
-  });
-}, [historyMonths, groupAccounts, dimensionActive]);
+});
+}, [historyMonths, groupAccounts, dimensionActive, upDimGroups, upDimensions]);
 
 const getBSHistVal = useCallback((h, code) => {
   const n = h.map.get(code);
-  const raw = n ? sumNode(n) : 0;
+  if (!n) return 0;
+  const sumYtdH = (nd) => {
+    if (!nd) return 0;
+    if (nd.type === "localAccount" || nd.type === "dimension" || nd.type === "plain") {
+      return h.leafIdx?.get(String(nd.code)) ?? 0;
+    }
+    if (nd.uploadLeaves?.length > 0) {
+      let s = 0;
+      nd.uploadLeaves.forEach(l => { s += sumYtdH(l); });
+      (nd.children || []).forEach(c => { s += sumYtdH(c); });
+      return s;
+    }
+    let s = 0;
+    (nd.children || []).forEach(c => { s += sumYtdH(c); });
+    return s;
+  };
+  const raw = sumYtdH(n);
   return Number(code) >= 599999 ? -raw : raw;
 }, []);
 
@@ -11912,7 +12241,7 @@ if (expandedCmp && hasMoreCmp) {
       });
     });
 
-const sumLiteral = (node) => {
+const sumLiteralLeaf = (node) => {
       let total = 0;
       if (node.dims && node.dims.length > 0) {
         node.dims.forEach(d => { total += dimIdx.get(`${node.code}|${d}`) ?? 0; });
@@ -11920,6 +12249,12 @@ const sumLiteral = (node) => {
         total = accIdx.get(node.code) ?? 0;
       }
       return total;
+    };
+    const sumLiteral = (node) => {
+      if (node.isSum && node.children && node.children.length > 0) {
+        return node.children.reduce((s, c) => s + sumLiteral(c), 0);
+      }
+      return sumLiteralLeaf(node);
     };
 
     // Per-leaf+dim indexes for BS saved-mapping compare periods
@@ -11990,7 +12325,7 @@ const cmp2AccIdxBs = new Map();
         cmp3DimIdxBs.set(`${code}|${g}:${v}`, (cmp3DimIdxBs.get(`${code}|${g}:${v}`) ?? 0) + amt);
       });
     });
-    const sumLiteralBSGeneric = (node, accIdxLoc, dimIdxLoc) => {
+const sumLiteralBSGenericLeaf = (node, accIdxLoc, dimIdxLoc) => {
       let total = 0;
       if (node.dims && node.dims.length > 0) {
         node.dims.forEach(d => { total += dimIdxLoc.get(`${node.code}|${d}`) ?? 0; });
@@ -11998,6 +12333,12 @@ const cmp2AccIdxBs = new Map();
         total = accIdxLoc.get(node.code) ?? 0;
       }
       return total;
+    };
+    const sumLiteralBSGeneric = (node, accIdxLoc, dimIdxLoc) => {
+      if (node.isSum && node.children && node.children.length > 0) {
+        return node.children.reduce((s, c) => s + sumLiteralBSGeneric(c, accIdxLoc, dimIdxLoc), 0);
+      }
+      return sumLiteralBSGenericLeaf(node, accIdxLoc, dimIdxLoc);
     };
     const sumLiteralB = (node) => sumLiteralBSGeneric(node, cmpAccIdxBs, cmpDimIdxBs);
     const sumLiteralC = (node) => sumLiteralBSGeneric(node, cmp2AccIdxBs, cmp2DimIdxBs);
@@ -12121,13 +12462,13 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
           <div className="scrollbar-hide" style={{ overflowX: "auto", overflowY: "auto", flex: 1, minHeight: 0 }}>
 <table className="w-full k-sticky-table">
 <colgroup>
-                <col style={{ width: "1px" }} />
+<col style={{ width: accColWidth ? `${accColWidth}px` : "auto" }} />
                 {multiCompany
-                  ? selectedCompanies.map(co => <col key={`bsmc-saved-col-${co}`} style={{ width: "1px" }} />)
-                  : <col style={{ width: "1px" }} />}
-{!multiCompany && compareMode && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
-                {!multiCompany && compareMode && cmp2Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
-                {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+                  ? selectedCompanies.map(co => <col key={`bsmc-saved-col-${co}`} style={{ width: "180px" }} />)
+                  : <col style={{ width: "160px" }} />}
+{!multiCompany && compareMode && <><col style={{ width: "160px" }} /><col style={{ width: "110px" }} /><col style={{ width: "75px" }} /></>}
+                {!multiCompany && compareMode && cmp2Enabled && <><col style={{ width: "160px" }} /><col style={{ width: "110px" }} /><col style={{ width: "75px" }} /></>}
+               {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><col style={{ width: "160px" }} /><col style={{ width: "110px" }} /><col style={{ width: "75px" }} /></>}
                 {!multiCompany && historyExpanded && bsHistoryProcessed.map(h => (
                   <col key={`bshist-col-${h.year}-${h.month}`} style={{ width: "140px" }} />
                 ))}
@@ -12138,7 +12479,8 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                   background: "rgba(255,255,255,0.98)",
                   boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
                 }}>
-                  <th className="text-left px-6 whitespace-nowrap k-sticky-acc-head" style={{ height: "64px" }}>
+<th className="text-left px-6 whitespace-nowrap k-sticky-acc-head" style={{ height: "64px", position: "relative" }}>
+                    <div className="k-acc-resize-handle" onMouseDown={startAccResize} title="Drag to resize column" />
                     <div className="flex items-center gap-5">
                       <div className="flex items-center gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
                         <button onClick={() => setSearchActive(a => !a)}
@@ -12194,10 +12536,27 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
 </>
                         )}
                       </div>
-                      <div style={{ width: 1, height: 18, background: "#e5e7eb" }} />
-                      <button onClick={(e) => {
+<div style={{ width: 1, height: 18, background: "#e5e7eb", flexShrink: 0 }} />
+                      {compareMode && (
+                        <>
+                          <button onClick={() => setFiltersOpen(o => !o)}
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg"
+                            style={{
+                              background: "transparent",
+                              color: filtersOpen ? colors.primary : "#94a3b8",
+                              transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)",
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+                            onMouseLeave={e => { e.currentTarget.style.color = filtersOpen ? colors.primary : "#94a3b8"; }}>
+                            <ChevronDown size={10} style={{ transition: "transform 300ms cubic-bezier(0.34,1.56,0.64,1)", transform: filtersOpen ? "rotate(0deg)" : "rotate(-90deg)" }} />
+                            <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? "Hide" : "Show"}</span>
+                          </button>
+                          <div style={{ width: 1, height: 18, background: "#e5e7eb", flexShrink: 0 }} />
+                        </>
+                      )}
+<button onClick={(e) => {
                         e.stopPropagation();
-                        if (Object.values(bsDrillMap).some(Boolean)) { setBsDrillMap({}); return; }
+                        if (Object.keys(bsDrillMap).some(k => k.startsWith('bssaved-') && bsDrillMap[k])) { setBsDrillMap({}); return; }
                         const next = {};
                         savedBsLiteral.forEach((section, secIdx) => {
                           const walk = (node, parentPath) => {
@@ -12213,16 +12572,16 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                         style={{ background: "transparent", color: "#94a3b8", padding: 4, transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)" }}
                         onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
                         onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
-                        title={Object.values(bsDrillMap).some(Boolean) ? "Collapse all" : "Expand all"}>
-                        <span key={Object.values(bsDrillMap).some(Boolean) ? "collapse" : "expand"}
+title={Object.keys(bsDrillMap).some(k => k.startsWith('bssaved-') && bsDrillMap[k]) ? "Collapse all" : "Expand all"}>
+                        <span key={Object.keys(bsDrillMap).some(k => k.startsWith('bssaved-') && bsDrillMap[k]) ? "collapse" : "expand"}
                           className="inline-flex"
                           style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
-                          {Object.values(bsDrillMap).some(Boolean)
+                          {Object.keys(bsDrillMap).some(k => k.startsWith('bssaved-') && bsDrillMap[k])
                             ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
                             : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
                           }
                         </span>
-                      </button>
+</button>
                     </div>
                   </th>
 {multiCompany ? selectedCompanies.map(co => (
@@ -12230,7 +12589,7 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                       <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{co}</span>
                     </th>
                   )) : (
-                    <th className="text-right pr-6 py-3 whitespace-nowrap k-sticky-head" style={{ width: "200px", cursor: compareMode ? "default" : "pointer" }}
+<th className="text-center py-3 whitespace-nowrap k-sticky-head" style={{ width: "200px", cursor: compareMode ? "default" : "pointer" }}
                       onClick={compareMode ? undefined : toggleBSHistory}
                       title={compareMode ? "" : historyExpanded ? "Hide history" : "Show last 6 months"}>
                       <span className="font-black tracking-tight inline-block"
@@ -12280,7 +12639,7 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                     </th>
                   ))}
 <th className="text-right pr-6 py-3" style={{ background: "transparent" }}>
-                    <div className="flex items-center justify-end gap-2" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
+                    <div className="flex items-center justify-centergap-2" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
                       {compareMode && (
                         <button onClick={() => setFiltersOpen(o => !o)}
                           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all duration-200 hover:scale-[1.02]"
@@ -12315,11 +12674,21 @@ rows.push(
                   );
                 }
 const renderNode = (node, depth, parentPath) => {
-                  const val = sumLiteral(node);
-                  let displayVal = val;
-                  if (node.isSum && node.children && node.children.length > 0) {
-                    displayVal = node.children.reduce((s, c) => s + sumLiteral(c), val);
-                  }
+const displayVal = sumLiteral(node);
+if (node.code === 'A.03' || node.code === 'A.03.a' || node.code === 'A.01') {
+  historyMonthsProcessed.forEach(h => {
+    const histGaNode = h.map.get(String(node.code));
+    console.log('[HIST]', node.code, h.year, h.month, {
+      sumNodeResult: histGaNode ? sumNode(histGaNode) : null,
+      uploadLeavesCount: histGaNode?.uploadLeaves?.length ?? 0,
+      uploadLeavesTotal: histGaNode?.uploadLeaves?.reduce((s,l) => s + (l.amount ?? 0), 0) ?? 0,
+      childrenCount: histGaNode?.children?.length ?? 0,
+      childrenCodes: histGaNode?.children?.map(c => c.code).join(',') ?? '',
+      childrenSums: histGaNode?.children?.map(c => `${c.code}=${sumNode(c)}`).join(' | ') ?? '',
+      currentPeriodDisplay: displayVal,
+    });
+  });
+}
                   const rowStyle = depth === 0 ? body1Style : body2Style;
 const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
                   const gaNodeForKids = treeByCode.get(String(node.code));
@@ -12352,11 +12721,8 @@ const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
                       )) : (
                         <>
                           <BSAmountCell value={displayVal} typoStyle={rowStyle} />
-                          {compareMode && (() => {
-                            let cmpVal = sumLiteralB(node);
-                            if (node.isSum && node.children && node.children.length > 0) {
-                              cmpVal = node.children.reduce((s, c) => s + sumLiteralB(c), cmpVal);
-                            }
+{compareMode && (() => {
+                            const cmpVal = sumLiteralB(node);
                             return (
                               <>
                                 <BSAmountCell value={cmpVal} typoStyle={rowStyle} divider />
@@ -12365,10 +12731,7 @@ const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
                             );
                           })()}
 {compareMode && cmp2Enabled && (() => {
-                            let cmp2Val = sumLiteralC(node);
-                            if (node.isSum && node.children && node.children.length > 0) {
-                              cmp2Val = node.children.reduce((s, c) => s + sumLiteralC(c), cmp2Val);
-                            }
+                            const cmp2Val = sumLiteralC(node);
                             return (
                               <>
                                 <BSAmountCell value={cmp2Val} typoStyle={rowStyle} divider />
@@ -12376,11 +12739,8 @@ const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
                               </>
                             );
                           })()}
-                          {compareMode && cmp2Enabled && cmp3Enabled && (() => {
-                            let cmp3Val = sumLiteralD(node);
-                            if (node.isSum && node.children && node.children.length > 0) {
-                              cmp3Val = node.children.reduce((s, c) => s + sumLiteralD(c), cmp3Val);
-                            }
+{compareMode && cmp2Enabled && cmp3Enabled && (() => {
+                            const cmp3Val = sumLiteralD(node);
                             return (
                               <>
                                 <BSAmountCell value={cmp3Val} typoStyle={rowStyle} divider />
@@ -12388,11 +12748,17 @@ const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
                               </>
                             );
                           })()}
-                          {historyExpanded && bsHistoryProcessed.map(h => {
-                            const histNode = h.map.get(String(node.code));
-                            const histVal = histNode
-                              ? (Number(node.code) >= 599999 ? -sumNode(histNode) : sumNode(histNode))
-                              : 0;
+{historyExpanded && bsHistoryProcessed.map(h => {
+                            const computeBsHistForNode = (nd) => {
+                              if (nd.isSum && Array.isArray(nd.children) && nd.children.length > 0) {
+                                return nd.children.reduce((s, c) => s + computeBsHistForNode(c), 0);
+                              }
+                              const histNode = h.map.get(String(nd.code));
+                              if (!histNode) return 0;
+                              const raw = sumNode(histNode);
+                              return Number(nd.code) >= 599999 ? -raw : raw;
+                            };
+                            const histVal = computeBsHistForNode(node);
                             return <BSAmountCell key={`bshist-saved-${h.year}-${h.month}-${node.id}`} value={histVal} typoStyle={rowStyle} centered />;
                           })}
                         </>
@@ -12429,7 +12795,7 @@ const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
                             </div>
                           </td>
 {multiCompany ? selectedCompanies.map(co => (
-                            <BSAmountCell key={`bsmc-saved-leaf-${leaf.code ?? "noleaf"}-${co}-${i}`} value={leaf.code ? getBsLeafValForCompany(leaf.code, co) : 0} typoStyle={subbody1Style} centered />
+                            <BSAmountCell key={`bsmc-saved-leaf-${leaf.code ?? "noleaf"}-${co}-${i}`} value={leaf.code ? (perCompanyBsLeafIdx?.get(co)?.get(String(leaf.code)) ?? 0) : 0} typoStyle={subbody1Style} centered />
                           )) : (
                             <>
                               <BSAmountCell value={amt} typoStyle={subbody1Style} />
@@ -12511,13 +12877,14 @@ const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
 }
                     });
 
-                    // ── Journal entries at NODE level (BS saved-mapping path) ──
+// ── Journal entries at NODE level (BS saved-mapping path) ──
                     if (node.code) {
                       const nodeJrns = journalByCode.get(String(node.code)) || [];
-                      if (nodeJrns.length > 0) {
+                      const hasHistJrns = bsHistoryProcessed.some(h => (h.jrnByCode?.get(String(node.code)) || []).length > 0);
+                      if (nodeJrns.length > 0 || hasHistJrns) {
                         const jrnKey = `${rowKey}-jrn`;
                         const jrnExpanded = isOpen(jrnKey);
-                        rows.push(
+rows.push(
                           <tr key={jrnKey}
                             className="border-b border-[#1a2f8a]/5 cursor-pointer hover:bg-indigo-50/50 transition-colors bg-indigo-50/20"
                             onClick={() => bsDrill(jrnKey)}>
@@ -12533,10 +12900,24 @@ const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
                             {!multiCompany && compareMode && <><td /><td /><td /></>}
                             {!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
                             {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
+                            {!multiCompany && historyExpanded && bsHistoryProcessed.map(h => {
+                              const histEntries = h.jrnByCode?.get(String(node.code)) || [];
+                              const histAmt = histEntries.reduce((acc, je) => acc + parseAmt(je.amountYTD ?? je.AmountYTD ?? 0), 0);
+                              return <BSAmountCell key={`bshist-saved-jhdr-${h.year}-${h.month}-${node.code}`} value={histAmt} typoStyle={subbody2Style} centered />;
+                            })}
                           </tr>
                         );
-                        if (jrnExpanded) {
-                          nodeJrns.forEach((jrn, k) => {
+if (jrnExpanded) {
+                          // Build unified list: current period entries + each history month's own entries
+                          const allJrnRows = [];
+                          nodeJrns.forEach(jrn => allJrnRows.push({ jrn, source: 'current' }));
+                          if (historyExpanded) {
+                            bsHistoryProcessed.forEach(h => {
+                              const hjrns = h.jrnByCode?.get(String(node.code)) || [];
+                              hjrns.forEach(jrn => allJrnRows.push({ jrn, source: `hist-${h.year}-${h.month}` }));
+                            });
+                          }
+                          allJrnRows.forEach(({ jrn, source: jsrc }, k) => {
                             const amt = parseAmt(jrn.amountYTD ?? jrn.AmountYTD ?? 0);
                             rows.push(
                               <tr key={`${jrnKey}-entry-${k}`}
@@ -12554,10 +12935,15 @@ const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
                                   const jrnCo = String(jrn.companyShortName ?? jrn.CompanyShortName ?? "");
                                   const v = jrnCo === co ? amt : 0;
                                   return <BSAmountCell key={`bsmc-saved-jentry-${node.code}-${co}-${k}`} value={v} typoStyle={subbody2Style} centered />;
-                                }) : <BSAmountCell value={amt} typoStyle={subbody2Style} />}
+                                }) : <BSAmountCell value={jsrc === 'current' ? amt : 0} typoStyle={subbody2Style} />}
                                 {!multiCompany && compareMode && <><td /><td /><td /></>}
                                 {!multiCompany && compareMode && cmp2Enabled && <><td /><td /><td /></>}
                                 {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><td /><td /><td /></>}
+                                {!multiCompany && historyExpanded && bsHistoryProcessed.map(h => {
+                                  // Show amount only in this row's own month column
+                                  const v = jsrc === `hist-${h.year}-${h.month}` ? amt : 0;
+                                  return <BSAmountCell key={`bshist-saved-jentry-${h.year}-${h.month}-${node.code}-${k}`} value={v} typoStyle={subbody2Style} centered />;
+                                })}
                               </tr>
                             );
 });
@@ -12951,13 +13337,13 @@ const tabs = ["summary","assets","equity"];
 <div className="scrollbar-hide" style={{ overflowX: "auto", overflowY: "auto", maxHeight: !compareMode ? "calc(86vh)" : filtersOpen ? cmp2Enabled ? "calc(72.5vh)" : "calc(79.5vh)" : "calc(85.5vh)" }}>
 <table className="w-full k-sticky-table">
 <colgroup>
-            <col style={{ width: "1px" }} />
+  <col style={{ width: accColWidth ? `${accColWidth}px` : "auto" }} />
             {multiCompany
-              ? selectedCompanies.map(co => <col key={`bsmc-col-${co}`} style={{ width: "1px" }} />)
-              : <col style={{ width: "1px" }} />}
-{!multiCompany && compareMode && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
-            {!multiCompany && compareMode && cmp2Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
-            {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /><col style={{ width: "1px" }} /></>}
+              ? selectedCompanies.map(co => <col key={`bsmc-col-${co}`} style={{ width: "180px" }} />)
+              : <col style={{ width: "160px" }} />}
+{!multiCompany && compareMode && <><col style={{ width: "160px" }} /><col style={{ width: "110px" }} /><col style={{ width: "75px" }} /></>}
+           {!multiCompany && compareMode && cmp2Enabled && <><col style={{ width: "160px" }} /><col style={{ width: "110px" }} /><col style={{ width: "75px" }} /></>}
+            {!multiCompany && compareMode && cmp2Enabled && cmp3Enabled && <><col style={{ width: "160px" }} /><col style={{ width: "110px" }} /><col style={{ width: "75px" }} /></>}
             <col />
           </colgroup>
 <thead>
@@ -12966,7 +13352,8 @@ const tabs = ["summary","assets","equity"];
   background: "rgba(255,255,255,0.98)",
   boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
 }}>
-<th className="text-left px-6 whitespace-nowrap k-sticky-acc-head" style={{ height: "64px" }}>
+<th className="text-left px-6 whitespace-nowrap k-sticky-acc-head" style={{ height: "64px", position: "relative" }}>
+                    <div className="k-acc-resize-handle" onMouseDown={startAccResize} title="Drag to resize column" />
     <div className="flex items-center gap-5">
       <div className="flex items-center gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
         <button onClick={() => setSearchActive(a => !a)}
@@ -13022,10 +13409,10 @@ const tabs = ["summary","assets","equity"];
           </>
         )}
       </div>
-      <div style={{ width: 1, height: 18, background: "#e5e7eb" }} />
+     <div style={{ width: 1, height: 18, background: "#e5e7eb", flexShrink: 0 }} />
 <div className="flex items-center gap-4" style={{ flexDirection: "row-reverse" }}>
-        <button onClick={() => {
-          if (Object.values(bsDrillMap).some(Boolean)) { setBsDrillMap({}); return; }
+<button onClick={() => {
+          if (Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap[k])) { setBsDrillMap({}); return; }
           const next = {};
           const expandDrillChildren = (children, leaves, depth, contextKey) => {
             (children || []).filter(hasData).forEach(child => {
@@ -13058,11 +13445,11 @@ className="flex items-center justify-center"
           style={{ background: "transparent", color: "#94a3b8", padding: 4, transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)" }}
           onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
           onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
-          title={Object.values(bsDrillMap).some(Boolean) ? "Collapse all" : "Expand all"}>
-          <span key={Object.values(bsDrillMap).some(Boolean) ? "collapse" : "expand"}
+title={Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap[k]) ? "Collapse all" : "Expand all"}>
+          <span key={Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap[k]) ? "collapse" : "expand"}
             className="inline-flex"
             style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
-            {Object.values(bsDrillMap).some(Boolean)
+            {Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap[k])
               ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
               : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
             }
@@ -13106,7 +13493,7 @@ className="flex items-center justify-center"
         </div>
         {compareMode && (
           <>
-            <div style={{ width: 1, height: 18, background: "#e5e7eb" }} />
+            <div style={{ width: 1, height: 18, background: "#e5e7eb", flexShrink: 0 }} />
             <button onClick={() => setFiltersOpen(o => !o)}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg"
               style={{
@@ -13129,7 +13516,7 @@ className="flex items-center justify-center"
     <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{co}</span>
   </th>
 )) : (
-<th className="text-right pr-6 py-3 whitespace-nowrap"
+<th className="text-center py-3 whitespace-nowrap"
   style={{ background: "transparent", width: "200px", cursor: (compareMode || multiCompany) ? "default" : "pointer" }}
   onClick={toggleBSHistory}
   title={(compareMode || multiCompany) ? "" : historyExpanded ? "Hide history" : "Show last 6 months"}>
@@ -13367,6 +13754,7 @@ const [plCmp2Loading, setPlCmp2Loading] = useState(false);
 const [plCmp2Enabled, setPlCmp2Enabled] = useState(true);
 const [bsCmp2Enabled, setBsCmp2Enabled] = useState(true);
 const [plExpandedMap, setPlExpandedMap] = useState({});
+const [accColWidth, setAccColWidth] = useState(null);
 const [bsDrillMap, setBsDrillMap] = useState({});
 const [plHistoryExpanded, setPlHistoryExpandedRaw] = useState(false);
 const [bsHistoryExpanded, setBsHistoryExpandedRaw] = useState(false);
@@ -13380,6 +13768,8 @@ const setBsHistoryExpanded = (v) => {
   setPlHistoryExpandedRaw(v);
   if (!v) { setPlHistoryMonths([]); setBsHistoryMonths([]); }
 };
+
+
 const [plHistoryMonths, setPlHistoryMonths] = useState([]);
 const [bsHistoryMonths, setBsHistoryMonths] = useState([]);
 const [bsCmpDimGroups, setBsCmpDimGroups] = useState(null);
@@ -13479,10 +13869,21 @@ const handleTabChange = (newTab) => {
   setActiveTab(newTab);
   setAnimKey(k => k + 1);
 };
-
   // ── Filter state (shared — used by Uploaded and Report tabs) ──
 const [upYear, setUpYear] = useState("");
   const [upMonth, setUpMonth] = useState("");
+  // When the period changes while history is expanded, clear both history arrays
+// so each side re-fetches against the new period (handles unmounted tab too).
+const histPeriodRef = useRef(`${upYear}-${upMonth}`);
+useEffect(() => {
+  const current = `${upYear}-${upMonth}`;
+  if (histPeriodRef.current === current) return;
+  histPeriodRef.current = current;
+  if (plHistoryExpanded || bsHistoryExpanded) {
+    setPlHistoryMonths([]);
+    setBsHistoryMonths([]);
+  }
+}, [upYear, upMonth, plHistoryExpanded, bsHistoryExpanded]);
   const [upSource, setUpSource] = useState("");
   const [upStructure, setUpStructure] = useState("");
 const [upCompaniesRaw, setUpCompaniesRaw] = useState([]);
@@ -13866,6 +14267,9 @@ const [viewsMode, setViewsMode] = useState(null); // null | "landing" | "structu
 const [savedMappings, setSavedMappings] = useState([]);
 const [mappingsLoading, setMappingsLoading] = useState(false);
 const [mappingsError, setMappingsError] = useState(null);
+const [reportMappings, setReportMappings] = useState([]);
+const [reportMappingsLoading, setReportMappingsLoading] = useState(false);
+const [reportMappingsError, setReportMappingsError] = useState(null);
 
 const fetchSavedMappings = useCallback(async () => {
   setMappingsLoading(true);
@@ -13892,6 +14296,32 @@ useEffect(() => {
   if (viewsMode === "structure") fetchSavedMappings();
 }, [viewsMode, fetchSavedMappings]);
 
+const fetchReportMappings = useCallback(async () => {
+  setReportMappingsLoading(true);
+  setReportMappingsError(null);
+  try {
+    const { supabase } = await import("../../lib/supabaseClient");
+    const { listMappings: listRpt } = await import("../../lib/reportMappingsApi");
+    const { getActiveCompanyId } = await import("../../lib/mappingsApi");
+    const { data: { session } } = await supabase.auth.getSession();
+    const uid = session?.user?.id;
+    if (!uid) throw new Error("Not authenticated");
+    const cid = await getActiveCompanyId(uid);
+    if (!cid) throw new Error("No active company");
+    const rows = await listRpt({ companyId: cid });
+    setReportMappings(Array.isArray(rows) ? rows : []);
+  } catch (e) {
+    setReportMappingsError(e.message);
+    setReportMappings([]);
+  } finally {
+    setReportMappingsLoading(false);
+  }
+}, []);
+
+useEffect(() => {
+  if (viewsMode === "report") fetchReportMappings();
+}, [viewsMode, fetchReportMappings]);
+
 
 const [activeMapping, setActiveMapping] = useState(null);
 // activeMapping shape: { mapping_id, name, standard, plConverted, bsConverted } | null
@@ -13908,6 +14338,44 @@ const handleApplyMapping = useCallback((m) => {
     highlightedIds: Array.isArray(m.highlighted_ids) ? new Set(m.highlighted_ids) : new Set(),
   });
 }, []);
+
+// Auto-activate the user's saved standard mapping on mount (from AccountsDashboard preference)
+const autoMappingAppliedRef = useRef(false);
+useEffect(() => {
+  if (autoMappingAppliedRef.current) return;
+  autoMappingAppliedRef.current = true;
+  let cancelled = false;
+  (async () => {
+    try {
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) return;
+      const { data: settingsData } = await supabase
+        .from("user_settings")
+        .select("preferences")
+        .eq("user_id", uid)
+        .single();
+const mid = settingsData?.preferences?.standard_mapping_id;
+      console.log("[auto-mapping] settingsData:", settingsData, "mid:", mid);
+      if (!mid) return;
+      const SUPABASE_URL = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
+      const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
+const { listMappings, getActiveCompanyId } = await import("../../lib/mappingsApi");
+      const cid = await getActiveCompanyId(uid);
+      console.log("[auto-mapping] cid:", cid);
+      if (!cid) return;
+      const allMappings = await listMappings({ companyId: cid });
+      console.log("[auto-mapping] all mappings:", allMappings);
+      const match = (allMappings || []).find(m => String(m.mapping_id) === String(mid));
+      console.log("[auto-mapping] match:", match);
+      if (match) {
+        handleApplyMapping(match);
+      }
+    } catch (err) { console.error("[auto-mapping] error:", err); }
+  })();
+  return () => { cancelled = true; };
+}, [handleApplyMapping]);
 
 const [exportOpts, setExportOpts] = useState({
   plSummary: true, plDetailed: true,
@@ -14814,12 +15282,31 @@ return (
         .k-panel-title { color: ${colors.quaternary ?? "#F59E0B"} !important; }
 .scrollbar-hide::-webkit-scrollbar { display: none; }
 .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+.k-scroll { scrollbar-width: thin; scrollbar-color: ${colors.primary}40 transparent; }
+.k-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.k-scroll::-webkit-scrollbar-track { background: transparent; }
+.k-scroll::-webkit-scrollbar-thumb { background: ${colors.primary}30; border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; transition: background-color 200ms ease; }
+.k-scroll::-webkit-scrollbar-thumb:hover { background: ${colors.primary}80; background-clip: padding-box; }
+.k-scroll::-webkit-scrollbar-corner { background: transparent; }
+.k-scroll::-webkit-scrollbar-button:vertical:start:decrement { display: block; height: 64px; background: transparent; }
+.k-scroll::-webkit-scrollbar-button:vertical:end:increment { display: block; height: 40px; background: transparent; }
+.k-scroll::-webkit-scrollbar-button:vertical:start:increment,
+.k-scroll::-webkit-scrollbar-button:vertical:end:decrement { display: none; }
+.k-scroll::-webkit-scrollbar-button:horizontal { display: none; }
+.k-scroll-overlay { overflow: overlay; }
+@supports not (overflow: overlay) { .k-scroll-overlay { overflow: auto; } }
 /* Sticky requires the table to have border-collapse: separate */
-        .k-sticky-table { border-collapse: separate; border-spacing: 0; }
-        .k-sticky-table thead th { position: sticky; top: 0; z-index: 10; background: rgba(255,255,255,0.98); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); }
-        .k-sticky-table thead th.k-sticky-acc-head { left: 0; z-index: 25; box-shadow: 4px 0 8px -4px rgba(0,0,0,0.06); }
-        .k-sticky-table tbody td.k-sticky-acc,
-        .k-sticky-table tbody th.k-sticky-acc { position: sticky; left: 0; z-index: 5; background: white; box-shadow: 4px 0 8px -4px rgba(0,0,0,0.06); }
+        .k-sticky-table { border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+       .k-sticky-table thead th { position: sticky; top: 0; z-index: 10; background: #ffffff !important; will-change: transform; }
+        .k-sticky-table thead th.k-sticky-acc-head { position: sticky !important; top: 0; left: 0; z-index: 25; border-right: 1px solid rgba(0,0,0,0.06); }
+.k-sticky-table tbody td.k-sticky-acc,
+        .k-sticky-table tbody th.k-sticky-acc { position: sticky; left: 0; z-index: 5; background: white; border-right: 1px solid rgba(0,0,0,0.06); }
+.k-sticky-acc, .k-sticky-acc-head { overflow: hidden !important; }
+.k-sticky-acc > div { min-width: 0; max-width: 100%; overflow: hidden; }
+.k-sticky-acc span:not(.k-no-truncate) { white-space: nowrap; flex-shrink: 0; }
+.k-sticky-acc > div { flex-wrap: nowrap; min-width: max-content; width: max-content; }
+.k-acc-resize-handle { position: absolute; right: 0; top: 0; bottom: 0; width: 5px; cursor: col-resize; z-index: 50; background: transparent; transition: background 160ms; user-select: none; }
+        .k-acc-resize-handle:hover, .k-acc-resize-handle.is-dragging { background: rgba(26,47,138,0.35); }
         .k-sticky-table tbody tr.bg-\\[\\#fef3c7\\] td.k-sticky-acc { background: #fef3c7; }
         .k-sticky-table tbody tr.bg-\\[\\#fafbff\\] td.k-sticky-acc { background: #fafbff; }
         .k-sticky-table tbody tr.bg-amber-50\\/10 td.k-sticky-acc { background: #fffbeb1a; }
@@ -14940,35 +15427,13 @@ setBsCmp2Year(String(upYear)); setBsCmp2Month(String(upMonth));
       },
     } : null
   }
-fabActions={viewsMode ? undefined : [
-{
-      id: "views",
-      icon: Eye,
-      label: t("btn_views"),
-      onClick: () => setViewsMode("landing"),
-    },
-    ...((activeTab === "pl" || activeTab === "bs") ? [{
-      id: "export",
-      icon: Download,
-      label: t("btn_export"),
-      subActions: [
-        {
-          id: "excel",
-          label: t("export_excel"),
-          src: "https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png",
-          alt: "Excel",
-          onClick: () => { setExportOpts(o => ({ ...o, format: "xlsx" })); setExportModal(true); },
-        },
-{
-          id: "pdf",
-          label: t("export_pdf"),
-          src: "https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png",
-          alt: "PDF",
-          onClick: () => { setExportOpts(o => ({ ...o, format: "pdf" })); setExportModal(true); },
-        },
-      ],
-    }] : [])
-  ]}
+onMappingsClick={viewsMode ? undefined : () => setViewsMode("landing")}
+onExportPdf={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
+  ? () => { setExportOpts(o => ({ ...o, format: "pdf" })); setExportModal(true); }
+  : undefined}
+onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
+  ? () => { setExportOpts(o => ({ ...o, format: "xlsx" })); setExportModal(true); }
+  : undefined}
 />
 
 
@@ -15140,12 +15605,85 @@ fabActions={viewsMode ? undefined : [
       </div>
     )}
 
-    {/* Report: coming soon */}
+{/* Report: library */}
     {viewsMode === "report" && (
-      <div className="flex-1 flex items-center justify-center bg-white rounded-2xl shadow-sm border border-gray-100">
-        <div className="text-center">
-          <p className="text-5xl mb-3">🚧</p>
-          <p className="text-base font-black text-gray-300">Coming soon</p>
+      <div className="flex-1 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col min-h-0">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
+          <div>
+            <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Library</p>
+            <p className="font-black text-xs text-gray-700">Saved report mappings</p>
+          </div>
+          {activeMapping && (
+            <button onClick={() => { setActiveMapping(null); setViewsMode(null); }}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest text-red-500 hover:bg-red-50 transition-colors">
+              <X size={10} /> Clear active
+            </button>
+          )}
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4">
+          {reportMappingsLoading && (
+            <div className="py-16 text-center">
+              <Loader2 size={24} className="text-[#CF305D] animate-spin mx-auto mb-2" />
+              <p className="text-gray-400 text-xs">Loading report mappings…</p>
+            </div>
+          )}
+
+          {reportMappingsError && !reportMappingsLoading && (
+            <div className="py-12 text-center">
+              <AlertCircle size={20} className="text-red-400 mx-auto mb-2" />
+              <p className="text-red-500 text-xs font-bold">{reportMappingsError}</p>
+              <button onClick={fetchReportMappings} className="mt-2 text-xs text-[#CF305D] underline font-bold">Retry</button>
+            </div>
+          )}
+
+          {!reportMappingsLoading && !reportMappingsError && reportMappings.length === 0 && (
+            <div className="py-16 text-center">
+              <div className="w-14 h-14 bg-[#fef1f5] rounded-2xl flex items-center justify-center mx-auto mb-3">
+                <FileText size={24} className="text-[#CF305D]" />
+              </div>
+              <p className="text-gray-700 font-black text-sm mb-1">No report mappings yet</p>
+              <p className="text-gray-400 text-xs">Create one from the Report Mappings page.</p>
+            </div>
+          )}
+
+          {!reportMappingsLoading && !reportMappingsError && reportMappings.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {reportMappings.map(m => {
+                const isActive = activeMapping?.mapping_id === m.mapping_id;
+                return (
+                  <button key={m.mapping_id}
+                    onClick={() => { handleApplyMapping(m); setViewsMode(null); }}
+                    className="text-left bg-white rounded-xl border-2 p-4 transition-all hover:shadow-md group flex flex-col"
+                    style={{ borderColor: isActive ? "#CF305D" : "#f3f4f6", background: isActive ? "#CF305D06" : "white" }}>
+                    <div className="flex items-start gap-2.5 mb-3">
+                      <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0"
+                        style={{ background: isActive ? "#CF305D" : "#fef1f5" }}>
+                        <FileText size={14} style={{ color: isActive ? "white" : "#CF305D" }} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <p className="font-black text-xs text-gray-800 truncate">{m.name ?? "Untitled"}</p>
+                          {isActive && (
+                            <span className="text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded flex-shrink-0"
+                              style={{ background: "#CF305D", color: "white" }}>Active</span>
+                          )}
+                        </div>
+                        <p className="text-[9px] font-bold uppercase tracking-widest mt-0.5" style={{ color: "#CF305D" }}>{m.standard ?? "—"}</p>
+                      </div>
+                    </div>
+                    {m.description && <p className="text-[10px] text-gray-500 mb-2 line-clamp-2">{m.description}</p>}
+                    <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-50 mt-auto">
+                      <span className="text-[9px] text-gray-400">Updated {m.updated_at ? new Date(m.updated_at).toLocaleDateString() : "—"}</span>
+                      <span className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-widest bg-emerald-500 group-hover:bg-emerald-600 text-white shadow-sm transition-all">
+                        <CheckCircle2 size={9} />Apply
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     )}
@@ -15295,6 +15833,9 @@ onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}>
   return (
 <div key={`pl-${animKey}`} className="tab-content" style={{ "--slide-from": TAB_ORDER.indexOf("pl") > TAB_ORDER.indexOf(prevTab ?? "pl") ? "30px" : "-30px" }}>
 <PLStatement
+  externalAccColWidth={accColWidth}
+  onAccColWidthChange={setAccColWidth}
+  bsCompareMode={bsCompareMode}
   externalExpandedMap={plExpandedMap}
   externalSetExpandedMap={setPlExpandedMap}
 multiCompany={upCompaniesDebounced.length > 1}
@@ -15468,9 +16009,14 @@ savedHighlightedIds={activeMapping?.highlightedIds ?? null}
   return (
 <div key={`bs-${animKey}`} className="tab-content" style={{ "--slide-from": TAB_ORDER.indexOf("bs") > TAB_ORDER.indexOf(prevTab ?? "bs") ? "30px" : "-30px" }}>
 <BalanceSheet
+externalAccColWidth={accColWidth}
+  onAccColWidthChange={setAccColWidth}
   multiCompany={upCompanies.length > 1}
   selectedCompanies={upCompanies}
   externalBsDrillMap={bsDrillMap}
+  compareMode={bsCompareMode}
+ plCompareMode={compareMode}
+ setCompareMode={setBsCompareMode}
   externalSetBsDrillMap={setBsDrillMap}
   onHistoryExpandedChange={setBsHistoryExpanded}
   externalHistoryExpanded={bsHistoryExpanded}

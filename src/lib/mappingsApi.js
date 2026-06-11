@@ -54,7 +54,7 @@ export async function getActiveCompanyId(userId) {
 // ════════════════════════════════════════════════════════════════
 export async function listMappings({ companyId, standard = null }) {
   if (!companyId) return [];
-  let url = `${SUPABASE_URL}/mappings?select=*&company_id=eq.${companyId}&is_archived=eq.false&order=updated_at.desc`;
+ let url = `${SUPABASE_URL}/mappings?select=*&company_id=eq.${companyId}&order=updated_at.desc`;
   if (standard) url += `&standard=eq.${standard}`;
   const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) {
