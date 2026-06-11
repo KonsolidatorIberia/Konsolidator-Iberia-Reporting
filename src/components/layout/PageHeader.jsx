@@ -790,6 +790,7 @@ aiToggle,
   onExportPdf,
   onExportXlsx,
   onMappingsClick,
+  showAllFilters = false,
 }) {
 const { colors } = useSettings();
   const headerStyle = useTypo("header1");
@@ -798,8 +799,9 @@ const { colors } = useSettings();
   const displayTitle = activeTabObj?.label ?? title;
 
 // Always show the first 3 filters (Year, Month, Company by convention); rest go behind "More filters"
-  const primaryFilters = filters.slice(0, 3);
-  const secondaryFilters = filters.slice(3);
+  // When showAllFilters is true, render every filter inline with no overflow.
+  const primaryFilters = showAllFilters ? filters : filters.slice(0, 3);
+  const secondaryFilters = showAllFilters ? [] : filters.slice(3);
 
 const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
   const [moreFiltersClosing, setMoreFiltersClosing] = useState(false);
@@ -899,7 +901,7 @@ style={{
 {/* Filters — primary always visible; secondary revealed on More filters hover */}
 {filters.length > 0 && (
 <div
-    className="no-scrollbar flex items-center gap-1 px-3 overflow-x-auto relative"
+    className="no-scrollbar flex items-center gap-1 px-3 overfFlow-x-auto relative"
     style={{ flexWrap: "nowrap", pointerEvents: moreFiltersClosing ? "none" : "auto" }}
 onMouseEnter={() => {
       moreFiltersHoverRef.current = true;

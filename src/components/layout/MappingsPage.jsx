@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, useId } from "react";
 import {
   X, Plus, Search, Layers, FilePlus, Library, ChevronLeft,
   ChevronDown, ChevronRight, Clock, FileText, Sparkles, ArrowRightLeft,
@@ -62,6 +62,7 @@ function getField(obj, ...names) {
   }
   return undefined;
 }
+// eslint-disable-next-line react-refresh/only-export-components
 export function detectStandard(groupAccounts = []) {
   if (!groupAccounts.length) return null;
   const codes = groupAccounts.map(n => String(n.accountCode ?? n.AccountCode ?? ""));
@@ -75,18 +76,18 @@ function buildClientTree(groupAccounts) {
   const byCode = new Map();
   groupAccounts.forEach(ga => { const c = String(getField(ga, "accountCode") ?? ""); if (c) byCode.set(c, ga); });
   const childrenOf = new Map(), roots = [];
-  groupAccounts.forEach(ga => {
-    const code = String(getField(ga, "accountCode") ?? "");
+groupAccounts.forEach(ga => {
+    const accCode = String(getField(ga, "accountCode") ?? "");
     const parent = String(getField(ga, "sumAccountCode") ?? "");
-    if (!code) return;
-    if (!byCode.has(parent) || parent === code) roots.push(ga);
+    if (!accCode) return;
+    if (!byCode.has(parent) || parent === accCode) roots.push(ga);
     else { if (!childrenOf.has(parent)) childrenOf.set(parent, []); childrenOf.get(parent).push(ga); }
   });
   const numSort = (a, b) => String(getField(a, "accountCode") ?? "").localeCompare(String(getField(b, "accountCode") ?? ""), undefined, { numeric: true });
   childrenOf.forEach(arr => arr.sort(numSort)); roots.sort(numSort);
-  function makeNode(ga) {
-    const code = String(getField(ga, "accountCode") ?? "");
-    return { code, name: String(getField(ga, "accountName") ?? ""), accountType: String(getField(ga, "accountType") ?? ""), isSumAccount: !!getField(ga, "isSumAccount"), level: Number(getField(ga, "level") ?? 0), children: (childrenOf.get(code) || []).map(makeNode) };
+function makeNode(ga) {
+    const nodeCode = String(getField(ga, "accountCode") ?? "");
+    return { code: nodeCode, name: String(getField(ga, "accountName") ?? ""), accountType: String(getField(ga, "accountType") ?? ""), isSumAccount: !!getField(ga, "isSumAccount"), level: Number(getField(ga, "level") ?? 0), children: (childrenOf.get(nodeCode) || []).map(makeNode) };
   }
   return roots.map(makeNode);
 }
@@ -97,8 +98,8 @@ function buildTemplateTree(rows, sections = []) {
   function buildHierarchy(subsetRows) {
     const subsetCodes = new Set(subsetRows.map(r => normalize(r.account_code)));
     const childrenOf = new Map(), localRoots = [];
-    subsetRows.forEach(r => {
-      const code = normalize(r.account_code), parent = normalize(r.parent_code);
+subsetRows.forEach(r => {
+      const parent = normalize(r.parent_code);
       if (!parent || !subsetCodes.has(parent)) localRoots.push(r);
       else { if (!childrenOf.has(parent)) childrenOf.set(parent, []); childrenOf.get(parent).push(r); }
     });
@@ -138,8 +139,7 @@ function renameNode(tree, targetId, newName) { return walkTransform(tree, n => (
 function deleteNode(tree, targetId) { return walkTransform(tree, n => (n.id === targetId || n.code === targetId) ? null : n); }
 function collectIdsFromSubtree(node) { const out = []; function walk(n) { out.push(n.id ?? n.code); (n.children || []).forEach(walk); } walk(node); return out; }
 function stripSubtreeForTransfer(node) { return { code: node.code, name: node.name, isSum: node.isSum ?? node.isSumAccount ?? false, isSumAccount: node.isSumAccount ?? node.isSum ?? false, accountType: node.accountType ?? null, sectionCode: node.sectionCode ?? null, showInSummary: node.showInSummary ?? false, dims: node.dims ?? null, children: (node.children || []).map(stripSubtreeForTransfer) }; }
-function initialExpanded(tree, prefix) { const result = {}; tree.forEach(root => { if ((root.children?.length ?? 0) > 0) result[`${prefix}-${root.code}`] = true; }); return result; }
-function collectAllCodes(tree, prefix) { const out = []; function walk(nodes) { nodes.forEach(n => { if ((n.children?.length ?? 0) > 0) { out.push(`${prefix}-${n.code}`); walk(n.children); } }); } walk(tree); return out; }
+function collectAllCodes(tree, prefix) {const out = []; function walk(nodes) { nodes.forEach(n => { if ((n.children?.length ?? 0) > 0) { out.push(`${prefix}-${n.code}`); walk(n.children); } }); } walk(tree); return out; }
 function countNodes(tree) { let n = 0; function walk(nodes) { nodes.forEach(node => { n++; walk(node.children || []); }); } walk(tree); return n; }
 function filterTree(tree, predicate) { function walk(nodes) { return nodes.map(n => { const kids = walk(n.children || []); return (predicate(n) || kids.length > 0) ? { ...n, children: kids } : null; }).filter(Boolean); } return walk(tree); }
 function filterTreeTpl(tree, q) { function walk(nodes) { return nodes.map(n => { const kids = walk(n.children || []); const matches = n.code.toLowerCase().includes(q) || (n.name ?? "").toLowerCase().includes(q); return (matches || kids.length > 0) ? { ...n, children: kids } : null; }).filter(Boolean); } return walk(tree); }
@@ -149,11 +149,12 @@ export default function MappingsPage({ token, preloadedData = {} }) {
   const { colors } = useSettings();
 const groupAccounts = preloadedData.groupAccounts ?? [];
   const preloadedDimensions = preloadedData.dimensions ?? [];
+  const [category, setCategory] = useState(null); // null | "account" | "cashflow"
   const [selected, setSelected] = useState(null); // null | "structure" | "report"
   const [search, setSearch] = useState("");
 
   // ── Structure view ──────────────────────────────────────────
-if (selected === "structure") {
+if (category === "account" && selected === "structure") {
 return (
 <StructureMappingsView
         groupAccounts={groupAccounts}
@@ -169,7 +170,7 @@ return (
   }
 
 // ── Report view ─────────────────────────────────────────────
-  if (selected === "report") {
+  if (category === "account" && selected === "report") {
     return (
       <StructureMappingsView
         groupAccounts={groupAccounts}
@@ -184,7 +185,110 @@ return (
     );
   }
 
-  // ── Landing ─────────────────────────────────────────────────
+  // ── Cash flow placeholder ───────────────────────────────────
+  if (category === "cashflow") {
+    return (
+      <div className="flex flex-col h-full min-h-0">
+        <PageHeader kicker="Views · Mappings" title="Cash Flow Mappings" tabs={[]} activeTab={null} onTabChange={() => {}} filters={[]} onBack={() => setCategory(null)} />
+        <div className="flex-1 flex items-center justify-center mt-3 rounded-2xl bg-white shadow-xl border border-gray-100">
+          <div className="text-center max-w-md p-10">
+            <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-5" style={{ background: "linear-gradient(135deg, #0891b2 0%, #06b6d4 100%)" }}>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            </div>
+            <p className="font-black text-2xl text-gray-800 mb-2">Cash Flow Mappings</p>
+            <p className="text-sm text-gray-500 leading-relaxed">Define how accounts flow into operating, investing, and financing activities. Coming soon.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Account-mapping category (Structure / Report selection) ─
+  if (category === "account") {
+    return (
+      <div className="flex flex-col h-full min-h-0">
+        <PageHeader kicker="Views · Mappings" title="Account Mappings" tabs={[]} activeTab={null} onTabChange={() => {}} filters={[]} onBack={() => setCategory(null)} />
+        <style>{`
+          @keyframes floatOrb1 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(20px,-30px) scale(1.1); } }
+          @keyframes floatOrb2 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-15px,20px) scale(0.95); } }
+          @keyframes floatOrb3 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(25px,15px) scale(1.05); } }
+          @keyframes spinSlow  { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+          @keyframes spinSlowR { from { transform: rotate(0deg); } to { transform: rotate(-360deg); } }
+          @keyframes dashMove  { from { stroke-dashoffset: 200; } to { stroke-dashoffset: 0; } }
+          @keyframes pulseDot  { 0%,100% { opacity: 0.3; transform: scale(1); } 50% { opacity: 0.8; transform: scale(1.4); } }
+        `}</style>
+        <div className="flex-1 flex px-0 pt-3 pb-0 min-h-0">
+          <div className="w-full h-full">
+            <div className="grid grid-cols-2 gap-5 h-full">
+              {/* Structure card */}
+              <button onClick={() => setSelected("structure")}
+                className="relative text-left rounded-2xl border-2 border-gray-100 overflow-hidden transition-all group hover:border-[#1a2f8a] flex flex-col h-full"
+                style={{ background: "linear-gradient(135deg, #ffffff 0%, #f4f6ff 40%, #eef1fb 100%)", boxShadow: "0 8px 32px -8px rgba(26,47,138,0.18), 0 2px 8px -2px rgba(0,0,0,0.06)" }}>
+                <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                  <div className="absolute" style={{ top: "15%", right: "10%", width: 180, height: 180, borderRadius: "50%", background: "radial-gradient(circle, #1a2f8a18 0%, transparent 70%)", animation: "floatOrb1 8s ease-in-out infinite" }} />
+                  <div className="absolute" style={{ bottom: "10%", right: "25%", width: 120, height: 120, borderRadius: "50%", background: "radial-gradient(circle, #3b54b820 0%, transparent 70%)", animation: "floatOrb2 11s ease-in-out 2s infinite" }} />
+                  <div className="absolute" style={{ top: "50%", left: "60%", width: 80, height: 80, borderRadius: "50%", background: "radial-gradient(circle, #1a2f8a12 0%, transparent 70%)", animation: "floatOrb3 9s ease-in-out 1s infinite" }} />
+                  <div className="absolute inset-0" style={{ backgroundImage: "radial-gradient(#1a2f8a0d 1px, transparent 1px)", backgroundSize: "28px 28px" }} />
+                </div>
+                <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none" style={{ background: "linear-gradient(135deg, #eef1fb 0%, #ffffff 50%, #dde3f8 100%)" }} />
+                <div className="relative z-10 flex flex-col h-full p-10">
+                  <div className="mb-auto">
+                    <div className="mb-8 relative w-20 h-20">
+                      <div className="absolute inset-0 rounded-2xl opacity-20 group-hover:opacity-40 transition-opacity" style={{ background: "#1a2f8a", filter: "blur(12px)", transform: "translateY(4px)" }} />
+                      <div className="relative w-20 h-20 rounded-2xl flex items-center justify-center transition-transform duration-300 group-hover:scale-105" style={{ background: "linear-gradient(145deg, #1a2f8a 0%, #3b54b8 100%)", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.2)" }}>
+                        <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+                          <rect x="4" y="8" width="10" height="10" rx="2" fill="white" opacity="0.9"/><rect x="4" y="22" width="10" height="6" rx="1.5" fill="white" opacity="0.5"/><rect x="17" y="8" width="15" height="4" rx="1.5" fill="white" opacity="0.7"/><rect x="17" y="15" width="10" height="4" rx="1.5" fill="white" opacity="0.5"/><rect x="17" y="22" width="12" height="4" rx="1.5" fill="white" opacity="0.4"/>
+                        </svg>
+                      </div>
+                    </div>
+                    <p className="font-black text-2xl text-gray-800 mb-3">Structure Mappings</p>
+                    <p className="text-sm text-gray-500 leading-relaxed max-w-xs">Map your chart of accounts to standard structures like PGC, Spanish IFRS, or Danish IFRS. Control how accounts are grouped and labeled across all reports.</p>
+                  </div>
+                  <div className="mt-10 flex items-center justify-between">
+                    <div className="flex gap-2">{["PGC", "Spanish IFRS", "Danish IFRS"].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#1a2f8a15", color: "#1a2f8a" }}>{tag}</span>)}</div>
+                    <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#1a2f8a" }}>Open →</span>
+                  </div>
+                </div>
+              </button>
+
+              {/* Report card */}
+              <button onClick={() => setSelected("report")}
+                className="relative text-left rounded-2xl border-2 border-gray-100 overflow-hidden transition-all group hover:border-[#CF305D] flex flex-col h-full"
+                style={{ background: "linear-gradient(135deg, #ffffff 0%, #fff4f7 40%, #fef1f5 100%)", boxShadow: "0 8px 32px -8px rgba(207,48,93,0.18), 0 2px 8px -2px rgba(0,0,0,0.06)" }}>
+                <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                  <div className="absolute" style={{ top: "15%", right: "10%", width: 180, height: 180, borderRadius: "50%", background: "radial-gradient(circle, #CF305D18 0%, transparent 70%)", animation: "floatOrb2 9s ease-in-out infinite" }} />
+                  <div className="absolute" style={{ bottom: "10%", right: "25%", width: 120, height: 120, borderRadius: "50%", background: "radial-gradient(circle, #e0558520 0%, transparent 70%)", animation: "floatOrb1 12s ease-in-out 1s infinite" }} />
+                  <div className="absolute" style={{ top: "50%", left: "60%", width: 80, height: 80, borderRadius: "50%", background: "radial-gradient(circle, #CF305D10 0%, transparent 70%)", animation: "floatOrb3 10s ease-in-out 3s infinite" }} />
+                  <div className="absolute inset-0" style={{ backgroundImage: "radial-gradient(#CF305D0d 1px, transparent 1px)", backgroundSize: "28px 28px" }} />
+                </div>
+                <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none" style={{ background: "linear-gradient(135deg, #fef1f5 0%, #ffffff 50%, #fde0ea 100%)" }} />
+                <div className="relative z-10 flex flex-col h-full p-10">
+                  <div className="mb-auto">
+                    <div className="mb-8 relative w-20 h-20">
+                      <div className="absolute inset-0 rounded-2xl opacity-20 group-hover:opacity-40 transition-opacity" style={{ background: "#CF305D", filter: "blur(12px)", transform: "translateY(4px)" }} />
+                      <div className="relative w-20 h-20 rounded-2xl flex items-center justify-center transition-transform duration-300 group-hover:scale-105" style={{ background: "linear-gradient(145deg, #CF305D 0%, #e05585 100%)", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.2)" }}>
+                        <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+                          <rect x="4" y="5" width="28" height="5" rx="2" fill="white" opacity="0.9"/><rect x="4" y="13" width="28" height="3.5" rx="1.5" fill="white" opacity="0.6"/><rect x="4" y="19.5" width="20" height="3.5" rx="1.5" fill="white" opacity="0.5"/><rect x="4" y="26" width="14" height="3.5" rx="1.5" fill="white" opacity="0.4"/>
+                        </svg>
+                      </div>
+                    </div>
+                    <p className="font-black text-2xl text-gray-800 mb-3">Report Mappings</p>
+                    <p className="text-sm text-gray-500 leading-relaxed max-w-xs">Define custom report templates and layouts. Control which sections, KPIs, and account groups appear in your financial reports.</p>
+                  </div>
+                  <div className="mt-10 flex items-center justify-between">
+                    <div className="flex gap-2">{["PGC", "Spanish IFRS", "Danish IFRS"].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#CF305D15", color: "#CF305D" }}>{tag}</span>)}</div>
+                    <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#CF305D" }}>Open →</span>
+                  </div>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Top landing (Account / Cash Flow) ───────────────────────
   return (
     <div className="flex flex-col h-full min-h-0">
       <PageHeader kicker="Views" title="Mappings" tabs={[]} activeTab={null} onTabChange={() => {}} filters={[]} />
@@ -197,11 +301,11 @@ return (
         @keyframes dashMove  { from { stroke-dashoffset: 200; } to { stroke-dashoffset: 0; } }
         @keyframes pulseDot  { 0%,100% { opacity: 0.3; transform: scale(1); } 50% { opacity: 0.8; transform: scale(1.4); } }
       `}</style>
-      <div className="flex-1 flex px-0 pt-3 pb-0 min-h-0">
+<div className="flex-1 flex px-0 pt-3 pb-0 min-h-0">
         <div className="w-full h-full">
           <div className="grid grid-cols-2 gap-5 h-full">
-            {/* Structure card */}
-            <button onClick={() => setSelected("structure")}
+            {/* Account mapping card */}
+            <button onClick={() => setCategory("account")}
               className="relative text-left rounded-2xl border-2 border-gray-100 overflow-hidden transition-all group hover:border-[#1a2f8a] flex flex-col h-full"
               style={{ background: "linear-gradient(135deg, #ffffff 0%, #f4f6ff 40%, #eef1fb 100%)", boxShadow: "0 8px 32px -8px rgba(26,47,138,0.18), 0 2px 8px -2px rgba(0,0,0,0.06)" }}>
               <div className="absolute inset-0 pointer-events-none overflow-hidden">
@@ -232,20 +336,20 @@ return (
                       </svg>
                     </div>
                   </div>
-                  <p className="font-black text-2xl text-gray-800 mb-3">Structure Mappings</p>
-                  <p className="text-sm text-gray-500 leading-relaxed max-w-xs">Map your chart of accounts to standard structures like PGC, Spanish IFRS, or Danish IFRS. Control how accounts are grouped and labeled across all reports.</p>
+<p className="font-black text-2xl text-gray-800 mb-3">Account Mappings</p>
+                  <p className="text-sm text-gray-500 leading-relaxed max-w-xs">Organize how your chart of accounts maps into standard structures and how it appears across your financial reports. Includes Structure and Report mappings.</p>
                 </div>
                 <div className="mt-10 flex items-center justify-between">
-                  <div className="flex gap-2">{["PGC", "Spanish IFRS", "Danish IFRS"].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#1a2f8a15", color: "#1a2f8a" }}>{tag}</span>)}</div>
+                  <div className="flex gap-2">{["Structure", "Report"].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#1a2f8a15", color: "#1a2f8a" }}>{tag}</span>)}</div>
                   <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#1a2f8a" }}>Open →</span>
                 </div>
               </div>
             </button>
 
-            {/* Report card */}
-            <button onClick={() => setSelected("report")}
-              className="relative text-left rounded-2xl border-2 border-gray-100 overflow-hidden transition-all group hover:border-[#CF305D] flex flex-col h-full"
-              style={{ background: "linear-gradient(135deg, #ffffff 0%, #fff4f7 40%, #fef1f5 100%)", boxShadow: "0 8px 32px -8px rgba(207,48,93,0.18), 0 2px 8px -2px rgba(0,0,0,0.06)" }}>
+            {/* Cash flow card */}
+            <button onClick={() => setCategory("cashflow")}
+              className="relative text-left rounded-2xl border-2 border-gray-100 overflow-hidden transition-all group hover:border-[#0891b2] flex flex-col h-full"
+              style={{ background: "linear-gradient(135deg, #ffffff 0%, #f0fbfd 40%, #e0f7fa 100%)", boxShadow: "0 8px 32px -8px rgba(8,145,178,0.18), 0 2px 8px -2px rgba(0,0,0,0.06)" }}>
               <div className="absolute inset-0 pointer-events-none overflow-hidden">
                 <div className="absolute" style={{ top: "15%", right: "10%", width: 180, height: 180, borderRadius: "50%", background: "radial-gradient(circle, #CF305D18 0%, transparent 70%)", animation: "floatOrb2 9s ease-in-out infinite" }} />
                 <div className="absolute" style={{ bottom: "10%", right: "25%", width: 120, height: 120, borderRadius: "50%", background: "radial-gradient(circle, #e0558520 0%, transparent 70%)", animation: "floatOrb1 12s ease-in-out 1s infinite" }} />
@@ -274,12 +378,12 @@ return (
                       </svg>
                     </div>
                   </div>
-                  <p className="font-black text-2xl text-gray-800 mb-3">Report Mappings</p>
-                  <p className="text-sm text-gray-500 leading-relaxed max-w-xs">Define custom report templates and layouts. Control which sections, KPIs, and account groups appear in your financial reports.</p>
+<p className="font-black text-2xl text-gray-800 mb-3">Cash Flow Mappings</p>
+                  <p className="text-sm text-gray-500 leading-relaxed max-w-xs">Define how accounts flow into operating, investing, and financing activities to build your cash flow statement.</p>
                 </div>
                 <div className="mt-10 flex items-center justify-between">
-<div className="flex gap-2">{["PGC", "Spanish IFRS", "Danish IFRS"].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#CF305D15", color: "#CF305D" }}>{tag}</span>)}</div>
-                  <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#CF305D" }}>Open →</span>
+<div className="flex gap-2">{["Operating", "Investing", "Financing"].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#0891b215", color: "#0891b2" }}>{tag}</span>)}</div>
+                  <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#0891b2" }}>Open →</span>
                 </div>
               </div>
             </button>
@@ -304,9 +408,14 @@ function StructureMappingsView({ groupAccounts, dimensions = [], search, setSear
   const [mappings, setMappings] = useState([]);
 const [mappingsLoading, setMappingsLoading] = useState(true);
 const [editingMapping, setEditingMapping] = useState(null);
-  const [standardMappingId, setStandardMappingId] = useState(null);
+const [standardMappingId, setStandardMappingId] = useState(null);
   const [pendingStandardMapping, setPendingStandardMapping] = useState(null);
   const [mapperStatement, setMapperStatement] = useState("PL");
+  const [favorites, setFavorites] = useState(new Set());
+  const [filterStandard, setFilterStandard] = useState("");
+  const [filterUser, setFilterUser] = useState("");
+  const [filterFavorite, setFilterFavorite] = useState(false);
+const [sortBy, setSortBy] = useState("desc");
   const mapperSaveRef = useRef(null);
   const mapperResetRef = useRef(null);
   
@@ -322,19 +431,22 @@ const [editingMapping, setEditingMapping] = useState(null);
 
 useEffect(() => {
     if (view !== "list" || !companyId) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMappingsLoading(true);
     api.list({ companyId }).then(rows => setMappings(rows)).finally(() => setMappingsLoading(false));
   }, [view, companyId, api]);
 
-  useEffect(() => {
+useEffect(() => {
     if (!authUserId) return;
     (async () => {
       const { data } = await supabase.from("user_settings").select("preferences").eq("user_id", authUserId).single();
       if (data?.preferences?.standard_mapping_id) setStandardMappingId(data.preferences.standard_mapping_id);
+      const favKey = mappingKind === "report" ? "favorite_report_mappings" : "favorite_mappings";
+      if (Array.isArray(data?.preferences?.[favKey])) setFavorites(new Set(data.preferences[favKey]));
     })();
-  }, [authUserId]);
+  }, [authUserId, mappingKind]);
 
-  const handleSetStandard = async (id) => {
+const handleSetStandard = async (id) => {
     if (!authUserId) return;
     const newId = standardMappingId === id ? null : id; // toggle off if already set
     const { data } = await supabase.from("user_settings").select("preferences").eq("user_id", authUserId).single();
@@ -346,6 +458,30 @@ useEffect(() => {
     });
     setStandardMappingId(newId);
   };
+
+  const handleToggleFavorite = async (mappingId) => {
+    if (!authUserId) return;
+    const next = new Set(favorites);
+    if (next.has(mappingId)) next.delete(mappingId); else next.add(mappingId);
+    setFavorites(next);
+    const { data } = await supabase.from("user_settings").select("preferences").eq("user_id", authUserId).single();
+    const prefs = data?.preferences ?? {};
+    const favKey = mappingKind === "report" ? "favorite_report_mappings" : "favorite_mappings";
+    await supabase.from("user_settings").upsert({
+      user_id: authUserId,
+      preferences: { ...prefs, [favKey]: [...next] },
+      updated_at: new Date().toISOString(),
+    });
+  };
+
+  const uniqueUsers = useMemo(() => {
+    const set = new Set();
+    mappings.forEach(m => {
+      if (m.updated_by_name) set.add(m.updated_by_name);
+      if (m.created_by_name) set.add(m.created_by_name);
+    });
+    return [...set].sort();
+  }, [mappings]);
 
 const detectedStandard = useMemo(() => detectStandard(groupAccounts), [groupAccounts]);
 
@@ -381,8 +517,8 @@ const detectedStandard = useMemo(() => detectStandard(groupAccounts), [groupAcco
             if (rows.length > 0) { console.log("[uploaded] fetched", rows.length, "rows, sample Dimensions:", rows.slice(0,3).map(r => r.Dimensions)); setUploadedAccounts(rows); return; }
           }
           m--; if (m < 1) { m = 12; y--; }
-        }
-      } catch {}
+}
+      } catch { /* ignore probe failures */ }
     })();
 }, [token, groupAccounts.length]);
 
@@ -400,12 +536,33 @@ mapper: { title: selectedStandard ? `Mapping · ${STANDARD_META[selectedStandard
     <div className="flex flex-col h-full min-h-0">
       <PageHeader
         kicker="Views · Mappings"
-        title={cfg.title}
+title={cfg.title}
         titleSuffix={view === "mapper" && editingMapping?.name ? editingMapping.name : undefined}
         tabs={[]}
         activeTab={null}
         onTabChange={() => {}}
-        filters={[]}
+showAllFilters={view === "list"}
+        filters={view === "list" ? [
+          { label: "Standard", value: filterStandard, onChange: setFilterStandard, options: [
+            { value: "", label: "All standards", displayLabel: "Standard" },
+            { value: "PGC", label: "PGC", displayLabel: "PGC" },
+            { value: "SpanishIFRS", label: "Spanish IFRS", displayLabel: "Spanish IFRS" },
+            { value: "DanishIFRS", label: "Danish IFRS", displayLabel: "Danish IFRS" },
+            { value: "Scratch", label: "Custom", displayLabel: "Custom" },
+          ]},
+          { label: "User", value: filterUser, onChange: setFilterUser, options: [
+            { value: "", label: "All users", displayLabel: "User" },
+            ...uniqueUsers.map(u => ({ value: u, label: u, displayLabel: u })),
+          ]},
+{ label: "Sort", value: sortBy, onChange: setSortBy, options: [
+            { value: "desc", label: "Most recent first", displayLabel: "Most recent" },
+            { value: "asc", label: "Oldest first", displayLabel: "Oldest" },
+          ]},
+{ label: "Favorites", value: filterFavorite ? "yes" : "", onChange: v => setFilterFavorite(v === "yes"), options: [
+            { value: "", label: "All", displayLabel: "Favorites" },
+            { value: "yes", label: "Favorites only", displayLabel: "★ Favorites" },
+          ]},
+        ] : []}
         onBack={cfg.back}
         headerSearch={view === "list" ? { value: search, onChange: setSearch, placeholder: "Search mappings…" } : undefined}
       headerActions={view === "list" ? [{ icon: Plus, label: "Create mapping", onClick: () => { setEditingMapping(null); setView("create"); } }] : undefined}
@@ -465,9 +622,14 @@ mapper: { title: selectedStandard ? `Mapping · ${STANDARD_META[selectedStandard
             search={search}
             standardMappingId={standardMappingId}
             onSetStandard={handleSetStandard}
+            favorites={favorites}
+            onToggleFavorite={handleToggleFavorite}
+            filterStandard={filterStandard}
+            filterUser={filterUser}
+            filterFavorite={filterFavorite}
+            sortBy={sortBy}
             onCreate={() => { setEditingMapping(null); setView("create"); }}
             onOpen={m => { setEditingMapping(m); setSelectedStandard(m.standard); setView("mapper"); }}
-            onApply={() => {}}
             onArchive={async m => {
               if (!window.confirm(`Delete "${m.name}"? This cannot be undone.`)) return;
               await api.archive({ mappingId: m.mapping_id, userId: authUserId });
@@ -544,10 +706,21 @@ editingMapping={editingMapping}
 }
 
 // ─── ListView ────────────────────────────────────────────────
-function ListView({ mappings, loading, search, standardMappingId, onSetStandard, onCreate, onOpen, onApply, onArchive }) {
-  const filtered = search.trim()
-    ? mappings.filter(m => String(m.name ?? m.mapping_name ?? "").toLowerCase().includes(search.toLowerCase()))
-    : mappings;
+function ListView({ mappings, loading, search, standardMappingId, onSetStandard, favorites = new Set(), onToggleFavorite, filterStandard = "", filterUser = "", filterFavorite = false, sortBy = "desc", onCreate, onOpen, onArchive }) {
+  const filtered = useMemo(() => {
+    let list = mappings;
+    if (search.trim()) list = list.filter(m => String(m.name ?? m.mapping_name ?? "").toLowerCase().includes(search.toLowerCase()));
+    if (filterStandard) list = list.filter(m => m.standard === filterStandard);
+    if (filterUser) list = list.filter(m => m.updated_by_name === filterUser || m.created_by_name === filterUser);
+    if (filterFavorite) list = list.filter(m => favorites.has(m.mapping_id));
+return [...list].sort((a, b) => {
+      const aFav = favorites.has(a.mapping_id) ? 0 : 1;
+      const bFav = favorites.has(b.mapping_id) ? 0 : 1;
+      if (aFav !== bFav) return aFav - bFav;
+      const diff = new Date(b.updated_at ?? 0) - new Date(a.updated_at ?? 0);
+      return sortBy === "asc" ? -diff : diff;
+    });
+  }, [mappings, search, filterStandard, filterUser, filterFavorite, favorites, sortBy]);
 
   return (
     <div className="overflow-y-auto flex-1 flex flex-col">
@@ -562,7 +735,7 @@ function ListView({ mappings, loading, search, standardMappingId, onSetStandard,
         <EmptyLibrary onCreate={onCreate} hasSearch={!!search.trim()} />
 ) : (
         <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-          {filtered.map(m => <MappingCard key={m.mapping_id} mapping={m} isStandard={m.mapping_id === standardMappingId} onSetStandard={onSetStandard} onOpen={onOpen} onApply={onApply} onArchive={onArchive} />)}
+          {filtered.map(m => <MappingCard key={m.mapping_id} mapping={m} isStandard={m.mapping_id === standardMappingId} isFavorite={favorites.has(m.mapping_id)} onSetStandard={onSetStandard} onToggleFavorite={onToggleFavorite} onOpen={onOpen} onArchive={onArchive} />)}
         </div>
       )}
     </div>
@@ -580,7 +753,7 @@ function EmptyLibrary({ onCreate, hasSearch }) {
   );
 }
 
-function MappingCard({ mapping, isStandard, onSetStandard, onOpen, onApply, onArchive }) {
+function MappingCard({ mapping, isStandard, isFavorite, onSetStandard, onToggleFavorite, onOpen, onArchive }) {
   const standardMeta = STANDARD_META[mapping.standard];
   return (
     <div className="bg-white rounded-2xl border border-gray-100 p-5 hover:border-[#1a2f8a]/30 hover:shadow-lg transition-all group flex flex-col">
@@ -593,6 +766,12 @@ function MappingCard({ mapping, isStandard, onSetStandard, onOpen, onApply, onAr
             <p className="font-black text-sm text-gray-800 truncate">{mapping.name ?? "Untitled"}</p>
             <p className="text-[10px] font-bold uppercase tracking-widest mt-0.5" style={{ color: standardMeta?.accent ?? "#1a2f8a" }}>{standardMeta?.label ?? mapping.standard}</p>
           </div>
+          <button onClick={e => { e.stopPropagation(); onToggleFavorite?.(mapping.mapping_id); }}
+            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${isFavorite ? "" : "opacity-0 group-hover:opacity-100"}`}
+            style={{ color: isFavorite ? "#f59e0b" : "#9ca3af" }}
+            title={isFavorite ? "Remove from favorites" : "Add to favorites"}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill={isFavorite ? "#f59e0b" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+          </button>
           <button onClick={e => { e.stopPropagation(); onArchive?.(mapping); }} className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-red-50 hover:text-red-500 transition-all" title="Archive"><Trash2 size={11} /></button>
         </div>
         {mapping.description && <p className="text-[11px] text-gray-500 mb-3 line-clamp-2">{mapping.description}</p>}
@@ -628,7 +807,7 @@ function MappingCard({ mapping, isStandard, onSetStandard, onOpen, onApply, onAr
 }
 
 // ─── CreateView ───────────────────────────────────────────────
-function CreateView({ onScratch, onExisting, onCancel }) {
+function CreateView({ onScratch, onExisting }) {
   return (
     <div className="flex-1 flex flex-col min-h-0 p-0">
       <style>{`
@@ -746,7 +925,8 @@ function CreateView({ onScratch, onExisting, onCancel }) {
 function SelectStandardView({ detectedStandard, onPick }) {
   const [catalog, setCatalog] = useState([]);
   const [loading, setLoading] = useState(true);
-  useEffect(() => {
+useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     fetch(`${SUPABASE_URL}/template_catalog?select=*&active=eq.true`, { headers: sbHeaders })
       .then(r => r.json()).then(rows => { if (Array.isArray(rows)) setCatalog(rows); }).catch(() => setCatalog([])).finally(() => setLoading(false));
@@ -806,7 +986,7 @@ function StandardCard({ meta, isRecommended, onClick }) {
 }
 
 // ─── MapperView ───────────────────────────────────────────────
-function MapperView({ standard, groupAccounts, uploadedAccounts = [], dimensions = [], authUserId, companyId, editingMapping, existingMappings = [], onSaved, onBackToList, statement, setStatement, saveRef, resetRef, api = { create: createMapping, update: updateMapping }, mappingKind = "structure" }) {
+function MapperView({ standard, groupAccounts, uploadedAccounts = [], dimensions = [], authUserId, companyId, editingMapping, existingMappings = [], onSaved, statement, saveRef, resetRef, api = { create: createMapping, update: updateMapping }, mappingKind = "structure" }) {
   const meta = STANDARD_META[standard];
 
   const dimsByGroupCode = useMemo(() => {
@@ -833,8 +1013,8 @@ if (!map.has(groupCode)) map.set(groupCode, new Set());
         map.get(groupCode).add(`${dimGroup}:${dimName}`);
       });
     });
-    return map;
-  }, [uploadedAccounts]);
+return map;
+  }, [uploadedAccounts, dimensions]);
 
   const [tplRows, setTplRows] = useState([]);
   const [tplSections, setTplSections] = useState([]);
@@ -859,7 +1039,8 @@ const [showSaveChoice, setShowSaveChoice] = useState(false);
 useEffect(() => {
     const ac = new AbortController();
     if (templateTreeBy[statement]) return;
-    if (standard === "Scratch") {
+if (standard === "Scratch") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setTplRows([]); setTplSections([]); setTplStatement(statement); setTplLoading(false);
       return;
     }
@@ -878,7 +1059,8 @@ useEffect(() => {
       } catch (e) { if (e.name !== "AbortError") { setTplRows([]); setTplSections([]); } }
       finally { if (!ac.signal.aborted) setTplLoading(false); }
     })();
-    return () => ac.abort();
+return () => ac.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [standard, statement]);
 
   const baseClientTree = useMemo(() => {
@@ -895,11 +1077,18 @@ useEffect(() => {
     return addIds(buildTemplateTree(tplRows, tplSections));
   }, [tplRows, tplSections, tplStatement, statement]);
 
-  useEffect(() => { setClientTreeBy({ PL: null, BS: null }); setTemplateTreeBy({ PL: null, BS: null }); setMovedClientCodes(new Set()); setMovedTemplateIds(new Set()); }, [standard]);
+useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setClientTreeBy({ PL: null, BS: null });
+    setTemplateTreeBy({ PL: null, BS: null });
+    setMovedClientCodes(new Set());
+    setMovedTemplateIds(new Set());
+  }, [standard]);
 useEffect(() => {
   if (!editingMapping) return;
   const plTree = Array.isArray(editingMapping.pl_tree) ? editingMapping.pl_tree : [];
   const bsTree = Array.isArray(editingMapping.bs_tree) ? editingMapping.bs_tree : [];
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   setTemplateTreeBy({ PL: plTree, BS: bsTree });
   if (Array.isArray(editingMapping.highlighted_ids)) setHighlightedIds(new Set(editingMapping.highlighted_ids));
   // Walk both trees and reconstruct movedClientCodes + movedDimsByCode
@@ -927,8 +1116,11 @@ useEffect(() => {
   setMovedClientCodes(movedCodes);
   setMovedDimsByCode(movedDims);
 }, [editingMapping]);
+// eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (baseClientTree.length > 0) setClientTreeBy(prev => prev[statement] ? prev : { ...prev, [statement]: baseClientTree }); }, [baseClientTree, statement]);
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (baseTemplateTree.length > 0) setTemplateTreeBy(prev => prev[statement] ? prev : { ...prev, [statement]: baseTemplateTree }); }, [baseTemplateTree, statement]);
+// eslint-disable-next-line react-hooks/set-state-in-effect
 useEffect(() => { setCurrentName(editingMapping?.name ?? ""); setCurrentDescription(editingMapping?.description ?? ""); }, [editingMapping]);
 
 // When opening a fresh standard template (no saved mapping), pre-mark
@@ -946,8 +1138,9 @@ useEffect(() => { setCurrentName(editingMapping?.name ?? ""); setCurrentDescript
         walkTemplate(n.children || []);
       });
     };
-    walkTemplate(baseTemplateTree);
+walkTemplate(baseTemplateTree);
     if (!templateCodes.size) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMovedClientCodes(prev => {
       const next = new Set(prev);
       groupAccounts.forEach(ga => {
@@ -1076,15 +1269,27 @@ const deletedNode = findNodeById(templateTreeBy[statement] ?? templateTree, targ
         // Walk the entire deleted subtree and collect per-code dim removals
         const dimsToRemoveByCode = new Map(); // code → Set of dims (null = full delete)
         const fullDeleteCodes = new Set();
-        const walk = (n) => {
+const walk = (n) => {
           const code = String(n.code ?? "");
           if (code) {
-            if (Array.isArray(n.dims) && n.dims.length > 0) {
+            const sourceAccountDims = dimsByGroupCode.get(code);
+            const isAllDimsCopy = Array.isArray(n.dims)
+              && n.dims.length > 0
+              && sourceAccountDims
+              && n.dims.length >= sourceAccountDims.size;
+            if (Array.isArray(n.dims) && n.dims.length > 0 && !isAllDimsCopy) {
+              // Partial dim mapping — only remove those specific dims
               const s = dimsToRemoveByCode.get(code) ?? new Set();
               n.dims.forEach(d => s.add(d));
               dimsToRemoveByCode.set(code, s);
             } else {
+              // Full account mapping, all-dims copy, or regular account
               fullDeleteCodes.add(code);
+              if (Array.isArray(n.dims) && n.dims.length > 0) {
+                const s = dimsToRemoveByCode.get(code) ?? new Set();
+                n.dims.forEach(d => s.add(d));
+                dimsToRemoveByCode.set(code, s);
+              }
             }
           }
           (n.children || []).forEach(walk);
@@ -1113,13 +1318,45 @@ const deletedNode = findNodeById(templateTreeBy[statement] ?? templateTree, targ
     }
   };
 
-function findByCodeAndDim(nodes, code, dim) { for (const n of nodes) { if (n.code === code && Array.isArray(n.dims) && n.dims.includes(dim)) return n; const f = findByCodeAndDim(n.children || [], code, dim); if (f) return f; } return null; }
-  function findByCodeOnly(nodes, code) { for (const n of nodes) { if (n.code === code) return n; const f = findByCodeOnly(n.children || [], code); if (f) return f; } return null; }
-
 const handleDrop = ({ sourceNode, sourceSide, targetId, position, destSide }) => {
   
 if (sourceSide === "template" && destSide === "client" && mappingKind !== "report") return;
     console.log("[handleDrop]", { code: sourceNode.code, sourceSide, destSide, targetId, position, children: sourceNode.children?.length, dims: sourceNode.dims });
+
+    // ── Failsafe (structure mode, client → template) ──────────────
+    // Block any drop whose code is already represented on the template side,
+    // whether as a full account or via dim-specific copies.
+    if (sourceSide === "client" && destSide === "template" && mappingKind !== "report" && sourceNode.code !== "__multi__") {
+      const code = String(sourceNode.code ?? "");
+      const isDimDrag = Array.isArray(sourceNode.dims) && sourceNode.dims.length > 0;
+
+      // Scan template tree for any node with this code (full or dim copy)
+      const templateHasCode = (() => {
+        let found = null; // "full" | "dim" | null
+        const walk = (nodes) => nodes.forEach(n => {
+          if (String(n.code ?? "") === code) {
+            if (Array.isArray(n.dims) && n.dims.length > 0) found = found ?? "dim";
+            else found = "full";
+          }
+          walk(n.children || []);
+        });
+        walk(templateTree);
+        return found;
+      })();
+
+      if (isDimDrag) {
+        // Dim drag: block if the dim was already mapped OR the whole account is already mapped on the right
+        const dim = sourceNode.dims[0];
+        const alreadyMovedDims = movedDimsByCode.get(code) ?? new Set();
+        if (alreadyMovedDims.has(dim)) return;
+        if (movedClientCodes.has(code)) return;
+        if (templateHasCode === "full") return;
+      } else {
+        // Full-account drag: block if already mapped fully or if any node with this code exists on the template
+        if (movedClientCodes.has(code)) return;
+        if (templateHasCode) return;
+      }
+    }
 
     // Structure mode: dropping "inside" a non-sum template row is invalid → demote to "after" (sibling)
     if (mappingKind !== "report" && destSide === "template" && position === "inside" && targetId) {
@@ -1137,7 +1374,17 @@ if (sourceSide === "template" && destSide === "client" && mappingKind !== "repor
 if (sourceNode.code === "__multi__" && Array.isArray(sourceNode.children) && sourceNode.children.length > 0) {
       const isSameSide = sourceSide === destSide;
       const sourceTree = sourceSide === "client" ? clientTree : templateTree;
-      const childrenToMove = sourceNode.children.map(child => {
+      // Filter children that already exist in destination (cross-side, structure mode)
+      let incomingChildren = sourceNode.children;
+      if (!isSameSide && destSide === "template" && mappingKind !== "report") {
+        const destTreeCheck = templateTree;
+        const existingCodes = new Set();
+        const walkExisting = (nodes) => nodes.forEach(n => { if (n.code && !String(n.code).startsWith("__")) existingCodes.add(String(n.code)); walkExisting(n.children || []); });
+        walkExisting(destTreeCheck);
+        incomingChildren = sourceNode.children.filter(c => !existingCodes.has(String(c.code)));
+        if (incomingChildren.length === 0) return;
+      }
+      const childrenToMove = incomingChildren.map(child => {
         if (isSameSide) { const original = findNodeById(sourceTree, child.id ?? child.code); return original ?? cloneSubtree(child, sourceSide); }
         return cloneSubtree(child, sourceSide);
       });
@@ -1171,9 +1418,9 @@ const safePosition = (position === "inside" && destSide === "template") ? "insid
           else { const prevId = childrenToMove[i - 1].id ?? childrenToMove[i - 1].code; newTree = insertAt(newTree, prevId, "after", child); }
         });
       }
-      if (destSide === "client") setClientTreeBy({ ...clientTreeBy, [statement]: newTree });
+if (destSide === "client") setClientTreeBy({ ...clientTreeBy, [statement]: newTree });
       else setTemplateTreeBy({ ...templateTreeBy, [statement]: newTree });
-      if (sourceSide === "client" && destSide === "template") setMovedClientCodes(prev => new Set([...prev, ...sourceNode.children.map(n => n.code)]));
+      if (sourceSide === "client" && destSide === "template") setMovedClientCodes(prev => new Set([...prev, ...incomingChildren.map(n => n.code)]));
       return;
     }
 if (sourceSide === destSide) {
@@ -1446,7 +1693,22 @@ const [flatMode, setFlatMode] = useState(false);
   const [multiMode, setMultiMode] = useState(false);
 const [selectedIds, setSelectedIds] = useState(new Set());
 const lastSelectedRef = useRef(null);
+// eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
   useEffect(() => { if (activeMultiSide !== "client" && multiMode) { setMultiMode(false); setSelectedIds(new Set()); } }, [activeMultiSide]);
+
+// Auto-deselect accounts that have just been marked as moved
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSelectedIds(prev => {
+      if (prev.size === 0) return prev;
+      const next = new Set();
+      prev.forEach(id => {
+        const code = typeof id === "string" && id.startsWith("cli-") ? id.slice(4) : id;
+        if (!movedIds.has(code) && !movedIds.has(id)) next.add(id);
+      });
+      return next.size === prev.size ? prev : next;
+    });
+  }, [movedIds]);
   const totalCount = useMemo(() => countNodes(tree), [tree]);
   const flatTree = useMemo(() => {
     const out = [];
@@ -1487,10 +1749,11 @@ const filteredTree = useMemo(() => {
       const q = search.toLowerCase();
       return source.filter(n => n.code.toLowerCase().includes(q) || (n.name ?? "").toLowerCase().includes(q));
     }
-    source = flatMode ? flatTree : tree;
+source = flatMode ? flatTree : tree;
+    const q = search.toLowerCase();
     const searchFiltered = !search.trim() ? source : flatMode
       ? source.filter(n => n.code.toLowerCase().includes(q) || (n.name ?? "").toLowerCase().includes(q))
-      : filterTree(source, n => n.code.toLowerCase().includes(search.toLowerCase()) || (n.name ?? "").toLowerCase().includes(search.toLowerCase()));
+      : filterTree(source, n => n.code.toLowerCase().includes(q) || (n.name ?? "").toLowerCase().includes(q));
     if (!hasDimFilter) return searchFiltered;
     return flatMode
       ? searchFiltered.filter(dimPredicate)
@@ -1586,7 +1849,7 @@ const unmappedToggleBtn = mappingKind === "report" ? null : (
 }>
 <PanelToolbar search={search} setSearch={setSearch} placeholder="Search your accounts…" count={visibleCount} total={totalCount} />
 
-      <div className="flex-1 overflow-y-auto px-1"onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); if (data.sourceSide === "template") onDrop({ sourceNode: data.node, sourceSide: "template", targetId: null, position: "after" }); } catch {} }}>
+      <div className="flex-1 overflow-y-auto px-1"onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); if (data.sourceSide === "template") onDrop({ sourceNode: data.node, sourceSide: "template", targetId: null, position: "after" }); } catch { /* ignore parse */ } }}>
      {filteredTree.length === 0 ? <EmptyPanelState icon={FileText} message={search ? "No matches" : "No accounts"} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="client" mappingKind={mappingKind} movedIds={mappingKind === "report" ? new Set() : movedIds} movedDimsByCode={mappingKind === "report" ? new Map() : movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { selectedIds.forEach(sid => onDelete(sid)); setSelectedIds(new Set()); } else { onDelete(id); } }}multiMode={multiMode} selectedIds={selectedIds} clientTree={tree}
       onToggleSelect={(id, shiftKey) => {
   if (shiftKey && lastSelectedRef.current && lastSelectedRef.current !== id) {
@@ -1616,9 +1879,9 @@ const [expanded, setExpanded] = useState({});
   const [multiMode, setMultiMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
 const lastSelectedRef = useRef(null);
+  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
   useEffect(() => { if (activeMultiSide !== "template" && multiMode) { setMultiMode(false); setSelectedIds(new Set()); } }, [activeMultiSide]);
-  const prevLoadingRef = useRef(loading);
-  const totalCount = useMemo(() => countNodes(tree), [tree]);
+const totalCount = useMemo(() => countNodes(tree), [tree]);
   const filteredTree = useMemo(() => { if (!search.trim()) return tree; return filterTreeTpl(tree, search.toLowerCase()); }, [tree, search]);
   const visibleCount = useMemo(() => countNodes(filteredTree), [filteredTree]);
 const allKeys = useMemo(() => collectAllCodes(tree, "tpl"), [tree]);
@@ -1646,8 +1909,8 @@ const allKeys = useMemo(() => collectAllCodes(tree, "tpl"), [tree]);
       <AddRowForm accent={accent} onAdd={p => onAddRow({ ...p, parentId: pendingParentId })} existingTree={tree} pendingParentId={pendingParentId} onClearParent={() => setPendingParentId(null)} tree={tree} />
       <AddBreakerForm accent={accent} open={showBreakerForm} onOpen={() => setShowBreakerForm(true)} onClose={() => setShowBreakerForm(false)} onAdd={onAddBreaker} />
 
-<div className="flex-1 overflow-y-auto px-1" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); if (data.sourceSide === "client") onDrop({ sourceNode: data.node, sourceSide: "client", targetId: null, position: "after" }); else if (data.sourceSide === "template") onDrop({ sourceNode: data.node, sourceSide: "template", targetId: null, position: "after" }); } catch {} }}>
-        {loading ? <div className="text-center py-16 text-xs text-gray-400">Loading template…</div> : filteredTree.length === 0 ? <EmptyPanelState icon={Library} message={search ? "No matches" : "No rows"} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="template" movedIds={movedIds} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onAddChild={parentId => { setPendingParentId(parentId); setExpanded(prev => ({ ...prev, [`tpl-${parentId}`]: true })); }} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} templateTree={tree} onToggleSelect={(id, shiftKey) => {
+<div className="flex-1 overflow-y-auto px-1" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); if (data.sourceSide === "client") onDrop({ sourceNode: data.node, sourceSide: "client", targetId: null, position: "after" }); else if (data.sourceSide === "template") onDrop({ sourceNode: data.node, sourceSide: "template", targetId: null, position: "after" }); } catch { /* ignore parse */ } }}>
+        {loading ? <div className="text-center py-16 text-xs text-gray-400">Loading template…</div> : filteredTree.length === 0 ? <EmptyPanelState icon={Library} message={search ? "No matches" : "No rows"} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="template" movedIds={movedIds} onDrop={onDrop} onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { selectedIds.forEach(sid => onDelete(sid)); setSelectedIds(new Set()); } else { onDelete(id); } }} onAddChild={parentId => { setPendingParentId(parentId); setExpanded(prev => ({ ...prev, [`tpl-${parentId}`]: true })); }} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} templateTree={tree} onToggleSelect={(id, shiftKey) => {
   if (shiftKey && lastSelectedRef.current && lastSelectedRef.current !== id) {
     const from = flatSelectableIds.indexOf(lastSelectedRef.current);
     const to = flatSelectableIds.indexOf(id);
@@ -1678,14 +1941,15 @@ function DraggableTreeRow({ node, depth, expanded, onToggle, side, mappingKind =
   const [editValue, setEditValue] = useState(node.name);
 const [hovering, setHovering] = useState(false);
 const [showDims, setShowDims] = useState(false);
-  const dimIdRef = useRef(`dim-${node.code}-${Math.random()}`);
+const dimUid = useId();
+  const dimIdRef = useRef(`dim-${node.code}-${dimUid}`);
   useEffect(() => {
     const handler = (e) => { if (e.detail !== dimIdRef.current) setShowDims(false); };
     window.addEventListener("dim-popover-open", handler);
     return () => window.removeEventListener("dim-popover-open", handler);
   }, []);
   const editInputRef = useRef(null);
-const dims = side === "client" ? (dimsByGroupCode?.get(node.code) ?? new Set()) : (node.dims ? new Set(node.dims) : new Set());
+  const dims = side === "client" ? (dimsByGroupCode?.get(node.code) ?? new Set()) : (node.dims ? new Set(node.dims) : new Set());
   const hasDims = dims.size > 0;
   const movedDims = movedDimsByCode?.get(node.code) ?? new Set();
   useEffect(() => { if (editing && editInputRef.current) { editInputRef.current.focus(); editInputRef.current.select(); } }, [editing]);
@@ -1694,14 +1958,27 @@ const dims = side === "client" ? (dimsByGroupCode?.get(node.code) ?? new Set()) 
   const cancelEdit = () => { setEditValue(node.name); setEditing(false); };
 const handleDragStart = e => {
     if (side === "client" && (node.isSum || node.isSumAccount)) { e.preventDefault(); return; }
+    // Block dragging a client account that's already mapped (structure mode)
+    if (side === "client" && mappingKind !== "report" && (movedIds?.has(node.code) || movedIds?.has(node.id ?? node.code))) { e.preventDefault(); return; }
     e.stopPropagation();
     e.dataTransfer.effectAllowed = "copyMove";
     const nodeId = node.id ?? node.code;
 if (multiMode && selectedIds?.size > 0 && selectedIds.has(nodeId)) {
       const sourceTree = side === "client" ? clientTree : templateTree;
       const selected = [];
-      function collect(ns) { ns.forEach(n => { if (selectedIds.has(n.id ?? n.code) && !n.isSum && !n.isSumAccount && n.kind !== "breaker") selected.push({ ...stripSubtreeForTransfer(n), id: n.id ?? n.code }); collect(n.children || []); }); }
+      const isClientStructure = side === "client" && mappingKind !== "report";
+      function collect(ns) {
+        ns.forEach(n => {
+          const id = n.id ?? n.code;
+          const isMovedClient = isClientStructure && (movedIds?.has(n.code) || movedIds?.has(id));
+          if (selectedIds.has(id) && !n.isSum && !n.isSumAccount && n.kind !== "breaker" && !isMovedClient) {
+            selected.push({ ...stripSubtreeForTransfer(n), id });
+          }
+          collect(n.children || []);
+        });
+      }
       collect(sourceTree ?? []);
+      if (selected.length === 0) { e.preventDefault(); return; }
 if (selected.length > 0) {
         const multiNode = { id: `multi-${Date.now()}`, code: "__multi__", name: `${selected.length} accounts`, isSum: false, isSumAccount: false, children: selected };
         console.log("[multi-drag] packaging", selected.length, "nodes", selected.map(n => n.code));
@@ -1712,7 +1989,7 @@ if (selected.length > 0) {
     e.dataTransfer.setData("application/json", JSON.stringify({ sourceSide: side, node: { ...stripSubtreeForTransfer(node), id: node.id } }));
   };
   const handleDragOver = e => { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = "copy"; const rect = e.currentTarget.getBoundingClientRect(), y = e.clientY - rect.top, h = rect.height; if (y < h * 0.35) setDropZone("before"); else if (y > h * 0.65) setDropZone("after"); else setDropZone("inside"); };
-  const handleDrop = e => { e.preventDefault(); e.stopPropagation(); const zone = dropZone; setDropZone(null); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); onDrop({ sourceNode: data.node, sourceSide: data.sourceSide, targetId: node.id ?? node.code, position: zone ?? "after" }); } catch {} };
+  const handleDrop = e => { e.preventDefault(); e.stopPropagation(); const zone = dropZone; setDropZone(null); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); onDrop({ sourceNode: data.node, sourceSide: data.sourceSide, targetId: node.id ?? node.code, position: zone ?? "after" }); } catch { /* ignore parse */ } };
   const accent = side === "client" ? "#1a2f8a" : "#374151";
 
   const editControls = editing ? (
@@ -1734,7 +2011,7 @@ if (selected.length > 0) {
           {editControls}
         </div>
         {dropZone === "after" && <div className="h-0.5 mx-2 rounded-full" style={{ background: accent, boxShadow: `0 0 6px ${accent}80` }} />}
-      {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child} depth={1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} movedIds={movedIds} movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { selectedIds.forEach(sid => onDelete(sid)); setSelectedIds(new Set()); } else { onDelete(id); } }} onAddChild={onAddChild} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} />)}
+     {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child} depth={1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} movedIds={movedIds} movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onAddChild={onAddChild} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} />)}
       </>
     );
   }
@@ -1771,7 +2048,7 @@ const cursorClass = editing ? "cursor-text" : (side === "client" && isSum) ? "cu
             </div>
           )}
           {!editing && hovering && <div className="flex items-center gap-0.5 flex-shrink-0">
-{onAddChild && <button onClick={e => { e.stopPropagation(); onAddChild?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-emerald-50 text-gray-400 hover:text-emerald-600 transition-colors"><Plus size={14} /></button>}
+{onAddChild && isSum && <button onClick={e => { e.stopPropagation(); onAddChild?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} title="Add child row" className="w-6 h-6 rounded flex items-center justify-center hover:bg-emerald-50 text-gray-400 hover:text-emerald-600 transition-colors"><Plus size={14} /></button>}
             <button onClick={startEdit} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-[#1a2f8a]/10 text-gray-400 hover:text-[#1a2f8a] transition-colors"><Pencil size={13} /></button>
 {side !== "client" && <>
               <button onClick={e => { e.stopPropagation(); onToggleHighlight?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center transition-colors" style={{ color: highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : undefined }} title={highlightedIds?.has(node.id ?? node.code) ? "Remove highlight" : "Highlight row"}>
@@ -2023,9 +2300,11 @@ function PanelToolbar({ search, setSearch, placeholder, count, total }) {
     </div>
   );
 }
-function EmptyPanelState({ icon: Icon, message }) {
-  return <div className="text-center py-16"><Icon size={24} className="text-gray-200 mx-auto mb-2" /><p className="text-xs text-gray-400 font-medium">{message}</p></div>;
+function EmptyPanelState(props) {
+  const IconCmp = props.icon;
+  return <div className="text-center py-16"><IconCmp size={24} className="text-gray-200 mx-auto mb-2" /><p className="text-xs text-gray-400 font-medium">{props.message}</p></div>;
 }
+// eslint-disable-next-line react-refresh/only-export-components
 export function normalizeMappingStandard(std) {
   if (!std) return null;
   if (STANDARD_META[std]) return std;           // already a valid STANDARD_META key

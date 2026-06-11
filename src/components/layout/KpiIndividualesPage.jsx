@@ -285,16 +285,35 @@ function evalFormulaWithCcTags(node, pivot, cache, kpiList, ccTagToCodes, sectio
   switch (node.type) {
 case "account": {
       if (node.dimGroup || node.dimCode) {
+        const key = `${node.accountCode}:::${node.dimGroup ?? ""}:::${node.dimCode ?? ""}`;
+        // Local-code path first, then group-code path
+        if (pivot.__localDimPivot && pivot.__localDimPivot.has(key)) {
+          return -(pivot.__localDimPivot.get(key) ?? 0);
+        }
         if (pivot.__dimPivot) {
-          const key = `${node.accountCode}:::${node.dimGroup ?? ""}:::${node.dimCode ?? ""}`;
           return -(pivot.__dimPivot.get(key) ?? 0);
         }
+      }
+      if (pivot.__localPivot && pivot.__localPivot.has(node.accountCode)) {
+        return -(pivot.__localPivot.get(node.accountCode) ?? 0);
       }
       let total = 0;
       pivot.forEach((val, ac) => { if (ac === node.accountCode) total += val; });
       return -total;
     }
     case "accountGroup": {
+      // New: groupCode picks one group account and sums it + all descendants
+      if (node.groupCode) {
+        const descendants = pivot.__groupDescendants?.get(node.groupCode);
+        let total = 0;
+        if (descendants && descendants.size > 0) {
+          descendants.forEach(c => { total += (pivot.get(c) ?? 0); });
+        } else {
+          total = pivot.get(node.groupCode) ?? 0;
+        }
+        return -total;
+      }
+      // Legacy prefix path (older saved formulas)
       let total = 0;
       pivot.forEach((val, ac) => { if (node.prefix && ac.startsWith(node.prefix)) total += val; });
       return -total;
@@ -1588,7 +1607,7 @@ function AccountPicker({ items, value, onChange, dimsByAccount = new Map() }) {
   );
 }
 
-function SlotPicker({ onSelect, onClose, kpiList, accountCodes, accountCodeLabels = new Map(), builtInIds = new Set(), dimsByAccount = new Map() }) {
+function SlotPicker({ onSelect, onClose, kpiList, accountCodes, localAccounts = [], groupAccountsList = [], accountCodeLabels = new Map(), builtInIds = new Set(), dimsByAccount = new Map(), localDimsByAccount = new Map() }) {
   const [step, setStep] = useState("type");
   const [type, setType] = useState(null);
   const [prefix, setPrefix] = useState("");
@@ -1607,15 +1626,14 @@ function SlotPicker({ onSelect, onClose, kpiList, accountCodes, accountCodeLabel
     });
     return [...seen].sort();
   }, [accountCodes]);
-
 const TYPES = [
-    { id: "accountGroup", label: "Grupo de cuentas", desc: "Suma todas las cuentas bajo un código padre", color: "bg-blue-50 text-blue-700 border-blue-200" },
-    { id: "account",      label: "Cuenta individual", desc: "Código exacto de una cuenta",   color: "bg-[#eef1fb] text-[#1a2f8a] border-[#1a2f8a]/20" },
+    { id: "accountGroup", label: "Cuenta de grupo", desc: "Suma todas las cuentas locales bajo esta cuenta de grupo", color: "bg-blue-50 text-blue-700 border-blue-200" },
+    { id: "account",      label: "Cuenta local", desc: "Cuenta de contabilización individual",   color: "bg-[#eef1fb] text-[#1a2f8a] border-[#1a2f8a]/20" },
     { id: "ref",          label: "KPI existente",     desc: "Referencia a otro KPI calculado", color: "bg-purple-50 text-purple-700 border-purple-200" },
   ];
 
 const confirm = () => {
-    if (type === "accountGroup") onSelect({ type: "accountGroup", prefix });
+    if (type === "accountGroup") onSelect({ type: "accountGroup", groupCode: prefix, prefix });
     else if (type === "account") {
 if (accountCode.includes(":::")) {
         const [ac, dimGroup, dimCode] = accountCode.split(":::");
@@ -1667,9 +1685,9 @@ return (
 
 {step === "type" && (
           <div className="p-5 flex flex-col gap-3 overflow-y-auto flex-1">
-            {[
-              { id: "accountGroup", label: "Grupo de cuentas", desc: "Suma todas las cuentas bajo un código padre", icon: "Σ", iconBg: "#dbeafe", iconColor: "#1d4ed8" },
-              { id: "account",      label: "Cuenta individual", desc: "Código exacto de una cuenta", icon: "#", iconBg: "#eef1fb", iconColor: "#1a2f8a" },
+{[
+              { id: "accountGroup", label: "Cuenta de grupo", desc: "Suma todas las cuentas locales bajo esta cuenta de grupo", icon: "Σ", iconBg: "#dbeafe", iconColor: "#1d4ed8" },
+              { id: "account",      label: "Cuenta local", desc: "Cuenta de contabilización individual", icon: "#", iconBg: "#eef1fb", iconColor: "#1a2f8a" },
               { id: "ref",          label: "KPI existente",     desc: "Referencia a otro KPI calculado", icon: "↗", iconBg: "#f3e8ff", iconColor: "#7c3aed" },
             ].map((t) => (
               <button key={t.id} onClick={() => { setType(t.id); setStep("detail"); }}
@@ -1693,33 +1711,47 @@ return (
           </div>
         )}
 
-        {step === "detail" &&(
+{step === "detail" &&(
           <div className="p-5 flex flex-col gap-4 flex-1 min-h-0">
-{type === "accountGroup" && (
-              <div className="flex flex-col gap-2">
-                <p className="text-[10px] text-gray-400 leading-snug bg-blue-50 px-3 py-2 rounded-xl">
-                  Suma todas las cuentas cuyo código empiece por este prefijo. Ej: <span className="font-mono font-bold text-blue-700">70</span> incluye 7000, 7001, 7010…
-                </p>
-                <SearchableList
-                  items={groupPrefixes.length > 0 ? groupPrefixes : accountCodes}
+<div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+{type === "accountGroup" && (() => {
+              const items = (groupAccountsList.length > 0 ? groupAccountsList : []).map(g => ({
+                code: g.code,
+                label: g.name ? `${g.code} — ${g.name}${g.isSum ? "  ·  sum" : ""}` : g.code,
+              }));
+              if (items.length === 0) {
+                return (
+                  <div className="flex flex-col gap-2">
+                    <p className="text-[10px] text-gray-400 leading-snug bg-blue-50 px-3 py-2 rounded-xl">
+                      No hay cuentas de grupo cargadas. Usa un prefijo como fallback.
+                    </p>
+                    <SearchableList items={groupPrefixes} value={prefix} onChange={setPrefix} placeholder="Buscar prefijo..." />
+                  </div>
+                );
+              }
+              return (
+                <AccountPicker
+                  items={items}
                   value={prefix}
                   onChange={setPrefix}
-                  placeholder="Buscar prefijo..."
+                  dimsByAccount={dimsByAccount}
                 />
-              </div>
-            )}
-<div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+              );
+            })()}
 {type === "account" && (() => {
-              const items = accountCodes.map(ac => ({
-                code: ac,
-                label: accountCodeLabels.get(ac) ? `${ac} — ${accountCodeLabels.get(ac)}` : ac,
+              const source = localAccounts.length > 0
+                ? localAccounts
+                : accountCodes.map(c => ({ code: c, name: accountCodeLabels.get(c) ?? "" }));
+              const items = source.map(({ code, name }) => ({
+                code,
+                label: name ? `${code} — ${name}` : code,
               }));
               return (
                 <AccountPicker
                   items={items}
                   value={accountCode}
                   onChange={setAccountCode}
-                  dimsByAccount={dimsByAccount}
+                  dimsByAccount={localDimsByAccount}
                 />
               );
             })()}
@@ -1742,7 +1774,11 @@ return (
 
 function SlotLabel({ node, kpiList, accountCodeLabels = new Map() }) {
   if (!node) return <span className="text-gray-300 italic">vacío</span>;
-  if (node.type === "accountGroup") return <span>Grupo <span className="font-black">{node.prefix || "?"}</span></span>;
+  if (node.type === "accountGroup") {
+    const code = node.groupCode ?? node.prefix ?? "?";
+    const name = accountCodeLabels.get(code);
+    return <span>Grupo <span className="font-black">{name ? `${code} — ${name}` : code}</span></span>;
+  }
 if (node.type === "account") {
     const name = accountCodeLabels.get(node.accountCode);
     const base = name ? `${node.accountCode} — ${name}` : (node.accountCode || "?");
@@ -1832,7 +1868,7 @@ function VisualFormula({ formula, onChange, kpiList, accountCodes, accountCodeLa
 // ── Text Formula Builder ──────────────────────────────────────────────────────
 const VARIABLE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
-function TextFormulaBuilder({ formula, onChange, kpiList, accountCodes, accountCodeLabels = new Map(), builtInIds = new Set(), dimsByAccount = new Map() }) {
+function TextFormulaBuilder({ formula, onChange, kpiList, accountCodes, localAccounts = [], groupAccountsList = [], accountCodeLabels = new Map(), builtInIds = new Set(), dimsByAccount = new Map(), localDimsByAccount = new Map() }) {
   const [expression, setExpression] = useState(() => {
     if (formula?.type === "text") return formula.expression ?? "";
     return "";
@@ -1989,9 +2025,12 @@ const updateExpr = (val) => {
           onClose={() => setEditingVar(null)}
           kpiList={kpiList}
           accountCodes={accountCodes}
+          localAccounts={localAccounts}
+          groupAccountsList={groupAccountsList}
           accountCodeLabels={accountCodeLabels}
           builtInIds={builtInIds}
           dimsByAccount={dimsByAccount}
+          localDimsByAccount={localDimsByAccount}
         />
       )}
     </div>
@@ -2348,7 +2387,7 @@ function TagInput({ tag, setTag, allLocalKpis }) {
   );
 }
 
-function KpiEditorModal({ kpi, onSave, onClose, onReset, onEditLibraryKpi, onDeleteLibraryKpi, onDuplicate, kpiList, allLocalKpis = [], systemKpis = [], accountCodes, accountCodeLabels = new Map(), builtInIds = new Set(), currentUserId, dimsByAccount = new Map() }) {
+function KpiEditorModal({ kpi, onSave, onClose, onReset, onEditLibraryKpi, onDeleteLibraryKpi, onDuplicate, kpiList, allLocalKpis = [], systemKpis = [], accountCodes, localAccounts = [], groupAccountsList = [], accountCodeLabels = new Map(), builtInIds = new Set(), currentUserId, dimsByAccount = new Map(), localDimsByAccount = new Map() }) {
   const [mode, setMode] = useState(kpi ? "custom" : "library");
 
   const [label, setLabel] = useState(kpi?.label ?? "");
@@ -2819,9 +2858,12 @@ style={{
                   onChange={setFormula}
                   kpiList={otherKpis}
                   accountCodes={accountCodes}
+                  localAccounts={localAccounts}
+                  groupAccountsList={groupAccountsList}
                   accountCodeLabels={accountCodeLabels}
                   builtInIds={builtInIds}
                   dimsByAccount={dimsByAccount}
+                  localDimsByAccount={localDimsByAccount}
                 />
               </div>
             )}
@@ -4352,9 +4394,34 @@ useEffect(() => { fetchAllCompanies(); }, [fetchAllCompanies]);
         if (code) sums.add(code);
       }
     });
-    console.log(`[KpiPage] identified ${sums.size} sum accounts to exclude from pivot`);
+console.log(`[KpiPage] identified ${sums.size} sum accounts to exclude from pivot`);
     return sums;
   }, [groupAccounts]);
+
+// groupCode → Set of leaf descendants (incl. self) for accountGroup roll-ups
+const groupDescendantsMap = useMemo(() => {
+  const childrenOf = new Map();
+  groupAccounts.forEach(g => {
+    const parent = String(g.sumAccountCode ?? g.SumAccountCode ?? "");
+    const code = String(g.accountCode ?? g.AccountCode ?? "");
+    if (!code || !parent || parent === code) return;
+    if (!childrenOf.has(parent)) childrenOf.set(parent, []);
+    childrenOf.get(parent).push(code);
+  });
+  const desc = new Map();
+  const collect = (code) => {
+    if (desc.has(code)) return desc.get(code);
+    const out = new Set([code]);
+    (childrenOf.get(code) || []).forEach(c => collect(c).forEach(d => out.add(d)));
+    desc.set(code, out);
+    return out;
+  };
+  groupAccounts.forEach(g => {
+    const code = String(g.accountCode ?? g.AccountCode ?? "");
+    if (code) collect(code);
+  });
+  return desc;
+}, [groupAccounts]);
 
 const companyPivots = useMemo(() => {
     // Build dimPivot from ALL rows (no AccountType filter, no sum filter)
@@ -4376,11 +4443,14 @@ const companyPivots = useMemo(() => {
       return dimPivot;
     };
 
-    const buildPivot = (rows) => {
+const buildPivot = (rows) => {
       const p = new Map();
+      const localPivot = new Map();
+      const localDimPivot = new Map();
       const dimPivot = new Map(); // kept for compat, replaced below
       rows.forEach(r => {
         const ac = r.AccountCode ?? r.accountCode ?? "";
+        const lac = String(r.LocalAccountCode ?? r.localAccountCode ?? "").trim();
         const acType = r.AccountType ?? r.accountType ?? "";
         if (!ac) return;
         if (sumAccountCodes.has(ac)) return;
@@ -4400,17 +4470,23 @@ const companyPivots = useMemo(() => {
 
         const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
         p.set(ac, (p.get(ac) ?? 0) + amt);
+        if (lac && lac !== "—") {
+          localPivot.set(lac, (localPivot.get(lac) ?? 0) + amt);
+        }
 
-        // Build dim pivot from ALL dim pairs on this row (regardless of page-level filter)
-        // This allows formula-level dim filtering to work correctly even when the page
-        // is already filtered by a different dimension
         dimPairs.forEach(([dGroup, dCode]) => {
           if (!dGroup || !dCode) return;
           const key = `${ac}:::${dGroup}:::${dCode}`;
           dimPivot.set(key, (dimPivot.get(key) ?? 0) + amt);
+          if (lac && lac !== "—") {
+            const lkey = `${lac}:::${dGroup}:::${dCode}`;
+            localDimPivot.set(lkey, (localDimPivot.get(lkey) ?? 0) + amt);
+          }
         });
       });
-p.__dimPivot = dimPivot; // will be overwritten below with full raw version
+      p.__dimPivot = dimPivot; // will be overwritten below with full raw version
+      p.__localPivot = localPivot;
+      p.__localDimPivot = localDimPivot;
       return p;
     };
 
@@ -4419,6 +4495,7 @@ const pivots = new Map();
       const currPivot = buildPivot(rows);
       // Overwrite with full raw dimPivot (includes sum account rows where dims live)
       currPivot.__dimPivot = buildDimPivotFromRaw(rows);
+      currPivot.__groupDescendants = groupDescendantsMap;
 
       if (viewPeriod === "ytd") {
         pivots.set(co, currPivot);
@@ -4446,12 +4523,24 @@ const monthlyPivot = new Map();
           const prevVal = isJanuary ? 0 : (prevRawDimPivot.get(key) ?? 0);
           monthlyDimPivot.set(key, currVal - prevVal);
         });
-        monthlyPivot.__dimPivot = monthlyDimPivot;
+monthlyPivot.__dimPivot = monthlyDimPivot;
+        // Build monthly localPivot
+        const currLP = currPivot.__localPivot ?? new Map();
+        const prevLP = prevPivot.__localPivot ?? new Map();
+        const monthlyLocalPivot = new Map();
+        const allLocalCodes = new Set([...currLP.keys(), ...prevLP.keys()]);
+        allLocalCodes.forEach(lc => {
+          const cv = currLP.get(lc) ?? 0;
+          const pv = isJanuary ? 0 : (prevLP.get(lc) ?? 0);
+          monthlyLocalPivot.set(lc, cv - pv);
+        });
+        monthlyPivot.__localPivot = monthlyLocalPivot;
+        monthlyPivot.__groupDescendants = groupDescendantsMap;
         pivots.set(co, monthlyPivot);
       }
     });
     return pivots;
-  }, [companyData, companyDataPrev, viewPeriod, month, selGroup, selDim, sumAccountCodes]);
+  }, [companyData, companyDataPrev, viewPeriod, month, selGroup, selDim, sumAccountCodes, groupDescendantsMap]);
 
 // Compare-scenario company pivots — same logic as companyPivots but reading
   // from companyDataCmp / companyDataCmpPrev.
@@ -4641,6 +4730,35 @@ const allAccountCodes = useMemo(() => {
     return [...codes].sort();
   }, [companyPivots]);
 
+// Local (posting) accounts gathered from journal rows — what the "Cuenta local" picker shows
+const allLocalAccounts = useMemo(() => {
+  const m = new Map();
+  companyData.forEach(rows => {
+    rows.forEach(r => {
+      const lac = String(r.LocalAccountCode ?? r.localAccountCode ?? "").trim();
+      if (!lac || lac === "—") return;
+      if (m.has(lac)) return;
+      const lan = String(r.LocalAccountName ?? r.localAccountName ?? "").trim();
+      m.set(lac, lan);
+    });
+  });
+  return [...m.entries()].map(([code, name]) => ({ code, name }))
+    .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+}, [companyData]);
+
+// Group accounts list (with names + sum flag) — what the "Cuenta de grupo" picker shows
+const allGroupAccountsList = useMemo(() => {
+  return groupAccounts.map(g => ({
+    code: String(g.accountCode ?? g.AccountCode ?? ""),
+    name: String(g.accountName ?? g.AccountName ?? ""),
+    isSum: !!(g.isSumAccount ?? g.IsSumAccount),
+    parent: String(g.sumAccountCode ?? g.SumAccountCode ?? ""),
+  })).filter(g => g.code)
+    .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+}, [groupAccounts]);
+
+
+
 const accountCodeLabels = useMemo(() => {
     const map = new Map();
     groupAccounts.forEach(g => {
@@ -4648,9 +4766,11 @@ const accountCodeLabels = useMemo(() => {
       const name = String(g.accountName ?? g.AccountName ?? g.name ?? "");
       if (code) map.set(code, name);
     });
+    allLocalAccounts.forEach(({ code, name }) => {
+      if (!map.has(code) && name) map.set(code, name);
+    });
     return map;
-  }, [groupAccounts]);
-
+  }, [groupAccounts, allLocalAccounts]);
 // Build dimsByAccount from actual data rows: Map<accountCode, [{group, code, name}]>
   const dimsByAccount = useMemo(() => {
     // Build a code → name lookup from the dimensions prop
@@ -4691,7 +4811,7 @@ const map = new Map();
     return result;
   }, [companyData, dimensions]);
 
-  const allDimCodes = useMemo(() => {
+const allDimCodes = useMemo(() => {
     const codes = new Set();
     companyData.forEach(rows => rows.forEach(r => {
       const dc = r.DimensionCode ?? r.dimensionCode ?? "";
@@ -4699,6 +4819,36 @@ const map = new Map();
     }));
     return [...codes].sort();
   }, [companyData]);
+
+// Dims keyed by LOCAL account code (mirrors dimsByAccount but for the local picker)
+const localDimsByAccount = useMemo(() => {
+  const dimNameLookup = new Map();
+  dimensions.forEach(d => {
+    const code = String(d.dimensionCode ?? d.DimensionCode ?? d.code ?? "");
+    const name = String(d.dimensionName ?? d.DimensionName ?? d.name ?? "");
+    if (code && name) { dimNameLookup.set(code, name); dimNameLookup.set(name, name); }
+  });
+  const map = new Map();
+  companyData.forEach(rows => {
+    rows.forEach(r => {
+      const lac = String(r.LocalAccountCode ?? r.localAccountCode ?? "").trim();
+      const dimsRaw = r.Dimensions ?? r.dimensions ?? "";
+      if (!lac || lac === "—" || !dimsRaw || dimsRaw === "—") return;
+      const pairs = parseDimensions(dimsRaw);
+      if (!pairs.length) return;
+      if (!map.has(lac)) map.set(lac, new Map());
+      pairs.forEach(([group, rawCode]) => {
+        if (!group || !rawCode) return;
+        const name = dimNameLookup.get(rawCode) ?? rawCode;
+        const key = `${group}:::${rawCode}`;
+        if (!map.get(lac).has(key)) map.get(lac).set(key, { group, code: rawCode, name });
+      });
+    });
+  });
+  const result = new Map();
+  map.forEach((inner, lac) => result.set(lac, [...inner.values()]));
+  return result;
+}, [companyData, dimensions]);
 
 // isAlphaStructure removed — KpiResolver detects the standard now.
 
@@ -5744,10 +5894,13 @@ kpiList={kpiList}
           allLocalKpis={localKpis}
           systemKpis={resolvedAllKpis}
           accountCodes={allAccountCodes}
+localAccounts={allLocalAccounts}
+          groupAccountsList={allGroupAccountsList}
           accountCodeLabels={accountCodeLabels}
 builtInIds={new Set(resolvedAllKpis.map(k => k.id))}
           currentUserId={authUserId}
           dimsByAccount={dimsByAccount}
+          localDimsByAccount={localDimsByAccount}
         />
       )}
     </div>
