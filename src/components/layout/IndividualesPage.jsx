@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef, useDeferredValue, startTransition } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef, useDeferredValue } from "react";
 import { useCurrentUserResourceAccess } from "../../lib/userPermissionsApi";
 import {
   FileText, Search, Loader2, AlertCircle, Filter,
@@ -44,14 +44,6 @@ function rowMatchesDimMulti(r, groups, codes) {
     const codeOk  = !codesActive  || codes.includes(String(d.code));
     return groupOk && codeOk;
   });
-}
-
-function rowMatchesDim(r, group, code) {
-  const raw = r.Dimensions ?? r.dimensions ?? "";
-  const dims = parseDimensionsField(raw);
-  if (!dims.length) return false;
-  if (code) return dims.some(d => d.group === group && String(d.code) === String(code));
-  return dims.some(d => d.group === group);
 }
 
 function buildCompanyFilter(companies) {
@@ -738,11 +730,12 @@ function generatePLXlsx({
   cmp2UploadedAccounts, cmp2PrevUploadedAccounts, cmp2Filters,
   month, year, source, structure,
   summaryRows,
+  t = (k) => k, MONTHS: MONTHS_T = MONTHS,
 }) {
   async function doGenerate(ExcelJS) {
-    const monthLabel  = MONTHS.find(m => String(m.value) === String(month))?.label ?? month;
-    const cmpMoLabel  = MONTHS.find(m => String(m.value) === String(cmpFilters?.month))?.label ?? cmpFilters?.month;
-    const cmp2MoLabel = MONTHS.find(m => String(m.value) === String(cmp2Filters?.month))?.label ?? cmp2Filters?.month;
+    const monthLabel  = MONTHS_T.find(m => String(m.value) === String(month))?.label ?? month;
+    const cmpMoLabel  = MONTHS_T.find(m => String(m.value) === String(cmpFilters?.month))?.label ?? cmpFilters?.month;
+    const cmp2MoLabel = MONTHS_T.find(m => String(m.value) === String(cmp2Filters?.month))?.label ?? cmp2Filters?.month;
 
     const tree      = buildTree(groupAccounts, uploadedAccounts);
     const prevTree  = buildTree(groupAccounts, prevUploadedAccounts);
@@ -827,7 +820,7 @@ function generatePLXlsx({
       ws.addRow([]);
       const r1 = ws.lastRow;
       r1.height = 28;
-      r1.getCell(1).value = `Profit & Loss — ${sheetTitle}`;
+     r1.getCell(1).value = `${t("page_pl_full")} — ${sheetTitle}`;
       r1.getCell(1).font = mkFont(true, "FFFFFFFF", 13);
       r1.getCell(1).fill = mkFill(NAVY);
       r1.getCell(1).alignment = mkAlign("left");
@@ -876,16 +869,15 @@ function generatePLXlsx({
         const r5 = ws.lastRow;
         r5.height = 20;
 
-        const parentGroups = [
-          { col: 1, span: 1, label: "",          fill: LIGHT,   font: NAVY },
-          { col: 2, span: 1, label: "Monthly A",  fill: LIGHT,   font: NAVY },
+const parentGroups = [
+          { col: 1, span: 1, label: "",                              fill: LIGHT,   font: NAVY },
+          { col: 2, span: 1, label: `${t("pl_monthly")} A`,           fill: LIGHT,   font: NAVY },
           { col: 3, span: 3, label: `B: ${cmpMoLabel} ${cmpFilters?.year}`,  fill: "FFCF305D", font: "FFFFFFFF" },
           { col: 6, span: 3, label: `C: ${cmp2MoLabel} ${cmp2Filters?.year}`, fill: "FF57AA78", font: "FFFFFFFF" },
-          { col: 9, span: 1, label: "YTD A",      fill: LIGHT,   font: NAVY },
+          { col: 9, span: 1, label: `${t("pl_ytd")} A`,               fill: LIGHT,   font: NAVY },
           { col: 10, span: 3, label: `B: ${cmpMoLabel} ${cmpFilters?.year}`, fill: "FFCF305D", font: "FFFFFFFF" },
           { col: 13, span: 3, label: `C: ${cmp2MoLabel} ${cmp2Filters?.year}`, fill: "FF57AA78", font: "FFFFFFFF" },
         ];
-
         const parentRowNum = compareMode ? 5 : 4;
         parentGroups.forEach(({ col, span, label, fill: f, font: ft }) => {
           const cell = r5.getCell(col);
@@ -902,8 +894,8 @@ function generatePLXlsx({
         });
 
         // ── Row 6: column headers ──
-        const hdrs = ["Account","Monthly A","Monthly B","Mon Δ","Mon Δ%","Monthly C","Mon Δ","Mon Δ%",
-                       "YTD A","YTD B","YTD Δ","YTD Δ%","YTD C","YTD Δ","YTD Δ%"];
+const hdrs = [t("col_account"), `${t("pl_monthly")} A`, `${t("pl_monthly")} B`, `${t("pl_monthly")} Δ`, `${t("pl_monthly")} Δ%`, `${t("pl_monthly")} C`, `${t("pl_monthly")} Δ`, `${t("pl_monthly")} Δ%`,
+                       `${t("pl_ytd")} A`, `${t("pl_ytd")} B`, `${t("pl_ytd")} Δ`, `${t("pl_ytd")} Δ%`, `${t("pl_ytd")} C`, `${t("pl_ytd")} Δ`, `${t("pl_ytd")} Δ%`];
         ws.addRow(hdrs);
         const r6 = ws.lastRow;
         r6.height = 20;
@@ -917,7 +909,7 @@ function generatePLXlsx({
 
       } else {
         // ── Simple column headers ──
-        ws.addRow(["Account", "Monthly", "YTD"]);
+      ws.addRow([t("col_account"), t("pl_monthly"), t("pl_ytd")]);
         const rh = ws.lastRow;
         rh.height = 20;
         [1,2,3].forEach(i => {
@@ -981,8 +973,8 @@ function generatePLXlsx({
       }
     };
 
-    buildSheet(summaryData,  "Summary");
-    buildSheet(detailedData, "Detailed");
+buildSheet(summaryData,  t("view_summary"));
+    buildSheet(detailedData, t("view_detailed"));
 
     const buf = await wb.xlsx.writeBuffer();
     const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
@@ -1003,7 +995,7 @@ function generatePLXlsx({
 
   load("https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js")
     .then(() => doGenerate(window.ExcelJS))
-    .catch(e => alert("Could not load Excel library: " + e.message));
+    .catch(e => alert(t("error_load_excel_lib") + ": " + e.message));
 }
 function generatePLPdf({
   groupAccounts, uploadedAccounts, prevUploadedAccounts,
@@ -1012,6 +1004,7 @@ function generatePLPdf({
   cmp2UploadedAccounts, cmp2PrevUploadedAccounts, cmp2Filters,
   month, year, source, structure,
   summaryRows,
+  t = (k) => k, MONTHS: MONTHS_T = MONTHS,
 }) {
   function doGenerate(jsPDF, autoTable) {
     const NAVY     = [20,  36, 112];
@@ -1031,9 +1024,9 @@ function generatePLPdf({
     const GRAYLT   = [210, 215, 230];
     const TEXTDK   = [20,  35,  80];
 
-    const monthLabel  = MONTHS.find(m => String(m.value) === String(month))?.label ?? month;
-    const cmpMoLabel  = MONTHS.find(m => String(m.value) === String(cmpFilters?.month))?.label ?? cmpFilters?.month;
-    const cmp2MoLabel = MONTHS.find(m => String(m.value) === String(cmp2Filters?.month))?.label ?? cmp2Filters?.month;
+const monthLabel  = MONTHS_T.find(m => String(m.value) === String(month))?.label ?? month;
+    const cmpMoLabel  = MONTHS_T.find(m => String(m.value) === String(cmpFilters?.month))?.label ?? cmpFilters?.month;
+    const cmp2MoLabel = MONTHS_T.find(m => String(m.value) === String(cmp2Filters?.month))?.label ?? cmp2Filters?.month;
 
     const tree      = buildTree(groupAccounts, uploadedAccounts);
     const prevTree  = buildTree(groupAccounts, prevUploadedAccounts);
@@ -1117,7 +1110,7 @@ function generatePLPdf({
       doc.setFont("helvetica", "bold");
       doc.setFontSize(17);
       doc.setTextColor(...WHITE);
-      doc.text("PROFIT & LOSS", 12, 14);
+      doc.text(t("page_pl_full").toUpperCase(), 12, 14);
 
       // Subtitle: period info
       doc.setFont("helvetica", "normal");
@@ -1175,7 +1168,7 @@ function generatePLPdf({
       doc.setFont("helvetica", "normal");
       doc.setFontSize(6);
       doc.setTextColor(...GRAY);
-      doc.text(`Generated ${new Date().toLocaleDateString()}`, rightX, 22, { align: "right" });
+     doc.text(`${t("export_generated")} ${new Date().toLocaleDateString()}`, rightX, 22, { align: "right" });
 
       // Thin separator line below header
       doc.setDrawColor(...NAVYMID);
@@ -1199,7 +1192,7 @@ function generatePLPdf({
       doc.setFont("helvetica", "bold");
       doc.setFontSize(6.5);
       doc.setTextColor(...NAVY);
-      doc.text("PROFIT & LOSS", 10, H - 4.5);
+      doc.text(t("page_pl_full").toUpperCase(), 10, H - 4.5);
 
       doc.setFont("helvetica", "normal");
       doc.setTextColor(...GRAY);
@@ -1218,32 +1211,32 @@ function generatePLPdf({
     // ─────────────────────────────────────────────────────────
     // BUILD TABLE DATA
     // ─────────────────────────────────────────────────────────
-    const monCols = compareMode ? [
-      { header: "ACCOUNT",   dataKey: "name" },
-      { header: "MONTHLY",   dataKey: "mainVal" },
-      { header: "MONTHLY B", dataKey: "bVal" },
+const monCols = compareMode ? [
+      { header: t("col_account").toUpperCase(),   dataKey: "name" },
+      { header: t("pl_monthly").toUpperCase(),    dataKey: "mainVal" },
+      { header: `${t("pl_monthly").toUpperCase()} B`, dataKey: "bVal" },
       { header: "Δ",         dataKey: "bDev" },
       { header: "Δ %",       dataKey: "bPct" },
-      { header: "MONTHLY C", dataKey: "cVal" },
+      { header: `${t("pl_monthly").toUpperCase()} C`, dataKey: "cVal" },
       { header: "Δ",         dataKey: "cDev" },
       { header: "Δ %",       dataKey: "cPct" },
     ] : [
-      { header: "ACCOUNT", dataKey: "name" },
-      { header: "MONTHLY", dataKey: "mainVal" },
+      { header: t("col_account").toUpperCase(), dataKey: "name" },
+      { header: t("pl_monthly").toUpperCase(), dataKey: "mainVal" },
     ];
 
     const ytdCols = compareMode ? [
-      { header: "ACCOUNT", dataKey: "name" },
-      { header: "YTD",     dataKey: "mainVal" },
-      { header: "YTD B",   dataKey: "bVal" },
+      { header: t("col_account").toUpperCase(), dataKey: "name" },
+      { header: t("pl_ytd").toUpperCase(),     dataKey: "mainVal" },
+      { header: `${t("pl_ytd").toUpperCase()} B`,   dataKey: "bVal" },
       { header: "Δ",       dataKey: "bDev" },
       { header: "Δ %",     dataKey: "bPct" },
-      { header: "YTD C",   dataKey: "cVal" },
+      { header: `${t("pl_ytd").toUpperCase()} C`,   dataKey: "cVal" },
       { header: "Δ",       dataKey: "cDev" },
       { header: "Δ %",     dataKey: "cPct" },
     ] : [
-      { header: "ACCOUNT", dataKey: "name" },
-      { header: "YTD",     dataKey: "mainVal" },
+      { header: t("col_account").toUpperCase(), dataKey: "name" },
+      { header: t("pl_ytd").toUpperCase(),     dataKey: "mainVal" },
     ];
 
     const toRow = (d, isMonthly) => ({
@@ -1277,11 +1270,11 @@ function generatePLPdf({
     // ─────────────────────────────────────────────────────────
     // RENDER 4 PAGES
     // ─────────────────────────────────────────────────────────
-    const pages = [
-      { section: "Summary",  view: "Monthly",  data: summaryData,  cols: monCols, isMonthly: true  },
-      { section: "Summary",  view: "YTD",      data: summaryData,  cols: ytdCols, isMonthly: false },
-      { section: "Detailed", view: "Monthly",  data: detailedData, cols: monCols, isMonthly: true  },
-      { section: "Detailed", view: "YTD",      data: detailedData, cols: ytdCols, isMonthly: false },
+const pages = [
+      { section: t("view_summary"),  view: t("pl_monthly"),  data: summaryData,  cols: monCols, isMonthly: true  },
+      { section: t("view_summary"),  view: t("pl_ytd"),      data: summaryData,  cols: ytdCols, isMonthly: false },
+      { section: t("view_detailed"), view: t("pl_monthly"),  data: detailedData, cols: monCols, isMonthly: true  },
+      { section: t("view_detailed"), view: t("pl_ytd"),      data: detailedData, cols: ytdCols, isMonthly: false },
     ];
 
     pages.forEach(({ section, view, data, cols, isMonthly }, i) => {
@@ -1369,7 +1362,7 @@ function generatePLPdf({
       const { jsPDF } = window.jspdf;
       doGenerate(jsPDF, window.jspdf.jsPDF.autoTable ?? ((d, opts) => d.autoTable(opts)));
     })
-    .catch(e => alert("Could not load PDF library: " + e.message));
+    .catch(e => alert(t("error_load_pdf_lib") + ": " + e.message));
 }
 
 function generateKonsolidatorXlsx({
@@ -1398,7 +1391,6 @@ savedPlLiteral = null,
   aFilters = {},
   companies = [],
   dimensions = [],
-  dimGroups = [],
 journalEntries = [],
   journalEntriesCmp = [],
   journalEntriesCmp2 = [],
@@ -1622,95 +1614,6 @@ const plHistMaps = hasHistoryPL ? plHist.map(h => {
       year: h.year, month: h.month,
       map: nodeMap(buildTree(groupAccounts, h.data || [])),
     })) : [];
-
-    // ── Saved literal mode helpers ────────────────────────────
-    const hasSavedLiteral = Array.isArray(savedPlLiteral) && savedPlLiteral.length > 0;
-
-    const buildDimIdx = (rows) => {
-      const fullIdx = new Map();
-      const valIdx = new Map();
-      (rows || []).forEach(row => {
-        const code = String(getField(row, 'accountCode') ?? '');
-        if (!code) return;
-        const amt = parseAmt(getField(row, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
-        const dimsStr = String(getField(row, 'Dimensions', 'dimensions') ?? '');
-        if (!dimsStr) return;
-        dimsStr.split('||').map(s => s.trim()).filter(Boolean).forEach(pair => {
-          const i = pair.indexOf(':'); if (i === -1) return;
-          const g = pair.slice(0, i).trim();
-          const v = pair.slice(i + 1).trim();
-          fullIdx.set(`${code}|${g}:${v}`, (fullIdx.get(`${code}|${g}:${v}`) ?? 0) + amt);
-          valIdx.set(`${code}|${v}`, (valIdx.get(`${code}|${v}`) ?? 0) + amt);
-        });
-      });
-      // Mirror by NAME using dimensions metadata
-      if (Array.isArray(dimensions) && dimensions.length > 0) {
-        const nameToCode = new Map();
-        dimensions.forEach(d => {
-          const group = String(d.dimensionGroup ?? d.DimensionGroup ?? d.groupName ?? d.GroupName ?? '').trim();
-          const code = String(d.dimensionCode ?? d.DimensionCode ?? d.code ?? d.Code ?? '').trim();
-          const name = String(d.dimensionName ?? d.DimensionName ?? d.name ?? d.Name ?? '').trim();
-          if (group && code && name) nameToCode.set(`${group}:${name}`, code);
-        });
-        [...fullIdx.entries()].forEach(([k, v]) => {
-          const pipe = k.indexOf('|'); const accCode = k.slice(0, pipe);
-          const rest = k.slice(pipe + 1); const colon = rest.indexOf(':');
-          if (colon === -1) return;
-          const group = rest.slice(0, colon); const codeVal = rest.slice(colon + 1);
-          for (const [nameKey, mappedCode] of nameToCode.entries()) {
-            if (mappedCode === codeVal && nameKey.startsWith(`${group}:`)) {
-              const name = nameKey.slice(group.length + 1);
-              fullIdx.set(`${accCode}|${group}:${name}`, v);
-              valIdx.set(`${accCode}|${name}`, v);
-              break;
-            }
-          }
-        });
-      }
-      return { fullIdx, valIdx };
-    };
-
-    const treeByCodeOf = (t) => {
-      const m = new Map();
-      (function w(nodes) { nodes.forEach(n => { m.set(String(n.code), n); w(n.children || []); }); })(t);
-      return m;
-    };
-
-    const aTreeByCode = hasSavedLiteral ? treeByCodeOf(tree) : null;
-    const aPrevTreeByCode = hasSavedLiteral ? treeByCodeOf(prevTree) : null;
-    const aIdx = hasSavedLiteral ? buildDimIdx(uploadedAccounts) : null;
-    const aPrevIdx = hasSavedLiteral ? buildDimIdx(prevUploadedAccountsRaw && prevUploadedAccountsRaw.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts) : null;
-
-    const sumDimRec = (gaNode, dimStr, idx) => {
-      if (!gaNode) return 0;
-      let total = 0;
-      const code = String(gaNode.code);
-      total += dimStr.includes(':') ? (idx.fullIdx.get(`${code}|${dimStr}`) ?? 0) : (idx.valIdx.get(`${code}|${dimStr}`) ?? 0);
-      (gaNode.children || []).forEach(c => { total += sumDimRec(c, dimStr, idx); });
-      return total;
-    };
-
-    // Returns { ytd, mon } for a literal node in a given period
-    const sumLiteralPeriod = (node, treeMap, prevTreeMap, idx, prevIdx, periodMonth) => {
-      const gaNode = treeMap?.get(String(node.code));
-      if (!gaNode) return { ytd: 0, mon: 0 };
-      if (!node.dims || node.dims.length === 0) {
-        const ytd = -sumNode(gaNode);
-        const prevGa = prevTreeMap?.get(String(node.code));
-        const prevYtd = prevGa && Number(periodMonth) !== 1 ? -sumNode(prevGa) : 0;
-        return { ytd, mon: ytd - prevYtd };
-      }
-      let total = 0, prevTotal = 0;
-      node.dims.forEach(d => { total += sumDimRec(gaNode, String(d), idx); });
-      if (Number(periodMonth) !== 1 && prevIdx) {
-        node.dims.forEach(d => { prevTotal += sumDimRec(gaNode, String(d), prevIdx); });
-      }
-      const ytd = -total;
-      const prevYtd = -prevTotal;
-      return { ytd, mon: ytd - prevYtd };
-    };
-
-    const sumLiteralA = (node) => sumLiteralPeriod(node, aTreeByCode, aPrevTreeByCode, aIdx, aPrevIdx, month);
 
 const PL = { name: 1 };
     let idx = 2;
@@ -2142,7 +2045,6 @@ if (hasHistoryPL) {
         });
         return m;
       };
-      const aLeafIdx     = buildLeafIdx(uploadedAccounts);
       const aPrevLeafIdx = buildLeafIdx(prevUploadedAccounts);
       const bLeafIdx     = hasB ? buildLeafIdx(cmpUploadedAccounts) : new Map();
       const bPrevLeafIdx = hasB ? buildLeafIdx(cmpPrevUploadedAccounts) : new Map();
@@ -2367,21 +2269,6 @@ if (hasMultiCo && key) {
           dr.getCell(c).border = mkBorder();
         }
       };
-
-// Index compare/history journals by JournalNumber for cross-period lookup (PL)
-      const jrnPlIdxBy = (entries) => {
-        const m = new Map();
-        (entries || []).forEach(j => {
-          const num = String(j.JournalNumber ?? j.journalNumber ?? '');
-          if (!num) return;
-          const amt = parseAmt(j.AmountYTD ?? j.amountYTD ?? 0);
-          m.set(num, (m.get(num) ?? 0) + amt);
-        });
-        return m;
-      };
-      // Note: the export currently only receives `journalEntries` (Period A).
-      // For B/C/D/history/multi-co we fall back to 0 if no extra journal data was passed.
-      // (The component-level journalByCodeCmp/Cmp2/Cmp3 aren't piped through — that's a separate plumbing change.)
 
 const writeJrnEntry = (jrn, depth, ol) => {
         const bg = JRN_BG;
@@ -2978,7 +2865,7 @@ if (hasMultiCo) perCoTrees.forEach((cot, i) => {
       if (filtered.length > 0) leaves = filtered;
     }
 
-    leaves.forEach((leaf, li) => {
+   leaves.forEach((leaf) => {
       const ytdA = -(leaf.amount ?? 0);
       const prevA = leaf.code && Number(month) !== 1 ? (aPrevLeafIdxOnce.get(String(leaf.code)) ?? 0) : 0;
       const monA = -(((leaf.amount ?? 0) - prevA));
@@ -3601,7 +3488,7 @@ if (hasMultiCo) perCoBsTrees.forEach((cot, i) => {
       if (filtered.length > 0) leavesB = filtered;
     }
 
-    leavesB.forEach((leaf, li) => {
+   leavesB.forEach((leaf) => {
       const amt = leaf.amount ?? 0;
       ws.addRow([]);
       const dr2 = ws.lastRow;
@@ -4059,7 +3946,7 @@ if (bsHasD) {
       };
 
       let bsZebra = 0;
-      const writeBSRow = (node, depth, ol) => {
+      const writeBSRow = (node, depth) => {
         if (!hasData(node) || node.accountType !== 'B/S') return;
 
         const div = BS_DIVIDERS[String(node.code)];
@@ -4141,7 +4028,7 @@ if (hasHistoryBS) {
         // Recurse children — structural rows stay visible
         (node.children || [])
           .filter(c => hasData(c) && c.accountType === 'B/S')
-          .forEach(c => writeBSRow(c, depth + 1, 0));
+          .forEach(c => writeBSRow(c, depth + 1));
 
 // Drill-down: local accounts (collapsed) — fully populated with compare/history/multi-co values
         const bsLeafIdxOf = (rows) => {
@@ -4443,7 +4330,7 @@ setC(jr, BS.act, amt, NUM_FMT, INDIGO, false, hbg);
         .filter(n => !filterFn || filterFn(n))
         .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
 
-      bsRoots.forEach(n => writeBSRow(n, 0, 0));
+      bsRoots.forEach(n => writeBSRow(n, 0));
     };
 
     // BUILD SHEETS
@@ -4452,6 +4339,7 @@ setC(jr, BS.act, amt, NUM_FMT, INDIGO, false, hbg);
       return name.includes('asset') || name.includes('activo');
     };
 
+const hasSavedLiteral = Array.isArray(savedPlLiteral) && savedPlLiteral.length > 0;
 const hasSavedBsLiteral = Array.isArray(savedBsLiteral) && savedBsLiteral.length > 0;
 
 if (hasSavedLiteral) {
@@ -4649,6 +4537,7 @@ if (hasSavedBsLiteral) {
 }
 
 function generateKonsolidatorPdf({
+  t = (k) => k, MONTHS: MONTHS_T = MONTHS,
   groupAccounts, uploadedAccounts, prevUploadedAccounts,
   compareMode,
   cmpUploadedAccounts, cmpPrevUploadedAccounts, cmpFilters,
@@ -4674,7 +4563,6 @@ plHistoryMonths = [],
   aFilters = {},
   companies = [],
   dimensions = [],
-  dimGroups = [],
 journalEntries = [],
   journalEntriesCmp = [],
   journalEntriesCmp2 = [],
@@ -4879,7 +4767,7 @@ const drawHeader = (sectionTitle, isFirst, useCmpFlag = null, useLabels = null) 
 
 if (!sections.find(s => s.title === sectionTitle)) {
         sections.push({ title: sectionTitle, page: actualPage });
-        try { doc.outline.add(null, sectionTitle, { pageNumber: actualPage }); } catch {}
+        try { doc.outline.add(null, sectionTitle, { pageNumber: actualPage });} catch { /* ignore */ }
       }
       return headerH + 4;
     };
@@ -5110,7 +4998,7 @@ if (jrns.length > 0) {
             const histAmt = entries.reduce((acc, je) => acc + -parseAmt(je.AmountYTD ?? je.amountYTD ?? 0), 0);
             return { mon: histAmt, ytd: histAmt };
           }) : [];
-          rows.push({ code: '', label: '  '.repeat(d + 1) + `Journal entries (${jrns.length})`, mon: null, ytd: null, cMon: null, cYtd: null, c2Mon: null, c2Ytd: null, c3Mon: null, c3Ytd: null, histVals: hdrHistVals, isBold: false, depth: d + 1, isJrn: true, isJrnHeader: true });
+         rows.push({ code: '', label: '  '.repeat(d + 1) + `${t("entries").charAt(0).toUpperCase() + t("entries").slice(1)} (${jrns.length})`, mon: null, ytd: null, cMon: null, cYtd: null, c2Mon: null, c2Ytd: null, c3Mon: null, c3Ytd: null, histVals: hdrHistVals, isBold: false, depth: d + 1, isJrn: true, isJrnHeader: true });
           const findMatchPl = (idx, jnum) => {
             const m = (idx.get(String(node.code)) || []).find(jj => (jj.JournalNumber ?? jj.journalNumber) === jnum);
             return m ? -parseAmt(m.AmountYTD ?? m.amountYTD ?? 0) : null;
@@ -5317,7 +5205,7 @@ const jrns = (journalEntries || []).filter(j => {
           return acc === String(node.code) && (jt === 'AJE' || jt === 'RJE');
         });
         if (jrns.length > 0) {
-          rows.push({ code: '', label: '  '.repeat(d + 1) + `📋 Journal (${jrns.length})`, total: null, cVal: null, c2Val: null, c3Val: null, isBold: false, depth: d + 1, isJrn: true, isJrnHeader: true });
+         rows.push({ code: '', label: '  '.repeat(d + 1) + `📋 ${t("label_journal").charAt(0).toUpperCase() + t("label_journal").slice(1)} (${jrns.length})`, total: null, cVal: null, c2Val: null, c3Val: null, isBold: false, depth: d + 1, isJrn: true, isJrnHeader: true });
           const findMatchBs = (idx, jnum) => {
             const m = (idx.get(String(node.code)) || []).find(jj => (jj.JournalNumber ?? jj.journalNumber) === jnum);
             return m ? parseAmt(m.AmountYTD ?? m.amountYTD ?? 0) : null;
@@ -5695,8 +5583,8 @@ if (jrns.length > 0) {
               const histAmt = entries.reduce((acc, je) => acc + -parseAmt(je.AmountYTD ?? je.amountYTD ?? 0), 0);
               return { mon: histAmt, ytd: histAmt };
             }) : [];
-            out.push({
-              code: '', label: '  '.repeat(depth + 1) + `Journal entries (${jrns.length})`,
+out.push({
+              code: '', label: '  '.repeat(depth + 1) + `${t("entries").charAt(0).toUpperCase() + t("entries").slice(1)} (${jrns.length})`,
               mon: null, ytd: null, cMon: null, cYtd: null, c2Mon: null, c2Ytd: null, c3Mon: null, c3Ytd: null,
               histVals: hdrHistVals,
               depth: depth + 1, isJrn: true, isJrnHeader: true,
@@ -5941,8 +5829,8 @@ out.push({
             return acc === String(node.code) && (jt === 'AJE' || jt === 'RJE');
           });
           if (jrns.length > 0) {
-            out.push({
-              code: '', label: '  '.repeat(depth + 1) + `📋 Journal (${jrns.length})`,
+out.push({
+              code: '', label: '  '.repeat(depth + 1) + `📋 ${t("label_journal").charAt(0).toUpperCase() + t("label_journal").slice(1)} (${jrns.length})`,
               total: null, cVal: null, c2Val: null, c3Val: null,
               depth: depth + 1, isJrn: true, isJrnHeader: true,
             });
@@ -6024,55 +5912,55 @@ if (bsHasB || bsHasC || bsHasD) {
 const makePlCols = (view) => {
       // Multi-company: ONLY per-company columns
       if (hasMultiCo) {
-        const cols = [{ header: 'Code', dataKey: 'code' }, { header: 'Account', dataKey: 'label' }];
+        const cols = [{ header: t("export_col_code"), dataKey: 'code' }, { header: t("col_account"), dataKey: 'label' }];
         perCoMaps.forEach((c, i) => cols.push({ header: c.legal, dataKey: `co${i}` }));
         return cols;
       }
       // History: current month + 5 historic months, one col each (uses ytdOnly metric)
       if (hasHistoryPL) {
-        const cols = [{ header: 'Code', dataKey: 'code' }, { header: 'Account', dataKey: 'label' }];
-        const curLbl = MONTHS.find(m => String(m.value) === String(month))?.label?.slice(0, 3) ?? String(month);
+        const cols = [{ header: t("export_col_code"), dataKey: 'code' }, { header: t("col_account"), dataKey: 'label' }];
+        const curLbl = MONTHS_T.find(m => String(m.value) === String(month))?.label?.slice(0, 3) ?? String(month);
         cols.push({ header: `${curLbl} ${year}`, dataKey: ytdOnly ? 'ytd' : 'mon' });
         plHistMaps.forEach((h, i) => {
-          const moLbl = MONTHS.find(m => String(m.value) === String(h.month))?.label?.slice(0, 3) ?? String(h.month);
+          const moLbl = MONTHS_T.find(m => String(m.value) === String(h.month))?.label?.slice(0, 3) ?? String(h.month);
           cols.push({ header: `${moLbl} ${h.year}`, dataKey: ytdOnly ? `histYtd${i}` : `histMon${i}` });
         });
         return cols;
       }
 // Default: compare/main (view='monthly' | 'ytd' | undefined for both)
-      const cols = [{ header: 'Code', dataKey: 'code' }, { header: 'Account', dataKey: 'label' }];
+      const cols = [{ header: t("export_col_code"), dataKey: 'code' }, { header: t("col_account"), dataKey: 'label' }];
       if (view !== 'ytd') {
-        cols.push({ header: 'Monthly', dataKey: 'mon' });
-        if (hasB) cols.push({ header: 'B Mon', dataKey: 'cMon' }, { header: '±', dataKey: 'devM' }, { header: '± %', dataKey: 'devMP' });
-        if (hasC) cols.push({ header: 'C Mon', dataKey: 'c2Mon' }, { header: '±', dataKey: 'devM2' }, { header: '± %', dataKey: 'devM2P' });
-        if (hasD) cols.push({ header: 'D Mon', dataKey: 'c3Mon' }, { header: '±', dataKey: 'devM3' }, { header: '± %', dataKey: 'devM3P' });
+        cols.push({ header: t("pl_monthly"), dataKey: 'mon' });
+        if (hasB) cols.push({ header: `B ${t("pl_monthly")}`, dataKey: 'cMon' }, { header: '±', dataKey: 'devM' }, { header: '± %', dataKey: 'devMP' });
+        if (hasC) cols.push({ header: `C ${t("pl_monthly")}`, dataKey: 'c2Mon' }, { header: '±', dataKey: 'devM2' }, { header: '± %', dataKey: 'devM2P' });
+        if (hasD) cols.push({ header: `D ${t("pl_monthly")}`, dataKey: 'c3Mon' }, { header: '±', dataKey: 'devM3' }, { header: '± %', dataKey: 'devM3P' });
       }
       if (view !== 'monthly') {
-        cols.push({ header: 'YTD', dataKey: 'ytd' });
-        if (hasB) cols.push({ header: 'B YTD', dataKey: 'cYtd' }, { header: '±', dataKey: 'devY' }, { header: '± %', dataKey: 'devYP' });
-        if (hasC) cols.push({ header: 'C YTD', dataKey: 'c2Ytd' }, { header: '±', dataKey: 'devY2' }, { header: '± %', dataKey: 'devY2P' });
-        if (hasD) cols.push({ header: 'D YTD', dataKey: 'c3Ytd' }, { header: '±', dataKey: 'devY3' }, { header: '± %', dataKey: 'devY3P' });
+        cols.push({ header: t("pl_ytd"), dataKey: 'ytd' });
+        if (hasB) cols.push({ header: `B ${t("pl_ytd")}`, dataKey: 'cYtd' }, { header: '±', dataKey: 'devY' }, { header: '± %', dataKey: 'devYP' });
+        if (hasC) cols.push({ header: `C ${t("pl_ytd")}`, dataKey: 'c2Ytd' }, { header: '±', dataKey: 'devY2' }, { header: '± %', dataKey: 'devY2P' });
+        if (hasD) cols.push({ header: `D ${t("pl_ytd")}`, dataKey: 'c3Ytd' }, { header: '±', dataKey: 'devY3' }, { header: '± %', dataKey: 'devY3P' });
       }
       return cols;
     };
 
 const makeBsCols = () => {
       if (hasMultiCo) {
-        const cols = [{ header: 'Code', dataKey: 'code' }, { header: 'Account', dataKey: 'label' }];
+        const cols = [{ header: t("export_col_code"), dataKey: 'code' }, { header: t("col_account"), dataKey: 'label' }];
         perCoMaps.forEach((c, i) => cols.push({ header: c.legal, dataKey: `co${i}` }));
         return cols;
       }
       if (hasHistoryBS) {
-        const cols = [{ header: 'Code', dataKey: 'code' }, { header: 'Account', dataKey: 'label' }];
-        const curLbl = MONTHS.find(m => String(m.value) === String(month))?.label?.slice(0, 3) ?? String(month);
+        const cols = [{ header: t("export_col_code"), dataKey: 'code' }, { header: t("col_account"), dataKey: 'label' }];
+        const curLbl = MONTHS_T.find(m => String(m.value) === String(month))?.label?.slice(0, 3) ?? String(month);
         cols.push({ header: `${curLbl} ${year}`, dataKey: 'total' });
         bsHistMaps.forEach((h, i) => {
-          const moLbl = MONTHS.find(m => String(m.value) === String(h.month))?.label?.slice(0, 3) ?? String(h.month);
+          const moLbl = MONTHS_T.find(m => String(m.value) === String(h.month))?.label?.slice(0, 3) ?? String(h.month);
           cols.push({ header: `${moLbl} ${h.year}`, dataKey: `hist${i}` });
         });
         return cols;
       }
-      const cols = [{ header: 'Code', dataKey: 'code' }, { header: 'Account', dataKey: 'label' }, { header: 'Actual', dataKey: 'total' }];
+      const cols = [{ header: t("export_col_code"), dataKey: 'code' }, { header: t("col_account"), dataKey: 'label' }, { header: t("col_actual"), dataKey: 'total' }];
       if (bsHasB) cols.push({ header: 'B', dataKey: 'cVal' }, { header: '±', dataKey: 'devB' }, { header: '± %', dataKey: 'devBP' });
       if (bsHasC) cols.push({ header: 'C', dataKey: 'c2Val' }, { header: '±', dataKey: 'devC' }, { header: '± %', dataKey: 'devCP' });
       if (bsHasD) cols.push({ header: 'D', dataKey: 'c3Val' }, { header: '±', dataKey: 'devD' }, { header: '± %', dataKey: 'devDP' });
@@ -6244,27 +6132,27 @@ let isFirst = true;
         if (opts.plSaved !== false) {
           const savedPlBody = buildSavedPlRowsLit().map(toPlRowBody);
           if (hasB || hasC || hasD) {
-            renderPage(`Profit & Loss — Monthly${chunkSuffix}`, isFirst, makePlCols('monthly'), savedPlBody, true, plColStyles('monthly')); isFirst = false;
-            renderPage(`Profit & Loss — YTD${chunkSuffix}`,     isFirst, makePlCols('ytd'),     savedPlBody, true, plColStyles('ytd'));     isFirst = false;
+renderPage(`${t("page_pl_full")} — ${t("pl_monthly")}${chunkSuffix}`, isFirst, makePlCols('monthly'), savedPlBody, true, plColStyles('monthly')); isFirst = false;
+            renderPage(`${t("page_pl_full")} — ${t("pl_ytd")}${chunkSuffix}`,     isFirst, makePlCols('ytd'),     savedPlBody, true, plColStyles('ytd'));     isFirst = false;
           } else {
-            renderPage(`Profit & Loss${chunkSuffix}`, isFirst, makePlCols(), savedPlBody, true, plColStyles()); isFirst = false;
+            renderPage(`${t("page_pl_full")}${chunkSuffix}`, isFirst, makePlCols(), savedPlBody, true, plColStyles()); isFirst = false;
           }
         }
       } else {
         if (opts.plSummary !== false) {
           if (hasB || hasC || hasD) {
-            renderPage(`P&L — Summary — Monthly${chunkSuffix}`, isFirst, makePlCols('monthly'), buildPlSummaryRows().map(toPlRowBody), true, plColStyles('monthly')); isFirst = false;
-            renderPage(`P&L — Summary — YTD${chunkSuffix}`,     isFirst, makePlCols('ytd'),     buildPlSummaryRows().map(toPlRowBody), true, plColStyles('ytd'));     isFirst = false;
+renderPage(`${t("page_pl")} — ${t("view_summary")} — ${t("pl_monthly")}${chunkSuffix}`, isFirst, makePlCols('monthly'), buildPlSummaryRows().map(toPlRowBody), true, plColStyles('monthly')); isFirst = false;
+            renderPage(`${t("page_pl")} — ${t("view_summary")} — ${t("pl_ytd")}${chunkSuffix}`,     isFirst, makePlCols('ytd'),     buildPlSummaryRows().map(toPlRowBody), true, plColStyles('ytd'));     isFirst = false;
           } else {
-            renderPage(`P&L — Summary${chunkSuffix}`, isFirst, makePlCols(), buildPlSummaryRows().map(toPlRowBody), true, plColStyles()); isFirst = false;
+            renderPage(`${t("page_pl")} — ${t("view_summary")}${chunkSuffix}`, isFirst, makePlCols(), buildPlSummaryRows().map(toPlRowBody), true, plColStyles()); isFirst = false;
           }
         }
         if (opts.plDetailed !== false) {
           if (hasB || hasC || hasD) {
-            renderPage(`P&L — Detailed — Monthly${chunkSuffix}`, isFirst, makePlCols('monthly'), buildPlRows(tree).map(toPlRowBody), true, plColStyles('monthly')); isFirst = false;
-            renderPage(`P&L — Detailed — YTD${chunkSuffix}`,     isFirst, makePlCols('ytd'),     buildPlRows(tree).map(toPlRowBody), true, plColStyles('ytd'));     isFirst = false;
+            renderPage(`${t("page_pl")} — ${t("view_detailed")} — ${t("pl_monthly")}${chunkSuffix}`, isFirst, makePlCols('monthly'), buildPlRows(tree).map(toPlRowBody), true, plColStyles('monthly')); isFirst = false;
+            renderPage(`${t("page_pl")} — ${t("view_detailed")} — ${t("pl_ytd")}${chunkSuffix}`,     isFirst, makePlCols('ytd'),     buildPlRows(tree).map(toPlRowBody), true, plColStyles('ytd'));     isFirst = false;
           } else {
-            renderPage(`P&L — Detailed${chunkSuffix}`, isFirst, makePlCols(), buildPlRows(tree).map(toPlRowBody), true, plColStyles()); isFirst = false;
+            renderPage(`${t("page_pl")} — ${t("view_detailed")}${chunkSuffix}`, isFirst, makePlCols(), buildPlRows(tree).map(toPlRowBody), true, plColStyles()); isFirst = false;
           }
         }
       }
@@ -6283,11 +6171,11 @@ const renderBsForChunk = (chunkIdx) => {
       const chunkSuffix = hasMultiCo && coChunksAll.length > 1 ? ` (cos ${chunkIdx * MULTI_CO_CHUNK + 1}–${chunkIdx * MULTI_CO_CHUNK + coChunksAll[chunkIdx].length})` : '';
 
       if (hasSavedBsLit) {
-        if (opts.bsSaved !== false) { renderPage(`Balance Sheet${chunkSuffix}`, isFirst, makeBsCols(), buildSavedBsRowsLit().map(toBsRowBody), false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
+if (opts.bsSaved !== false) { renderPage(`${t("page_bs_full")}${chunkSuffix}`, isFirst, makeBsCols(), buildSavedBsRowsLit().map(toBsRowBody), false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
       } else {
-        if (opts.bsSummary !== false) { renderPage(`Balance Sheet — Summary${chunkSuffix}`, isFirst, makeBsCols(), buildBsRows().map(toBsRowBody),                       false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
-        if (opts.bsAssets  !== false) { renderPage(`Balance Sheet — Assets${chunkSuffix}`,   isFirst, makeBsCols(), buildBsRows(isAssetsRoot).map(toBsRowBody),          false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
-        if (opts.bsEquity  !== false) { renderPage(`Balance Sheet — Equity & Liabilities${chunkSuffix}`, isFirst, makeBsCols(), buildBsRows(n => !isAssetsRoot(n)).map(toBsRowBody), false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
+        if (opts.bsSummary !== false) { renderPage(`${t("page_bs_full")} — ${t("view_summary")}${chunkSuffix}`, isFirst, makeBsCols(), buildBsRows().map(toBsRowBody),                       false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
+        if (opts.bsAssets  !== false) { renderPage(`${t("page_bs_full")} — ${t("bs_assets")}${chunkSuffix}`,   isFirst, makeBsCols(), buildBsRows(isAssetsRoot).map(toBsRowBody),          false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
+        if (opts.bsEquity  !== false) { renderPage(`${t("page_bs_full")} — ${t("bs_equity_liab_full")}${chunkSuffix}`, isFirst, makeBsCols(), buildBsRows(n => !isAssetsRoot(n)).map(toBsRowBody), false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
       }
     };
 
@@ -6299,7 +6187,7 @@ const renderBsForChunk = (chunkIdx) => {
 
     // Dims & Journal
     if (opts.dimJournal !== false && (uploadedAccounts.some(r => getField(r, 'dimensionCode')) || (journalEntries?.length > 0))) {
-      const startY = drawHeader('Dimensions & Journal', isFirst); isFirst = false;
+     const startY = drawHeader(t("export_dim_journal_title"), isFirst); isFirst = false;
       const dimBody = uploadedAccounts.filter(r => getField(r, 'dimensionCode')).map(r => ({
         acc: `${String(getField(r, 'accountCode') ?? '')}  ${String(getField(r, 'accountName') ?? '')}`.trim(),
         dim: `${String(getField(r, 'dimensionCode') ?? '')}  ${String(getField(r, 'dimensionName') ?? '')}`.trim(),
@@ -6309,7 +6197,7 @@ const renderBsForChunk = (chunkIdx) => {
         cur: String(getField(r, 'CurrencyCode', 'currencyCode') ?? ''),
       }));
       if (dimBody.length > 0) {
-        autoTable(doc, { startY, columns: [{ header: 'Account', dataKey: 'acc' }, { header: 'Dimension', dataKey: 'dim' }, { header: 'Local Account', dataKey: 'lac' }, { header: 'Amount YTD', dataKey: 'amt' }, { header: 'Company', dataKey: 'co' }, { header: 'Currency', dataKey: 'cur' }],
+       autoTable(doc, { startY, columns: [{ header: t("col_account"), dataKey: 'acc' }, { header: t("dimension"), dataKey: 'dim' }, { header: t("export_local_account"), dataKey: 'lac' }, { header: t("dim_amount_ytd"), dataKey: 'amt' }, { header: t("dim_company"), dataKey: 'co' }, { header: t("jrn_currency"), dataKey: 'cur' }],
           body: dimBody, margin: { left: 8, right: 8, bottom: 10 }, tableWidth: W - 16,
           styles: { fontSize: 6.5, cellPadding: 2, overflow: 'ellipsize', lineColor: GRAYLT, lineWidth: 0.1, font: 'helvetica', textColor: TEXTDK },
           headStyles: { fillColor: AMBER, textColor: WHITE, fontStyle: 'bold', fontSize: 6, lineWidth: 0 },
@@ -6321,7 +6209,7 @@ const renderBsForChunk = (chunkIdx) => {
       if (journalEntries?.length > 0) {
         const jY = (doc.lastAutoTable?.finalY ?? startY) + 6;
         doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(...NAVY);
-        doc.text('Journal Entries', 8, jY + 4);
+       doc.text(t("export_journal_entries"), 8, jY + 4);
         const jBody = journalEntries.map(j => ({
           jn: String(j.JournalNumber ?? j.journalNumber ?? ''), jh: String(j.JournalHeader ?? j.journalHeader ?? ''),
           acc: `${String(j.AccountCode ?? j.accountCode ?? '')}  ${String(j.AccountName ?? j.accountName ?? '')}`.trim(),
@@ -6330,7 +6218,7 @@ const renderBsForChunk = (chunkIdx) => {
           amt: fmtN(parseAmt(j.AmountYTD ?? j.amountYTD ?? 0)),
           cur: String(j.CurrencyCode ?? j.currencyCode ?? ''),
         }));
-        autoTable(doc, { startY: jY + 7, columns: [{ header: 'Journal #', dataKey: 'jn' }, { header: 'Header', dataKey: 'jh' }, { header: 'Account', dataKey: 'acc' }, { header: 'Type', dataKey: 'jt' }, { header: 'Dimension', dataKey: 'dim' }, { header: 'Counterparty', dataKey: 'cp' }, { header: 'Amount YTD', dataKey: 'amt' }, { header: 'Currency', dataKey: 'cur' }],
+       autoTable(doc, { startY: jY + 7, columns: [{ header: t("jrn_number"), dataKey: 'jn' }, { header: t("jrn_header"), dataKey: 'jh' }, { header: t("col_account"), dataKey: 'acc' }, { header: t("jrn_account_type"), dataKey: 'jt' }, { header: t("dimension"), dataKey: 'dim' }, { header: t("jrn_counterparty"), dataKey: 'cp' }, { header: t("jrn_amount_ytd"), dataKey: 'amt' }, { header: t("jrn_currency"), dataKey: 'cur' }],
           body: jBody, margin: { left: 8, right: 8, bottom: 10 }, tableWidth: W - 16,
           styles: { fontSize: 6.5, cellPadding: 2, overflow: 'ellipsize', lineColor: GRAYLT, lineWidth: 0.1, font: 'helvetica', textColor: TEXTDK },
           headStyles: { fillColor: [60, 50, 160], textColor: WHITE, fontStyle: 'bold', fontSize: 6, lineWidth: 0 },
@@ -6347,9 +6235,9 @@ const renderBsForChunk = (chunkIdx) => {
     doc.setFont('helvetica', 'bold'); doc.setFontSize(38); doc.setTextColor(...WHITE);
     doc.text('KONSOLIDATOR', W / 2, H / 4, { align: 'center' });
     doc.setFont('helvetica', 'normal'); doc.setFontSize(14); doc.setTextColor(180, 200, 255);
-    doc.text('Financial Report', W / 2, H / 4 + 12, { align: 'center' });
+doc.text(t("export_financial_report"), W / 2, H / 4 + 12, { align: 'center' });
     doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(...WHITE);
-    doc.text('PRIMARY PERIOD', W / 2, H / 4 + 28, { align: 'center' });
+    doc.text(t("export_primary_period").toUpperCase(), W / 2, H / 4 + 28, { align: 'center' });
     doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(200, 215, 255);
     const aLines = doc.splitTextToSize(aLabel, W - 40);
     let aY = H / 4 + 34;
@@ -6357,7 +6245,7 @@ const renderBsForChunk = (chunkIdx) => {
     if (hasB || bsHasB) {
       let cY = aY + 6;
       doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(...WHITE);
-      doc.text('COMPARE PERIODS', W / 2, cY, { align: 'center' });
+     doc.text(t("export_compare_periods").toUpperCase(), W / 2, cY, { align: 'center' });
       cY += 6;
       const cmpLine = (letter, label, color) => {
         if (!label) return;
@@ -6376,14 +6264,14 @@ const renderBsForChunk = (chunkIdx) => {
       if (bsHasD && !hasD) cmpLine('D (BS)', bsDLabel, PURPLEDK);
     }
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(150, 175, 230);
-    const dateStr = new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
-    doc.text(`Generated  ·  ${dateStr}`, W / 2, H - 12, { align: 'center' });
+const dateStr = new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
+    doc.text(`${t("export_generated")}  ·  ${dateStr}`, W / 2, H - 12, { align: 'center' });
 
     // ── Insert TOC at page 2 ──
     doc.insertPage(2); doc.setPage(2);
     doc.setFillColor(...WHITE); doc.rect(0, 0, W, H, 'F');
     doc.setFont('helvetica', 'bold'); doc.setFontSize(22); doc.setTextColor(...NAVY);
-    doc.text('Table of Contents', W / 2, 30, { align: 'center' });
+    doc.text(t("export_toc"), W / 2, 30, { align: 'center' });
     doc.setDrawColor(...NAVY); doc.setLineWidth(0.5);
     doc.line(W / 2 - 22, 33, W / 2 + 22, 33);
     let tocY = 55;
@@ -6398,7 +6286,7 @@ const renderBsForChunk = (chunkIdx) => {
       doc.setLineDashPattern([], 0);
       doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(...NAVY);
       doc.text(String(adjustedPage), W - 30, tocY, { align: 'right' });
-      try { doc.link(30, tocY - 5, W - 60, 7, { pageNumber: adjustedPage }); } catch {}
+      try { doc.link(30, tocY - 5, W - 60, 7, { pageNumber: adjustedPage }); } catch { /* ignore */ }
       tocY += 11;
     });
 
@@ -6425,12 +6313,12 @@ const renderBsForChunk = (chunkIdx) => {
   load('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
     .then(() => load('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js'))
     .then(() => { const { jsPDF } = window.jspdf; doGenerate(jsPDF, window.jspdf.jsPDF.autoTable ?? ((d, opts) => d.autoTable(opts))); })
-    .catch(e => alert('Could not load PDF library: ' + e.message));
+.catch(e => alert(t("error_load_pdf_lib") + ': ' + e.message));
 }
 
 
 function PLStatement({
-  bsCompareMode = false , externalAccColWidth, onAccColWidthChange,
+  externalAccColWidth, onAccColWidthChange,
   externalExpandedMap, externalSetExpandedMap,
   multiCompany = false,
   selectedCompanies = [],
@@ -6510,8 +6398,7 @@ const body1Style = useTypo("body1");
 const body2Style = useTypo("body2");
 const subbody1Style = useTypo("subbody1");
 const subbody2Style = useTypo("subbody2");
-const header2Style = useTypo("header2");
-const expandedMap = externalExpandedMap ?? {};
+const expandedMap = useMemo(() => externalExpandedMap ?? {}, [externalExpandedMap]);
 const setExpandedMap = externalSetExpandedMap ?? (() => {});
 const [hoveredDimRow, setHoveredDimRow] = useState(null);
 const [summaryMode, setSummaryMode] = useState(true);
@@ -6589,10 +6476,10 @@ const raf = requestAnimationFrame(() => requestAnimationFrame(clamp));
 const [filtersOpen, setFiltersOpen] = useState(true);
   const [historyExpandedInternal, setHistoryExpandedInternal] = useState(false);
   const historyExpanded = externalHistoryExpanded !== undefined ? externalHistoryExpanded : historyExpandedInternal;
-  const setHistoryExpanded = (v) => {
+const setHistoryExpanded = useCallback((v) => {
     setHistoryExpandedInternal(v);
     onHistoryExpandedChange?.(v);
-  };
+  }, [onHistoryExpandedChange]);
 const [historyMonthsInternal, setHistoryMonthsInternal] = useState([]);
   const historyMonths = externalHistoryMonths !== undefined ? externalHistoryMonths : historyMonthsInternal;
   const historyMonthsRef = useRef(historyMonths);
@@ -6635,7 +6522,7 @@ const jsonJ = resJ.ok ? await resJ.json() : { value: [] };
 const toggleHistory = useCallback(() => {
     if (compareMode || multiCompany) return;
     setHistoryExpanded(!historyExpanded);
-  }, [compareMode, multiCompany, historyExpanded]);
+}, [compareMode, multiCompany, historyExpanded, setHistoryExpanded]);
 // Single sync effect: fetches when expanded turns on or period changes; clears when off.
 // Skips refetch on remount when nothing actually changed.
 const plHistSyncRef = useRef({ expanded: externalHistoryExpanded, period: `${year}-${month}`, scope: `${source}|${structure}|${selectedCompanies?.[0] ?? ''}` });
@@ -6740,13 +6627,6 @@ const getPrevLeafAmt = useCallback((localCode) => {
   let total = 0;
   dimMap.forEach(v => { total += v; });
   return total;
-}, [prevLeafIndex, month]);
-
-const getPrevDimAmt = useCallback((localCode, dimCode) => {
-  if (Number(month) === 1) return 0;
-  const dimMap = prevLeafIndex.get(String(localCode));
-  if (!dimMap) return 0;
-  return dimMap.get(String(dimCode ?? "__none__")) ?? 0;
 }, [prevLeafIndex, month]);
 
 const cmpLeafDimIndex = useMemo(() => {
@@ -7398,27 +7278,6 @@ const treeByCode = new Map();
       nodes.forEach(n => { treeByCode.set(String(n.code), n); indexTree(n.children || []); });
     })(tree);
 
-    // Per-leaf+dim indexes for compare periods (saved-mapping path)
-    const buildSavedLeafDimIdx = (rows) => {
-      const m = new Map();
-      (rows || []).forEach(row => {
-        const lac = String(getField(row, "localAccountCode") ?? "");
-        const dc  = String(getField(row, "dimensionCode") ?? "");
-        if (!lac || !dc || dc === "null") return;
-        const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
-        m.set(`${lac}|${dc}`, (m.get(`${lac}|${dc}`) ?? 0) + amt);
-      });
-      return m;
-    };
-    const aLeafDimIdxSaved     = buildSavedLeafDimIdx(uploadedAccounts);
-    const aPrevLeafDimIdxSaved = buildSavedLeafDimIdx(prevUploadedAccountsRaw?.length > 0 ? prevUploadedAccountsRaw : prevUploadedAccounts);
-    const bLeafDimIdxSaved     = compareMode ? buildSavedLeafDimIdx(cmpUploadedAccounts) : new Map();
-    const bPrevLeafDimIdxSaved = compareMode ? buildSavedLeafDimIdx(cmpPrevUploadedAccounts) : new Map();
-    const cLeafDimIdxSaved     = compareMode && cmp2Enabled ? buildSavedLeafDimIdx(cmp2UploadedAccounts) : new Map();
-    const cPrevLeafDimIdxSaved = compareMode && cmp2Enabled ? buildSavedLeafDimIdx(cmp2PrevUploadedAccounts) : new Map();
-    const dLeafDimIdxSaved     = compareMode && cmp2Enabled && cmp3Enabled ? buildSavedLeafDimIdx(cmp3UploadedAccounts) : new Map();
-    const dPrevLeafDimIdxSaved = compareMode && cmp2Enabled && cmp3Enabled ? buildSavedLeafDimIdx(cmp3PrevUploadedAccounts) : new Map();
-
     savedPlLiteral.forEach((section, secIdx) => {
       const walk = (node, parentPath) => {
         const rowKey = `saved-${secIdx}-${parentPath}-${node.id}`;
@@ -7585,20 +7444,20 @@ const handleExportXlsx = () => {
         {/* Body */}
         <div className="p-5 space-y-3">
           {[
-            ["Account", `${jrnPopup.AccountCode ?? jrnPopup.accountCode ?? ""} · ${jrnPopup.AccountName ?? jrnPopup.accountName ?? ""}`],
-            ["Account Type", jrnPopup.AccountType ?? jrnPopup.accountType],
-            ["Journal Type", jrnPopup.JournalType ?? jrnPopup.journalType],
-            ["Journal Layer", jrnPopup.JournalLayer ?? jrnPopup.journalLayer],
-            ["Row Text", jrnPopup.RowText ?? jrnPopup.rowText],
-            ["Counterparty", jrnPopup.CounterpartyShortName ?? jrnPopup.counterpartyShortName],
-            ["Dimension", jrnPopup.DimensionName ?? jrnPopup.dimensionName],
-            ["Amount YTD", jrnPopup.AmountYTD ?? jrnPopup.amountYTD],
-            ["Currency", jrnPopup.CurrencyCode ?? jrnPopup.currencyCode],
-            ["Period", `${jrnPopup.Month ?? jrnPopup.month} / ${jrnPopup.Year ?? jrnPopup.year}`],
-            ["Source", jrnPopup.Source ?? jrnPopup.source],
-            ["Company", jrnPopup.CompanyShortName ?? jrnPopup.companyShortName],
-            ["System Generated", (jrnPopup.SystemGenerated ?? jrnPopup.systemGenerated) === true ? "Yes" : (jrnPopup.SystemGenerated ?? jrnPopup.systemGenerated) === false ? "No" : "—"],
-            ["Posted", (jrnPopup.Posted ?? jrnPopup.posted) === true ? "Yes" : (jrnPopup.Posted ?? jrnPopup.posted) === false ? "No" : "—"],
+[t("jrn_account"), `${jrnPopup.AccountCode ?? jrnPopup.accountCode ?? ""} · ${jrnPopup.AccountName ?? jrnPopup.accountName ?? ""}`],
+            [t("jrn_account_type"), jrnPopup.AccountType ?? jrnPopup.accountType],
+            [t("jrn_journal_type"), jrnPopup.JournalType ?? jrnPopup.journalType],
+            [t("jrn_journal_layer"), jrnPopup.JournalLayer ?? jrnPopup.journalLayer],
+            [t("jrn_row_text"), jrnPopup.RowText ?? jrnPopup.rowText],
+            [t("jrn_counterparty"), jrnPopup.CounterpartyShortName ?? jrnPopup.counterpartyShortName],
+            [t("jrn_dimension"), jrnPopup.DimensionName ?? jrnPopup.dimensionName],
+            [t("jrn_amount_ytd"), jrnPopup.AmountYTD ?? jrnPopup.amountYTD],
+            [t("jrn_currency"), jrnPopup.CurrencyCode ?? jrnPopup.currencyCode],
+            [t("jrn_period"), `${jrnPopup.Month ?? jrnPopup.month} / ${jrnPopup.Year ?? jrnPopup.year}`],
+            [t("jrn_source"), jrnPopup.Source ?? jrnPopup.source],
+            [t("jrn_company"), jrnPopup.CompanyShortName ?? jrnPopup.companyShortName],
+            [t("jrn_system_generated"), (jrnPopup.SystemGenerated ?? jrnPopup.systemGenerated) === true ? t("cell_yes") : (jrnPopup.SystemGenerated ?? jrnPopup.systemGenerated) === false ? t("cell_no") : "—"],
+            [t("jrn_posted"), (jrnPopup.Posted ?? jrnPopup.posted) === true ? t("cell_yes") : (jrnPopup.Posted ?? jrnPopup.posted) === false ? t("cell_no") : "—"],
           ].filter(([, v]) => v !== null && v !== undefined && v !== "" && v !== "—").map(([label, value]) => (
             <div key={label} className="flex items-start justify-between gap-4 py-2 border-b border-gray-50 last:border-0">
               <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest flex-shrink-0 mt-0.5">{label}</span>
@@ -7620,8 +7479,8 @@ if (loading) return (
   // ────────────────────────────────────────────────────────────
   //  PRECOMPUTED INDEXES (memoized — heavy work runs only on data change)
   // ────────────────────────────────────────────────────────────
-const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.value) === String(cmpFilters.month))?.label, cmpFilters.source, cmpFilters.dimension].filter(Boolean).join(" · ") || "Period B" : "";
-  const cmp2Label = compareMode ? [cmp2Filters?.year, MONTHS.find(m => String(m.value) === String(cmp2Filters?.month))?.label, cmp2Filters?.source, cmp2Filters?.dimension].filter(Boolean).join(" · ") || "Period C" : "";
+const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.value) === String(cmpFilters.month))?.label, cmpFilters.source, cmpFilters.dimension].filter(Boolean).join(" · ") || t("period_b") : "";
+  const cmp2Label = compareMode ? [cmp2Filters?.year, MONTHS.find(m => String(m.value) === String(cmp2Filters?.month))?.label, cmp2Filters?.source, cmp2Filters?.dimension].filter(Boolean).join(" · ") || t("period_c") : "";
 
   if (savedPlLiteral && !loading) {
 // Build a lookup by code into the standard group-account tree.
@@ -8071,16 +7930,16 @@ return (
                   style={{ background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)", boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)" }}>
                   <span className="text-white text-[11px] font-black">B</span>
                 </div>
-                <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Period B</span>
+               <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>{t("period_b")}</span>
               </div>
-              <HeaderFilterPill label="Year" value={cmpFilters.year} onChange={v => onCmpFilterChange("year", v)} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-              <HeaderFilterPill label="Month" value={cmpFilters.month} onChange={v => onCmpFilterChange("month", v)} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-              <HeaderFilterPill label="Source" value={cmpFilters.source} onChange={v => onCmpFilterChange("source", v)} options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
-              <HeaderFilterPill label="Structure" value={cmpFilters.structure} onChange={v => onCmpFilterChange("structure", v)} options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-              <HeaderFilterPill label="Company" value={cmpFilters.company} onChange={v => onCmpFilterChange("company", v)} options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
-              <HeaderMultiFilterPill label="DIM GRP" values={cmpFilters.dimGroups} onChange={vs => onCmpFilterChange("dimGroups", vs)} options={dimGroups.map(g => ({ value: g, label: g }))} />
-              <HeaderMultiFilterPill label="DIMS" values={cmpFilters.dimensions} onChange={vs => onCmpFilterChange("dimensions", vs)} options={cmpFilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
-              {!cmp2Enabled && <button onClick={() => onCmp2EnabledChange(true)} className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]" style={{ background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)", boxShadow: "0 4px 14px -4px rgba(87,170,120,0.5)" }}><span className="text-white text-[10px] font-black">+ Add Period C</span></button>}
+<HeaderFilterPill label={t("filter_year")} value={cmpFilters.year} onChange={v => onCmpFilterChange("year", v)} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+              <HeaderFilterPill label={t("filter_month")} value={cmpFilters.month} onChange={v => onCmpFilterChange("month", v)} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+              <HeaderFilterPill label={t("filter_source")} value={cmpFilters.source} onChange={v => onCmpFilterChange("source", v)} options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+              <HeaderFilterPill label={t("filter_structure")} value={cmpFilters.structure} onChange={v => onCmpFilterChange("structure", v)} options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+              <HeaderFilterPill label={t("filter_company")} value={cmpFilters.company} onChange={v => onCmpFilterChange("company", v)} options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+              <HeaderMultiFilterPill label={t("filter_dim_group").toUpperCase()} values={cmpFilters.dimGroups} onChange={vs => onCmpFilterChange("dimGroups", vs)} options={dimGroups.map(g => ({ value: g, label: g }))} />
+              <HeaderMultiFilterPill label={t("filter_dims")} values={cmpFilters.dimensions} onChange={vs => onCmpFilterChange("dimensions", vs)} options={cmpFilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+            {!cmp2Enabled && <button onClick={() => onCmp2EnabledChange(true)} className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]" style={{ background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)", boxShadow: "0 4px 14px -4px rgba(87,170,120,0.5)" }}><span className="text-white text-[10px] font-black">{t("add_period_c")}</span></button>}
             </div>
             {cmp2Enabled && (
               <div className="px-5 py-3 flex items-center gap-2 flex-wrap border-t border-gray-100">
@@ -8088,18 +7947,18 @@ return (
                   <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)", boxShadow: "0 4px 12px -4px rgba(87,170,120,0.5)" }}>
                     <span className="text-white text-[11px] font-black">C</span>
                   </div>
-                  <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>Period C</span>
+                 <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>{t("period_c")}</span>
                 </div>
-                <HeaderFilterPill label="Year" value={cmp2Filters?.year} onChange={v => onCmp2FilterChange("year", v)} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-                <HeaderFilterPill label="Month" value={cmp2Filters?.month} onChange={v => onCmp2FilterChange("month", v)} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-                <HeaderFilterPill label="Source" value={cmp2Filters?.source} onChange={v => onCmp2FilterChange("source", v)} options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
-                <HeaderFilterPill label="Structure" value={cmp2Filters?.structure} onChange={v => onCmp2FilterChange("structure", v)} options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-                <HeaderFilterPill label="Company" value={cmp2Filters?.company} onChange={v => onCmp2FilterChange("company", v)} options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
-                <HeaderMultiFilterPill label="DIM GRP" values={cmp2Filters?.dimGroups} onChange={vs => onCmp2FilterChange("dimGroups", vs)} options={dimGroups.map(g => ({ value: g, label: g }))} />
-                <HeaderMultiFilterPill label="DIMS" values={cmp2Filters?.dimensions} onChange={vs => onCmp2FilterChange("dimensions", vs)} options={cmp2FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
-<button onClick={() => onCmp2EnabledChange(false)} className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all" style={{ background: "#fee2e2", color: "#dc2626" }} title="Remove Period C"><X size={12} strokeWidth={2.5} /></button>
+<HeaderFilterPill label={t("filter_year")} value={cmp2Filters?.year} onChange={v => onCmp2FilterChange("year", v)} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+                <HeaderFilterPill label={t("filter_month")} value={cmp2Filters?.month} onChange={v => onCmp2FilterChange("month", v)} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+                <HeaderFilterPill label={t("filter_source")} value={cmp2Filters?.source} onChange={v => onCmp2FilterChange("source", v)} options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+                <HeaderFilterPill label={t("filter_structure")} value={cmp2Filters?.structure} onChange={v => onCmp2FilterChange("structure", v)} options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+                <HeaderFilterPill label={t("filter_company")} value={cmp2Filters?.company} onChange={v => onCmp2FilterChange("company", v)} options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+                <HeaderMultiFilterPill label={t("filter_dim_group").toUpperCase()} values={cmp2Filters?.dimGroups} onChange={vs => onCmp2FilterChange("dimGroups", vs)} options={dimGroups.map(g => ({ value: g, label: g }))} />
+                <HeaderMultiFilterPill label={t("filter_dims")} values={cmp2Filters?.dimensions} onChange={vs => onCmp2FilterChange("dimensions", vs)} options={cmp2FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+<button onClick={() => onCmp2EnabledChange(false)} className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all" style={{ background: "#fee2e2", color: "#dc2626" }} title={t("remove_period_c")}><X size={12} strokeWidth={2.5} /></button>
               {!cmp3Enabled && (
-                <button onClick={() => onCmp3EnabledChange(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]" style={{ background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)", boxShadow: "0 4px 14px -4px rgba(168,85,247,0.5)" }}><span className="text-white text-[10px] font-black">+ Add Period D</span></button>
+                <button onClick={() => onCmp3EnabledChange(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]" style={{ background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)", boxShadow: "0 4px 14px -4px rgba(168,85,247,0.5)" }}><span className="text-white text-[10px] font-black">{t("add_period_d")}</span></button>
               )}
             </div>
           )}
@@ -8109,16 +7968,16 @@ return (
                 <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)", boxShadow: "0 4px 12px -4px rgba(168,85,247,0.5)" }}>
                   <span className="text-white text-[11px] font-black">D</span>
                 </div>
-                <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>Period D</span>
+<span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>{t("period_d")}</span>
               </div>
-              <HeaderFilterPill label="Year" value={cmp3Filters?.year} onChange={v => onCmp3FilterChange("year", v)} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-              <HeaderFilterPill label="Month" value={cmp3Filters?.month} onChange={v => onCmp3FilterChange("month", v)} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-              <HeaderFilterPill label="Source" value={cmp3Filters?.source} onChange={v => onCmp3FilterChange("source", v)} options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
-              <HeaderFilterPill label="Structure" value={cmp3Filters?.structure} onChange={v => onCmp3FilterChange("structure", v)} options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-              <HeaderFilterPill label="Company" value={cmp3Filters?.company} onChange={v => onCmp3FilterChange("company", v)} options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
-              <HeaderMultiFilterPill label="DIM GRP" values={cmp3Filters?.dimGroups} onChange={vs => onCmp3FilterChange("dimGroups", vs)} options={dimGroups.map(g => ({ value: g, label: g }))} />
-              <HeaderMultiFilterPill label="DIMS" values={cmp3Filters?.dimensions} onChange={vs => onCmp3FilterChange("dimensions", vs)} options={cmp3FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
-              <button onClick={() => onCmp3EnabledChange(false)} className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all" style={{ background: "#fee2e2", color: "#dc2626" }} title="Remove Period D"><X size={12} strokeWidth={2.5} /></button>
+              <HeaderFilterPill label={t("filter_year")} value={cmp3Filters?.year} onChange={v => onCmp3FilterChange("year", v)} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+              <HeaderFilterPill label={t("filter_month")} value={cmp3Filters?.month} onChange={v => onCmp3FilterChange("month", v)} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+              <HeaderFilterPill label={t("filter_source")} value={cmp3Filters?.source} onChange={v => onCmp3FilterChange("source", v)} options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+              <HeaderFilterPill label={t("filter_structure")} value={cmp3Filters?.structure} onChange={v => onCmp3FilterChange("structure", v)} options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+              <HeaderFilterPill label={t("filter_company")} value={cmp3Filters?.company} onChange={v => onCmp3FilterChange("company", v)} options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+              <HeaderMultiFilterPill label={t("filter_dim_group").toUpperCase()} values={cmp3Filters?.dimGroups} onChange={vs => onCmp3FilterChange("dimGroups", vs)} options={dimGroups.map(g => ({ value: g, label: g }))} />
+              <HeaderMultiFilterPill label={t("filter_dims")} values={cmp3Filters?.dimensions} onChange={vs => onCmp3FilterChange("dimensions", vs)} options={cmp3FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+              <button onClick={() => onCmp3EnabledChange(false)} className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all" style={{ background: "#fee2e2", color: "#dc2626" }} title={t("remove_period_d")}><X size={12} strokeWidth={2.5} /></button>
             </div>
           )}
         </div>
@@ -8154,7 +8013,7 @@ return (
                           style={{ background: "transparent", color: searchActive ? colors.primary : "#94a3b8", padding: 0, transition: "color 240ms" }}
                           onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
                           onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary : "#94a3b8"; }}
-                          title="Search">
+                          title={t("table_search_placeholder")}>
                           <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
                             <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.6"/>
                             <path d="M9.5 9.5L12.5 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
@@ -8174,7 +8033,7 @@ return (
                                   setSearchQuery("");
                                 }
                               }}
-                              placeholder="Code or name..."
+                             placeholder={t("search_code_or_name")}
                               style={{
                                 fontSize: 16, fontWeight: 700, color: colors.primary,
                                 border: "none", outline: "none", background: "transparent",
@@ -8186,7 +8045,7 @@ return (
                               style={{ background: "transparent", color: "#94a3b8", padding: 2, transition: "color 200ms" }}
                               onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
                               onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
-                              title="Close search">
+                             title={t("close_search")}>
                               <X size={14} />
                             </button>
                           </>
@@ -8215,7 +8074,7 @@ return (
                             onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
                             onMouseLeave={e => { e.currentTarget.style.color = filtersOpen ? colors.primary : "#94a3b8"; }}>
                             <ChevronDown size={10} style={{ transition: "transform 300ms cubic-bezier(0.34,1.56,0.64,1)", transform: filtersOpen ? "rotate(0deg)" : "rotate(-90deg)" }} />
-                            <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? "Hide" : "Show"}</span>
+                            <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? t("btn_hide") : t("btn_show")}</span>
                           </button>
                           <div style={{ width: 1, height: 18, background: "#e5e7eb", flexShrink: 0 }} />
                         </>
@@ -8262,7 +8121,7 @@ title={Object.keys(expandedMap).some(k => k.startsWith('saved-') && expandedMap[
                   )) : (
 <th className="text-center py-3 whitespace-nowrap k-sticky-head" style={{ cursor: "pointer" }}
                       onClick={toggleHistory}
-                      title={historyExpanded ? "Hide history" : "Show last 6 months"}>
+                      title={historyExpanded ? t("hide_history") : t("show_last_6_months")}>
                       <div className="flex items-center justify-center gap-3">
                         <span key={ytdOnly ? "ytd" : "monthly"} className="font-black tracking-tight inline-block"
                           style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em" }}>
@@ -8307,12 +8166,12 @@ title={Object.keys(expandedMap).some(k => k.startsWith('saved-') && expandedMap[
                     </div>
                   </th>}
                   {compareMode && cmp2Enabled && cmp3Enabled && (() => {
-                    const cmp3Label = [cmp3Filters?.year, MONTHS.find(m => String(m.value) === String(cmp3Filters?.month))?.label, cmp3Filters?.source].filter(Boolean).join(" · ") || "Period D";
+                    const cmp3Label = [cmp3Filters?.year, MONTHS.find(m => String(m.value) === String(cmp3Filters?.month))?.label, cmp3Filters?.source].filter(Boolean).join(" · ") || t("period_d");
                     return <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap k-sticky-head">
                       <div className="flex flex-col items-center">
                         <div className="flex items-center gap-1.5">
                           <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#a855f7" }} />
-                          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>Period D</span>
+<span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>{t("period_d")}</span>
                         </div>
                         <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{cmp3Label}</span>
                       </div>
@@ -8771,10 +8630,6 @@ const dimIsMatch = (() => {
                       if (nodeJrns.length > 0 || hasHistJrns) {
                         const jrnKey = `${rowKey}-jrn`;
                         const jrnExpanded = isOpen(jrnKey);
-                        const histTotalsByMonth = historyMonthsProcessed.map(h => {
-                          const entries = h.jrnByCode?.get(String(node.code)) || [];
-                          return entries.reduce((acc, je) => acc + -parseAmt(je.amountYTD ?? je.AmountYTD ?? 0), 0);
-                        });
 sectionRows.push(
                           <tr key={jrnKey}
                             className="border-b border-[#1a2f8a]/5 bg-white cursor-pointer hover:bg-indigo-50/40 transition-colors"
@@ -8976,10 +8831,10 @@ if (jrnExpanded) {
     );
   }
 
-  if (loading) return (
+if (loading) return (
     <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
       <Loader2 size={28} className="text-[#1a2f8a] animate-spin mx-auto mb-3" />
-      <p className="text-gray-400 text-sm">Loading P&L data…</p>
+      <p className="text-gray-400 text-sm">{t("loading_pl_data")}</p>
     </div>
   );
   if (error) return <ErrorBox error={error} />;
@@ -9008,7 +8863,7 @@ return (
                 </div>
                 <div>
                   <p className="text-white font-black text-sm">{dimPopup.name || dimPopup.code || "—"}</p>
-                  <p className="text-white/60 text-[10px] font-medium uppercase tracking-widest">Dimension</p>
+                 <p className="text-white/60 text-[10px] font-medium uppercase tracking-widest">{t("dimension")}</p>
                 </div>
               </div>
               <button onClick={() => setDimPopup(null)} className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-all">
@@ -9016,11 +8871,11 @@ return (
               </button>
             </div>
             <div className="p-5 space-y-1">
-              {[
-                ["Code", dimPopup.code],
-                ["Name", dimPopup.name],
-                ["Amount YTD", dimPopup.amount != null ? fmtAmt(dimPopup.amount) : null],
-                ["Company", dimPopup.company],
+{[
+                [t("dim_code"), dimPopup.code],
+                [t("dim_name"), dimPopup.name],
+                [t("dim_amount_ytd"), dimPopup.amount != null ? fmtAmt(dimPopup.amount) : null],
+                [t("dim_company"), dimPopup.company],
               ].filter(([, v]) => v !== null && v !== undefined && v !== "" && v !== "—").map(([label, value]) => (
                 <div key={label} className="flex items-start justify-between gap-4 py-2 border-b border-gray-50 last:border-0">
                   <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest flex-shrink-0 mt-0.5">{label}</span>
@@ -9179,7 +9034,7 @@ return (
         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all"
         style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}80` }}>
         <ChevronDown size={12} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
-        {filtersOpen ? "Hide filters" : "Show filters"}
+       {filtersOpen ? t("pl_hide_filters") : t("pl_show_filters")}
       </button>
     )}
 <button onClick={() => {
@@ -9210,7 +9065,7 @@ return (
 className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-black transition-all"
       style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}80` }}
 
-      title={Object.values(expandedMap).some(Boolean) ? "Collapse all" : "Expand all"}>
+     title={Object.values(expandedMap).some(Boolean) ? t("btn_collapse_all") : t("btn_expand_all")}>
 {Object.values(expandedMap).some(Boolean)
         ? <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
         : <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
@@ -9221,7 +9076,7 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
       style={compareMode
         ? { backgroundColor: colors.quaternary ?? "#F59E0B", color: colors.primary ?? "#1a2f8a" }
         : { background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}80` }}>
-      <GitMerge size={12} /> Compare
+<GitMerge size={12} /> {t("btn_compare")}
 
     </button>
 <div className="relative flex items-center p-1 rounded-xl" style={{ backgroundColor: "rgba(255,255,255,0.1)" }}
@@ -9243,15 +9098,15 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
         transition: "left 0.25s cubic-bezier(0.4,0,0.2,1), width 0.25s cubic-bezier(0.4,0,0.2,1)",
         pointerEvents: "none",
       }} />
-      <button onClick={() => setYtdOnly(false)}
+      <button onClick={() => {}}
         className="relative z-10 px-3 py-1.5 rounded-lg text-xs font-black transition-colors duration-200"
-        style={{ color: !ytdOnly ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}80` }}>
-        Monthly
+style={{ color: !ytdOnly ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}80` }}>
+        {t("pl_monthly")}
       </button>
-      <button onClick={() => setYtdOnly(true)}
+      <button onClick={() => {}}
         className="relative z-10 px-3 py-1.5 rounded-lg text-xs font-black transition-colors duration-200"
         style={{ color: ytdOnly ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}80` }}>
-        YTD
+        {t("pl_ytd")}
       </button>
     </div>
     <div className="relative flex items-center p-1 rounded-xl" style={{ backgroundColor: "rgba(255,255,255,0.1)" }}
@@ -9275,13 +9130,13 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
       }} />
       <button onClick={() => setSummaryMode(false)}
         className="relative z-10 px-3 py-1.5 rounded-lg text-xs font-black transition-colors duration-200"
-        style={{ color: !summaryMode ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}80` }}>
-        Detailed
+style={{ color: !summaryMode ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}80` }}>
+        {t("pl_detailed")}
       </button>
       <button onClick={() => setSummaryMode(true)}
         className="relative z-10 px-3 py-1.5 rounded-lg text-xs font-black transition-colors duration-200"
         style={{ color: summaryMode ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}80` }}>
-        Summary
+        {t("pl_summary")}
       </button>
     </div>
   </div>
@@ -9316,7 +9171,7 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
         style={{ background: "transparent", color: searchActive ? colors.primary : "#94a3b8", padding: 0, transition: "color 240ms" }}
         onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
         onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary : "#94a3b8"; }}
-        title="Search">
+       title={t("table_search_placeholder")}>
         <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
           <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.6"/>
           <path d="M9.5 9.5L12.5 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
@@ -9336,7 +9191,7 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
               setSearchQuery("");
             }
           }}
-          placeholder="Code or name..."
+         placeholder={t("search_code_or_name")}
           style={{
             fontSize: 16, fontWeight: 700, color: colors.primary,
             border: "none", outline: "none", background: "transparent",
@@ -9348,18 +9203,18 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
           style={{ background: "transparent", color: "#94a3b8", padding: 2, transition: "color 200ms" }}
           onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
           onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
-          title="Close search">
+         title={t("close_search")}>
           <X size={14} />
         </button>
         </>
       ) : (
         <>
-          <span onClick={() => setSearchActive(true)} className="font-black tracking-tight"
+<span onClick={() => setSearchActive(true)} className="font-black tracking-tight"
             style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em", cursor: "pointer" }}>
-            Account
+            {t("col_account")}
           </span>
           <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
-            Profit & Loss
+            {t("page_pl_full")}
           </span>
         </>
       )}
@@ -9446,7 +9301,7 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
             onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
             onMouseLeave={e => { e.currentTarget.style.color = filtersOpen ? colors.primary : "#94a3b8"; }}>
             <ChevronDown size={10} style={{ transition: "transform 300ms cubic-bezier(0.34,1.56,0.64,1)", transform: filtersOpen ? "rotate(0deg)" : "rotate(-90deg)" }} />
-            <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? "Hide" : "Show"}</span>
+            <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? t("btn_hide") : t("btn_show")}</span>
           </button>
         </>
       )}
@@ -9460,7 +9315,7 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
 )) : (
 <th className="text-center py-3 whitespace-nowrap k-sticky-head" style={{ width: "200px", cursor: (compareMode || multiCompany) ? "default" : "pointer" }}
   onClick={toggleHistory}
-  title={(compareMode || multiCompany) ? "" : (historyExpanded ? "Hide history" : "Show last 12 months")}>
+ title={(compareMode || multiCompany) ? "" : (historyExpanded ? t("hide_history") : t("show_last_12_months"))}>
   <span key={ytdOnly ? "ytd" : "monthly"} className="font-black tracking-tight inline-block"
     style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em" }}>
     {(ytdOnly ? t("mode_ytd") : t("mode_monthly")).split("").map((ch, i) => (
@@ -9508,7 +9363,7 @@ className="flex items-center justify-center w-7 h-7 rounded-lg text-xs font-blac
     </div>
   </th>}
   {compareMode && cmp2Enabled && cmp3Enabled && (() => {
-    const cmp3Label = [cmp3Filters?.year, MONTHS.find(m => String(m.value) === String(cmp3Filters?.month))?.label, cmp3Filters?.source].filter(Boolean).join(" · ") || "Period D";
+    const cmp3Label = [cmp3Filters?.year, MONTHS.find(m => String(m.value) === String(cmp3Filters?.month))?.label, cmp3Filters?.source].filter(Boolean).join(" · ") || t("period_d");
     return <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap k-sticky-head">
       <div className="flex flex-col items-center">
         <div className="flex items-center gap-1.5">
@@ -9539,17 +9394,16 @@ const isMatchSelf = (() => {
 const expanded = isOpen(node.code);
 const hasKids  = (node.children||[]).filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType)).length > 0
                 || (node.uploadLeaves || []).some(l => l.type !== "plain");
-const isHighlighted = PL_HIGHLIGHTED_CODES.has(String(node.code)) || String(node.code).endsWith(".S") || String(node.code).endsWith(".PL");
 const SECTION_DIVIDERS_MAP = Object.keys(effectiveBreakersPl).length
   ? effectiveBreakersPl
   : summaryRows.some(n => /[a-zA-Z]/.test(String(n.code)))
-    ? { "A.04.S": { label: "Ingresos", color: colors.primary }, "A.13.S": { label: "Gastos operativos", color: colors.secondary }, "A.24.S": { label: "Resultado final", color: colors.tertiary } }
-    : { "11999": { label: "Ingresos", color: colors.primary }, "53999": { label: "Gastos operativos", color: colors.secondary }, "89999": { label: "Resultado final", color: colors.tertiary } };
+    ? { "A.04.S": { label: t("pl_divider_revenue"), color: colors.primary }, "A.13.S": { label: t("pl_divider_opex"), color: colors.secondary }, "A.24.S": { label: t("pl_divider_result"), color: colors.tertiary } }
+    : { "11999": { label: t("pl_divider_revenue"), color: colors.primary }, "53999": { label: t("pl_divider_opex"), color: colors.secondary }, "89999": { label: t("pl_divider_result"), color: colors.tertiary } };
 
 const DETAIL_DIVIDERS_BEFORE = (() => {
-  const fallback = summaryRows.some(n => /[a-zA-Z]/.test(String(n.code)))
-    ? { "A.04.S": { label: "Ingresos", color: colors.primary }, "A.13.S": { label: "Gastos operativos", color: colors.secondary }, "A.24.S": { label: "Resultado neto", color: colors.tertiary } }
-    : { "10999": { label: "Ingresos", color: colors.primary }, "12199": { label: "Gastos operativos", color: colors.secondary }, "89999": { label: "Resultado final", color: colors.tertiary } };
+const fallback = summaryRows.some(n => /[a-zA-Z]/.test(String(n.code)))
+    ? { "A.04.S": { label: t("pl_divider_revenue"), color: colors.primary }, "A.13.S": { label: t("pl_divider_opex"), color: colors.secondary }, "A.24.S": { label: t("pl_divider_result"), color: colors.tertiary } }
+    : { "10999": { label: t("pl_divider_revenue"), color: colors.primary }, "12199": { label: t("pl_divider_opex"), color: colors.secondary }, "89999": { label: t("pl_divider_result"), color: colors.tertiary } };
 const source = Object.keys(effectiveBreakersPl).length ? effectiveBreakersPl : fallback;
   if (allSumRows.length === 0) return source;
   const remapped = { ...source };
@@ -10069,7 +9923,7 @@ function FinancialReport({ groupAccounts, uploadedAccounts, loading, error }) {
     return (
       <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
         <Loader2 size={28} className="text-[#1a2f8a] animate-spin mx-auto mb-3" />
-        <p className="text-gray-400 text-sm">Loading financial data…</p>
+       <p className="text-gray-400 text-sm">{t("loading_financial_data")}</p>
       </div>
     );
   }
@@ -10082,8 +9936,8 @@ function FinancialReport({ groupAccounts, uploadedAccounts, loading, error }) {
         <div className="w-14 h-14 bg-[#eef1fb] rounded-2xl flex items-center justify-center mx-auto mb-4">
           <TrendingUp size={24} className="text-[#1a2f8a]" />
         </div>
-        <p className="text-gray-400 text-sm font-semibold">Waiting for data…</p>
-        <p className="text-gray-300 text-xs mt-1">Data is being loaded automatically.</p>
+<p className="text-gray-400 text-sm font-semibold">{t("waiting_for_data")}</p>
+        <p className="text-gray-300 text-xs mt-1">{t("data_loading_automatically")}</p>
       </div>
     );
   }
@@ -10101,12 +9955,12 @@ function FinancialReport({ groupAccounts, uploadedAccounts, loading, error }) {
           ))}
         </div>
         <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-[#eef1fb] text-[#1a2f8a]">
-          <Hash size={11} />{visibleRoots.length} sections · {uploadedAccounts.length} rows · {groupAccounts.length} group accs
+          <Hash size={11} />{visibleRoots.length} {t("table_sections")} · {uploadedAccounts.length} {t("table_rows")} · {groupAccounts.length} {t("table_group_accs")}
         </div>
         <div className="ml-auto flex items-center gap-2">
           <div className="flex items-center gap-2 bg-white border border-gray-100 rounded-xl px-3 py-2 shadow-sm">
             <Search size={13} className="text-gray-400" />
-            <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search accounts…"
+         <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder={t("search_accounts_placeholder")}
               className="text-xs outline-none text-gray-700 w-36 bg-transparent placeholder:text-gray-300" />
             {search && <button onClick={() => setSearch("")}><X size={12} className="text-gray-400" /></button>}
           </div>
@@ -10241,8 +10095,8 @@ function convertSavedMappingTree(tree, opts = {}) {
           const canon = normalizeBSSectionCode(node.name);
           if (canon) secCode = canon;
         }
-        sections.set(secCode, {
-          label: String(node.name ?? "Section"),
+sections.set(secCode, {
+          label: String(node.name ?? ""),
           color: node.color || "#1a2f8a",
         });
         walk(node.children || [], depth, secCode);
@@ -10295,8 +10149,8 @@ function buildSavedMappingLiteral(tree) {
   for (const node of tree) {
     if (!node) continue;
     if (node.kind === "breaker") {
-      current = {
-        label: String(node.name ?? "Section"),
+current = {
+        label: String(node.name ?? ""),
         color: node.color || "#1a2f8a",
         nodes: [],
       };
@@ -10351,7 +10205,7 @@ function BSDeviationCells({ a, b, typoStyle }) {
 
 
 
-function BalanceSheet({ plCompareMode = false, externalAccColWidth, onAccColWidthChange, multiCompany = false, selectedCompanies = [], externalBsDrillMap, externalSetBsDrillMap, onHistoryExpandedChange, externalHistoryExpanded, externalHistoryMonths, onHistoryMonthsChange, groupAccounts, uploadedAccounts,dimensions = [], loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], journalEntriesCmp = [], journalEntriesCmp2 = [], journalEntriesCmp3 = [], onCompareChange, dimensionActive = false,upDimGroup = "", upDimension = "", upDimGroups = [], upDimensions = [], filteredDims = [], externalCmp2Enabled, onBsCmp2EnabledChange,breakers = { pl: {}, bs: {}, cf: {} }, pgcBsMapping = null, savedBsLiteral = null,
+function BalanceSheet({ plCompareMode = false, externalAccColWidth, onAccColWidthChange, multiCompany = false, selectedCompanies = [], externalBsDrillMap, externalSetBsDrillMap, onHistoryExpandedChange, externalHistoryExpanded, externalHistoryMonths, onHistoryMonthsChange, groupAccounts, uploadedAccounts, loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], journalEntriesCmp = [], journalEntriesCmp2 = [], journalEntriesCmp3 = [], onCompareChange, dimensionActive = false,upDimGroup = "", upDimension = "", upDimGroups = [], upDimensions = [], filteredDims = [], externalCmp2Enabled, onBsCmp2EnabledChange,breakers = { pl: {}, bs: {}, cf: {} }, pgcBsMapping = null, savedBsLiteral = null,
   compareMode, setCompareMode,
   cmpYear, setCmpYear, cmpMonth, setCmpMonth, cmpSource, setCmpSource, cmpStructure, setCmpStructure, cmpCompany, setCmpCompany,
   cmpData, setCmpData,
@@ -10374,10 +10228,10 @@ const { colors } = useSettings();
 const [filtersOpen, setFiltersOpen] = useState(true);
   const [historyExpandedInternal, setHistoryExpandedInternal] = useState(false);
   const historyExpanded = externalHistoryExpanded !== undefined ? externalHistoryExpanded : historyExpandedInternal;
-  const setHistoryExpanded = (v) => {
+const setHistoryExpanded = useCallback((v) => {
     setHistoryExpandedInternal(v);
     onHistoryExpandedChange?.(v);
-  };
+  }, [onHistoryExpandedChange]);
 const [historyMonthsInternal, setHistoryMonthsInternal] = useState([]);
   const historyMonths = externalHistoryMonths !== undefined ? externalHistoryMonths : historyMonthsInternal;
   const historyMonthsRef = useRef(historyMonths);
@@ -10428,13 +10282,13 @@ for (const target of targets) {
         return [...filtered, { year: target.year, month: target.month, data, journals }];
       });
     }
-    setHistoryLoading(false);
-  }, [year, month, fetchBSHistoryMonth]);
+setHistoryLoading(false);
+  }, [year, month, fetchBSHistoryMonth, setHistoryMonths]);
 
 const toggleBSHistory = useCallback(() => {
     if (compareMode || multiCompany || plCompareMode) return;
     setHistoryExpanded(!historyExpanded);
-  }, [compareMode, multiCompany, plCompareMode, historyExpanded]);
+}, [compareMode, multiCompany, plCompareMode, historyExpanded, setHistoryExpanded]);
 
 // Single sync effect: fetches when expanded turns on or period changes; clears when off.
   // Skips refetch on remount when nothing actually changed.
@@ -10482,14 +10336,13 @@ const matchesSelf = useCallback((n, q) => {
   return false;
 }, [localName]);
 
-  const [cmpLoading, setCmpLoading] = useState(false);
+const [, setCmpLoading] = useState(false);
   const header3Style = useTypo("header3");
-  const header2Style = useTypo("header2");
   const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
   const subbody1Style = useTypo("subbody1");
   const subbody2Style = useTypo("subbody2");
-  const [cmp2Loading, setCmp2Loading] = useState(false);
+const [, setCmp2Loading] = useState(false);
 const [bsView, setBsView] = useState("summary");
   const [searchActive, setSearchActive] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -10498,7 +10351,6 @@ const searchInputRef = useRef(null);
 const [accColWidthInternal, setAccColWidthInternal] = useState(null);
 const accColWidth = externalAccColWidth !== undefined ? externalAccColWidth : accColWidthInternal;
 const setAccColWidth = onAccColWidthChange ?? setAccColWidthInternal;
-const accTableRef = useRef(null);
 const startAccResize = useCallback((e) => {
   e.preventDefault();
   e.stopPropagation();
@@ -10589,8 +10441,8 @@ const bsCmp3FilteredDims = useMemo(() => {
     return bsCmp3DimGroups.includes(g);
   });
 }, [effectiveDimensions, bsCmp3DimGroups]);
-const bsDrillMap = externalBsDrillMap ?? {};
-const setBsDrillMap = externalSetBsDrillMap ?? (() => {});
+const bsDrillMap = useMemo(() => externalBsDrillMap ?? {}, [externalBsDrillMap]);
+const setBsDrillMap = useMemo(() => externalSetBsDrillMap ?? (() => {}), [externalSetBsDrillMap]);
 
 const bsDrill = useCallback((key) => {
   setBsDrillMap(prev => ({ ...prev, [key]: !prev[key] }));
@@ -10881,11 +10733,10 @@ const companyColumns = useMemo(() => {
     const co = String(r.CompanyShortName ?? r.companyShortName ?? "");
     const cur = String(r.CurrencyCode ?? r.currencyCode ?? "");
     const key = `${co}|||${cur}`;
-    if (co && !seen.has(key)) { seen.add(key); cols.push({ company: co, currency: cur }); }
+ if (co && !seen.has(key)) { seen.add(key); cols.push({ company: co, currency: cur }); }
   });
   return cols.sort((a, b) => a.company.localeCompare(b.company));
-}, [allCompaniesData]);
-
+}, [filteredAllCompaniesData]);
 
 
 const companyTree = useMemo(() => {
@@ -10920,7 +10771,7 @@ const renderDrillChildren = (children, leaves, depth, contextKey) => {
       const grandkids = (child.children || []).filter(hasData);
       const hasMore = grandkids.length > 0 || (child.uploadLeaves?.filter(l => l.type !== "plain").length > 0);
       const total = Number(child.code) >= 599999 ? -sumNode(child) : sumNode(child);
-      const isBold = BS_HIGHLIGHTED_CODES.has(String(child.code));
+      // const isBold = BS_HIGHLIGHTED_CODES.has(String(node.code));
 
 const isChildMatch = (() => {
         const q = debouncedQuery.trim().toLowerCase();
@@ -11001,7 +10852,7 @@ if (childExpanded) {
                     {jrnExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>}
                   </span>
                   <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded flex-shrink-0">
-                    journal
+{t("label_journal")}
                   </span>
                   <span className="text-[10px] text-gray-400">{jrnRows.length} {jrnRows.length === 1 ? t("entry") : t("entries")}</span>
                 </div>
@@ -11249,7 +11100,7 @@ if (jrnExpanded) {
                   <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded flex-shrink-0">
                    {jrnExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>} {t("label_journal")}
                   </span>
-                  <span className="text-[10px] text-gray-400">{jrnRows.length} entries</span>
+                  <span className="text-[10px] text-gray-400">{jrnRows.length} {jrnRows.length === 1 ? t("entry") : t("entries")}</span>
                 </div>
               </td>
               <td className="text-right pr-8 py-1 font-mono text-xs text-gray-300">—</td>
@@ -11385,7 +11236,7 @@ function renderNode(node, depth = 0) {
 if (expanded && hasMore) {
 const drillRows = renderBSDrill(node, drillKey, depth);
       if (drillRows?.length) {
-        rows.push(...drillRows.map((row, i) => row));
+       rows.push(...drillRows);
       }
     }
   }
@@ -11441,8 +11292,7 @@ const flatNodes = bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes;
     rootsInFlat.sort(sortBySO);
 
     const renderFlatNode = (node, depth) => {
-      const total = isPGC_BS(node.code) ? -sumNode(node) : sumNode(node);
-      const isBold = isBSHighlighted(node);
+const total = isPGC_BS(node.code) ? -sumNode(node) : sumNode(node);
       const drillKey = `bsrow-${node.code}`;
       const flatChildren = childrenInFlat.get(String(node.code)) || [];
       const treeChildren = (node.children || []).filter(hasData);
@@ -11515,23 +11365,22 @@ if (expanded) {
 
   // Fallback: original recursive rendering for non-PGC structures
   nodes.filter(hasData).forEach(node => {
-    const total = Number(node.code) >= 599999 ? -sumNode(node) : sumNode(node);
-    const isBold = isBSHighlighted(node);
+const total = Number(node.code) >= 599999 ? -sumNode(node) : sumNode(node);
     const kids = (node.children || []).filter(hasData).filter(c => c.level <= 4);
     const drillKey = `bsrow-${node.code}`;
     const hasMore = kids.length > 0 || node.uploadLeaves?.filter(l => l.type !== "plain").length > 0;
     const expanded = !!bsDrillMap[drillKey];
 const BS_DIVIDERS = Object.keys(breakers.bs).length
   ? effectiveBreakersBs
-  : { '399999': { label: "Activo", color: colors.primary }, '499999': { label: "Patrimonio Neto", color: colors.secondary }, '699999': { label: "Pasivo", color: colors.tertiary }, 'C.ACT': { label: "Activo", color: colors.primary }, 'D.S': { label: "Patrimonio Neto", color: colors.secondary }, 'E.S': { label: "Pasivo", color: colors.tertiary } };
+  : { '399999': { label: t("bs_assets"), color: colors.primary }, '499999': { label: t("bs_equity"), color: colors.secondary }, '699999': { label: t("bs_liabilities"), color: colors.tertiary }, 'C.ACT': { label: t("bs_assets"), color: colors.primary }, 'D.S': { label: t("bs_equity"), color: colors.secondary }, 'E.S': { label: t("bs_liabilities"), color: colors.tertiary } };
     const bsDivider = BS_DIVIDERS[String(node.code)];
-if (divider) {
+if (bsDivider) {
           rows.push(
             <tr key={`bsdivider-${node.code}`}>
-              <td style={{ backgroundColor: divider.color, position: "sticky", left: 0, zIndex: 4 }} className="px-6 py-1.5 whitespace-nowrap">
-                <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
+              <td style={{ backgroundColor: bsDivider.color, position: "sticky", left: 0, zIndex: 4 }} className="px-6 py-1.5 whitespace-nowrap">
+                <span className="uppercase tracking-widest" style={header3Style}>{bsDivider.label}</span>
               </td>
-              <td colSpan={(cmp2Enabled ? 8 : 5)} style={{ backgroundColor: divider.color }} />
+              <td colSpan={(cmp2Enabled ? 8 : 5)} style={{ backgroundColor: bsDivider.color }} />
             </tr>
           );
         }
@@ -11587,19 +11436,19 @@ useEffect(() => {
     if (compareMode && cmpSource && cmpStructure && cmpYear && cmpMonth && cmpCompany) {
       fetchBSCompare(cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany, setCmpData, setCmpLoading);
     }
-  }, [compareMode, cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany, fetchBSCompare]);
+}, [compareMode, cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany, fetchBSCompare, setCmpData]);
 
 useEffect(() => {
     if (compareMode && cmp2Source && cmp2Structure && cmp2Year && cmp2Month && cmp2Company) {
       fetchBSCompare(cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, setCmp2Data, setCmp2Loading);
     }
-  }, [compareMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, fetchBSCompare]);
+}, [compareMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, fetchBSCompare, setCmp2Data]);
 
   useEffect(() => {
     if (compareMode && cmp3Enabled && cmp3Source && cmp3Structure && cmp3Year && cmp3Month && cmp3Company) {
       fetchBSCompare(cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3Company, setCmp3Data, () => {});
     }
-  }, [compareMode, cmp3Enabled, cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3Company, fetchBSCompare]);
+}, [compareMode, cmp3Enabled, cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3Company, fetchBSCompare, setCmp3Data]);
 
   useEffect(() => {
     onCompareChange?.(
@@ -11609,7 +11458,7 @@ useEffect(() => {
       { year: cmp2Year, month: cmp2Month, source: cmp2Source, structure: cmp2Structure, company: cmp2Company },
       cmp2Data,
     );
-  }, [compareMode, cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany, cmpData, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, cmp2Data]);
+}, [compareMode, cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany, cmpData, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, cmp2Data, onCompareChange]);
 
 const tree = useMemo(() => buildTree(groupAccounts, uploadedAccounts, !dimensionActive), [groupAccounts, uploadedAccounts, dimensionActive]);
 const rawSumByCode = useMemo(() => {
@@ -11751,23 +11600,6 @@ const treeByCode = new Map();
     (function indexTree(nodes) {
       nodes.forEach(n => { treeByCode.set(String(n.code), n); indexTree(n.children || []); });
     })(tree);
-
-    // Per-leaf+dim indexes for compare periods (saved-mapping path)
-    const buildSavedLeafDimIdx = (rows) => {
-      const m = new Map();
-      (rows || []).forEach(row => {
-        const lac = String(getField(row, "localAccountCode") ?? "");
-        const dc  = String(getField(row, "dimensionCode") ?? "");
-        if (!lac || !dc || dc === "null") return;
-        const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
-        m.set(`${lac}|${dc}`, (m.get(`${lac}|${dc}`) ?? 0) + amt);
-      });
-      return m;
-    };
-    const aPrevLeafDimIdxSaved = buildSavedLeafDimIdx(prevUploadedAccounts);
-    const bLeafDimIdxSaved     = compareMode ? buildSavedLeafDimIdx(cmpUploadedAccounts) : new Map();
-    const bPrevLeafDimIdxSaved = compareMode ? buildSavedLeafDimIdx(cmpPrevUploadedAccounts) : new Map();
-    const cLeafDimIdxSaved     = compareM
 
     savedBsLiteral.forEach((section, secIdx) => {
       const walk = (node, parentPath) => {
@@ -11992,9 +11824,7 @@ const effectiveBreakersBs = useMemo(() => {
   return out;
 }, [pgcBsMapping, breakers, bsView, bsPgcSummaryNodes, bsPgcAllSumNodes, groupAccounts, colors]);
 
-  const monthLabel = MONTHS.find(m => String(m.value) === String(month))?.label ?? month;
-
-  const getNodeValue = (tree, code) => {
+const getNodeValue = (tree, code) => {
     const find = (nodes) => {
       for (const n of nodes) {
         if (n.code === code) return n;
@@ -12052,19 +11882,12 @@ function renderBSCompareRows(nodes, cmpTree, cmp2Tree, cmp3Tree) {
       childrenInFlat.forEach(arr => arr.sort(sortBySO));
       rootsInFlat.sort(sortBySO);
 
-      const devColor = (v) => v === 0 ? "text-gray-300" : v > 0 ? "text-emerald-600" : "text-red-500";
-
-      const renderFlatNodeCmp = (node, depth) => {
-        const isBold = isBSHighlighted(node);
+const renderFlatNodeCmp = (node, depth) => {
         const actual = isPGC_BS(node.code) ? -sumNode(node) : sumNode(node);
         const cmpRaw = getNodeValue(cmpTree, node.code);
         const cmp = isPGC_BS(node.code) ? -cmpRaw : cmpRaw;
         const cmp2Raw = getNodeValue(cmp2Tree, node.code);
         const cmp2 = isPGC_BS(node.code) ? -cmp2Raw : cmp2Raw;
-        const devB = actual - cmp;
-        const devBPct = cmp !== 0 ? (devB / Math.abs(cmp)) * 100 : null;
-        const devC = actual - cmp2;
-        const devCPct = cmp2 !== 0 ? (devC / Math.abs(cmp2)) * 100 : null;
 
  const drillKeyCmp = `bsrow-${node.code}`;
         const flatChildrenCmp = childrenInFlat.get(String(node.code)) || [];
@@ -12074,7 +11897,6 @@ function renderBSCompareRows(nodes, cmpTree, cmp2Tree, cmp3Tree) {
         const hasJournalCmp = (journalByCode.get(node.code) || []).length > 0;
         const hasMoreCmp = flatChildrenCmp.length > 0 || hasNonFlatCmp || hasLeavesCmp || hasJournalCmp;
         const expandedCmp = isOpen(drillKeyCmp);
-        const rowStyle = depth === 0 ? body1Style : body2Style;
         const divider = effectiveBreakersBs[String(node.code)];
 if (divider) {
           rows.push(
@@ -12141,8 +11963,7 @@ if (expandedCmp) {
     if (pgcBsMapping) return rows;
 
     // Fallback: original recursive rendering
-    nodes.filter(hasData).forEach(node => {
-      const isBold = isBSHighlighted(node);
+nodes.filter(hasData).forEach(node => {
       const kids = (node.children || []).filter(hasData).filter(c => c.level <= 4);
 
 const BS_DIVIDERS = Object.keys(breakers.bs).length
@@ -12167,14 +11988,7 @@ if (bsDivider) {
       const cmp = Number(node.code) >= 599999 ? -cmpRaw : cmpRaw;
       const cmp2Raw = getNodeValue(cmp2Tree, node.code);
       const cmp2 = Number(node.code) >= 599999 ? -cmp2Raw : cmp2Raw;
-
-      const devB = actual - cmp;
-      const devBPct = cmp !== 0 ? (devB / Math.abs(cmp)) * 100 : null;
-      const devC = actual - cmp2;
-      const devCPct = cmp2 !== 0 ? (devC / Math.abs(cmp2)) * 100 : null;
-      const devColor = (v) => v === 0 ? "text-gray-300" : v > 0 ? "text-emerald-600" : "text-red-500";
-
-  const drillKeyCmp = `bsrow-${node.code}`;
+      const drillKeyCmp = `bsrow-${node.code}`;
       const hasMoreCmp = node.uploadLeaves?.filter(l => l.type !== "plain").length > 0;
       const expandedCmp = !!bsDrillMap[drillKeyCmp];
 
@@ -12344,8 +12158,8 @@ const sumLiteralBSGenericLeaf = (node, accIdxLoc, dimIdxLoc) => {
     const sumLiteralC = (node) => sumLiteralBSGeneric(node, cmp2AccIdxBs, cmp2DimIdxBs);
     const sumLiteralD = (node) => sumLiteralBSGeneric(node, cmp3AccIdxBs, cmp3DimIdxBs);
 
-const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource, cmpStructure].filter(Boolean).join(" · ") || "Period B";
-    const bsCmp2Label = [cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source, cmp2Structure].filter(Boolean).join(" · ") || "Period C";
+const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource, cmpStructure].filter(Boolean).join(" · ") || t("period_b");
+    const bsCmp2Label = [cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source, cmp2Structure].filter(Boolean).join(" · ") || t("period_c");
 
     return (
       <div className="space-y-3 flex flex-col" style={{ minHeight: 0, flex: 1, overflow: "visible" }}>
@@ -12367,25 +12181,25 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                   style={{ background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)", boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)" }}>
                   <span className="text-white text-[11px] font-black">B</span>
                 </div>
-                <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Period B</span>
+<span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>{t("period_b")}</span>
               </div>
-              <HeaderFilterPill label="Year" value={cmpYear} onChange={setCmpYear}
+              <HeaderFilterPill label={t("filter_year")} value={cmpYear} onChange={setCmpYear}
                 options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-              <HeaderFilterPill label="Month" value={cmpMonth} onChange={setCmpMonth}
+              <HeaderFilterPill label={t("filter_month")} value={cmpMonth} onChange={setCmpMonth}
                 options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-              <HeaderFilterPill label="Source" value={cmpSource} onChange={setCmpSource}
+              <HeaderFilterPill label={t("filter_source")} value={cmpSource} onChange={setCmpSource}
                 options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
-              <HeaderFilterPill label="Structure" value={cmpStructure} onChange={setCmpStructure}
+              <HeaderFilterPill label={t("filter_structure")} value={cmpStructure} onChange={setCmpStructure}
                 options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-<HeaderFilterPill label="Company" value={cmpCompany} onChange={setCmpCompany}
+<HeaderFilterPill label={t("filter_company")} value={cmpCompany} onChange={setCmpCompany}
                 options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
-              <HeaderMultiFilterPill label="DIM GRP" values={bsCmpDimGroups} onChange={vs => { setBsCmpDimGroups(vs); setBsCmpDimensions(null); }} options={dimGroups.map(g => ({ value: g, label: g }))} />
-              <HeaderMultiFilterPill label="DIMS" values={bsCmpDimensions} onChange={vs => setBsCmpDimensions(vs)} options={bsCmpFilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+              <HeaderMultiFilterPill label={t("filter_dim_group").toUpperCase()} values={bsCmpDimGroups} onChange={vs => { setBsCmpDimGroups(vs); setBsCmpDimensions(null); }} options={dimGroups.map(g => ({ value: g, label: g }))} />
+              <HeaderMultiFilterPill label={t("filter_dims")} values={bsCmpDimensions} onChange={vs => setBsCmpDimensions(vs)} options={bsCmpFilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
               {!cmp2Enabled && (
                 <button onClick={() => setCmp2Enabled(true)}
                   className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]"
                   style={{ background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)", boxShadow: "0 4px 14px -4px rgba(87,170,120,0.5)" }}>
-                  <span className="text-white text-[10px] font-black">+ Add Period C</span>
+                  <span className="text-white text-[10px] font-black">{t("add_period_c")}</span>
                 </button>
               )}
             </div>
@@ -12397,31 +12211,31 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                     style={{ background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)", boxShadow: "0 4px 12px -4px rgba(87,170,120,0.5)" }}>
                     <span className="text-white text-[11px] font-black">C</span>
                   </div>
-                  <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>Period C</span>
+<span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>{t("period_c")}</span>
                 </div>
-                <HeaderFilterPill label="Year" value={cmp2Year} onChange={setCmp2Year}
+                <HeaderFilterPill label={t("filter_year")} value={cmp2Year} onChange={setCmp2Year}
                   options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-                <HeaderFilterPill label="Month" value={cmp2Month} onChange={setCmp2Month}
+                <HeaderFilterPill label={t("filter_month")} value={cmp2Month} onChange={setCmp2Month}
                   options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-                <HeaderFilterPill label="Source" value={cmp2Source} onChange={setCmp2Source}
+                <HeaderFilterPill label={t("filter_source")} value={cmp2Source} onChange={setCmp2Source}
                   options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
-                <HeaderFilterPill label="Structure" value={cmp2Structure} onChange={setCmp2Structure}
+                <HeaderFilterPill label={t("filter_structure")} value={cmp2Structure} onChange={setCmp2Structure}
                   options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-<HeaderFilterPill label="Company" value={cmp2Company} onChange={setCmp2Company}
+<HeaderFilterPill label={t("filter_company")} value={cmp2Company} onChange={setCmp2Company}
                   options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
-                <HeaderMultiFilterPill label="DIM GRP" values={bsCmp2DimGroups} onChange={vs => { setBsCmp2DimGroups(vs); setBsCmp2Dimensions(null); }} options={dimGroups.map(g => ({ value: g, label: g }))} />
-                <HeaderMultiFilterPill label="DIMS" values={bsCmp2Dimensions} onChange={vs => setBsCmp2Dimensions(vs)} options={bsCmp2FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+                <HeaderMultiFilterPill label={t("filter_dim_group").toUpperCase()} values={bsCmp2DimGroups} onChange={vs => { setBsCmp2DimGroups(vs); setBsCmp2Dimensions(null); }} options={dimGroups.map(g => ({ value: g, label: g }))} />
+                <HeaderMultiFilterPill label={t("filter_dims")} values={bsCmp2Dimensions} onChange={vs => setBsCmp2Dimensions(vs)} options={bsCmp2FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
 <button onClick={() => setCmp2Enabled(false)}
                   className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all duration-200 hover:scale-[1.05]"
                   style={{ background: "#fee2e2", color: "#dc2626" }}
-                  title="Remove Period C">
+                  title={t("remove_period_c")}>
                   <X size={12} strokeWidth={2.5} />
                 </button>
                 {!cmp3Enabled && (
                   <button onClick={() => setCmp3Enabled(true)}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]"
                     style={{ background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)", boxShadow: "0 4px 14px -4px rgba(168,85,247,0.5)" }}>
-                    <span className="text-white text-[10px] font-black">+ Add Period D</span>
+                    <span className="text-white text-[10px] font-black">{t("add_period_d")}</span>
                   </button>
                 )}
               </div>
@@ -12433,24 +12247,24 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                     style={{ background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)", boxShadow: "0 4px 12px -4px rgba(168,85,247,0.5)" }}>
                     <span className="text-white text-[11px] font-black">D</span>
                   </div>
-                  <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>Period D</span>
+<span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>{t("period_d")}</span>
                 </div>
-                <HeaderFilterPill label="Year" value={cmp3Year} onChange={setCmp3Year}
+                <HeaderFilterPill label={t("filter_year")} value={cmp3Year} onChange={setCmp3Year}
                   options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-                <HeaderFilterPill label="Month" value={cmp3Month} onChange={setCmp3Month}
+                <HeaderFilterPill label={t("filter_month")} value={cmp3Month} onChange={setCmp3Month}
                   options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-                <HeaderFilterPill label="Source" value={cmp3Source} onChange={setCmp3Source}
+                <HeaderFilterPill label={t("filter_source")} value={cmp3Source} onChange={setCmp3Source}
                   options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
-                <HeaderFilterPill label="Structure" value={cmp3Structure} onChange={setCmp3Structure}
+                <HeaderFilterPill label={t("filter_structure")} value={cmp3Structure} onChange={setCmp3Structure}
                   options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-                <HeaderFilterPill label="Company" value={cmp3Company} onChange={setCmp3Company}
+                <HeaderFilterPill label={t("filter_company")} value={cmp3Company} onChange={setCmp3Company}
                   options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
-                <HeaderMultiFilterPill label="DIM GRP" values={bsCmp3DimGroups} onChange={vs => { setBsCmp3DimGroups(vs); setBsCmp3Dimensions(null); }} options={dimGroups.map(g => ({ value: g, label: g }))} />
-                <HeaderMultiFilterPill label="DIMS" values={bsCmp3Dimensions} onChange={vs => setBsCmp3Dimensions(vs)} options={bsCmp3FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+                <HeaderMultiFilterPill label={t("filter_dim_group").toUpperCase()} values={bsCmp3DimGroups} onChange={vs => { setBsCmp3DimGroups(vs); setBsCmp3Dimensions(null); }} options={dimGroups.map(g => ({ value: g, label: g }))} />
+                <HeaderMultiFilterPill label={t("filter_dims")} values={bsCmp3Dimensions} onChange={vs => setBsCmp3Dimensions(vs)} options={bsCmp3FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
                 <button onClick={() => setCmp3Enabled(false)}
                   className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all"
                   style={{ background: "#fee2e2", color: "#dc2626" }}
-                  title="Remove Period D">
+                  title={t("remove_period_d")}>
                   <X size={12} strokeWidth={2.5} />
                 </button>
               </div>
@@ -12488,7 +12302,7 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                           style={{ background: "transparent", color: searchActive ? colors.primary : "#94a3b8", padding: 0, transition: "color 240ms" }}
                           onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
                           onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary : "#94a3b8"; }}
-                          title="Search">
+                         title={t("table_search_placeholder")}>
                           <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
                             <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.6"/>
                             <path d="M9.5 9.5L12.5 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
@@ -12508,7 +12322,7 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                                   setSearchQuery("");
                                 }
                               }}
-                              placeholder="Code or name..."
+                              placeholder={t("search_code_or_name")}
                               style={{
                                 fontSize: 16, fontWeight: 700, color: colors.primary,
                                 border: "none", outline: "none", background: "transparent",
@@ -12520,7 +12334,7 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                               style={{ background: "transparent", color: "#94a3b8", padding: 2, transition: "color 200ms" }}
                               onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
                               onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
-                              title="Close search">
+                              title={t("close_search")}>
                               <X size={14} />
                             </button>
                           </>
@@ -12549,7 +12363,7 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                             onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
                             onMouseLeave={e => { e.currentTarget.style.color = filtersOpen ? colors.primary : "#94a3b8"; }}>
                             <ChevronDown size={10} style={{ transition: "transform 300ms cubic-bezier(0.34,1.56,0.64,1)", transform: filtersOpen ? "rotate(0deg)" : "rotate(-90deg)" }} />
-                            <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? "Hide" : "Show"}</span>
+                            <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? t("btn_hide") : t("btn_show")}</span>
                           </button>
                           <div style={{ width: 1, height: 18, background: "#e5e7eb", flexShrink: 0 }} />
                         </>
@@ -12572,7 +12386,7 @@ const bsCmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMont
                         style={{ background: "transparent", color: "#94a3b8", padding: 4, transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)" }}
                         onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
                         onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
-title={Object.keys(bsDrillMap).some(k => k.startsWith('bssaved-') && bsDrillMap[k]) ? "Collapse all" : "Expand all"}>
+title={Object.keys(bsDrillMap).some(k => k.startsWith('bssaved-') && bsDrillMap[k]) ? t("btn_collapse_all") : t("btn_expand_all")}>
                         <span key={Object.keys(bsDrillMap).some(k => k.startsWith('bssaved-') && bsDrillMap[k]) ? "collapse" : "expand"}
                           className="inline-flex"
                           style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
@@ -12591,7 +12405,7 @@ title={Object.keys(bsDrillMap).some(k => k.startsWith('bssaved-') && bsDrillMap[
                   )) : (
 <th className="text-center py-3 whitespace-nowrap k-sticky-head" style={{ width: "200px", cursor: compareMode ? "default" : "pointer" }}
                       onClick={compareMode ? undefined : toggleBSHistory}
-                      title={compareMode ? "" : historyExpanded ? "Hide history" : "Show last 6 months"}>
+                      title={compareMode ? "" : historyExpanded ? t("hide_history") : t("show_last_6_months")}>
                       <span className="font-black tracking-tight inline-block"
                         style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em", animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
                         {t("col_actual")}
@@ -12602,7 +12416,7 @@ title={Object.keys(bsDrillMap).some(k => k.startsWith('bssaved-') && bsDrillMap[
                     <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.26s both" }}>
                       <div className="flex items-center gap-1.5">
                         <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#CF305D" }} />
-                        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Period B</span>
+<span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>{t("period_b")}</span>
                       </div>
                       <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{bsCmpLabel}</span>
                     </div>
@@ -12611,18 +12425,18 @@ title={Object.keys(bsDrillMap).some(k => k.startsWith('bssaved-') && bsDrillMap[
                     <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.30s both" }}>
                       <div className="flex items-center gap-1.5">
                         <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#57aa78" }} />
-                        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>Period C</span>
+<span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>{t("period_c")}</span>
                       </div>
 <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{bsCmp2Label}</span>
                     </div>
                   </th>}
                   {compareMode && cmp2Enabled && cmp3Enabled && (() => {
-                    const bsCmp3Label = [cmp3Year, MONTHS.find(m => String(m.value) === String(cmp3Month))?.label, cmp3Source].filter(Boolean).join(" · ") || "Period D";
+const bsCmp3Label = [cmp3Year, MONTHS.find(m => String(m.value) === String(cmp3Month))?.label, cmp3Source].filter(Boolean).join(" · ") || t("period_d");
                     return <th colSpan={3} className="text-center pr-6 py-3 whitespace-nowrap k-sticky-head">
                       <div className="flex flex-col items-center">
                         <div className="flex items-center gap-1.5">
                           <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#a855f7" }} />
-                          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>Period D</span>
+                          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>{t("period_d")}</span>
                         </div>
                         <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{bsCmp3Label}</span>
                       </div>
@@ -12645,7 +12459,7 @@ title={Object.keys(bsDrillMap).some(k => k.startsWith('bssaved-') && bsDrillMap[
                           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all duration-200 hover:scale-[1.02]"
                           style={{ background: filtersOpen ? `${colors.primary}12` : "transparent", color: filtersOpen ? colors.primary : "#9ca3af" }}>
                           <ChevronDown size={10} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
-                          <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? "Hide" : "Show"}</span>
+                          <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? t("btn_hide") : t("btn_show")}</span>
                         </button>
                       )}
                     </div>
@@ -12675,20 +12489,6 @@ rows.push(
                 }
 const renderNode = (node, depth, parentPath) => {
 const displayVal = sumLiteral(node);
-if (node.code === 'A.03' || node.code === 'A.03.a' || node.code === 'A.01') {
-  historyMonthsProcessed.forEach(h => {
-    const histGaNode = h.map.get(String(node.code));
-    console.log('[HIST]', node.code, h.year, h.month, {
-      sumNodeResult: histGaNode ? sumNode(histGaNode) : null,
-      uploadLeavesCount: histGaNode?.uploadLeaves?.length ?? 0,
-      uploadLeavesTotal: histGaNode?.uploadLeaves?.reduce((s,l) => s + (l.amount ?? 0), 0) ?? 0,
-      childrenCount: histGaNode?.children?.length ?? 0,
-      childrenCodes: histGaNode?.children?.map(c => c.code).join(',') ?? '',
-      childrenSums: histGaNode?.children?.map(c => `${c.code}=${sumNode(c)}`).join(' | ') ?? '',
-      currentPeriodDisplay: displayVal,
-    });
-  });
-}
                   const rowStyle = depth === 0 ? body1Style : body2Style;
 const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
                   const gaNodeForKids = treeByCode.get(String(node.code));
@@ -12893,7 +12693,7 @@ rows.push(
                                 <div className="w-2 h-px bg-indigo-200 flex-shrink-0" />
                                 <span className="text-[#1a2f8a]/40 flex-shrink-0">{jrnExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>}</span>
                                 <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded flex-shrink-0">{t("label_journal")}</span>
-                                <span className="text-[10px] text-gray-400">{nodeJrns.length} entries</span>
+                               <span className="text-[10px] text-gray-400">{nodeJrns.length} {nodeJrns.length === 1 ? t("entry") : t("entries")}</span>
                               </div>
                             </td>
                             {multiCompany ? selectedCompanies.map(co => <td key={`bsmc-saved-jhdr-${node.code}-${co}`} />) : <td />}
@@ -12980,7 +12780,7 @@ if (jrnExpanded) {
                                     <div className="flex items-center gap-1.5">
                                       <div className="w-2 h-px bg-indigo-300 flex-shrink-0" />
                                       <span className="text-[9px] font-bold text-indigo-600 uppercase tracking-widest bg-indigo-100 border border-indigo-200 px-1.5 py-0.5 rounded flex-shrink-0">B/C/D only</span>
-                                      <span className="text-[10px] text-gray-400">{extras.length} entries</span>
+                                     <span className="text-[10px] text-gray-400">{extras.length} {extras.length === 1 ? t("entry") : t("entries")}</span>
                                     </div>
                                   </td>
                                   {multiCompany ? selectedCompanies.map(co => <td key={`bsmc-saved-jxhdr-${node.code}-${co}`} />) : <td />}
@@ -13041,12 +12841,9 @@ if (loading) return (
       <div className="w-14 h-14 bg-[#eef1fb] rounded-2xl flex items-center justify-center mx-auto mb-4">
         <BarChart2 size={24} className="text-[#1a2f8a]" />
       </div>
-      <p className="text-gray-400 text-sm font-semibold">Waiting for data…</p>
+<p className="text-gray-400 text-sm font-semibold">{t("waiting_for_data")}</p>
     </div>
   );
-
-const cmpLabel = [cmpYear, MONTHS.find(m => String(m.value) === String(cmpMonth))?.label, cmpSource, cmpStructure].filter(Boolean).join(" · ") || t("period_b");
-  const cmp2Label = [cmp2Year, MONTHS.find(m => String(m.value) === String(cmp2Month))?.label, cmp2Source, cmp2Structure].filter(Boolean).join(" · ") || t("period_c");
 
 return (
     <div className="space-y-3 flex flex-col" style={{ minHeight: 0, flex: 1, overflow: "visible" }}>
@@ -13071,20 +12868,20 @@ return (
             </div>
             <div className="p-5 space-y-3">
               {[
-                ["Account", `${jrnPopup.AccountCode ?? jrnPopup.accountCode ?? ""} · ${jrnPopup.AccountName ?? jrnPopup.accountName ?? ""}`],
-                ["Account Type", jrnPopup.AccountType ?? jrnPopup.accountType],
-                ["Journal Type", jrnPopup.JournalType ?? jrnPopup.journalType],
-                ["Journal Layer", jrnPopup.JournalLayer ?? jrnPopup.journalLayer],
-                ["Row Text", jrnPopup.RowText ?? jrnPopup.rowText],
-                ["Counterparty", jrnPopup.CounterpartyShortName ?? jrnPopup.counterpartyShortName],
-                ["Dimension", jrnPopup.DimensionName ?? jrnPopup.dimensionName],
-                ["Amount YTD", jrnPopup.AmountYTD ?? jrnPopup.amountYTD],
-                ["Currency", jrnPopup.CurrencyCode ?? jrnPopup.currencyCode],
-                ["Period", `${jrnPopup.Month ?? jrnPopup.month} / ${jrnPopup.Year ?? jrnPopup.year}`],
-                ["Source", jrnPopup.Source ?? jrnPopup.source],
-                ["Company", jrnPopup.CompanyShortName ?? jrnPopup.companyShortName],
-                ["System Generated", (jrnPopup.SystemGenerated ?? jrnPopup.systemGenerated) === true ? "Yes" : (jrnPopup.SystemGenerated ?? jrnPopup.systemGenerated) === false ? "No" : "—"],
-                ["Posted", (jrnPopup.Posted ?? jrnPopup.posted) === true ? "Yes" : (jrnPopup.Posted ?? jrnPopup.posted) === false ? "No" : "—"],
+[t("jrn_account"), `${jrnPopup.AccountCode ?? jrnPopup.accountCode ?? ""} · ${jrnPopup.AccountName ?? jrnPopup.accountName ?? ""}`],
+                [t("jrn_account_type"), jrnPopup.AccountType ?? jrnPopup.accountType],
+                [t("jrn_journal_type"), jrnPopup.JournalType ?? jrnPopup.journalType],
+                [t("jrn_journal_layer"), jrnPopup.JournalLayer ?? jrnPopup.journalLayer],
+                [t("jrn_row_text"), jrnPopup.RowText ?? jrnPopup.rowText],
+                [t("jrn_counterparty"), jrnPopup.CounterpartyShortName ?? jrnPopup.counterpartyShortName],
+                [t("jrn_dimension"), jrnPopup.DimensionName ?? jrnPopup.dimensionName],
+                [t("jrn_amount_ytd"), jrnPopup.AmountYTD ?? jrnPopup.amountYTD],
+                [t("jrn_currency"), jrnPopup.CurrencyCode ?? jrnPopup.currencyCode],
+                [t("jrn_period"), `${jrnPopup.Month ?? jrnPopup.month} / ${jrnPopup.Year ?? jrnPopup.year}`],
+                [t("jrn_source"), jrnPopup.Source ?? jrnPopup.source],
+                [t("jrn_company"), jrnPopup.CompanyShortName ?? jrnPopup.companyShortName],
+                [t("jrn_system_generated"), (jrnPopup.SystemGenerated ?? jrnPopup.systemGenerated) === true ? t("cell_yes") : (jrnPopup.SystemGenerated ?? jrnPopup.systemGenerated) === false ? t("cell_no") : "—"],
+                [t("jrn_posted"), (jrnPopup.Posted ?? jrnPopup.posted) === true ? t("cell_yes") : (jrnPopup.Posted ?? jrnPopup.posted) === false ? t("cell_no") : "—"],
               ].filter(([, v]) => v !== null && v !== undefined && v !== "" && v !== "—").map(([label, value]) => (
                 <div key={label} className="flex items-start justify-between gap-4 py-2 border-b border-gray-50 last:border-0">
                   <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest flex-shrink-0 mt-0.5">{label}</span>
@@ -13106,7 +12903,7 @@ return (
                 </div>
                 <div>
                   <p className="text-white font-black text-sm">{dimPopup.name || dimPopup.code || "—"}</p>
-                  <p className="text-white/60 text-[10px] font-medium uppercase tracking-widest">Dimension</p>
+                  <p className="text-white/60 text-[10px] font-medium uppercase tracking-widest">{t("dimension")}</p>
                 </div>
               </div>
               <button onClick={() => setDimPopup(null)} className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-all">
@@ -13137,7 +12934,7 @@ return (
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all"
               style={{ background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}80` }}>
               <ChevronDown size={12} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
-              {filtersOpen ? "Hide filters" : "Show filters"}
+             {filtersOpen ? t("pl_hide_filters") : t("pl_show_filters")}
             </button>
           )}
 
@@ -13158,7 +12955,7 @@ return (
 style={compareMode
         ? { backgroundColor: colors.quaternary ?? "#F59E0B", color: colors.primary ?? "#1a2f8a" }
               : { background: "transparent", color: `${(colors.quaternary ?? "#F59E0B")}80` }}>
-            <GitMerge size={12} /> Compare
+<GitMerge size={12} /> {t("btn_compare")}
           </button>
 
 <div className="relative flex items-center p-1 rounded-xl" style={{ backgroundColor: "rgba(255,255,255,0.1)" }}
@@ -13182,7 +12979,7 @@ const tabs = ["summary","assets","equity"];
               transition: "left 0.25s cubic-bezier(0.4,0,0.2,1), width 0.25s cubic-bezier(0.4,0,0.2,1)",
               pointerEvents: "none",
             }} />
-{[["summary","Summary"],["assets","Assets"],["equity","Equity & Liab."]].map(([v, label]) => (
+{[["summary",t("view_summary")],["assets",t("bs_assets")],["equity",t("bs_equity_liab")]].map(([v, label]) => (
               <button key={v} onClick={() => setBsView(v)}
                 className="relative z-10 px-3 py-1.5 rounded-lg text-xs font-black transition-colors duration-200"
                 style={{ color: bsView === v ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}80` }}>
@@ -13217,7 +13014,7 @@ const tabs = ["summary","assets","equity"];
           }}>
           <span className="text-white text-[11px] font-black">B</span>
         </div>
-        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Period B</span>
+<span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>{t("period_b")}</span>
       </div>
 
 <HeaderFilterPill label={t("filter_year")} value={cmpYear} onChange={setCmpYear}
@@ -13241,7 +13038,7 @@ const tabs = ["summary","assets","equity"];
             background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)",
             boxShadow: "0 4px 14px -4px rgba(87,170,120,0.5)",
           }}>
-          <span className="text-white text-[10px] font-black">+ Add Period C</span>
+<span className="text-white text-[10px] font-black">{t("add_period_c")}</span>
         </button>
       )}
     </div>
@@ -13258,7 +13055,7 @@ const tabs = ["summary","assets","equity"];
             }}>
             <span className="text-white text-[11px] font-black">C</span>
           </div>
-          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>Period C</span>
+<span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>{t("period_c")}</span>
         </div>
 
 <HeaderFilterPill label={t("filter_year")} value={cmp2Year} onChange={setCmp2Year}
@@ -13281,7 +13078,7 @@ const tabs = ["summary","assets","equity"];
             background: "#fee2e2",
             color: "#dc2626",
           }}
-          title="Remove Period C">
+title={t("remove_period_c")}>
           <X size={12} strokeWidth={2.5} />
         </button>
         {!cmp3Enabled && (
@@ -13291,7 +13088,7 @@ const tabs = ["summary","assets","equity"];
               background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)",
               boxShadow: "0 4px 14px -4px rgba(168,85,247,0.5)",
             }}>
-            <span className="text-white text-[10px] font-black">+ Add Period D</span>
+            <span className="text-white text-[10px] font-black">{t("add_period_d")}</span>
           </button>
         )}
       </div>
@@ -13303,7 +13100,7 @@ const tabs = ["summary","assets","equity"];
             style={{ background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)", boxShadow: "0 4px 12px -4px rgba(168,85,247,0.5)" }}>
             <span className="text-white text-[11px] font-black">D</span>
           </div>
-          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>Period D</span>
+<span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>{t("period_d")}</span>
         </div>
         <HeaderFilterPill label={t("filter_year")} value={cmp3Year} onChange={setCmp3Year}
           options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
@@ -13322,7 +13119,7 @@ const tabs = ["summary","assets","equity"];
         <button onClick={() => setCmp3Enabled(false)}
           className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all duration-200 hover:scale-[1.05]"
           style={{ background: "#fee2e2", color: "#dc2626" }}
-          title="Remove Period D">
+title={t("remove_period_d")}>
           <X size={12} strokeWidth={2.5} />
         </button>
       </div>
@@ -13361,7 +13158,7 @@ const tabs = ["summary","assets","equity"];
           style={{ background: "transparent", color: searchActive ? colors.primary : "#94a3b8", padding: 0, transition: "color 240ms" }}
           onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
           onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary : "#94a3b8"; }}
-          title="Search">
+title={t("table_search_placeholder")}>
           <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
             <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.6"/>
             <path d="M9.5 9.5L12.5 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
@@ -13381,7 +13178,7 @@ const tabs = ["summary","assets","equity"];
                   setSearchQuery("");
                 }
               }}
-              placeholder="Code or name..."
+           placeholder={t("search_code_or_name")}
               style={{
                 fontSize: 16, fontWeight: 700, color: colors.primary,
                 border: "none", outline: "none", background: "transparent",
@@ -13393,7 +13190,7 @@ const tabs = ["summary","assets","equity"];
               style={{ background: "transparent", color: "#94a3b8", padding: 2, transition: "color 200ms" }}
               onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
               onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
-              title="Close search">
+       title={t("close_search")}>
               <X size={14} />
             </button>
           </>
@@ -13445,7 +13242,7 @@ className="flex items-center justify-center"
           style={{ background: "transparent", color: "#94a3b8", padding: 4, transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)" }}
           onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
           onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
-title={Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap[k]) ? "Collapse all" : "Expand all"}>
+title={Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap[k]) ? t("btn_collapse_all") : t("btn_expand_all")}>
           <span key={Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap[k]) ? "collapse" : "expand"}
             className="inline-flex"
             style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
@@ -13476,7 +13273,7 @@ title={Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap
             transition: "left 320ms cubic-bezier(0.34, 1.56, 0.64, 1), width 320ms cubic-bezier(0.34, 1.56, 0.64, 1)",
             pointerEvents: "none",
           }} />
-{[["summary","Summary"],["assets","Assets"],["equity","Equity & Liab."]].map(([v, label]) => {
+{[["summary",t("view_summary")],["assets",t("bs_assets")],["equity",t("bs_equity_liab")]].map(([v, label]) => {
             const active = bsView === v;
             return (
               <button key={v} data-bs-tab onClick={() => setBsView(v)}
@@ -13504,7 +13301,7 @@ title={Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap
               onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
               onMouseLeave={e => { e.currentTarget.style.color = filtersOpen ? colors.primary : "#94a3b8"; }}>
               <ChevronDown size={10} style={{ transition: "transform 300ms cubic-bezier(0.34,1.56,0.64,1)", transform: filtersOpen ? "rotate(0deg)" : "rotate(-90deg)" }} />
-              <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? "Hide" : "Show"}</span>
+              <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? t("btn_hide") : t("btn_show")}</span>
             </button>
           </>
         )}
@@ -13519,7 +13316,7 @@ title={Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap
 <th className="text-center py-3 whitespace-nowrap"
   style={{ background: "transparent", width: "200px", cursor: (compareMode || multiCompany) ? "default" : "pointer" }}
   onClick={toggleBSHistory}
-  title={(compareMode || multiCompany) ? "" : historyExpanded ? "Hide history" : "Show last 6 months"}>
+ title={(compareMode || multiCompany) ? "" : historyExpanded ? t("hide_history") : t("show_last_6_months")}>
     <span className="font-black tracking-tight inline-block"
       style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em", animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
       {t("col_actual")}
@@ -13563,7 +13360,7 @@ title={Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap
     <div className="flex flex-col items-center">
       <div className="flex items-center gap-1.5">
         <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#a855f7" }} />
-        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>Period D</span>
+<span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>{t("period_d")}</span>
       </div>
       <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{[cmp3Year, MONTHS.find(m => String(m.value) === String(cmp3Month))?.label, cmp3Source].filter(Boolean).join(" · ")}</span>
     </div>
@@ -13581,11 +13378,11 @@ title={Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap
   <th className="text-left px-6" style={{ position: "sticky", top: 0, left: 0, zIndex: 20, background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", height: "64px" }}>
     <div className="flex items-center gap-3">
       <div className="flex items-baseline gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
-        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>
-          Account
+<span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>
+          {t("col_account")}
         </span>
         <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
-          Balance Sheet
+          {t("page_bs_full")}
         </span>
       </div>
       <div className="ml-auto flex items-center gap-2" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
@@ -13597,7 +13394,7 @@ title={Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap
               color: filtersOpen ? colors.primary : "#9ca3af",
             }}>
             <ChevronDown size={10} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
-            <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? "Hide" : "Show"}</span>
+            <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? t("btn_hide") : t("btn_show")}</span>
           </button>
         )}
         <button onClick={() => {
@@ -13614,7 +13411,7 @@ title={Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap
         }}
           className="flex items-center justify-center rounded-lg transition-all duration-200 hover:scale-[1.05]"
           style={{ background: `${colors.primary}12`, color: colors.primary, width: 28, height: 28, overflow: "hidden" }}
-          title={Object.values(bsDrillMap).some(Boolean) ? "Collapse all" : "Expand all"}>
+          title={Object.values(bsDrillMap).some(Boolean) ? t("btn_collapse_all") : t("btn_expand_all")}>
           <span key={Object.values(bsDrillMap).some(Boolean) ? "collapse" : "expand"}
             className="inline-flex"
             style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
@@ -13644,7 +13441,7 @@ title={Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap
             transition: "left 320ms cubic-bezier(0.34, 1.56, 0.64, 1), width 320ms cubic-bezier(0.34, 1.56, 0.64, 1), top 320ms cubic-bezier(0.34, 1.56, 0.64, 1), height 320ms cubic-bezier(0.34, 1.56, 0.64, 1)",
             pointerEvents: "none", zIndex: 0,
           }} />
-          {[["summary","Summary"],["assets","Assets"],["equity","Equity & Liab."]].map(([v, label]) => (
+{[["summary",t("view_summary")],["assets",t("bs_assets")],["equity",t("bs_equity_liab")]].map(([v, label]) => (
             <button key={v} data-bs-pill onClick={() => setBsView(v)}
               className="relative z-10 px-3 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-wider"
               style={{
@@ -13659,7 +13456,7 @@ title={Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap
       </div>
     </div>
   </th>
-  {companyColumns.map(({ source, currency }) => (
+ {companyColumns.map(({ source }) => (
     <React.Fragment key={source}>
       <th className="text-right pr-4 py-3 whitespace-nowrap min-w-[120px]" style={{ position: "sticky", top: 0, background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}>
         <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{t("col_actual")}</span>
@@ -13677,7 +13474,7 @@ title={Object.keys(bsDrillMap).some(k => !k.startsWith('bssaved-') && bsDrillMap
 <tbody key={`bs-body-${bsView}-${compareMode}`}>
             {pgcBsMapping ? (
               bsRoots.length === 0
-                ? <tr><td colSpan={8} className="py-12 text-center text-gray-400 text-sm">No Balance Sheet data found</td></tr>
+               ? <tr><td colSpan={8} className="py-12 text-center text-gray-400 text-sm">{t("no_bs_data")}</td></tr>
                 : (compareMode ? renderBSCompareRows(bsRoots, cmpTree, cmp2Tree, cmp3Tree) : renderBSRows(bsRoots))
             ) : (
               bsView === "summary" ? (
@@ -13734,12 +13531,7 @@ function useAnimatedNumber(target, duration = 800) {
 const AccountsDashboard = React.memo(function AccountsDashboard({ token, sources = [], structures = [], companies = [], dimensions = [] }) {
 const { colors } = useSettings();
 const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();
-const dashLoadStartRef = useRef(Date.now());
 const TABS = useTabs();
-const headerStyle = useTypo("header1");
-const header3Style = useTypo("header3");
-const underscoreStyle = useTypo("underscore1");
-const filterStyle = useTypo("filter");
 const t = useT();
 const MONTHS = useMonths();
 const locale = useLocale();
@@ -13750,7 +13542,7 @@ const [animKey, setAnimKey]       = useState(0);
   const [dataSubTab, setDataSubTab] = useState("uploaded");
   const [ytdOnly, setYtdOnly]     = useState(false);  // ← lifted from PLStatement; PageHeader periodToggle controls this
 const [plCmpLoading, setPlCmpLoading] = useState(false);
-const [plCmp2Loading, setPlCmp2Loading] = useState(false);
+const [plCmp2Loading] = useState(false);
 const [plCmp2Enabled, setPlCmp2Enabled] = useState(true);
 const [bsCmp2Enabled, setBsCmp2Enabled] = useState(true);
 const [plExpandedMap, setPlExpandedMap] = useState({});
@@ -13887,7 +13679,7 @@ useEffect(() => {
   const [upSource, setUpSource] = useState("");
   const [upStructure, setUpStructure] = useState("");
 const [upCompaniesRaw, setUpCompaniesRaw] = useState([]);
-  const upCompanies = Array.isArray(upCompaniesRaw) ? upCompaniesRaw : [];
+const upCompanies = useMemo(() => Array.isArray(upCompaniesRaw) ? upCompaniesRaw : [], [upCompaniesRaw]);
   const setUpCompanies = (v) => setUpCompaniesRaw(Array.isArray(v) ? v : []);
  const upCompany = upCompanies[0] ?? "";
 const [upCompaniesDebounced, setUpCompaniesDebounced] = useState(upCompanies);
@@ -13895,7 +13687,6 @@ useEffect(() => {
   const t = setTimeout(() => setUpCompaniesDebounced(upCompanies), 300);
   return () => clearTimeout(t);
 }, [upCompanies]);
-  const setUpCompany = (v) => setUpCompanies(v ? [v] : []);
 const [upDimGroups, setUpDimGroups] = useState(null);   // null = all, [] = none, [...] = selected
 const [upDimensions, setUpDimensions] = useState(null);
 
@@ -14344,8 +14135,7 @@ const autoMappingAppliedRef = useRef(false);
 useEffect(() => {
   if (autoMappingAppliedRef.current) return;
   autoMappingAppliedRef.current = true;
-  let cancelled = false;
-  (async () => {
+(async () => {
     try {
       const { supabase } = await import("../../lib/supabaseClient");
       const { data: { session } } = await supabase.auth.getSession();
@@ -14373,8 +14163,7 @@ const { listMappings, getActiveCompanyId } = await import("../../lib/mappingsApi
         handleApplyMapping(match);
       }
     } catch (err) { console.error("[auto-mapping] error:", err); }
-  })();
-  return () => { cancelled = true; };
+})();
 }, [handleApplyMapping]);
 
 const [exportOpts, setExportOpts] = useState({
@@ -14458,7 +14247,7 @@ const breakersFetchedRef = useRef(false);
           return;
         }
       }
-    } catch (e) { /* ignore */ }
+   } catch { /* ignore */ }
 
     console.log("[IndividualesPage] CACHE MISS - falling back to probe");
 
@@ -14614,7 +14403,7 @@ useEffect(() => {
     fetchPrev(upYear, upMonth, upSource, upStructure, upCompaniesDebounced);
     fetchJournal(upYear, upMonth, upSource, upStructure, upCompaniesDebounced);
   }
-}, [upSource, upStructure, upYear, upMonth, upCompaniesDebounced]);
+}, [upSource, upStructure, upYear, upMonth, upCompaniesDebounced, fetchUploaded, fetchPrev, fetchJournal]);
 
 const fetchJournalCmp = useCallback(async (year, month, source, structure, company) => {
   if (!year || !month || !source || !structure || !company) { setJrnCmpData([]); return; }
@@ -14673,12 +14462,14 @@ const fetchCmp2 = useCallback(async (year, month, source, structure, company) =>
 useEffect(() => {
     fetchMapped();
     fetchGroup();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
 useEffect(() => {
     if (dataSubTab === "journal" && !jrnFetched && !jrnLoading) {
       fetchJournal();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataSubTab]);
 
   // ── Manual re-fetch for uploaded when filters change ───────
@@ -14720,7 +14511,7 @@ const [cmpDimGroups, setCmpDimGroups] = useState(null);
   const [cmpDimensions, setCmpDimensions] = useState(null);
 const [cmpData,     setCmpData]       = useState([]);
 const [cmpPrevData, setCmpPrevData]   = useState([]);
-const [cmpLoading,  setCmpLoading]    = useState(false);
+const [, setCmpLoading]    = useState(false);
 
 // ── Compare period 2 ──────────────────────────────────────
 const [cmp2Year,      setCmp2Year]      = useState("");
@@ -14729,10 +14520,10 @@ const [cmp2Source,    setCmp2Source]    = useState("");
 const [cmp2Structure, setCmp2Structure] = useState("");
 const [cmp2Company,   setCmp2Company]   = useState("");
 const [cmp2DimGroups, setCmp2DimGroups] = useState(null);
-  const [cmp2Dimensions, setCmp2Dimensions] = useState(null);
+const [cmp2Dimensions, setCmp2Dimensions] = useState(null);
 const [cmp2Data,      setCmp2Data]      = useState([]);
 const [cmp2PrevData,  setCmp2PrevData]  = useState([]);
-const [cmp2Loading,   setCmp2Loading]   = useState(false);
+const [, setCmp2Loading]   = useState(false);
 
 // ── Compare period 3 (Period D) ───────────────────────────
 const [cmp3Year,      setCmp3Year]      = useState("");
@@ -14744,14 +14535,14 @@ const [cmp3DimGroups, setCmp3DimGroups] = useState(null);
 const [cmp3Dimensions, setCmp3Dimensions] = useState(null);
 const [cmp3Data,      setCmp3Data]      = useState([]);
 const [cmp3PrevData,  setCmp3PrevData]  = useState([]);
-const [cmp3Loading,   setCmp3Loading]   = useState(false);
+const [, setCmp3Loading]   = useState(false);
 const [plCmp3Enabled, setPlCmp3Enabled] = useState(true);
 const [jrnCmp3Data, setJrnCmp3Data]     = useState([]);
   useEffect(() => {
   if (compareMode && cmpSource && cmpStructure && cmpYear && cmpMonth && cmpCompany) {
     fetchCmp(cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany);
   }
-}, [compareMode, cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany]);
+}, [compareMode, cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany, fetchCmp]);
 
 useEffect(() => {
   if (compareMode && cmpSource && cmpStructure && cmpYear && cmpMonth && cmpCompany) {
@@ -14773,7 +14564,7 @@ useEffect(() => {
   if (compareMode && cmp2Source && cmp2Structure && cmp2Year && cmp2Month && cmp2Company) {
     fetchCmp2(cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company);
   }
-}, [compareMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company]);
+}, [compareMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, fetchCmp2]);
 
 const fetchCmp3 = useCallback(async (year, month, source, structure, company) => {
   if (!year || !month || !source || !structure || !company) return;
@@ -14819,7 +14610,7 @@ useEffect(() => {
   if (compareMode && cmp3Source && cmp3Structure && cmp3Year && cmp3Month && cmp3Company) {
     fetchCmp3(cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3Company);
   }
-}, [compareMode, cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3Company]);
+}, [compareMode, cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3Company, fetchCmp3]);
 
 useEffect(() => {
   if (compareMode && cmp3Source && cmp3Structure && cmp3Year && cmp3Month && cmp3Company) {
@@ -14892,22 +14683,22 @@ const cmp2FilteredDims = useMemo(() => {
 }, [effectiveDimensions, cmp2DimGroups]);
 const dataSubTabSelector = (
   <div className="flex items-center gap-1 p-1 bg-gray-100/70 rounded-xl">
-    {["uploaded", "mapped", "group", "journal", "report"].map(t => (
+{["uploaded", "mapped", "group", "journal", "report"].map(tab => (
       <button
-        key={t}
-        onClick={() => setDataSubTab(t)}
+        key={tab}
+        onClick={() => setDataSubTab(tab)}
         className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all capitalize
-          ${dataSubTab === t
+          ${dataSubTab === tab
             ? "bg-white text-[#1a2f8a] shadow-sm"
             : "text-gray-400 hover:text-gray-600"}`}
       >
-        {t}
+        {t(`datatab_${tab}`)}
       </button>
     ))}
   </div>
 );
 
-const PeriodChip = ({ letter, color, label, filters, MONTHS, t, companies = [] }) => {
+const PeriodChip = ({ letter, color, label, filters, MONTHS, t = (k) => k, companies = [] }) => {
   if (!filters) return null;
   const moLabel = MONTHS.find(m => String(m.value) === String(filters.month))?.label ?? filters.month;
   const resolveCompany = (code) => {
@@ -14923,8 +14714,8 @@ const PeriodChip = ({ letter, color, label, filters, MONTHS, t, companies = [] }
     filters.source,
     filters.structure,
     resolveCompany(filters.company),
-    Array.isArray(filters.dimGroups) && filters.dimGroups.length > 0 ? `${filters.dimGroups.length} dim ${filters.dimGroups.length === 1 ? "group" : "groups"}` : null,
-    Array.isArray(filters.dimensions) && filters.dimensions.length > 0 ? `${filters.dimensions.length} ${filters.dimensions.length === 1 ? "dim" : "dims"}` : null,
+Array.isArray(filters.dimGroups) && filters.dimGroups.length > 0 ? `${filters.dimGroups.length} ${filters.dimGroups.length === 1 ? t("periodchip_dim_group") : t("periodchip_dim_groups")}` : null,
+    Array.isArray(filters.dimensions) && filters.dimensions.length > 0 ? `${filters.dimensions.length} ${filters.dimensions.length === 1 ? t("periodchip_dim") : t("periodchip_dims")}` : null,
   ].filter(Boolean);
 return (
     <div className="group flex gap-3 p-3 rounded-2xl border transition-all hover:shadow-sm"
@@ -14977,12 +14768,12 @@ const ExportModal = exportModal ? createPortal(
                 <div className="flex items-center gap-1.5 mt-1">
                   <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
                     style={{ background: `${colors.primary}10`, color: colors.primary }}>
-                    {(exportOpts.format ?? "xlsx") === "pdf" ? "PDF" : "Excel"}
+{(exportOpts.format ?? "xlsx") === "pdf" ? t("export_pdf") : t("export_excel")}
                   </span>
                   {(compareMode || bsCompareMode) && (
                     <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
                       style={{ background: "#CF305D15", color: "#CF305D" }}>
-                      Compare
+                      {t("btn_compare")}
                     </span>
                   )}
                 </div>
@@ -15005,7 +14796,7 @@ const ExportModal = exportModal ? createPortal(
               <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">{t("primary_period") || "Primary Period"}</p>
               <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
             </div>
-            <PeriodChip letter="A" color={colors.primary} label="Period A"
+           <PeriodChip letter="A" color={colors.primary} label={t("period_a")}
               filters={{ year: upYear, month: upMonth, source: upSource, structure: upStructure, company: upCompany, dimGroups: upDimGroups, dimensions: upDimensions }}
               MONTHS={MONTHS} t={t} companies={effectiveCompanies} />
           </div>
@@ -15014,20 +14805,20 @@ const ExportModal = exportModal ? createPortal(
           {compareMode && (
             <div>
               <div className="flex items-center gap-2 mb-2.5">
-                <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">P&L Compare</p>
+                <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">{t("export_pl_compare")}</p>
                 <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
               </div>
               <div className="space-y-2">
-                <PeriodChip letter="B" color="#CF305D" label="Period B"
+<PeriodChip letter="B" color="#CF305D" label={t("period_b")}
                   filters={{ year: cmpYear, month: cmpMonth, source: cmpSource, structure: cmpStructure, company: cmpCompany, dimGroups: cmpDimGroups, dimensions: cmpDimensions }}
                   MONTHS={MONTHS} t={t} companies={effectiveCompanies} />
                 {plCmp2Enabled && (
-                  <PeriodChip letter="C" color="#57aa78" label="Period C"
+                  <PeriodChip letter="C" color="#57aa78" label={t("period_c")}
                     filters={{ year: cmp2Year, month: cmp2Month, source: cmp2Source, structure: cmp2Structure, company: cmp2Company, dimGroups: cmp2DimGroups, dimensions: cmp2Dimensions }}
                     MONTHS={MONTHS} t={t} companies={effectiveCompanies} />
                 )}
                 {plCmp2Enabled && plCmp3Enabled && (
-                  <PeriodChip letter="D" color="#a855f7" label="Period D"
+                  <PeriodChip letter="D" color="#a855f7" label={t("period_d")}
                     filters={{ year: cmp3Year, month: cmp3Month, source: cmp3Source, structure: cmp3Structure, company: cmp3Company, dimGroups: cmp3DimGroups, dimensions: cmp3Dimensions }}
                     MONTHS={MONTHS} t={t} companies={effectiveCompanies} />
                 )}
@@ -15039,20 +14830,20 @@ const ExportModal = exportModal ? createPortal(
           {bsCompareMode && (
             <div>
               <div className="flex items-center gap-2 mb-2.5">
-                <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">Balance Sheet Compare</p>
+               <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">{t("export_bs_compare")}</p>
                 <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
               </div>
               <div className="space-y-2">
-                <PeriodChip letter="B" color="#CF305D" label="Period B"
+<PeriodChip letter="B" color="#CF305D" label={t("period_b")}
                   filters={{ year: bsCmpYear, month: bsCmpMonth, source: bsCmpSource, structure: bsCmpStructure, company: bsCmpCompany, dimGroups: bsCmpDimGroups, dimensions: bsCmpDimensions }}
                   MONTHS={MONTHS} t={t} companies={effectiveCompanies} />
                 {bsCmp2Enabled && (
-                  <PeriodChip letter="C" color="#57aa78" label="Period C"
+                  <PeriodChip letter="C" color="#57aa78" label={t("period_c")}
                     filters={{ year: bsCmp2Year, month: bsCmp2Month, source: bsCmp2Source, structure: bsCmp2Structure, company: bsCmp2Company, dimGroups: bsCmp2DimGroups, dimensions: bsCmp2Dimensions }}
                     MONTHS={MONTHS} t={t} companies={effectiveCompanies} />
                 )}
                 {bsCmp2Enabled && bsCmp3Enabled && (
-                  <PeriodChip letter="D" color="#a855f7" label="Period D"
+                  <PeriodChip letter="D" color="#a855f7" label={t("period_d")}
                     filters={{ year: bsCmp3Year, month: bsCmp3Month, source: bsCmp3Source, structure: bsCmp3Structure, company: bsCmp3Company, dimGroups: bsCmp3DimGroups, dimensions: bsCmp3Dimensions }}
                     MONTHS={MONTHS} t={t} companies={effectiveCompanies} />
                 )}
@@ -15063,21 +14854,21 @@ const ExportModal = exportModal ? createPortal(
 {/* What to include */}
           <div>
             <div className="flex items-center gap-2 mb-3">
-              <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">What to include</p>
+             <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">{t("export_what_to_include")}</p>
               <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
             </div>
             <div className="grid grid-cols-2 gap-2">
-              {(activeMapping ? [
-                ["plSaved",    "Profit & Loss",     colors.primary],
-                ["bsSaved",    "Balance Sheet",     colors.primary],
-                ["dimJournal", "Dims & Journal",    "#dc7533"],
+{(activeMapping ? [
+                ["plSaved",    t("page_pl_full"),                                         colors.primary],
+                ["bsSaved",    t("page_bs_full"),                                         colors.primary],
+                ["dimJournal", t("export_dim_journal_title"),                             "#dc7533"],
               ] : [
-                ["plSummary",  "P&L Summary",       colors.primary],
-                ["plDetailed", "P&L Detailed",      colors.primary],
-                ["bsSummary",  "BS Summary",        colors.primary],
-                ["bsAssets",   "BS Assets",         colors.primary],
-                ["bsEquity",   "BS Equity & Liab.", colors.primary],
-                ["dimJournal", "Dims & Journal",    "#dc7533"],
+                ["plSummary",  `${t("page_pl")} ${t("view_summary")}`,                    colors.primary],
+                ["plDetailed", `${t("page_pl")} ${t("view_detailed")}`,                   colors.primary],
+                ["bsSummary",  `${t("page_bs")} ${t("view_summary")}`,                    colors.primary],
+                ["bsAssets",   `${t("page_bs")} ${t("bs_assets")}`,                       colors.primary],
+                ["bsEquity",   `${t("page_bs")} ${t("bs_equity_liab")}`,                  colors.primary],
+                ["dimJournal", t("export_dim_journal_title"),                             "#dc7533"],
               ]).map(([k, label, accent]) => {
                 const checked = k === "dimJournal" ? exportOpts.dimJournal !== false : !!exportOpts[k];
                 return (
@@ -15119,7 +14910,7 @@ const ExportModal = exportModal ? createPortal(
               transition: "left 320ms cubic-bezier(0.34,1.56,0.64,1), width 320ms cubic-bezier(0.34,1.56,0.64,1)",
               pointerEvents: "none"
             }} />
-            {[["xlsx", "Excel"], ["pdf", "PDF"]].map(([f, l]) => (
+           {[["xlsx", t("export_excel")], ["pdf", t("export_pdf")]].map(([f, l]) => (
               <button key={f} data-fmt onClick={() => setExportOpts(o => ({ ...o, format: f }))}
                 className="relative z-10 px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-colors duration-200"
                 style={{ background: "transparent", color: (exportOpts.format ?? "xlsx") === f ? colors.primary : "#9ca3af" }}>
@@ -15221,8 +15012,8 @@ plHistoryMonths: plHistoryExpanded ? plHistoryMonths : [],
                 })(),
                 opts: exportOpts,
               };
-              if (fmt === 'pdf') generateKonsolidatorPdf(commonArgs);
-              else generateKonsolidatorXlsx({ ...commonArgs, compareMode });
+if (fmt === 'pdf') generateKonsolidatorPdf({ ...commonArgs, t, MONTHS });
+              else generateKonsolidatorXlsx({ ...commonArgs, compareMode, t, MONTHS });
             }}
 className="ml-auto flex items-center gap-2 px-5 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all duration-200 hover:scale-[1.03]"
             style={{
@@ -15593,12 +15384,12 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
                   <FileText size={26} className="text-white" strokeWidth={1.8} />
                 </div>
               </div>
-              <p className="font-black text-xl text-gray-800 mb-2">Report Mappings</p>
-              <p className="text-xs text-gray-500 leading-relaxed max-w-xs">Define custom report templates and layouts. Control which sections, KPIs, and account groups appear in your financial reports.</p>
+<p className="font-black text-xl text-gray-800 mb-2">{t("views_report_mappings")}</p>
+              <p className="text-xs text-gray-500 leading-relaxed max-w-xs">{t("views_report_description")}</p>
             </div>
             <div className="mt-6 flex items-center justify-between">
-              <span className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider" style={{ background: "#CF305D15", color: "#CF305D" }}>Coming soon</span>
-              <span className="text-xs font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300" style={{ color: "#CF305D" }}>Preview →</span>
+<span className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider" style={{ background: "#CF305D15", color: "#CF305D" }}>{t("badge_coming_soon")}</span>
+              <span className="text-xs font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300" style={{ color: "#CF305D" }}>{t("btn_preview_arrow")}</span>
             </div>
           </div>
         </button>
@@ -15609,14 +15400,14 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
     {viewsMode === "report" && (
       <div className="flex-1 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col min-h-0">
         <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
-          <div>
-            <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Library</p>
-            <p className="font-black text-xs text-gray-700">Saved report mappings</p>
+<div>
+            <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">{t("views_library")}</p>
+            <p className="font-black text-xs text-gray-700">{t("views_saved_report_mappings")}</p>
           </div>
           {activeMapping && (
             <button onClick={() => { setActiveMapping(null); setViewsMode(null); }}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest text-red-500 hover:bg-red-50 transition-colors">
-              <X size={10} /> Clear active
+              <X size={10} /> {t("btn_clear_active")}
             </button>
           )}
         </div>
@@ -15625,7 +15416,7 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
           {reportMappingsLoading && (
             <div className="py-16 text-center">
               <Loader2 size={24} className="text-[#CF305D] animate-spin mx-auto mb-2" />
-              <p className="text-gray-400 text-xs">Loading report mappings…</p>
+              <p className="text-gray-400 text-xs">{t("views_loading_report_mappings")}</p>
             </div>
           )}
 
@@ -15633,7 +15424,7 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
             <div className="py-12 text-center">
               <AlertCircle size={20} className="text-red-400 mx-auto mb-2" />
               <p className="text-red-500 text-xs font-bold">{reportMappingsError}</p>
-              <button onClick={fetchReportMappings} className="mt-2 text-xs text-[#CF305D] underline font-bold">Retry</button>
+             <button onClick={fetchReportMappings} className="mt-2 text-xs text-[#CF305D] underline font-bold">{t("btn_retry")}</button>
             </div>
           )}
 
@@ -15642,8 +15433,8 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
               <div className="w-14 h-14 bg-[#fef1f5] rounded-2xl flex items-center justify-center mx-auto mb-3">
                 <FileText size={24} className="text-[#CF305D]" />
               </div>
-              <p className="text-gray-700 font-black text-sm mb-1">No report mappings yet</p>
-              <p className="text-gray-400 text-xs">Create one from the Report Mappings page.</p>
+<p className="text-gray-700 font-black text-sm mb-1">{t("views_no_report_mappings")}</p>
+              <p className="text-gray-400 text-xs">{t("views_no_report_mappings_hint")}</p>
             </div>
           )}
 
@@ -15663,10 +15454,10 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5">
-                          <p className="font-black text-xs text-gray-800 truncate">{m.name ?? "Untitled"}</p>
+<p className="font-black text-xs text-gray-800 truncate">{m.name ?? t("views_untitled")}</p>
                           {isActive && (
                             <span className="text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded flex-shrink-0"
-                              style={{ background: "#CF305D", color: "white" }}>Active</span>
+                              style={{ background: "#CF305D", color: "white" }}>{t("views_active")}</span>
                           )}
                         </div>
                         <p className="text-[9px] font-bold uppercase tracking-widest mt-0.5" style={{ color: "#CF305D" }}>{m.standard ?? "—"}</p>
@@ -15674,9 +15465,9 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
                     </div>
                     {m.description && <p className="text-[10px] text-gray-500 mb-2 line-clamp-2">{m.description}</p>}
                     <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-50 mt-auto">
-                      <span className="text-[9px] text-gray-400">Updated {m.updated_at ? new Date(m.updated_at).toLocaleDateString() : "—"}</span>
+                      <span className="text-[9px] text-gray-400">{t("views_updated")} {m.updated_at ? new Date(m.updated_at).toLocaleDateString() : "—"}</span>
                       <span className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-widest bg-emerald-500 group-hover:bg-emerald-600 text-white shadow-sm transition-all">
-                        <CheckCircle2 size={9} />Apply
+                        <CheckCircle2 size={9} />{t("views_apply")}
                       </span>
                     </div>
                   </button>
@@ -15693,13 +15484,13 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
       <div className="flex-1 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col min-h-0">
         <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
           <div>
-            <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Library</p>
-            <p className="font-black text-xs text-gray-700">Saved mappings</p>
+<p className="text-[9px] font-black uppercase tracking-widest text-gray-400">{t("views_library")}</p>
+            <p className="font-black text-xs text-gray-700">{t("views_saved_mappings")}</p>
           </div>
           {activeMapping && (
             <button onClick={() => { setActiveMapping(null); setViewsMode(null); }}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest text-red-500 hover:bg-red-50 transition-colors">
-              <X size={10} /> Clear active
+              <X size={10} /> {t("btn_clear_active")}
             </button>
           )}
         </div>
@@ -15708,7 +15499,7 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
           {mappingsLoading && (
             <div className="py-16 text-center">
               <Loader2 size={24} className="text-[#1a2f8a] animate-spin mx-auto mb-2" />
-              <p className="text-gray-400 text-xs">Loading mappings…</p>
+              <p className="text-gray-400 text-xs">{t("views_loading_mappings")}</p>
             </div>
           )}
 
@@ -15716,7 +15507,7 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
             <div className="py-12 text-center">
               <AlertCircle size={20} className="text-red-400 mx-auto mb-2" />
               <p className="text-red-500 text-xs font-bold">{mappingsError}</p>
-              <button onClick={fetchSavedMappings} className="mt-2 text-xs text-[#1a2f8a] underline font-bold">Retry</button>
+             <button onClick={fetchSavedMappings} className="mt-2 text-xs text-[#1a2f8a] underline font-bold">{t("btn_retry")}</button>
             </div>
           )}
 
@@ -15725,8 +15516,8 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
               <div className="w-14 h-14 bg-[#eef1fb] rounded-2xl flex items-center justify-center mx-auto mb-3">
                 <Library size={24} className="text-[#1a2f8a]" />
               </div>
-              <p className="text-gray-700 font-black text-sm mb-1">No saved mappings yet</p>
-              <p className="text-gray-400 text-xs">Create one from the Mappings page in the sidebar.</p>
+<p className="text-gray-700 font-black text-sm mb-1">{t("views_no_mappings")}</p>
+              <p className="text-gray-400 text-xs">{t("views_no_mappings_hint")}</p>
             </div>
           )}
 
@@ -15746,10 +15537,10 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5">
-                          <p className="font-black text-xs text-gray-800 truncate">{m.name ?? "Untitled"}</p>
+<p className="font-black text-xs text-gray-800 truncate">{m.name ?? t("views_untitled")}</p>
                           {isActive && (
                             <span className="text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded flex-shrink-0"
-                              style={{ background: colors.primary, color: "white" }}>Active</span>
+                              style={{ background: colors.primary, color: "white" }}>{t("views_active")}</span>
                           )}
                         </div>
                         <p className="text-[9px] font-bold uppercase tracking-widest mt-0.5" style={{ color: colors.primary }}>{m.standard ?? "—"}</p>
@@ -15757,9 +15548,9 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
                     </div>
                     {m.description && <p className="text-[10px] text-gray-500 mb-2 line-clamp-2">{m.description}</p>}
                     <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-50 mt-auto">
-                      <span className="text-[9px] text-gray-400">Updated {m.updated_at ? new Date(m.updated_at).toLocaleDateString() : "—"}</span>
+                      <span className="text-[9px] text-gray-400">{t("views_updated")} {m.updated_at ? new Date(m.updated_at).toLocaleDateString() : "—"}</span>
                       <span className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-widest bg-emerald-500 group-hover:bg-emerald-600 text-white shadow-sm transition-all">
-                        <CheckCircle2 size={9} />Apply
+                        <CheckCircle2 size={9} />{t("views_apply")}
                       </span>
                     </div>
                   </button>
@@ -15862,16 +15653,12 @@ prevUploadedAccountsRaw={prevData}
       setCmpMonth(upMonth);
       setCmpSource(upSource);
       setCmpStructure(upStructure);
-      setCmpCompany(upCompany);
-      setCmpDimGroup(upDimGroup);
-      setCmpDimension(upDimension);
+setCmpCompany(upCompany);
       setCmp2Year(upYear);
       setCmp2Month(upMonth);
       setCmp2Source(upSource);
       setCmp2Structure(upStructure);
       setCmp2Company(upCompany);
-      setCmp2DimGroup(upDimGroup);
-      setCmp2Dimension(upDimension);
 
     }
     setCompareMode(c => !c);

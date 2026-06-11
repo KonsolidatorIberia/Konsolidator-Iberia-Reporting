@@ -20,6 +20,7 @@ const ref = useRef(null);
   const dropdownRef = useRef(null);
   const filterTypo = useTypo("filter");
   const { colors } = useSettings();
+  const t = useT();
 
 const showSearch = options.length >= 6;
 const filteredOptions = search.trim()
@@ -28,17 +29,16 @@ const filteredOptions = search.trim()
 
 const [highlightIdx, setHighlightIdx] = useState(0);
 
-const prevOpenRef = useRef(open);
-const prevSearchRef = useRef(search);
-if (prevOpenRef.current !== open) {
-  prevOpenRef.current = open;
+const [prevOpen, setPrevOpen] = useState(open);
+if (open !== prevOpen) {
+  setPrevOpen(open);
   if (!open) { setSearch(""); setHighlightIdx(0); }
 }
-if (prevSearchRef.current !== search) {
-  prevSearchRef.current = search;
+const [prevSearch, setPrevSearch] = useState(search);
+if (search !== prevSearch) {
+  setPrevSearch(search);
   setHighlightIdx(0);
 }
-
 const handleKeyDown = (e) => {
   if (e.key === "ArrowDown") {
     e.preventDefault();
@@ -69,7 +69,7 @@ useEffect(() => {
   }, []);
 
 useEffect(() => {
-    if (!open) { setDropdownRect(null); return; }
+    if (!open) return;
     let rafId;
     const track = () => {
       if (ref.current) setDropdownRect(ref.current.getBoundingClientRect());
@@ -147,8 +147,8 @@ useEffect(() => {
                   value={search}
                   onChange={e => setSearch(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  autoFocus
-                  placeholder="Search…"
+autoFocus
+                  placeholder={t("search_placeholder")}
                   className="text-xs outline-none bg-transparent flex-1 min-w-0"
                   style={{ color: colors.primary }}
                 />
@@ -163,7 +163,7 @@ useEffect(() => {
           <div className="p-1.5 max-h-72 overflow-y-auto" style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}>
             {filteredOptions.length === 0 ? (
               <div className="px-3 py-4 text-center text-[10px] text-gray-300 italic">
-                No matches
+                {t("no_matches")}
               </div>
             ) : filteredOptions.map((o, idx) => {
               const selected = String(value) === String(o.value);
@@ -212,6 +212,7 @@ const ref = useRef(null);
   const dropdownRef = useRef(null);
   const filterTypo = useTypo("filter");
   const { colors } = useSettings();
+  const t = useT();
 
 const showSearch = options.length >= 6;
 const filteredOptions = search.trim()
@@ -220,11 +221,16 @@ const filteredOptions = search.trim()
 
 const [highlightIdx, setHighlightIdx] = useState(0);
 
-useEffect(() => {
+const [prevOpen, setPrevOpen] = useState(open);
+if (open !== prevOpen) {
+  setPrevOpen(open);
   if (!open) { setSearch(""); setHighlightIdx(0); }
-}, [open]);
-
-useEffect(() => { setHighlightIdx(0); }, [search]);
+}
+const [prevSearch, setPrevSearch] = useState(search);
+if (search !== prevSearch) {
+  setPrevSearch(search);
+  setHighlightIdx(0);
+}
 
 const handleKeyDown = (e) => {
   if (e.key === "ArrowDown") {
@@ -254,7 +260,7 @@ useEffect(() => {
   }, []);
 
 useEffect(() => {
-    if (!open) { setDropdownRect(null); return; }
+    if (!open) return;
     let rafId;
     const track = () => {
       if (ref.current) setDropdownRect(ref.current.getBoundingClientRect());
@@ -268,7 +274,7 @@ const noneSelected = Array.isArray(values) && values.length === 0;
 const isDefault = allSelected || noneSelected;
 const display = isDefault
   ? label
-  : values.length === 1 ? (options.find(o => o.value === values[0])?.label ?? "1") : `${values.length} selected`;
+  : values.length === 1 ? (options.find(o => o.value === values[0])?.label ?? "1") : `${values.length} ${t("active").toLowerCase()}`;
 
   const toggle = (v) => {
     const current = values ?? options.map(o => o.value);
@@ -319,8 +325,8 @@ const display = isDefault
                   value={search}
                   onChange={e => setSearch(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  autoFocus
-                  placeholder="Search…"
+autoFocus
+                  placeholder={t("search_placeholder")}
                   className="text-xs outline-none bg-transparent flex-1 min-w-0"
                   style={{ color: colors.primary }}
                 />
@@ -342,11 +348,11 @@ const display = isDefault
                 style={{ backgroundColor: allSelected ? colors.primary : "#fff", borderColor: allSelected ? colors.primary : "#d4d4d8" }}>
                 {allSelected && <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2 6L5 9L10 3" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
               </span>
-              {allSelected ? "Deselect all" : "Select all"}
+              {allSelected ? t("deselect_all") : t("select_all")}
             </button>
             {filteredOptions.length === 0 ? (
               <div className="px-3 py-4 text-center text-[10px] text-gray-300 italic">
-                No matches
+                {t("no_matches")}
               </div>
             ) : filteredOptions.map((o, idx) => {
               const selected = (values ?? options.map(x => x.value)).includes(o.value);
@@ -537,6 +543,7 @@ export function ActionFAB({ actions = [] }) {
   const [hoveredId, setHoveredId] = useState(null);
   const ref = useRef(null);
   const { colors } = useSettings();
+  const t = useT();
 
   useEffect(() => {
     function handler(e) { if (ref.current && !ref.current.contains(e.target)) { setOpen(false); setHoveredId(null); } }
@@ -648,7 +655,7 @@ style={{
           );
         })}
 
-        <button onClick={() => setOpen(o => !o)} title="More actions"
+<button onClick={() => setOpen(o => !o)} title={t("more_actions")}
           className="relative flex items-center justify-center w-9 h-9 rounded-full z-40"
           style={{
             background: open ? colors.primary : 'rgba(26,47,138,0.06)',
@@ -746,7 +753,7 @@ style={{
           </div>
         );
       })}
-      <button onClick={() => setOpen(o => !o)} title="More actions"
+<button onClick={() => setOpen(o => !o)} title={t("more_actions")}
         className="relative flex items-center justify-center w-9 h-9 rounded-full z-40"
         style={{
           background: open ? colors.primary : "rgba(26,47,138,0.06)",
@@ -775,8 +782,7 @@ export default function PageHeader({
   filters = [],
   periodToggle,
   compareToggle,
-  aiToggle,
-  fabActions,
+aiToggle,
   onBack,
   headerSearch,
   headerActions,
@@ -791,19 +797,18 @@ const { colors } = useSettings();
   const activeTabObj = tabs?.find(t => t.id === activeTab);
   const displayTitle = activeTabObj?.label ?? title;
 
-  // Split filters: primary (Year/Month/Company) always visible, rest behind "More filters"
-  const isPrimary = (f) => {
-    const lbl = String(f?.label ?? "").toLowerCase();
-    return lbl.includes("year") || lbl.includes("month") || lbl.includes("company") || lbl.includes("año") || lbl.includes("mes") || lbl.includes("empresa");
-  };
-  const primaryFilters = filters.filter(isPrimary);
-  const secondaryFilters = filters.filter(f => !isPrimary(f));
+// Always show the first 3 filters (Year, Month, Company by convention); rest go behind "More filters"
+  const primaryFilters = filters.slice(0, 3);
+  const secondaryFilters = filters.slice(3);
 
 const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
+  const [moreFiltersClosing, setMoreFiltersClosing] = useState(false);
+  const moreFiltersHoverRef = useRef(false);
+  const moreFiltersCloseTimerRef = useRef(null);
   const [exportMode, setExportMode] = useState(false); // false = [Export, Mappings], true = [PDF, Excel]
   const exportButtonsRef = useRef(null);
 
-  useEffect(() => {
+useEffect(() => {
     if (!exportMode) return;
     const handler = (e) => {
       if (exportButtonsRef.current && !exportButtonsRef.current.contains(e.target)) {
@@ -813,8 +818,24 @@ const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [exportMode]);
+
+  // When moreFiltersOpen is on but mouse is no longer hovering and no dropdown is open, close it.
+  // Re-check periodically while open.
+useEffect(() => {
+    if (!moreFiltersOpen) return;
+    const interval = setInterval(() => {
+      if (moreFiltersHoverRef.current) return;
+      const anyDropdownOpen = document.querySelector(".fixed.z-\\[9999\\]");
+      if (!anyDropdownOpen) {
+        setMoreFiltersClosing(true);
+        setMoreFiltersOpen(false);
+        setTimeout(() => setMoreFiltersClosing(false), 500);
+      }
+    }, 200);
+    return () => clearInterval(interval);
+  }, [moreFiltersOpen]);
 return (
-<div className="relative sticky top-0 z-50 bg-[#f8f9ff] overflow-visible">
+<div className="sticky top-0 z-50 bg-[#f8f9ff] overflow-visible">
       {/* Match sidebar's logo card height (7vh) and rounded card vibe */}
 <div className="flex items-stretch gap-0 relative overflow-visible bg-white rounded-2xl shadow-xl border border-gray-100"
 style={{
@@ -829,7 +850,7 @@ style={{
             <button
               onClick={onBack}
               className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-gray-100 transition-colors flex-shrink-0"
-              title="Back"
+             title={t("back")}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: colors.primary }}>
                 <path d="M15 18l-6-6 6-6"/>
@@ -877,11 +898,28 @@ style={{
 
 {/* Filters — primary always visible; secondary revealed on More filters hover */}
 {filters.length > 0 && (
-  <div
+<div
     className="no-scrollbar flex items-center gap-1 px-3 overflow-x-auto relative"
-    style={{ flexWrap: "nowrap" }}
-    onMouseEnter={() => setMoreFiltersOpen(true)}
-    onMouseLeave={() => setMoreFiltersOpen(false)}
+    style={{ flexWrap: "nowrap", pointerEvents: moreFiltersClosing ? "none" : "auto" }}
+onMouseEnter={() => {
+      moreFiltersHoverRef.current = true;
+      if (moreFiltersCloseTimerRef.current) {
+        clearTimeout(moreFiltersCloseTimerRef.current);
+        moreFiltersCloseTimerRef.current = null;
+      }
+      setMoreFiltersOpen(true);
+    }}
+onMouseLeave={() => {
+      moreFiltersHoverRef.current = false;
+      moreFiltersCloseTimerRef.current = setTimeout(() => {
+        const anyDropdownOpen = document.querySelector(".fixed.z-\\[9999\\]");
+        if (!anyDropdownOpen && !moreFiltersHoverRef.current) {
+          setMoreFiltersClosing(true);
+          setMoreFiltersOpen(false);
+          setTimeout(() => setMoreFiltersClosing(false), 500);
+        }
+      }, 150);
+    }}
   >
     {primaryFilters.map((f, i) =>
       f.render
@@ -916,7 +954,7 @@ style={{
         >
           <span className="text-[9px] font-black uppercase tracking-[0.18em] leading-none whitespace-nowrap"
             style={{ color: colors.primary, opacity: 0.55 }}>
-            {t("more filters") || "More filters"}
+          {t("more_filters")}
           </span>
           <span className="text-[10px] font-bold leading-none"
             style={{ color: colors.primary, opacity: 0.4 }}>
@@ -968,7 +1006,7 @@ style={{
               {aiToggle && (
                 <button
                   onClick={aiToggle.onClick}
-                  title="AI Finance Analyst"
+                  title={t("ai_finance_analyst")}
                   className="flex items-center gap-1.5 px-3 h-9 rounded-full flex-shrink-0 transition-all duration-200"
                   style={{
                     background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.secondary ?? "#CF305D"} 100%)`,
@@ -1008,7 +1046,7 @@ style={{
 {compareToggle && (
                 <button
 onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareToggle.active); }}
-                  title={compareToggle.disabled ? "Disable history view first" : compareToggle.active ? `${t("btn_compare")} ✕` : t("btn_compare_with")}
+                  title={compareToggle.disabled ? t("disable_history_first") : compareToggle.active ? `${t("btn_compare")} ✕` : t("btn_compare_with")}
                   className="flex items-center gap-1.5 px-3 h-9 rounded-full flex-shrink-0"
                   style={{
                     background: compareToggle.disabled ? "rgba(26,47,138,0.03)" : compareToggle.active ? colors.primary : "rgba(26,47,138,0.06)",
@@ -1040,7 +1078,7 @@ onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareTog
                         setExportMode(true);
                       }
                     }}
-                    title={exportMode ? "Download PDF" : "Export"}
+                    title={exportMode ? t("download_pdf") : t("export")}
                     className="flex items-center gap-1.5 px-3 h-9 rounded-full flex-shrink-0"
                     style={{
                       background: exportMode ? "white" : "rgba(26,47,138,0.06)",
@@ -1065,7 +1103,7 @@ onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareTog
                       </svg>
                     )}
 <span className="hidden 2xl:inline text-[10px] font-black uppercase tracking-wider">
-                      {exportMode ? "PDF" : (t("export") || "Export")}
+                     {exportMode ? "PDF" : t("export")}
                     </span>
                   </button>
 
@@ -1078,7 +1116,7 @@ onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareTog
                         onMappingsClick?.();
                       }
                     }}
-                    title={exportMode ? "Download Excel" : "Mappings"}
+                    title={exportMode ? t("download_excel") : t("mappings")}
                     className="flex items-center gap-1.5 px-3 h-9 rounded-full flex-shrink-0"
                     style={{
                       background: exportMode ? "white" : "rgba(26,47,138,0.06)",
@@ -1103,7 +1141,7 @@ onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareTog
                       </svg>
                     )}
 <span className="hidden 2xl:inline text-[10px] font-black uppercase tracking-wider">
-                      {exportMode ? "Excel" : (t("mappings") || "Mappings")}
+                   {exportMode ? "Excel" : t("mappings")}
                     </span>
                   </button>
                 </div>
@@ -1119,7 +1157,7 @@ onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareTog
             <div className="flex items-center gap-2 px-3">
               <div className="flex items-center gap-2 rounded-xl px-3 py-1.5 border border-gray-100 bg-gray-50">
                 <Search size={12} className="text-gray-400 flex-shrink-0" />
-                <input type="text" value={headerSearch.value} onChange={e => headerSearch.onChange(e.target.value)} placeholder={headerSearch.placeholder ?? "Search…"} className="text-xs outline-none bg-transparent text-gray-700 placeholder:text-gray-300 w-40" />
+               <input type="text" value={headerSearch.value} onChange={e => headerSearch.onChange(e.target.value)} placeholder={headerSearch.placeholder ?? t("search_placeholder")} className="text-xs outline-none bg-transparent text-gray-700 placeholder:text-gray-300 w-40" />
                 {headerSearch.value && <button onClick={() => headerSearch.onChange("")}><X size={11} className="text-gray-400 hover:text-gray-600" /></button>}
               </div>
             </div>
