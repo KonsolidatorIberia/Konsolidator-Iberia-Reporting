@@ -1,11 +1,11 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from "react";
 import { useTypo, useSettings } from "./SettingsContext";
 import { useLatestPeriod } from "./LatestPeriodContext.jsx";
 import { createRoot } from "react-dom/client";
 
 function useAnimatedNumber(target, duration = 800) {
-  const [display, setDisplay] = useState(target);
-  const fromRef = useRef(target);
+  const [display, setDisplay] = useState(0);
+  const fromRef = useRef(0);
   const startRef = useRef(null);
   const rafRef = useRef(null);
   useEffect(() => {
@@ -680,8 +680,8 @@ function buildFilterString(f) {
   if (f.source) parts.push(f.source);
   if (f.structure) parts.push(f.structure);
   if (f.year && f.month) parts.push(`${monthLabel(f.month)} ${f.year}`);
-  if (f.dimGroup) parts.push(`Dim Group: ${f.dimGroup}`);
-  if (f.dim) parts.push(`Dim: ${f.dim}`);
+  if (Array.isArray(f.dimGroups) && f.dimGroups.length > 0) parts.push(`Dim Groups: ${f.dimGroups.join(", ")}`);
+  if (Array.isArray(f.dims) && f.dims.length > 0) parts.push(`Dims: ${f.dims.join(", ")}`);
   return parts.join(" · ");
 }
 
@@ -2457,6 +2457,7 @@ const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 const [removedIds, setRemovedIds] = useState(new Set());
 const [dupeLabelWarning, setDupeLabelWarning] = useState(false);
 const [formulaWarning, setFormulaWarning] = useState(null);
+const [confirmClose, setConfirmClose] = useState(false);
   useEffect(() => {
     if (document.getElementById("disint-style")) return;
     const s = document.createElement("style");
@@ -2496,12 +2497,11 @@ const validateFormula = (f) => {
     return null;
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
 <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-hidden flex flex-col"
-        style={{ boxShadow: "0 32px 80px -16px rgba(26,47,138,0.25), 0 8px 24px -8px rgba(0,0,0,0.08)" }}
-onClick={e => e.stopPropagation()}>
+        style={{ boxShadow: "0 32px 80px -16px rgba(26,47,138,0.25), 0 8px 24px -8px rgba(0,0,0,0.08)" }}>
 
 {dupeLabelWarning && (
   <div className="absolute inset-0 z-50 flex items-center justify-center rounded-3xl"
@@ -2583,13 +2583,44 @@ onClick={e => e.stopPropagation()}>
               </p>
             </div>
           </div>
-          <button onClick={onClose}
+<button onClick={() => setConfirmClose(true)}
             className="w-8 h-8 rounded-xl flex items-center justify-center transition-all hover:scale-110"
             style={{ background: "#f3f4f6", color: "#6b7280" }}>
             <X size={13} />
           </button>
         </div>
         <div className="h-px mx-6 mb-1" style={{ background: "linear-gradient(90deg, transparent, rgba(26,47,138,0.08), transparent)" }} />
+
+{confirmClose && (
+  <div className="absolute inset-0 z-[60] flex items-center justify-center rounded-3xl"
+    style={{ background: "rgba(255,255,255,0.85)", backdropFilter: "blur(8px)" }}>
+    <div className="flex flex-col items-center gap-4 p-8 rounded-2xl bg-white border border-gray-100 mx-6"
+      style={{ boxShadow: "0 24px 60px -12px rgba(26,47,138,0.2)" }}>
+      <div className="w-12 h-12 rounded-2xl flex items-center justify-center"
+        style={{ background: "#fef3c7" }}>
+        <AlertTriangle size={22} style={{ color: "#d97706" }} />
+      </div>
+      <div className="text-center">
+        <p className="text-sm font-black text-gray-900 mb-1">¿Cerrar sin guardar?</p>
+        <p className="text-xs text-gray-400 leading-relaxed max-w-[260px]">
+          Si cierras ahora perderás cualquier cambio que no hayas guardado.
+        </p>
+      </div>
+      <div className="flex gap-2 w-full">
+        <button onClick={() => setConfirmClose(false)}
+          className="flex-1 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all"
+          style={{ background: "#f3f4f6", color: "#6b7280" }}>
+          Continuar editando
+        </button>
+        <button onClick={() => { setConfirmClose(false); onClose(); }}
+          className="flex-1 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-white transition-all"
+          style={{ background: "linear-gradient(135deg, #dc2626 0%, #991b1b 100%)", boxShadow: "0 4px 14px -4px rgba(220,38,38,0.4)" }}>
+          Cerrar
+        </button>
+      </div>
+    </div>
+  </div>
+)}
 
 {/* Library mode */}
 {mode === "library" && (
@@ -2987,14 +3018,22 @@ function GraphSection({
 const secMode = viewPeriod === "ytd" ? "ytd" : "monthly";
 const [secXAxis, setSecXAxis] = useState("month");
 const [cmpBars, setCmpBars] = useState([
-    { id: "B", companies: [], source, structure, startYear: String(startY), startMonth: String(startM), endYear: String(anchorY), endMonth: String(anchorM), dimGroup: "", dim: "" },
-    { id: "C", companies: [], source, structure, startYear: String(startY), startMonth: String(startM), endYear: String(anchorY), endMonth: String(anchorM), dimGroup: "", dim: "" },
+    { id: "B", companies: [], source, structure, dimGroup: "", dim: "" },
+    { id: "C", companies: [], source, structure, dimGroup: "", dim: "" },
   ]);
   const [cmpChartData, setCmpChartData] = useState({});
+  const [cmpBarsCollapsed, setCmpBarsCollapsed] = useState(false);
+  useEffect(() => {
+    if (!compareMode) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setCmpBarsCollapsed(false);
+    }
+  }, [compareMode]);
   const updateCmpBar = (id, patch) => setCmpBars(prev => prev.map(b => b.id === id ? { ...b, ...patch } : b));
   const removeCmpBar = (id) => setCmpBars(prev => prev.filter(b => b.id !== id));
 
-  const [secKpiIds, setSecKpiIds] = useState(defaultKpiIds || []);
+const [secKpiIds, setSecKpiIds] = useState(defaultKpiIds || []);
+  const activeCmpBars = useMemo(() => compareMode ? cmpBars.filter(b => (cmpChartData[b.id]?.length ?? 0) > 0 || b.companies.length > 0) : [], [compareMode, cmpBars, cmpChartData]);
 const [kpiPickerOpen, setKpiPickerOpen] = useState(false);
   const [kpiSearch, setKpiSearch] = useState("");
   const [kpiPickerRect, setKpiPickerRect] = useState(null);
@@ -3143,10 +3182,10 @@ useEffect(() => { fetchChartData(); }, [fetchChartData]);
 
 useEffect(() => {
     if (!compareMode || !token) { setCmpChartData({}); return; }
-    cmpBars.forEach(bar => {
+cmpBars.forEach(bar => {
       if (!bar.source || !bar.structure || !bar.companies?.length) return;
-      const sY = parseInt(bar.startYear), sM = parseInt(bar.startMonth);
-      const eY = parseInt(bar.endYear), eM = parseInt(bar.endMonth);
+      const sY = parseInt(secStartYear), sM = parseInt(secStartMonth);
+      const eY = parseInt(secEndYear), eM = parseInt(secEndMonth);
       if (!sY || !sM || !eY || !eM) return;
       const list = [];
       let pY = sY, pM = sM - 1;
@@ -3206,7 +3245,7 @@ useEffect(() => {
         } catch (e) { console.error("Cmp fetch error:", e); }
       })();
     });
-  }, [compareMode, cmpBars, token, secMode, secKpiIds, kpiList, allKpis, ccTagToCodes, sectionCodes, sumAccountCodes]);
+}, [compareMode, cmpBars, token, secMode, secKpiIds, kpiList, allKpis, ccTagToCodes, sectionCodes, sumAccountCodes, secStartYear, secStartMonth, secEndYear, secEndMonth]);
 
 
   // Expose state up to parent for export
@@ -3238,11 +3277,23 @@ const COLORS = [
     "#84cc16",
   ];
 
+const KPI_CAP_COMPARE = 2;
+const KPI_CAP_NORMAL = 10;
+const kpiCap = compareMode ? KPI_CAP_COMPARE : KPI_CAP_NORMAL;
+
 const toggleKpi = (id) => {
-    setSecKpiIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+    setSecKpiIds(prev => {
+      if (prev.includes(id)) return prev.filter(x => x !== id);
+      if (prev.length >= kpiCap) return prev;
+      return [...prev, id];
+    });
   };
 
-
+  // Auto-trim when cap shrinks (e.g., entering compare mode)
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSecKpiIds(prev => prev.length > kpiCap ? prev.slice(0, kpiCap) : prev);
+  }, [kpiCap]);
 
   const allPickerKpis = useMemo(() => {
     const seen = new Set();
@@ -3336,16 +3387,19 @@ top: kpiPickerRect ? kpiPickerRect.bottom + 8 : 0,
                         <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: colors?.primary }} />
                         <span className="text-[9px] font-black uppercase tracking-[0.18em]" style={{ color: colors?.primary, opacity: 0.5 }}>System</span>
                       </div>
-                      {filteredSystem.map(k => (
-                        <button key={k.id} onClick={() => toggleKpi(k.id)}
-                          className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between gap-3"
+{filteredSystem.map(k => {
+                        const atCap = !secKpiIds.includes(k.id) && secKpiIds.length >= kpiCap;
+                        return (
+                        <button key={k.id} onClick={() => toggleKpi(k.id)} disabled={atCap}
+                          className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between gap-3 disabled:opacity-40 disabled:cursor-not-allowed"
                           style={{ background: secKpiIds.includes(k.id) ? "#eef1fb" : "transparent", color: secKpiIds.includes(k.id) ? "#1a2f8a" : "#475569" }}
                           onMouseEnter={e => { if (!secKpiIds.includes(k.id)) e.currentTarget.style.background = "#f8f9ff"; }}
                           onMouseLeave={e => { if (!secKpiIds.includes(k.id)) e.currentTarget.style.background = "transparent"; }}>
                           <span className="truncate">{k.label}</span>
-                          {secKpiIds.includes(k.id) && <Check size={10} className="flex-shrink-0" style={{ color: colors?.primary }} />}
+{secKpiIds.includes(k.id) && <Check size={10} className="flex-shrink-0" style={{ color: colors?.primary }} />}
                         </button>
-                      ))}
+                      );
+                      })}
                     </>
                   )}
                   {filteredCustom.length > 0 && (
@@ -3354,16 +3408,19 @@ top: kpiPickerRect ? kpiPickerRect.bottom + 8 : 0,
                         <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: "#16a34a" }} />
                         <span className="text-[9px] font-black uppercase tracking-[0.18em] text-emerald-600" style={{ opacity: 0.7 }}>Custom</span>
                       </div>
-                      {filteredCustom.map(k => (
-                        <button key={k.id} onClick={() => toggleKpi(k.id)}
-                          className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between gap-3"
+{filteredCustom.map(k => {
+                        const atCap = !secKpiIds.includes(k.id) && secKpiIds.length >= kpiCap;
+                        return (
+                        <button key={k.id} onClick={() => toggleKpi(k.id)} disabled={atCap}
+                          className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between gap-3 disabled:opacity-40 disabled:cursor-not-allowed"
                           style={{ background: secKpiIds.includes(k.id) ? "#dcfce7" : "transparent", color: secKpiIds.includes(k.id) ? "#15803d" : "#475569" }}
                           onMouseEnter={e => { if (!secKpiIds.includes(k.id)) e.currentTarget.style.background = "#f0fdf4"; }}
                           onMouseLeave={e => { if (!secKpiIds.includes(k.id)) e.currentTarget.style.background = "transparent"; }}>
                           <span className="truncate">{k.label}</span>
-                          {secKpiIds.includes(k.id) && <Check size={10} className="flex-shrink-0 text-emerald-600" />}
+{secKpiIds.includes(k.id) && <Check size={10} className="flex-shrink-0 text-emerald-600" />}
                         </button>
-                      ))}
+                      );
+                      })}
                     </>
                   )}
                   {filteredSystem.length === 0 && filteredCustom.length === 0 && (
@@ -3375,8 +3432,28 @@ top: kpiPickerRect ? kpiPickerRect.bottom + 8 : 0,
           })()}
         </div>
 {loading && <Loader2 size={12} className="animate-spin ml-2" style={{ color: colors?.primary }} />}
-        {compareMode && (() => {
-          const CMP_COLORS = ["#CF305D", "#f59e0b"];
+
+{/* X-axis granularity toggle — modern segmented pill */}
+        <div className="relative grid grid-cols-2 p-0.5 rounded-xl flex-shrink-0 ml-1"
+          style={{ background: `${colors?.primary}10`, width: 132 }}>
+          <div className="absolute top-0.5 bottom-0.5 rounded-lg transition-all duration-300 ease-out"
+            style={{
+              left: secXAxis === "month" ? 2 : "50%",
+              width: "calc(50% - 2px)",
+              background: colors?.primary,
+              boxShadow: `0 2px 8px -2px ${colors?.primary}60`,
+            }} />
+          {["month","year"].map(x => (
+            <button key={x} onClick={() => setSecXAxis(x)}
+              className="relative z-10 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-[0.18em] transition-colors duration-200 text-center"
+              style={{ color: secXAxis === x ? "#fff" : `${colors?.primary}80` }}>
+              {x.charAt(0).toUpperCase() + x.slice(1)}
+            </button>
+          ))}
+        </div>
+
+{compareMode && (() => {
+          const CMP_COLORS = ["#CF305D", "#10B981"];
           const allIds = ["B", "C"];
           const missingIds = allIds.filter(id => !cmpBars.some(b => b.id === id));
           if (missingIds.length === 0) return null;
@@ -3385,15 +3462,11 @@ top: kpiPickerRect ? kpiPickerRect.bottom + 8 : 0,
               {missingIds.map((id, i) => {
                 const color = CMP_COLORS[allIds.indexOf(id)];
                 return (
-                  <button key={id} onClick={() => setCmpBars(prev => [...prev, {
+<button key={id} onClick={() => setCmpBars(prev => [...prev, {
                     id,
                     companies: [],
                     source: secSource,
                     structure: secStructure,
-                    startYear: secStartYear,
-                    startMonth: secStartMonth,
-                    endYear: secEndYear,
-                    endMonth: secEndMonth,
                     dimGroup: "",
                     dim: "",
                   }])}
@@ -3407,9 +3480,27 @@ top: kpiPickerRect ? kpiPickerRect.bottom + 8 : 0,
             </div>
           );
         })()}
+        {compareMode && (
+          <button onClick={() => setCmpBarsCollapsed(v => !v)}
+            className="ml-auto flex-shrink-0 w-8 h-8 rounded-xl bg-white border border-gray-200 shadow-sm flex items-center justify-center hover:scale-110 hover:bg-gray-50 transition-all"
+            title={cmpBarsCollapsed ? "Mostrar filtros de comparación" : "Ocultar filtros de comparación"}>
+            <ChevronDown size={13} style={{
+              transition: 'transform 350ms cubic-bezier(0.4,0,0.2,1)',
+              transform: cmpBarsCollapsed ? 'rotate(0deg)' : 'rotate(180deg)',
+              color: colors?.primary,
+            }} />
+          </button>
+        )}
       </div>
-{compareMode && cmpBars.map((bar, bi) => {
-        const CMP_COLORS = ["#CF305D", "#f59e0b"];
+{compareMode && (
+        <div style={{
+          maxHeight: cmpBarsCollapsed ? 0 : 600,
+          opacity: cmpBarsCollapsed ? 0 : 1,
+          overflow: 'hidden',
+          transition: 'max-height 450ms cubic-bezier(0.4,0,0.2,1), opacity 300ms ease',
+        }}>
+{cmpBars.map((bar, bi) => {
+        const CMP_COLORS = ["#CF305D", "#10B981"];
         const cmpColor = CMP_COLORS[bi % CMP_COLORS.length];
         const cmpDimOptions = bar.dimGroup ? dimensions.filter(d => (d.DimensionGroup ?? d.dimensionGroup ?? "") === bar.dimGroup).map(d => ({ code: d.DimensionCode ?? d.dimensionCode ?? "", name: d.DimensionName ?? d.dimensionName ?? "" })).filter(d => d.code) : [];
         return (
@@ -3423,15 +3514,11 @@ top: kpiPickerRect ? kpiPickerRect.bottom + 8 : 0,
               <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: cmpColor }}>Compare {bar.id}</span>
             </div>
             <MultiFilterPill label="Company" values={bar.companies} onChange={v => updateCmpBar(bar.id, { companies: v })} options={companyCodes.map(c => ({ value: c, label: companyLegalName(c) }))} colors={{ primary: cmpColor }} />
-            <HeaderFilterPill label="Start M" value={bar.startMonth} onChange={v => updateCmpBar(bar.id, { startMonth: v })} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-            <HeaderFilterPill label="Start Y" value={bar.startYear} onChange={v => updateCmpBar(bar.id, { startYear: v })} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-            <HeaderFilterPill label="End M" value={bar.endMonth} onChange={v => updateCmpBar(bar.id, { endMonth: v })} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-            <HeaderFilterPill label="End Y" value={bar.endYear} onChange={v => updateCmpBar(bar.id, { endYear: v })} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
             {sourceOpts.length > 0 && <HeaderFilterPill label="Source" value={bar.source} onChange={v => updateCmpBar(bar.id, { source: v })} options={sourceOpts} />}
             {structureOpts.length > 0 && <HeaderFilterPill label="Structure" value={bar.structure} onChange={v => updateCmpBar(bar.id, { structure: v })} options={structureOpts} />}
             {secDimGroups.length > 0 && <HeaderFilterPill label="Dim Grp" value={bar.dimGroup} onChange={v => updateCmpBar(bar.id, { dimGroup: v, dim: "" })} options={[{ value: "", label: "Dim Grp" }, ...secDimGroups.map(g => ({ value: g, label: g }))]} />}
             {bar.dimGroup && cmpDimOptions.length > 0 && <HeaderFilterPill label="Dims" value={bar.dim} onChange={v => updateCmpBar(bar.id, { dim: v })} options={[{ value: "", label: "Dims" }, ...cmpDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))]} />}
-            <button onClick={() => removeCmpBar(bar.id)}
+<button onClick={() => removeCmpBar(bar.id)}
               className="flex-shrink-0 w-7 h-7 rounded-xl flex items-center justify-center ml-2 transition-all hover:scale-110"
               style={{ background: `${cmpColor}15`, color: cmpColor }}>
               <X size={11} />
@@ -3439,26 +3526,16 @@ top: kpiPickerRect ? kpiPickerRect.bottom + 8 : 0,
           </div>
         );
       })}
+        </div>
+      )}
     </div>
 
 {/* Chart card */}
     <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
 
 {/* Chart */}
-      <div ref={chartContainerRef} className="relative flex-1 min-h-0" style={{ minHeight: 0 }}>
-        <div className="absolute inset-0 px-4 py-4">
-          {/* X-axis granularity toggle */}
-          <div className="absolute bottom-4 left-4 z-10 flex items-center gap-0.5 rounded-xl p-0.5 shadow-sm"
-            style={{ background: "rgba(255,255,255,0.9)", border: "1px solid rgba(26,47,138,0.08)", backdropFilter: "blur(8px)" }}>
-            {["month","year"].map(x => (
-              <button key={x} onClick={() => setSecXAxis(x)}
-                className="px-3 py-1 rounded-lg text-[10px] font-black transition-all"
-                style={{ background: secXAxis === x ? colors?.primary : "transparent", color: secXAxis === x ? "#fff" : colors?.primary }}>
-                {x.charAt(0).toUpperCase() + x.slice(1)}
-              </button>
-            ))}
-          </div>
-
+<div ref={chartContainerRef} className="relative flex-1 min-h-0" style={{ minHeight: 0 }}>
+        <div className="absolute inset-0 px-2 py-3">
 {loading ? (
             <div className="flex flex-col items-center justify-center h-full gap-4">
               <div className="relative" style={{ width: 80, height: 80 }}>
@@ -3519,7 +3596,7 @@ top: kpiPickerRect ? kpiPickerRect.bottom + 8 : 0,
               });
             }
 const CHART_COLORS = [colors?.primary ?? "#1a2f8a", "#10b981", "#f59e0b", "#8b5cf6", "#06b6d4"];
-const CMP_COLORS = { B: "#CF305D", C: "#f59e0b" };
+const CMP_COLORS = { B: "#CF305D", C: "#10B981" };
             const activeCmpBars = compareMode ? cmpBars.filter(b => (cmpChartData[b.id]?.length ?? 0) > 0) : [];
 
             const allPeriods = [...new Set([
@@ -3539,11 +3616,11 @@ const CMP_COLORS = { B: "#CF305D", C: "#f59e0b" };
             });
 
             return (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={mergedData} margin={{ top: 8, right: 24, left: 8, bottom: 32 }}>
+<ResponsiveContainer width="100%" height="100%">
+<LineChart data={mergedData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(26,47,138,0.06)" vertical={false} />
-                  <XAxis dataKey="period" tick={{ fontSize: 10, fill: "#9ca3af", fontWeight: 600 }} axisLine={false} tickLine={false} interval={secXAxis === "year" ? 0 : "preserveStartEnd"} />
-                  <YAxis tick={{ fontSize: 10, fill: "#9ca3af", fontWeight: 600 }} axisLine={false} tickLine={false} tickFormatter={v => Math.abs(v) >= 1000000 ? `${(v/1000000).toFixed(1)}M` : Math.abs(v) >= 1000 ? `${(v/1000).toFixed(0)}k` : v.toFixed(0)} width={56} />
+                  <XAxis dataKey="period" tick={{ fontSize: 10, fill: "#9ca3af", fontWeight: 600 }} axisLine={false} tickLine={false} interval={secXAxis === "year" ? 0 : "preserveStartEnd"} tickMargin={6} />
+                  <YAxis tick={{ fontSize: 10, fill: "#9ca3af", fontWeight: 600 }} axisLine={false} tickLine={false} tickFormatter={v => Math.abs(v) >= 1000000 ? `${(v/1000000).toFixed(1)}M` : Math.abs(v) >= 1000 ? `${(v/1000).toFixed(0)}k` : v.toFixed(0)} width={40} tickMargin={4} />
                   <Tooltip
                     contentStyle={{ borderRadius: 16, border: "none", boxShadow: "0 20px 50px -12px rgba(26,47,138,0.25)", padding: "12px 16px", fontSize: 12 }}
                     labelStyle={{ fontWeight: 800, color: "#1a2f8a", marginBottom: 6 }}
@@ -3553,22 +3630,22 @@ formatter={(value, name) => {
                       return [fmtValue(value, kpi?.format), `${prefix.toUpperCase()} · ${kpi?.label ?? kid}`];
                     }}
                   />
-                  <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} formatter={(value) => {
+                  <Legend wrapperStyle={{ fontSize: 10, paddingTop: 2, lineHeight: '14px' }} iconSize={8} formatter={(value) => {
                     const [prefix, kid] = value.split("__");
                     const kpi = kpiList.find(k => k.id === kid);
                     return `${prefix.toUpperCase()} · ${kpi?.label ?? kid}`;
                   }} />
-                  {secKpiIds.map((kid, i) => (
+{secKpiIds.slice(0, kpiCap).map((kid, i) => (
                     <Line key={`a__${kid}`} type="monotone" dataKey={`a__${kid}`}
-                      stroke={CHART_COLORS[i % CHART_COLORS.length]}
+                      stroke={compareMode ? (colors?.primary ?? "#1a2f8a") : CHART_COLORS[i % CHART_COLORS.length]}
+                      strokeDasharray={compareMode && i === 1 ? "5 4" : undefined}
                       strokeWidth={2.5} dot={false} activeDot={{ r: 6, strokeWidth: 0 }} connectNulls />
                   ))}
-{activeCmpBars.flatMap(bar => secKpiIds.map((kid, i) => (
+{activeCmpBars.flatMap(bar => secKpiIds.slice(0, KPI_CAP_COMPARE).map((kid, i) => (
                     <Line key={`${bar.id}__${kid}`} type="monotone" dataKey={`${bar.id}__${kid}`}
                       stroke={CMP_COLORS[bar.id] ?? "#CF305D"}
-                      strokeWidth={2}
-                      strokeOpacity={i === 0 ? 1 : 0.65 - i * 0.1}
-                      strokeDasharray={bar.id === "B" ? "6 3" : "2 3"}
+                      strokeWidth={2.5}
+                      strokeDasharray={i === 1 ? "5 4" : undefined}
                       dot={false} activeDot={{ r: 5, strokeWidth: 0 }} connectNulls />
                   )))}
                 </LineChart>
@@ -3597,41 +3674,92 @@ formatter={(value, name) => {
         scrollbarWidth: "none",
         transition: "max-height 350ms cubic-bezier(0.4,0,0.2,1)",
       }}>
-          {chartData.length === 0 || secKpiIds.length === 0 ? (
+{chartData.length === 0 || secKpiIds.length === 0 ? (
             <div className="flex items-center justify-center h-full text-[10px] text-gray-300 font-bold">
               {secKpiIds.length === 0 ? "Select KPIs to view data" : "—"}
             </div>
-          ) : (
-            <table className="w-full border-collapse">
-              <thead className="sticky top-0 z-10">
-                <tr style={{ background: colors?.primary }}>
-                  <th className="text-left px-4 py-2.5 text-[10px] font-black uppercase tracking-wider text-white/70 whitespace-nowrap">Period</th>
-                  {secKpiIds.map(kid => {
-                    const k = kpiList.find(k => k.id === kid);
-                    return <th key={kid} className="text-right px-4 py-2.5 text-[10px] font-black uppercase tracking-wider text-white/70 whitespace-nowrap">{k?.label ?? kid}</th>;
-                  })}
-                </tr>
-              </thead>
-              <tbody>
-                {chartData.map((d, i) => (
-                  <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-[#f8f9ff]"}>
-                    <td className="px-4 py-2 text-xs font-bold whitespace-nowrap" style={{ color: colors?.primary }}>{d.period}</td>
-                    {secKpiIds.map(kid => {
+          ) : (() => {
+          const visibleKpiIds = secKpiIds.slice(0, kpiCap);
+            // Build merged rows: { period, a__kid, B__kid, C__kid... }
+            const allPeriods = compareMode
+              ? [...new Set([
+                  ...chartData.map(d => d.period),
+                  ...activeCmpBars.flatMap(b => (cmpChartData[b.id] ?? []).map(d => d.period)),
+                ])].sort()
+              : chartData.map(d => d.period);
+            const rows = allPeriods.map(period => {
+              const main = chartData.find(d => d.period === period) ?? {};
+              const row = { period };
+              visibleKpiIds.forEach(kid => { row[`a__${kid}`] = main[kid] ?? null; });
+              if (compareMode) {
+                activeCmpBars.forEach(bar => {
+                  const barRow = (cmpChartData[bar.id] ?? []).find(d => d.period === period) ?? {};
+                  visibleKpiIds.forEach(kid => { row[`${bar.id}__${kid}`] = barRow[kid] ?? null; });
+                });
+              }
+              return row;
+            });
+const renderCell = (v, fmt, prefix, cmpId = null) => {
+              const isNull = v === null || v === undefined || isNaN(v);
+              const tint = cmpId ? CMP_CELL_TINT[cmpId] : undefined;
+              return (
+                <td key={prefix} className="px-4 py-2 text-xs font-semibold text-center whitespace-nowrap"
+                  style={{
+                    color: isNull ? "#d1d5db" : v < 0 ? "#ef4444" : "#111827",
+                    background: tint,
+                  }}>
+                  {isNull ? "—" : fmtValue(v, fmt)}
+                </td>
+              );
+            };
+const CMP_HEADER_COLORS = { B: "#CF305D", C: "#10B981" };
+            const CMP_CELL_TINT = { B: "rgba(207,48,93,0.05)", C: "rgba(16,185,129,0.05)" };
+            const CMP_CELL_BORDER = { B: "#CF305D", C: "#10B981" };
+            return (
+              <table className="w-full border-collapse">
+                <thead className="sticky top-0 z-10">
+                  <tr>
+                    <th className="text-center px-4 py-2.5 text-[10px] font-black uppercase tracking-wider text-white/70 whitespace-nowrap"
+                      style={{ background: colors?.primary }}>Period</th>
+{visibleKpiIds.map(kid => {
                       const k = kpiList.find(k => k.id === kid);
-                      const v = d[kid];
-                      const isNull = v === null || v === undefined || isNaN(v);
-                      return (
-                        <td key={kid} className="px-4 py-2 text-xs font-semibold text-right whitespace-nowrap"
-                          style={{ color: isNull ? "#d1d5db" : v < 0 ? "#ef4444" : "#111827" }}>
-                          {isNull ? "—" : fmtValue(v, k?.format)}
-                        </td>
+                      const label = k?.label ?? kid;
+return (
+                        <Fragment key={kid}>
+                          <th className="text-center px-4 py-2.5 text-[10px] font-black uppercase tracking-wider text-white/90 whitespace-nowrap"
+                            style={{ background: colors?.primary }}>
+                            {compareMode ? `A · ${label}` : label}
+                          </th>
+                          {compareMode && activeCmpBars.map(bar => (
+                            <th key={`${kid}-${bar.id}`} className="text-center px-4 py-2.5 text-[10px] font-black uppercase tracking-wider text-white/90 whitespace-nowrap"
+                              style={{ background: CMP_HEADER_COLORS[bar.id] ?? colors?.primary }}>
+                              {`${bar.id} · ${label}`}
+                            </th>
+                          ))}
+                        </Fragment>
                       );
                     })}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+                </thead>
+                <tbody>
+{rows.map((d, i) => (
+                    <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-[#f8f9ff]"}>
+                      <td className="px-4 py-2 text-xs font-bold whitespace-nowrap text-center" style={{ color: colors?.primary }}>{d.period}</td>
+{visibleKpiIds.map(kid => {
+                        const k = kpiList.find(k => k.id === kid);
+return (
+                          <Fragment key={kid}>
+                            {renderCell(d[`a__${kid}`], k?.format, `${i}-a-${kid}`)}
+                           {compareMode && activeCmpBars.map(bar => renderCell(d[`${bar.id}__${kid}`], k?.format, `${i}-${bar.id}-${kid}`, bar.id))}
+                          </Fragment>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            );
+          })()}
 </div>
 </div>
       </div>
@@ -4123,17 +4251,32 @@ const [viewPeriod, setViewPeriod] = useState("ytd"); // "monthly" | "ytd"
 // Compare mode: when enabled, show 2 extra columns per existing column
 // (compare value + delta) using the comparison filter set below.
 const [compareMode, setCompareMode] = useState(false);
+const [compareVisible, setCompareVisible] = useState(false);
+const [cmpBarCollapsed, setCmpBarCollapsed] = useState(false);
+useEffect(() => {
+  if (compareMode) {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setCompareVisible(true);
+    return;
+  }
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  setCmpBarCollapsed(false);
+  const t = setTimeout(() => setCompareVisible(false), 450);
+  return () => clearTimeout(t);
+}, [compareMode]);
 const [cmpSource, setCmpSource] = useState("");
 const [cmpStructure, setCmpStructure] = useState("");
 const [cmpYear, setCmpYear] = useState("");
 const [cmpMonth, setCmpMonth] = useState("");
+const [cmpSelGroups, setCmpSelGroups] = useState(null);
+const [cmpSelDims, setCmpSelDims] = useState(null);
   const [dragIdx, setDragIdx] = useState(null);
   const [dragOverIdx, setDragOverIdx] = useState(null);
   const [colDragIdx, setColDragIdx] = useState(null);
   const [colDragOverIdx, setColDragOverIdx] = useState(null);
   const [colOrder, setColOrder] = useState(null);
-const [selGroup, setSelGroup] = useState("");
-  const [selDim, setSelDim] = useState("");
+const [selGroups, setSelGroups] = useState(null);
+  const [selDims, setSelDims] = useState(null);
 const [selCompanies, setSelCompanies] = useState(null);
   const graphSectionsRef = useRef({}); // { 1: {...}, 2: {...}, 3: {...} }
 const [exporting, setExporting] = useState(false);
@@ -4195,7 +4338,9 @@ const kpiDashProgress = useMemo(() => {
 }, [year, month, sources.length, structures.length, companies.length, groupAccounts.length, companyData, metaReady, loading]);
 
 const animatedKpiDashProgress = useAnimatedNumber(kpiDashProgress, 700);
-const kpiDashReady = kpiDashProgress >= 100;
+const [hasEverLoaded, setHasEverLoaded] = useState(false);
+if (kpiDashProgress >= 100 && !hasEverLoaded) setHasEverLoaded(true);
+const kpiDashReady = hasEverLoaded || kpiDashProgress >= 100;
 
   const companyLegalName = useCallback((shortName) => {
     const co = companies.find(c => (c.companyShortName ?? c.CompanyShortName ?? "") === shortName);
@@ -4301,17 +4446,50 @@ const { dimGroups, dimsByGroup } = useMemo(() => {
   }, [companyData, dimensions]);
 
 const groupDimOptions = useMemo(() => {
-    if (!selGroup) return [];
-    const m = dimsByGroup.get(selGroup);
-    if (!m) return [];
-    return [...m.entries()].map(([code, name]) => ({ code, name }));
-  }, [dimsByGroup, selGroup]);
+    const groups = (selGroups && selGroups.length > 0) ? selGroups : [...dimsByGroup.keys()];
+    const seen = new Map();
+    groups.forEach(g => {
+      const m = dimsByGroup.get(g);
+      if (!m) return;
+      [...m.entries()].forEach(([code, name]) => { if (!seen.has(code)) seen.set(code, name); });
+    });
+    return [...seen.entries()].map(([code, name]) => ({ code, name }));
+  }, [dimsByGroup, selGroups]);
 
-  const groupDimCodes = useMemo(() => {
-    if (selDim) return new Set([selDim]);
-    if (!selGroup) return null;
-    return new Set(groupDimOptions.map(d => d.code));
-  }, [selGroup, selDim, groupDimOptions]);
+const groupDimCodes = useMemo(() => {
+    if (Array.isArray(selDims)) {
+      if (selDims.length === 0) return new Set();
+      return new Set(selDims);
+    }
+    if (Array.isArray(selGroups)) {
+      if (selGroups.length === 0) return new Set();
+      return new Set(groupDimOptions.map(d => d.code));
+    }
+    return null;
+  }, [selGroups, selDims, groupDimOptions]);
+
+  const cmpGroupDimOptions = useMemo(() => {
+    const groups = (cmpSelGroups && cmpSelGroups.length > 0) ? cmpSelGroups : [...dimsByGroup.keys()];
+    const seen = new Map();
+    groups.forEach(g => {
+      const m = dimsByGroup.get(g);
+      if (!m) return;
+      [...m.entries()].forEach(([code, name]) => { if (!seen.has(code)) seen.set(code, name); });
+    });
+    return [...seen.entries()].map(([code, name]) => ({ code, name }));
+  }, [dimsByGroup, cmpSelGroups]);
+
+  const cmpGroupDimCodes = useMemo(() => {
+    if (Array.isArray(cmpSelDims)) {
+      if (cmpSelDims.length === 0) return new Set();
+      return new Set(cmpSelDims);
+    }
+    if (Array.isArray(cmpSelGroups)) {
+      if (cmpSelGroups.length === 0) return new Set();
+      return new Set(cmpGroupDimOptions.map(d => d.code));
+    }
+    return null;
+  }, [cmpSelGroups, cmpSelDims, cmpGroupDimOptions]);
 
 const fetchAllCompanies = useCallback(async () => {
     if (!metaReady || !year || !month || !source || !structure || companyCodes.length === 0) return;
@@ -4458,14 +4636,14 @@ const buildPivot = (rows) => {
 
        const dimPairs = parseDimensions(r.Dimensions ?? r.dimensions ?? "");
 
-        if (selDim || selGroup) {
-          if (selDim) {
-            const rowDimCodes = new Set(dimPairs.map(([, code]) => code));
-            if (!rowDimCodes.has(selDim)) return;
-          } else if (selGroup) {
-            const hasGroupMatch = dimPairs.some(([g]) => g === selGroup);
-            if (!hasGroupMatch) return;
-          }
+if (Array.isArray(selDims)) {
+          if (selDims.length === 0) return;
+          const rowDimCodes = new Set(dimPairs.map(([, code]) => code));
+          if (!selDims.some(d => rowDimCodes.has(d))) return;
+        } else if (Array.isArray(selGroups)) {
+          if (selGroups.length === 0) return;
+          const rowGroups = new Set(dimPairs.map(([g]) => g));
+          if (!selGroups.some(g => rowGroups.has(g))) return;
         }
 
         const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
@@ -4540,7 +4718,7 @@ monthlyPivot.__dimPivot = monthlyDimPivot;
       }
     });
     return pivots;
-  }, [companyData, companyDataPrev, viewPeriod, month, selGroup, selDim, sumAccountCodes, groupDescendantsMap]);
+ }, [companyData, companyDataPrev, viewPeriod, month, selGroups, selDims, sumAccountCodes, groupDescendantsMap]);
 
 // Compare-scenario company pivots — same logic as companyPivots but reading
   // from companyDataCmp / companyDataCmpPrev.
@@ -4553,15 +4731,16 @@ monthlyPivot.__dimPivot = monthlyDimPivot;
         if (!ac) return;
         if (sumAccountCodes.has(ac)) return;
         if (acType && acType !== "P/L") return;
-        if (selDim || selGroup) {
+if (Array.isArray(cmpSelDims)) {
+          if (cmpSelDims.length === 0) return;
           const dimPairs = parseDimensions(r.Dimensions);
-          if (selDim) {
-            const rowDimCodes = new Set(dimPairs.map(([, code]) => code));
-            if (!rowDimCodes.has(selDim)) return;
-          } else if (selGroup) {
-            const hasGroupMatch = dimPairs.some(([g]) => g === selGroup);
-            if (!hasGroupMatch) return;
-          }
+          const rowDimCodes = new Set(dimPairs.map(([, code]) => code));
+          if (!cmpSelDims.some(d => rowDimCodes.has(d))) return;
+        } else if (Array.isArray(cmpSelGroups)) {
+          if (cmpSelGroups.length === 0) return;
+          const dimPairs = parseDimensions(r.Dimensions);
+          const rowGroups = new Set(dimPairs.map(([g]) => g));
+          if (!cmpSelGroups.some(g => rowGroups.has(g))) return;
         }
         const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
         p.set(ac, (p.get(ac) ?? 0) + amt);
@@ -4601,7 +4780,7 @@ const monthlyPivot = new Map();
       }
     });
     return pivots;
-  }, [companyDataCmp, companyDataCmpPrev, viewPeriod, cmpMonth, selGroup, selDim, sumAccountCodes]);
+}, [companyDataCmp, companyDataCmpPrev, viewPeriod, cmpMonth, cmpSelGroups, cmpSelDims, sumAccountCodes]);
 
 // Dimension-level pivots: one flat pivot per dimension code, aggregating across all companies
   const dimensionPivots = useMemo(() => {
@@ -4621,9 +4800,12 @@ if (selCompanies && selCompanies.length > 0 && !selCompanies.includes(co)) retur
           const dimPairs = parseDimensions(r.Dimensions);
           if (dimPairs.length === 0) return;
 
-          for (const [group, code] of dimPairs) {
-            if (groupDimCodes && !groupDimCodes.has(code)) continue;
-            if (selGroup && group !== selGroup) continue;
+for (const [group, code] of dimPairs) {
+if (groupDimCodes && !groupDimCodes.has(code)) continue;
+            if (Array.isArray(selGroups)) {
+              if (selGroups.length === 0) continue;
+              if (!selGroups.includes(group)) continue;
+            }
 
             const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
             const key = code;
@@ -4663,7 +4845,7 @@ if (selCompanies && selCompanies.length > 0 && !selCompanies.includes(co)) retur
       result.set(key, { name: meta.name, group: meta.group, pivot: monthlyPivot });
     });
     return result;
-}, [companyData, companyDataPrev, viewPeriod, month, groupDimCodes, sumAccountCodes, selGroup, selCompanies]);
+}, [companyData, companyDataPrev, viewPeriod, month, groupDimCodes, sumAccountCodes, selGroups, selCompanies]);
   // Compare-scenario dimension pivots — mirrors dimensionPivots but reads
   // from companyDataCmp / companyDataCmpPrev with cmpMonth as the period.
   const dimensionPivotsCmp = useMemo(() => {
@@ -4680,9 +4862,12 @@ if (selCompanies && selCompanies.length > 0 && !selCompanies.includes(co)) retur
           const dimPairs = parseDimensions(r.Dimensions);
           if (dimPairs.length === 0) return;
 
-          for (const [group, code] of dimPairs) {
-            if (groupDimCodes && !groupDimCodes.has(code)) continue;
-            if (selGroup && group !== selGroup) continue;
+for (const [group, code] of dimPairs) {
+if (cmpGroupDimCodes && !cmpGroupDimCodes.has(code)) continue;
+            if (Array.isArray(cmpSelGroups)) {
+              if (cmpSelGroups.length === 0) continue;
+              if (!cmpSelGroups.includes(group)) continue;
+            }
 
             const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
             const key = code;
@@ -4719,7 +4904,7 @@ if (selCompanies && selCompanies.length > 0 && !selCompanies.includes(co)) retur
       result.set(key, { name: meta.name, group: meta.group, pivot: monthlyPivot });
     });
     return result;
-  }, [companyDataCmp, companyDataCmpPrev, viewPeriod, cmpMonth, groupDimCodes, sumAccountCodes, selGroup]);
+}, [companyDataCmp, companyDataCmpPrev, viewPeriod, cmpMonth, cmpGroupDimCodes, sumAccountCodes, cmpSelGroups]);
 
 const dimensionCodes = useMemo(() => [...dimensionPivots.keys()].sort(), [dimensionPivots]);
 
@@ -5260,9 +5445,9 @@ const imageDataUrl = await renderChartToImage({
     dimensionResults,
     dimensionPivots,
     graphSections: await buildGraphSections(),
-    filters: {
+filters: {
       source, structure, year, month,
-      dimGroup: selGroup, dim: selDim,
+      dimGroups: selGroups, dims: selDims,
     },
   });
 
@@ -5318,7 +5503,12 @@ const scope = viewMode === "dimension" ? "individual_dimension" : "individual_co
 
 
 
-const activeCols = viewMode === "company" ? companyCodes : dimensionCodes;
+const filteredCompanyCodes = useMemo(() => {
+  if (!selCompanies || selCompanies.length === 0) return companyCodes;
+  const set = new Set(selCompanies);
+  return companyCodes.filter(c => set.has(c));
+}, [companyCodes, selCompanies]);
+const activeCols = viewMode === "company" ? filteredCompanyCodes : dimensionCodes;
 const activeResults = viewMode === "company" ? companyResults : dimensionResults;
 const orderedCols = colOrder && colOrder.length === activeCols.length ? colOrder : activeCols;
 
@@ -5326,7 +5516,7 @@ const orderedCols = colOrder && colOrder.length === activeCols.length ? colOrder
   const structureOpts = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
 
 return (
-    <div className="flex flex-col gap-4 h-full min-h-0">
+    <div className="flex flex-col gap-4 h-full min-h-0 relative">
 <style>{`
         @keyframes plRowSlideIn {
           0%   { opacity: 0; transform: translateY(8px); }
@@ -5335,6 +5525,22 @@ return (
         @keyframes kBadgesPop {
           0%   { opacity: 0; transform: translateY(8px) scale(0.96); }
           100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @keyframes cmpBarIn {
+          0%   { opacity: 0; transform: translateY(-14px) scale(0.98); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @keyframes cmpBarOut {
+          0%   { opacity: 1; transform: translateY(0) scale(1); }
+          100% { opacity: 0; transform: translateY(-14px) scale(0.98); }
+        }
+        @keyframes cmpCellIn {
+          0%   { opacity: 0; transform: translateX(-12px); }
+          100% { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes cmpCellOut {
+          0%   { opacity: 1; transform: translateX(0); }
+          100% { opacity: 0; transform: translateX(12px); }
         }
         .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
         .no-scrollbar::-webkit-scrollbar { display: none; }
@@ -5362,26 +5568,25 @@ filters={viewMode === "graphs" ? [] : [
           ...(structureOpts.length > 0
             ? [{ label: "Structure", value: structure, onChange: setStructure, options: structureOpts }]
             : []),
-...(viewMode === "dimension" && companyCodes.length > 0
+...(companyCodes.length > 0 && (viewMode === "company" || viewMode === "dimension")
             ? [{ label: "Company", values: selCompanies, onChange: setSelCompanies, options: companyCodes.map(c => ({ value: c, label: companyLegalName(c) })), multiselect: true }]
             : []),
 ...(dimGroups.length > 0
             ? [{
                 label: "Dim Group",
-                value: selGroup,
-                onChange: v => { setSelGroup(v); setSelDim(""); },
-                options: [{ value: "", label: "All", displayLabel: "Dim Group" }, ...dimGroups.map(g => ({ value: g, label: g }))],
+                values: selGroups,
+                onChange: v => { setSelGroups(v); setSelDims(null); },
+                options: dimGroups.map(g => ({ value: g, label: g })),
+                multiselect: true,
               }]
             : []),
-          ...(selGroup && groupDimOptions.length > 0
+...(groupDimOptions.length > 0
             ? [{
                 label: "Dimension",
-                value: selDim,
-                onChange: setSelDim,
-                options: [
-                  { value: "", label: "All" },
-                  ...groupDimOptions.map(d => ({ value: d.code, label: d.name || d.code })),
-                ],
+                values: selDims,
+                onChange: setSelDims,
+                options: groupDimOptions.map(d => ({ value: d.code, label: d.name || d.code })),
+                multiselect: true,
               }]
             : []),
         ]}
@@ -5417,6 +5622,7 @@ fabActions={[
           },
         ]}
       />
+
 
 
       {activeMapping && (
@@ -5552,18 +5758,23 @@ viewPeriod={viewPeriod}
     body2Style={body2Style}
   />
 </div>
-      ) : loading ? (
-        <div className="flex items-center justify-center flex-1">
-          <div className="flex flex-col items-center gap-3">
-            <Loader2 size={28} className="animate-spin text-[#1a2f8a]" />
-            <p className="text-xs text-gray-400">Loading data for {companyCodes.length} {companyCodes.length === 1 ? "company" : "companies"}…</p>
-          </div>
-        </div>
-      ) : (
+) : (
 <div className="flex flex-col gap-3 flex-1 min-h-0">
-{compareMode && (
-<div className="bg-white rounded-2xl shadow-xl border border-gray-100 flex-shrink-0"
-    style={{ overflow: "visible", position: "relative", zIndex: 30 }}>
+<div className="flex-shrink-0 overflow-hidden" style={{
+  maxHeight: compareMode && !cmpBarCollapsed ? 200 : 0,
+  marginTop: compareMode && !cmpBarCollapsed ? 0 : -12,
+  opacity: cmpBarCollapsed ? 0 : 1,
+  transition: 'max-height 450ms cubic-bezier(0.4,0,0.2,1), margin-top 450ms cubic-bezier(0.4,0,0.2,1), opacity 300ms ease',
+}}>
+{compareVisible && (
+<div className="bg-white rounded-2xl shadow-xl border border-gray-100"
+    style={{
+      overflow: "visible",
+      position: "relative",
+      zIndex: 30,
+      animation: `${compareMode ? 'cmpBarIn' : 'cmpBarOut'} 450ms cubic-bezier(0.4,0,0.2,1) forwards`,
+      transformOrigin: 'top center',
+    }}>
    <div className="px-5 py-3 flex items-center gap-2 no-scrollbar" style={{ flexWrap: "nowrap", overflowX: "auto", overflowY: "visible" }}>
       <div className="flex items-center gap-2 mr-2">
         <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
@@ -5583,16 +5794,18 @@ viewPeriod={viewPeriod}
       <HeaderFilterPill label="Month" value={cmpMonth} onChange={setCmpMonth}
         options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
 {dimGroups.length > 0 && (
-        <HeaderFilterPill label="Dim Grp" value={selGroup} onChange={v => { setSelGroup(v); setSelDim(""); }}
-          options={[{ value: "", label: "Dim Grp" }, ...dimGroups.map(g => ({ value: g, label: g }))]} />
+        <MultiFilterPill label="Dim Grp" values={cmpSelGroups}
+          onChange={v => { setCmpSelGroups(v); setCmpSelDims(null); }}
+          options={dimGroups.map(g => ({ value: g, label: g }))} />
       )}
-      {selGroup && groupDimOptions.length > 0 && (
-        <HeaderFilterPill label="Dims" value={selDim} onChange={setSelDim}
-          options={[{ value: "", label: "Dims" }, ...groupDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))]} />
+      {cmpGroupDimOptions.length > 0 && (
+        <MultiFilterPill label="Dims" values={cmpSelDims} onChange={setCmpSelDims}
+          options={cmpGroupDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))} />
       )}
     </div>
   </div>
 )}
+</div>
 <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
         <div className="overflow-auto flex-1" style={{ paddingBottom: "0" }}>
             <table className="w-full text-xs border-collapse">
@@ -5626,21 +5839,22 @@ viewPeriod={viewPeriod}
                         </span>
                       </th>
                     ];
-                    if (compareMode) {
+if (compareVisible) {
+                      const cmpAnim = `${compareMode ? 'cmpCellIn' : 'cmpCellOut'} 420ms cubic-bezier(0.4,0,0.2,1) forwards`;
                       cells.push(
 <th key={`${col}__cmp`}
                           className="text-center px-4 py-3 whitespace-nowrap min-w-[120px]"
-                          style={{ background: "transparent" }}>
+                          style={{ background: "transparent", animation: cmpAnim }}>
                           <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}50`, fontSize: 10 }}>Σ cmp</span>
                         </th>,
                         <th key={`${col}__delta`}
                           className="text-center px-4 py-3 whitespace-nowrap min-w-[100px]"
-                          style={{ background: "transparent" }}>
+                          style={{ background: "transparent", animation: cmpAnim, animationDelay: '40ms' }}>
                           <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}50`, fontSize: 10 }}>Δ amt</span>
                         </th>,
                         <th key={`${col}__deltapct`}
                           className="text-center px-4 py-3 whitespace-nowrap min-w-[90px]"
-                          style={{ background: "transparent" }}>
+                          style={{ background: "transparent", animation: cmpAnim, animationDelay: '80ms' }}>
                           <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}50`, fontSize: 10 }}>Δ %</span>
                         </th>
                       );
@@ -5680,7 +5894,7 @@ return (
                       className={`border-b border-gray-100 bg-white hover:bg-[#eef1fb]/60 transition-colors group ${dragOverIdx === globalIdx ? "bg-[#eef1fb]" : ""}`}
                       style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(globalIdx, 25) * 40}ms both` }}>
 
-<td className="sticky left-0 z-20 bg-white border-r border-gray-100 group-hover:bg-[#eef1fb]/40 transition-colors"
+<td className="sticky left-0 z-20 bg-white border-r border-gray-100 group-hover:bg-[#f5f7ff] transition-colors"
   style={{ padding: "14px 20px" }}>
   <div className="flex items-center gap-2.5">
     <div className="opacity-0 group-hover:opacity-30 transition-opacity cursor-grab text-gray-400 flex-shrink-0">
@@ -5749,12 +5963,17 @@ const bColor = getBenchmarkColor(val, kpi.benchmark);
                             <AnimatedCell value={val} format={kpi.format} baseStyle={{ ...body1Style, color: bColor ? bColor.text : undefined }} />
                           </td>
                         ];
-if (compareMode) {
+if (compareVisible) {
                           // Compare scenario reads from the matching cmp results
                           // map depending on the current view mode.
                           const cmpResultsMap = viewMode === "dimension" ? dimensionResultsCmp : companyResultsCmp;
                           const cmpRes = cmpResultsMap.get(col);
                           const cmpVal = cmpRes ? cmpRes.get(kpi.id) : null;
+                          const cmpCellAnim = `${compareMode ? 'cmpCellIn' : 'cmpCellOut'} 420ms cubic-bezier(0.4,0,0.2,1) forwards`;
+                         const cmpLoading = compareMode && (loading || cmpResultsMap.size === 0);
+                          const cmpSpinner = (
+                            <Loader2 size={11} className="animate-spin mx-auto" style={{ color: `${colors.primary}80` }} />
+                          );
                           if (kpi.id === "revenue" && ci === 0) {
                             console.log(`[Cmp render] viewMode=${viewMode} col=${col} cmpResultsMap.size=${cmpResultsMap.size} cmpRes=${!!cmpRes} cmpVal=${cmpVal}`);
                           }
@@ -5779,24 +5998,31 @@ if (compareMode) {
 
 out.push(
                             <td key={`${col}__cmp`}
-                              className="px-4 py-3 text-center whitespace-nowrap bg-[#fafbff]">
-                              <AnimatedCell value={cmpValid ? cmpVal : null} format={kpi.format} baseStyle={body1Style} />
+                              className="px-4 py-3 text-center whitespace-nowrap bg-[#fafbff]"
+                              style={{ animation: cmpCellAnim }}>
+                              {cmpLoading
+                                ? cmpSpinner
+                                : <AnimatedCell value={cmpValid ? cmpVal : null} format={kpi.format} baseStyle={body1Style} />}
                             </td>,
                             <td key={`${col}__delta`}
-                              className="px-4 py-3 text-center whitespace-nowrap bg-[#f5f7ff]">
-                              {delta === null
-                                ? <span style={{ ...body1Style, color: "#D1D5DB" }}>—</span>
-                                : <AnimatedCell value={delta} format={kpi.format} baseStyle={{ ...body1Style, color: delta < 0 ? "#EF4444" : "#059669" }} />
-                              }
+                              className="px-4 py-3 text-center whitespace-nowrap bg-[#f5f7ff]"
+                              style={{ animation: cmpCellAnim, animationDelay: '40ms' }}>
+                              {cmpLoading
+                                ? cmpSpinner
+                                : delta === null
+                                  ? <span style={{ ...body1Style, color: "#D1D5DB" }}>—</span>
+                                  : <AnimatedCell value={delta} format={kpi.format} baseStyle={{ ...body1Style, color: delta < 0 ? "#EF4444" : "#059669" }} />}
                             </td>,
                             <td key={`${col}__deltapct`}
-                              className="px-4 py-3 text-center whitespace-nowrap bg-[#f0f3ff]">
-                              {deltaPct === null
-                                ? <span style={{ ...body1Style, color: "#D1D5DB" }}>—</span>
-                                : <span className="text-xs font-black" style={{ color: deltaPct < 0 ? "#EF4444" : "#059669" }}>
-                                    {deltaPct >= 0 ? "+" : ""}{deltaPct.toFixed(1)}%
-                                  </span>
-                              }
+                              className="px-4 py-3 text-center whitespace-nowrap bg-[#f0f3ff]"
+                              style={{ animation: cmpCellAnim, animationDelay: '80ms' }}>
+                              {cmpLoading
+                                ? cmpSpinner
+                                : deltaPct === null
+                                  ? <span style={{ ...body1Style, color: "#D1D5DB" }}>—</span>
+                                  : <span className="text-xs font-black" style={{ color: deltaPct < 0 ? "#EF4444" : "#059669" }}>
+                                      {deltaPct >= 0 ? "+" : ""}{deltaPct.toFixed(1)}%
+                                    </span>}
                             </td>
                           );
                         }
@@ -5808,7 +6034,7 @@ out.push(
                           return (
 <td className="sticky right-0 px-4 py-3 text-center whitespace-nowrap transition-all"
                               style={{
-                                background: aggColor ? aggColor.bg : "#eef1fb",
+                                background: aggColor ? `${aggColor.bg}, #ffffff` : "#eef1fb",
                                 borderLeft: aggColor ? `2px solid ${aggColor.border}` : "1px solid #e5e7eb",
                               }}>
                               {aggregate === null ? (

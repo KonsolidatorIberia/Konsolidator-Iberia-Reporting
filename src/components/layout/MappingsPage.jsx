@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useId } from "react";
 import {
   X, Plus, Search, Layers, FilePlus, Library, ChevronLeft,
   ChevronDown, ChevronRight, Clock, FileText, Sparkles, ArrowRightLeft,
-  CheckCircle2, Pencil, Trash2, Check,
+  CheckCircle2, Pencil, Trash2, Check, Copy,
 } from "lucide-react";
 import { useSettings } from "./SettingsContext.jsx";
 import PageHeader from "./PageHeader.jsx";
@@ -409,7 +409,8 @@ function StructureMappingsView({ groupAccounts, dimensions = [], search, setSear
 const [mappingsLoading, setMappingsLoading] = useState(true);
 const [editingMapping, setEditingMapping] = useState(null);
 const [standardMappingId, setStandardMappingId] = useState(null);
-  const [pendingStandardMapping, setPendingStandardMapping] = useState(null);
+const [pendingStandardMapping, setPendingStandardMapping] = useState(null);
+  const [showBackConfirm, setShowBackConfirm] = useState(false);
   const [mapperStatement, setMapperStatement] = useState("PL");
   const [favorites, setFavorites] = useState(new Set());
   const [filterStandard, setFilterStandard] = useState("");
@@ -528,7 +529,7 @@ const activeAccent = (selectedStandard && STANDARD_META[selectedStandard]?.accen
     list: { title: kindLabel, back: onBack },
     create: { title: "Create mapping", back: () => setView("list") },
     selectStandard: { title: "Select standard", back: () => setView("create") },
-mapper: { title: selectedStandard ? `Mapping · ${STANDARD_META[selectedStandard]?.label}` : "Mapper", back: initialView === "mapper" ? null : () => setView("selectStandard") },
+mapper: { title: selectedStandard ? `Mapping · ${STANDARD_META[selectedStandard]?.label}` : "Mapper", back: initialView === "mapper" ? null : () => setShowBackConfirm(true) },
   };
   const cfg = headerConfig[view] ?? headerConfig.list;
 
@@ -672,6 +673,34 @@ editingMapping={editingMapping}
           />
         )}
       </div>
+{showBackConfirm && (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" onClick={() => setShowBackConfirm(false)}>
+        <div className="absolute inset-0 bg-black/50 backdrop-blur-md" />
+        <div className="relative bg-white rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
+          <div className="px-6 pt-6 pb-5" style={{ background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)" }}>
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-3" style={{ background: "rgba(255,255,255,0.2)" }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+            </div>
+            <p className="text-white font-black text-lg leading-tight">Discard changes?</p>
+            <p className="text-white/70 text-[11px] mt-0.5">Any unsaved changes will be lost</p>
+          </div>
+          <div className="p-5 space-y-2">
+            <p className="text-xs text-gray-500 leading-relaxed pb-2">Going back will discard any unsaved changes to this mapping. This can't be undone.</p>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setShowBackConfirm(false)}
+                className="flex-1 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all">
+                Stay
+              </button>
+              <button onClick={() => { setShowBackConfirm(false); setEditingMapping(null); setSelectedStandard(null); setView("list"); }}
+                className="flex-1 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-white transition-all hover:opacity-90 active:scale-[0.98]"
+                style={{ background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)", boxShadow: "0 4px 14px -4px rgba(245,158,11,0.5)" }}>
+                Discard & go back
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
 {pendingStandardMapping && (
       <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" onClick={() => setPendingStandardMapping(null)}>
         <div className="absolute inset-0 bg-black/50 backdrop-blur-md" />
@@ -1232,9 +1261,16 @@ useEffect(() => {
 
   const handleReset = () => { setClientTreeBy({ ...clientTreeBy, [statement]: baseClientTree }); setTemplateTreeBy({ ...templateTreeBy, [statement]: baseTemplateTree }); setMovedClientCodes(new Set()); setMovedTemplateIds(new Set()); setHighlightedIds(new Set()); };
   const handleAddBreaker = ({ name, color }) => { const nb = { id: `brk-${Date.now()}`, kind: "breaker", code: `__breaker__custom_${Date.now()}`, sectionCode: `custom_${Date.now()}`, name, color, children: [] }; setTemplateTreeBy(prev => ({ ...prev, [statement]: [...(prev[statement] ?? templateTree), nb] })); };
-  const handleAddRow = ({ code, name, isSum, parentId = null }) => {
+const handleAddRow = ({ code, name, isSum, parentId = null }) => {
     const nn = { id: `new-${Date.now()}`, code, name, isSum, isSumAccount: isSum, sectionCode: null, showInSummary: false, sourceSide: "template", children: [] };
     setTemplateTreeBy(prev => { const ct = prev[statement] ?? templateTree; if (!parentId) return { ...prev, [statement]: [...ct, nn] }; return { ...prev, [statement]: walkTransform(ct, n => (n.id === parentId || n.code === parentId) ? { ...n, children: [...(n.children || []), nn] } : n) }; });
+  };
+  const handleCopy = (sourceSide, nodeId) => {
+    const sourceTree = sourceSide === "client" ? clientTree : templateTree;
+    const sourceNode = findNodeById(sourceTree, nodeId);
+    if (!sourceNode) return;
+    const cloned = cloneSubtree(sourceNode, sourceSide);
+    setTemplateTreeBy(prev => ({ ...prev, [statement]: [...(prev[statement] ?? templateTree), cloned] }));
   };
   const handleRename = (side, targetId, newName) => { if (side === "client") setClientTreeBy(prev => ({ ...prev, [statement]: renameNode(prev[statement] ?? clientTree, targetId, newName) })); else setTemplateTreeBy(prev => ({ ...prev, [statement]: renameNode(prev[statement] ?? templateTree, targetId, newName) })); };
 const handleDelete = (side, targetId) => {
@@ -1358,8 +1394,8 @@ if (sourceSide === "template" && destSide === "client" && mappingKind !== "repor
       }
     }
 
-    // Structure mode: dropping "inside" a non-sum template row is invalid → demote to "after" (sibling)
-    if (mappingKind !== "report" && destSide === "template" && position === "inside" && targetId) {
+// Dropping "inside" a non-sum template row is invalid → demote to "after" (sibling)
+    if (destSide === "template" && position === "inside" && targetId) {
       const targetTree = templateTree;
       const targetNode = findNodeById(targetTree, targetId);
       if (targetNode && targetNode.kind !== "breaker") {
@@ -1526,7 +1562,7 @@ if (sourceSide === "client") {
     <div className="flex flex-col h-full overflow-hidden">
 
       <div className="flex-1 grid grid-cols-2 gap-4 p-4 overflow-hidden">
-<ClientPanel mappingKind={mappingKind} tree={clientTree} statement={statement} movedIds={(() => {
+<ClientPanel mappingKind={mappingKind} onCopy={id => handleCopy("client", id)} tree={clientTree} statement={statement} movedIds={(() => {
   const effective = new Set(movedClientCodes);
   dimsByGroupCode.forEach((dims, code) => {
     const moved = movedDimsByCode.get(code);
@@ -1537,7 +1573,7 @@ if (sourceSide === "client") {
   });
   return effective;
 })()} movedDimsByCode={movedDimsByCode} onDrop={p => handleDrop({ ...p, destSide: "client" })} onRename={(id, name) => handleRename("client", id, name)} onDelete={id => handleDelete("client", id)} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} dimsByGroupCode={dimsByGroupCode} />
-       <TemplatePanel tree={templateTree} sectionByCode={sectionByCode} loading={tplLoading} accent={meta.accent} standardLabel={meta.label} movedIds={movedTemplateIds} onDrop={p => handleDrop({ ...p, destSide: "template" })} onRename={(id, name) => handleRename("template", id, name)} onDelete={id => handleDelete("template", id)} onAddRow={handleAddRow} onAddBreaker={handleAddBreaker} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} highlightedIds={highlightedIds} onToggleHighlight={id => setHighlightedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; })} />
+       <TemplatePanel mappingKind={mappingKind} onCopy={id => handleCopy("template", id)} tree={templateTree} sectionByCode={sectionByCode} loading={tplLoading} accent={meta.accent} standardLabel={meta.label} movedIds={movedTemplateIds} onDrop={p => handleDrop({ ...p, destSide: "template" })} onRename={(id, name) => handleRename("template", id, name)} onDelete={id => handleDelete("template", id)} onAddRow={handleAddRow} onAddBreaker={handleAddBreaker} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} highlightedIds={highlightedIds} onToggleHighlight={id => setHighlightedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; })} />
       </div>
       {conflict && <ConflictModal duplicates={conflict.duplicates} onResolve={conflict.onResolve} />}
       {showSaveForm && <SaveMappingForm name={currentName} setName={setCurrentName} description={currentDescription} setDescription={setCurrentDescription} error={saveError} saving={saving} asNew={!!editingMapping} accent={meta.accent} onCancel={() => { setShowSaveForm(false); setSaveError(null); }} onSave={() => handleSave({ asNew: !!editingMapping })} />}
@@ -1686,7 +1722,7 @@ function DimFilterDropdown({ value, onChange, options, placeholder, accent }) {
 }
 
 // ─── ClientPanel ──────────────────────────────────────────────
-function ClientPanel({ mappingKind = "structure", tree, statement, movedIds, movedDimsByCode = new Map(), onDrop, onRename, onDelete, activeMultiSide, onSetMultiSide, dimsByGroupCode = new Map() }) {
+function ClientPanel({ mappingKind = "structure", onCopy, tree, statement, movedIds, movedDimsByCode = new Map(), onDrop, onRename, onDelete, activeMultiSide, onSetMultiSide, dimsByGroupCode = new Map() }) {
   const [search, setSearch] = useState("");
 const [expanded, setExpanded] = useState({});
 const [flatMode, setFlatMode] = useState(false);
@@ -1762,12 +1798,12 @@ source = flatMode ? flatTree : tree;
 const visibleCount = useMemo(() => countNodes(filteredTree), [filteredTree]);
 const allKeys = useMemo(() => collectAllCodes(tree, "client"), [tree]);
 
-  const flatSelectableIds = useMemo(() => {
+const flatSelectableIds = useMemo(() => {
     const out = [];
-    function walk(nodes) { nodes.forEach(n => { if (!n.isSum && !n.isSumAccount) out.push(n.id ?? n.code); walk(n.children || []); }); }
+    function walk(nodes) { nodes.forEach(n => { if (mappingKind === "report" || (!n.isSum && !n.isSumAccount)) out.push(n.id ?? n.code); walk(n.children || []); }); }
     walk(tree);
     return out;
-  }, [tree]);
+  }, [tree, mappingKind]);
 console.log("[dims] map size:", dimsByGroupCode.size, "sample:", [...dimsByGroupCode.entries()].slice(0,3));
 const dimGroups = useMemo(() => {
     const groups = new Set();
@@ -1850,7 +1886,7 @@ const unmappedToggleBtn = mappingKind === "report" ? null : (
 <PanelToolbar search={search} setSearch={setSearch} placeholder="Search your accounts…" count={visibleCount} total={totalCount} />
 
       <div className="flex-1 overflow-y-auto px-1"onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); if (data.sourceSide === "template") onDrop({ sourceNode: data.node, sourceSide: "template", targetId: null, position: "after" }); } catch { /* ignore parse */ } }}>
-     {filteredTree.length === 0 ? <EmptyPanelState icon={FileText} message={search ? "No matches" : "No accounts"} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="client" mappingKind={mappingKind} movedIds={mappingKind === "report" ? new Set() : movedIds} movedDimsByCode={mappingKind === "report" ? new Map() : movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { selectedIds.forEach(sid => onDelete(sid)); setSelectedIds(new Set()); } else { onDelete(id); } }}multiMode={multiMode} selectedIds={selectedIds} clientTree={tree}
+     {filteredTree.length === 0 ? <EmptyPanelState icon={FileText} message={search ? "No matches" : "No accounts"} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="client" mappingKind={mappingKind} onCopy={onCopy} movedIds={mappingKind === "report" ? new Set() : movedIds} movedDimsByCode={mappingKind === "report" ? new Map() : movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { selectedIds.forEach(sid => onDelete(sid)); setSelectedIds(new Set()); } else { onDelete(id); } }}multiMode={multiMode} selectedIds={selectedIds} clientTree={tree}
       onToggleSelect={(id, shiftKey) => {
   if (shiftKey && lastSelectedRef.current && lastSelectedRef.current !== id) {
     const from = flatSelectableIds.indexOf(lastSelectedRef.current);
@@ -1871,7 +1907,7 @@ setSelectedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(
 }
 
 // ─── TemplatePanel ────────────────────────────────────────────
-function TemplatePanel({ tree, sectionByCode, loading, accent, standardLabel, movedIds, onDrop, onRename, onDelete, onAddRow, onAddBreaker, activeMultiSide, onSetMultiSide, highlightedIds, onToggleHighlight }) {
+function TemplatePanel({ mappingKind = "structure", onCopy, tree, sectionByCode, loading, accent, standardLabel, movedIds, onDrop, onRename, onDelete, onAddRow, onAddBreaker, activeMultiSide, onSetMultiSide, highlightedIds, onToggleHighlight }) {
   const [pendingParentId, setPendingParentId] = useState(null);
 const [showBreakerForm, setShowBreakerForm] = useState(false);
   const [search, setSearch] = useState("");
@@ -1910,7 +1946,7 @@ const allKeys = useMemo(() => collectAllCodes(tree, "tpl"), [tree]);
       <AddBreakerForm accent={accent} open={showBreakerForm} onOpen={() => setShowBreakerForm(true)} onClose={() => setShowBreakerForm(false)} onAdd={onAddBreaker} />
 
 <div className="flex-1 overflow-y-auto px-1" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); if (data.sourceSide === "client") onDrop({ sourceNode: data.node, sourceSide: "client", targetId: null, position: "after" }); else if (data.sourceSide === "template") onDrop({ sourceNode: data.node, sourceSide: "template", targetId: null, position: "after" }); } catch { /* ignore parse */ } }}>
-        {loading ? <div className="text-center py-16 text-xs text-gray-400">Loading template…</div> : filteredTree.length === 0 ? <EmptyPanelState icon={Library} message={search ? "No matches" : "No rows"} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="template" movedIds={movedIds} onDrop={onDrop} onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { selectedIds.forEach(sid => onDelete(sid)); setSelectedIds(new Set()); } else { onDelete(id); } }} onAddChild={parentId => { setPendingParentId(parentId); setExpanded(prev => ({ ...prev, [`tpl-${parentId}`]: true })); }} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} templateTree={tree} onToggleSelect={(id, shiftKey) => {
+        {loading ? <div className="text-center py-16 text-xs text-gray-400">Loading template…</div> : filteredTree.length === 0 ? <EmptyPanelState icon={Library} message={search ? "No matches" : "No rows"} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="template" mappingKind={mappingKind} onCopy={onCopy} movedIds={movedIds} onDrop={onDrop}onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { selectedIds.forEach(sid => onDelete(sid)); setSelectedIds(new Set()); } else { onDelete(id); } }} onAddChild={parentId => { setPendingParentId(parentId); setExpanded(prev => ({ ...prev, [`tpl-${parentId}`]: true })); }} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} templateTree={tree} onToggleSelect={(id, shiftKey) => {
   if (shiftKey && lastSelectedRef.current && lastSelectedRef.current !== id) {
     const from = flatSelectableIds.indexOf(lastSelectedRef.current);
     const to = flatSelectableIds.indexOf(id);
@@ -1930,7 +1966,7 @@ lastSelectedRef.current = id;
 }
 
 // ─── DraggableTreeRow ─────────────────────────────────────────
-function DraggableTreeRow({ node, depth, expanded, onToggle, side, mappingKind = "structure", movedIds, movedDimsByCode = new Map(), onDrop, onRename, onDelete, onAddChild, sectionByCode, multiMode, selectedIds, onToggleSelect, clientTree, templateTree, highlightedIds, onToggleHighlight, dimsByGroupCode }) {
+function DraggableTreeRow({ node, depth, expanded, onToggle, side, mappingKind = "structure", onCopy, movedIds, movedDimsByCode = new Map(), onDrop, onRename, onDelete, onAddChild, sectionByCode, multiMode, selectedIds, onToggleSelect, clientTree, templateTree, highlightedIds, onToggleHighlight, dimsByGroupCode }) {
   const key = `${side === "client" ? "client" : "tpl"}-${node.code}`;
   const isOpen = !!expanded[key];
   const hasChildren = (node.children?.length ?? 0) > 0;
@@ -1957,7 +1993,7 @@ const dimUid = useId();
   const commitEdit = () => { const trimmed = editValue.trim(); if (trimmed && trimmed !== node.name) onRename?.(node.id ?? node.code, trimmed); setEditing(false); };
   const cancelEdit = () => { setEditValue(node.name); setEditing(false); };
 const handleDragStart = e => {
-    if (side === "client" && (node.isSum || node.isSumAccount)) { e.preventDefault(); return; }
+    if (side === "client" && (node.isSum || node.isSumAccount) && mappingKind !== "report") { e.preventDefault(); return; }
     // Block dragging a client account that's already mapped (structure mode)
     if (side === "client" && mappingKind !== "report" && (movedIds?.has(node.code) || movedIds?.has(node.id ?? node.code))) { e.preventDefault(); return; }
     e.stopPropagation();
@@ -1971,7 +2007,7 @@ if (multiMode && selectedIds?.size > 0 && selectedIds.has(nodeId)) {
         ns.forEach(n => {
           const id = n.id ?? n.code;
           const isMovedClient = isClientStructure && (movedIds?.has(n.code) || movedIds?.has(id));
-          if (selectedIds.has(id) && !n.isSum && !n.isSumAccount && n.kind !== "breaker" && !isMovedClient) {
+          if (selectedIds.has(id) && (mappingKind === "report" || (!n.isSum && !n.isSumAccount)) && n.kind !== "breaker" && !isMovedClient) {
             selected.push({ ...stripSubtreeForTransfer(n), id });
           }
           collect(n.children || []);
@@ -2011,12 +2047,12 @@ if (selected.length > 0) {
           {editControls}
         </div>
         {dropZone === "after" && <div className="h-0.5 mx-2 rounded-full" style={{ background: accent, boxShadow: `0 0 6px ${accent}80` }} />}
-     {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child} depth={1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} movedIds={movedIds} movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onAddChild={onAddChild} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} />)}
+     {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child}depth={1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onAddChild={onAddChild} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} />)}
       </>
     );
   }
 
-const cursorClass = editing ? "cursor-text" : (side === "client" && isSum) ? "cursor-not-allowed" : "cursor-grab active:cursor-grabbing";
+const cursorClass = editing ? "cursor-text" : (side === "client" && isSum && mappingKind !== "report") ? "cursor-not-allowed" : "cursor-grab active:cursor-grabbing";
   const bgClass = isSum ? (side === "client" ? "bg-[#eef1fb]/40" : "bg-gray-50/60") : "";
 
   return (
@@ -2024,7 +2060,7 @@ const cursorClass = editing ? "cursor-text" : (side === "client" && isSum) ? "cu
       {dropZone === "before" && <div className="h-0.5 mx-2 rounded-full" style={{ background: accent, boxShadow: `0 0 6px ${accent}80` }} />}
       <div className="flex items-stretch gap-2">
       <div draggable={!editing} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragLeave={() => setDropZone(null)} onDrop={handleDrop} onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)} onClick={hasChildren && !editing ? e => { if (e.detail === 1) onToggle(key); } : undefined} className={`flex-1 min-w-0 flex items-center gap-2 px-2 py-2.5 rounded-lg transition-all ${cursorClass} ${dropZone === "inside" ? "ring-2 ring-offset-1" : "hover:bg-gray-50"} ${bgClass} ${isMoved ? "opacity-50" : ""}`}>
-{multiMode && (side === "client" ? !isSum : (!isSum && node.kind !== "breaker")) && (
+{multiMode && (side === "client" ? (!isSum || mappingKind === "report") : (!isSum && node.kind !== "breaker")) && (
             <span onClick={e => { e.stopPropagation(); onToggleSelect?.(node.id ?? node.code, e.shiftKey); }}
               className="w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 cursor-pointer transition-all"
               style={{ borderColor: selectedIds?.has(node.id ?? node.code) ? "#1a2f8a" : "#d1d5db", backgroundColor: selectedIds?.has(node.id ?? node.code) ? "#1a2f8a" : "white" }}>
@@ -2049,7 +2085,8 @@ const cursorClass = editing ? "cursor-text" : (side === "client" && isSum) ? "cu
           )}
           {!editing && hovering && <div className="flex items-center gap-0.5 flex-shrink-0">
 {onAddChild && isSum && <button onClick={e => { e.stopPropagation(); onAddChild?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} title="Add child row" className="w-6 h-6 rounded flex items-center justify-center hover:bg-emerald-50 text-gray-400 hover:text-emerald-600 transition-colors"><Plus size={14} /></button>}
-            <button onClick={startEdit} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-[#1a2f8a]/10 text-gray-400 hover:text-[#1a2f8a] transition-colors"><Pencil size={13} /></button>
+<button onClick={startEdit} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-[#1a2f8a]/10 text-gray-400 hover:text-[#1a2f8a] transition-colors"><Pencil size={13} /></button>
+            {mappingKind === "report" && node.kind !== "breaker" && <button onClick={e => { e.stopPropagation(); onCopy?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} title="Duplicate to template" className="w-6 h-6 rounded flex items-center justify-center hover:bg-indigo-50 text-gray-400 hover:text-indigo-600 transition-colors"><Copy size={12} /></button>}
 {side !== "client" && <>
               <button onClick={e => { e.stopPropagation(); onToggleHighlight?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center transition-colors" style={{ color: highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : undefined }} title={highlightedIds?.has(node.id ?? node.code) ? "Remove highlight" : "Highlight row"}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill={highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : "none"} stroke={highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
@@ -2102,7 +2139,7 @@ className={`group/dim flex items-center gap-1 py-1.5 rounded-lg transition-color
           </div>
         );
       })}
-    {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} movedIds={movedIds} movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={mappingKind === "report" ? onDelete : undefined} onAddChild={onAddChild} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} dimsByGroupCode={dimsByGroupCode} />)}
+    {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onAddChild={onAddChild}sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} dimsByGroupCode={dimsByGroupCode} />)}
     </>
   );
 }
