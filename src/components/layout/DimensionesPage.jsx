@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef, useDeferredValue } from "react";
+import { createPortal } from "react-dom";
 import ViewsSelector from "./ViewsSelector.jsx";
 function useAnimatedNumber(target, duration = 800) {
   const [display, setDisplay] = useState(target);
@@ -25,7 +26,7 @@ function useAnimatedNumber(target, duration = 800) {
   }, [target, duration]); // eslint-disable-line react-hooks/exhaustive-deps
   return display;
 }
-import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Search, Database, GitMerge, Maximize2, Minimize2, Library, CheckCircle2, AlertTriangle, TrendingUp, Scale, BarChart2, Download, Layers } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Search, Database, GitMerge, Maximize2, Minimize2, Library, CheckCircle2, AlertTriangle, TrendingUp, Scale, BarChart2, Download, Layers, Pencil, FileText } from "lucide-react";
 
 function useCountUp(target, duration = 900) {
   const [display, setDisplay] = useState(0);
@@ -53,6 +54,34 @@ function useCountUp(target, duration = 900) {
   return display;
 }
 
+// Strips Infinity/NaN cells + ExcelJS quirks so Excel doesn't pop "recovered content"
+async function repairDimXlsx(buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+  const sheets = Object.keys(zip.files).filter(f => /^xl\/worksheets\/sheet\d+\.xml$/.test(f));
+  const colToNum = (c) => { let n = 0; for (const ch of c) n = n * 26 + (ch.charCodeAt(0) - 64); return n; };
+  const numToCol = (n) => { let s = ""; while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); } return s; };
+  for (const f of sheets) {
+    let xml = await zip.file(f).async("string");
+    xml = xml.replace(/<c r="[^"]+"[^>]*><v>-?Infinity<\/v><\/c>/g, "");
+    xml = xml.replace(/<c r="[^"]+"[^>]*><v>NaN<\/v><\/c>/g, "");
+xml = xml.replace(/(<row[^>]*outlineLevel="\d+"[^>]*?)\s*collapsed="1"/g, "$1");
+    xml = xml.replace(/x14ac:dyDescent="55"/g, 'x14ac:dyDescent="0.25"');
+    // Cap outlineLevel attributes to 7 (Excel's hard max). Anything higher rejects the file.
+    xml = xml.replace(/outlineLevel="(\d+)"/g, (_, n) => `outlineLevel="${Math.min(7, parseInt(n))}"`);
+    // Strip empty <v/> tags that ExcelJS sometimes emits for unset numeric cells
+    xml = xml.replace(/<c r="[^"]+"[^>]*><v><\/v><\/c>/g, "");
+    const cells = [...xml.matchAll(/<c r="([A-Z]+)(\d+)"/g)];
+    if (cells.length > 0) {
+      const cs = cells.map(c => colToNum(c[1]));
+      const rs = cells.map(c => +c[2]);
+      const ref = `${numToCol(Math.min(...cs))}${Math.min(...rs)}:${numToCol(Math.max(...cs))}${Math.max(...rs)}`;
+      xml = xml.replace(/<dimension ref="[^"]+"\s*\/>/, `<dimension ref="${ref}"/>`);
+    }
+    zip.file(f, xml);
+  }
+  return await zip.generateAsync({ type: "arraybuffer" });
+}
+
 function DimAmountCell({ value, typoStyle, borderLeft, bgColor, extraStyle }) {
   const animated = useCountUp(value ?? 0, 900);
   const isEmpty = value === 0 || value == null;
@@ -60,14 +89,16 @@ function DimAmountCell({ value, typoStyle, borderLeft, bgColor, extraStyle }) {
   const color = isEmpty ? "#D1D5DB" : isNeg ? "#EF4444" : "#000000";
   const fmt = (n) => Math.abs(n).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return (
-<td className="px-4 py-2.5 text-right whitespace-nowrap tabular-nums" style={{ ...typoStyle, color, borderLeft: borderLeft ? "2px solid #f0f0f0" : undefined, background: bgColor ?? undefined, ...extraStyle }}>
+<td className="px-4 py-2.5 text-center whitespace-nowrap tabular-nums" style={{ ...typoStyle, color, borderLeft: borderLeft ? "2px solid #f0f0f0" : undefined, background: bgColor ?? undefined, ...extraStyle }}>
       {isEmpty ? "—" : isNeg ? `(${fmt(animated)})` : fmt(animated)}
     </td>
   );
 }
 import { useTypo, useSettings } from "./SettingsContext";
+import { useLatestPeriod } from "./LatestPeriodContext.jsx";
 import PageHeader, { FilterPill as HeaderFilterPill, MultiFilterPill } from "./PageHeader.jsx";
 import ExcelJS from "exceljs";
+import JSZip from "jszip";
 import { saveAs } from "file-saver";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -355,6 +386,44 @@ function extractSectionsFromTree(tree) {
 
 // Convert saved mapping tree (jsonb) into the {rows, sections} shape that
 // PivotTab uses for row ordering and section breakers.
+// Saved-mapping LITERAL tree (preserves duplicates + dims + hierarchy + breakers).
+// Used to render mappings the same way AccountsDashboard's PLStatement/BalanceSheet do.
+function buildSavedMappingLiteral(tree) {
+  if (!Array.isArray(tree) || tree.length === 0) return null;
+  const sections = []; // [{ label, color, nodes: [literalNode, ...] }]
+  let current = { label: null, color: null, nodes: [] };
+  sections.push(current);
+
+  function literal(node, depth) {
+    return {
+      id: String(node.id ?? `${node.code}-${Math.random()}`),
+      code: String(node.code ?? ""),
+      name: String(node.name ?? ""),
+      dims: Array.isArray(node.dims) && node.dims.length > 0 ? node.dims : null,
+      isSum: !!node.isSum || !!node.isSumAccount,
+      depth,
+      children: (node.children || [])
+        .filter(c => c && c.kind !== "breaker")
+        .map(c => literal(c, depth + 1)),
+    };
+  }
+
+  for (const node of tree) {
+    if (!node) continue;
+    if (node.kind === "breaker") {
+      current = { label: String(node.name ?? ""), color: node.color || "#1a2f8a", nodes: [] };
+      sections.push(current);
+      (node.children || [])
+        .filter(c => c && c.kind !== "breaker")
+        .forEach(c => current.nodes.push(literal(c, 0)));
+    } else {
+      current.nodes.push(literal(node, 0));
+    }
+  }
+  const cleaned = sections.filter((s, i) => i > 0 || s.nodes.length > 0);
+  return cleaned.length === 0 ? null : cleaned;
+}
+
 function convertSavedMappingTree(tree) {
   if (!Array.isArray(tree) || tree.length === 0) return null;
   const rows = new Map();
@@ -543,47 +612,43 @@ function FilterPill({ label, value, onChange, options }) {
 }
 
 const INDENT = 14;
-
-function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0 }) {
+function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null }) {
   const subbody2Style = useTypo("subbody2");
   const code = node.AccountCode;
   const visibleChildren = excludeCodes
     ? (node.children || []).filter(c => !excludeCodes.has(String(c.AccountCode)))
     : (node.children || []);
   const hasChildren = visibleChildren.length > 0;
-  const isExpanded = expandedSet.has(code);
+  const isExpanded = expandedSet.has(code) || (searchExpansionSet?.has(String(code)) ?? false);
+  const q = (searchQuery ?? "").trim().toLowerCase();
+  const isMatch = !!q && (String(code ?? "").toLowerCase().includes(q) || String(node.AccountName ?? node.accountName ?? "").toLowerCase().includes(q));
 
+  // Rollup logic: when a node has children that produce a non-zero sum, trust
+  // the children — the journal often carries the same money at BOTH the summary
+  // AccountCode and its leaf postings, so adding self on top double-counts.
+  // Fall back to self's own value only when every child resolves to zero (covers
+  // accounts posted directly at the summary level with no separate leaf rows).
   const getNodeVal = (dimKey) => {
-    const ownVal = getVal(code, dimKey);
-    if (ownVal !== 0) return ownVal;
-    if (!hasChildren) return 0;
-    let total = 0;
-    const sumChildren = (n) => {
-      n.children.forEach(c => {
-        const cv = getVal(c.AccountCode, dimKey);
-        if (cv !== 0) { total += cv; }
-        else if (c.children?.length) { sumChildren(c); }
-      });
+    const sumNode = (n) => {
+      if (n.children && n.children.length > 0) {
+        const childSum = n.children.reduce((s, c) => s + sumNode(c), 0);
+        if (childSum !== 0) return childSum;
+      }
+      return getVal(n.AccountCode, dimKey);
     };
-    sumChildren(node);
-    return total;
+    return sumNode(node);
   };
 
   const getCmpNodeVal = (dimKey) => {
     if (!getCmpVal) return 0;
-    const own = getCmpVal(code, dimKey);
-    if (own !== 0) return own;
-    if (!hasChildren) return 0;
-    let total = 0;
-    const sumChildren = (n) => {
-      n.children.forEach(c => {
-        const cv = getCmpVal(c.AccountCode, dimKey);
-        if (cv !== 0) { total += cv; }
-        else if (c.children?.length) { sumChildren(c); }
-      });
+    const sumNode = (n) => {
+      if (n.children && n.children.length > 0) {
+        const childSum = n.children.reduce((s, c) => s + sumNode(c), 0);
+        if (childSum !== 0) return childSum;
+      }
+      return getCmpVal(n.AccountCode, dimKey);
     };
-    sumChildren(node);
-    return total;
+    return sumNode(node);
   };
 
   const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 0);
@@ -591,12 +656,12 @@ function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, get
 
   return (
     <>
-      <tr
-        className="border-b border-gray-100 bg-white hover:bg-[#eef1fb]/60 transition-colors"
+<tr
+        className={`border-b border-gray-100 transition-colors ${isMatch ? "bg-[#fef3c7]" : "bg-white hover:bg-[#eef1fb]/60"}`}
         style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 25) * 35 + 50}ms both` }}
       >
         <td
-          className="py-2.5 sticky left-0 z-10 border-r border-gray-100 bg-white"
+          className={`py-2.5 sticky left-0 z-10 border-r border-gray-100 ${isMatch ? "bg-[#fef3c7]" : "bg-white"}`}
           style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 300 }}
           onClick={() => hasChildren && onToggle(code)}
         >
@@ -621,20 +686,18 @@ function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, get
             <React.Fragment key={dk}>
               <DimAmountCell value={val} typoStyle={rowStyle} />
 {cmpVisible && <>
-                <DimAmountCell value={cmpVal} typoStyle={{ ...rowStyle, color: cmpVal === 0 ? "#D1D5DB" : "#CF305D" }} bgColor={`${colors.primary}08`} extraStyle={{ animation: cmpExiting ? "cmpColOut 320ms cubic-bezier(0.4,0,0.2,1) 0ms both" : "cmpColIn 380ms cubic-bezier(0.34,1.56,0.64,1) 60ms both", transformOrigin: "left center" }} />
-                <td className="px-2 py-2.5 text-right whitespace-nowrap tabular-nums text-xs font-bold" style={{ color: devColor, width: 110, background: `${colors.primary}12`, animation: cmpExiting ? "cmpColOut 320ms cubic-bezier(0.4,0,0.2,1) 40ms both" : "cmpColIn 380ms cubic-bezier(0.34,1.56,0.64,1) 120ms both", transformOrigin: "left center" }}>
+                <DimAmountCell value={cmpVal} typoStyle={rowStyle} bgColor="#fafbff" extraStyle={{ animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 0ms forwards` }} />
+                <td className="px-2 py-2.5 text-center whitespace-nowrap tabular-nums text-xs font-bold" style={{ color: devColor, width: 110, background: "#f5f7ff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 40ms forwards` }}>
                   {diff === 0 ? "—" : diff < 0 ? `(${Math.abs(diff).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : diff.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </td>
-                <td className="px-2 py-2.5 text-right whitespace-nowrap tabular-nums text-xs font-bold" style={{ color: devColor, width: 90, background: `${colors.primary}1e`, animation: cmpExiting ? "cmpColOut 320ms cubic-bezier(0.4,0,0.2,1) 80ms both" : "cmpColIn 380ms cubic-bezier(0.34,1.56,0.64,1) 180ms both", transformOrigin: "left center" }}>
+                <td className="px-2 py-2.5 text-center whitespace-nowrap tabular-nums text-xs font-bold" style={{ color: devColor, width: 90, background: "#f0f3ff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 80ms forwards` }}>
                   {pct === null ? "—" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}
                 </td>
               </>}
             </React.Fragment>
           );
         })}
-{!cmpVisible && <td className="sticky right-0 z-10 border-l border-gray-100 bg-[#fafafa]"style={{ minWidth: 150 }}>
-          <DimAmountCell value={rowTotal} typoStyle={rowStyle} />
-        </td>}
+{!cmpVisible && <DimAmountCell value={rowTotal} typoStyle={rowStyle} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
       </tr>
       {isExpanded && hasChildren && visibleChildren.map((child, ci) => (
 <DimensionRow key={child.AccountCode} node={child} depth={depth + 1}
@@ -642,7 +705,8 @@ function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, get
           dimCols={dimCols} getVal={getVal} getCmpVal={getCmpVal} compareMode={compareMode} cmpVisible={cmpVisible} cmpExiting={cmpExiting}
           body1Style={body1Style} body2Style={body2Style}
           header2Style={header2Style} colors={colors}
-          excludeCodes={excludeCodes} rowIndex={rowIndex + ci + 1} />
+          excludeCodes={excludeCodes} rowIndex={rowIndex + ci + 1}
+          searchQuery={searchQuery} searchExpansionSet={searchExpansionSet} />
       ))}
     </>
   );
@@ -693,7 +757,7 @@ function AccountsTab({ data }) {
                     const val = row[col];
                     if (val === null || val === undefined || val === "") return <td key={j} className="px-4 py-2.5 text-gray-200 italic">—</td>;
                     if (typeof val === "boolean") return <td key={j} className={`px-4 py-2.5 font-semibold ${val ? "text-emerald-600" : "text-gray-400"}`}>{val ? "Yes" : "No"}</td>;
-                    if (typeof val === "number") return <td key={j} className="px-4 py-2.5 font-mono text-right">{val.toLocaleString()}</td>;
+                    if (typeof val === "number") return <td key={j} className="px-4 py-2.5 font-mono text-center">{val.toLocaleString()}</td>;
                     if (typeof val === "string" && val.match(/^\d{4}-\d{2}-\d{2}T/)) return <td key={j} className="px-4 py-2.5 font-mono text-gray-500 whitespace-nowrap">{new Date(val).toLocaleDateString()}</td>;
                     return <td key={j} className="px-4 py-2.5 text-gray-700 whitespace-nowrap">{String(val)}</td>;
                   })}
@@ -710,7 +774,7 @@ function AccountsTab({ data }) {
 
 
 /* ── Pivot Tab ────────────────────────────────────────────── */
-function PivotTab({ data, dimensions, groupAccounts = [], onShowAccounts, selGroups = new Set(), selDims = new Set(), onSelGroupsChange = () => {}, onSelDimsChange = () => {}, dimGroups = [], compareMode, statementType = "pl", externalViewMode = null,sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, exportRef = null, hasCustomMapping = false }) {
+function PivotTab({ data, dimensions, groupAccounts = [], onShowAccounts, selGroups = new Set(), selDims = new Set(), onSelGroupsChange = () => {}, onSelDimsChange = () => {}, dimGroups = [], compareMode, statementType = "pl", externalViewMode = null,sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false }) {
 
   const header2Style = useTypo("header2");
     const body1Style = useTypo("body1");
@@ -718,7 +782,13 @@ function PivotTab({ data, dimensions, groupAccounts = [], onShowAccounts, selGro
   const header3Style = useTypo("header3");
   const { colors } = useSettings();
 
-// Summary/Detailed toggle (only used in non-compare mode). statementType
+// Account header search — magnifier toggles to input, matches highlight in yellow.
+  const [searchActive, setSearchActive] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const debouncedQuery = useDeferredValue(searchQuery);
+  const searchInputRef = useRef(null);
+
+  // Summary/Detailed toggle (only used in non-compare mode). statementType
   // is lifted to DimensionesPage to drive PageHeader tabs.
   const [summaryMode, setSummaryMode] = useState(true);
   const [cmpVisible, setCmpVisible] = useState(false);
@@ -730,7 +800,7 @@ function PivotTab({ data, dimensions, groupAccounts = [], onShowAccounts, selGro
       setCmpVisible(true);
     } else if (cmpVisible) {
       setCmpExiting(true);
-      const t = setTimeout(() => { setCmpVisible(false); setCmpExiting(false); }, 400);
+      const t = setTimeout(() => { setCmpVisible(false); setCmpExiting(false); }, 450);
       return () => clearTimeout(t);
     }
   }, [compareMode]);
@@ -867,7 +937,7 @@ const acType = a.AccountType ?? a.accountType ?? "";
 const lacCheck = r.LocalAccountCode ?? r.localAccountCode ?? "";
       const acType = r.AccountType ?? r.accountType ?? "";
       if (!ac) return;
-      if (lacCheck && lacCheck !== "—") return;
+     // Keep all rows including leaf-level postings — descendants roll up via parentOf
 const targetType = statementType === "bs" ? "B/S" : "P/L";
       if (acType && acType !== targetType) return;
 
@@ -901,8 +971,23 @@ const [colOrder, setColOrder] = useState(null); // null = use natural order
 // Reset col order only when the actual set of dim codes changes, not on compare toggle
   const dimColKeys = useMemo(() => dimCols.map(d => d.code ?? "__none__").join(","), [dimCols]);
   useEffect(() => { setColOrder(null); }, [dimColKeys]); const expandAll = useCallback(() => {
+    const literal = statementType === "pl" ? plLiteral : bsLiteral;
+    if (literal && literal.length > 0) {
+      const keys = [];
+      literal.forEach((section, secIdx) => {
+        const walk = (node, parentPath) => {
+          if (node.children && node.children.length > 0) {
+            keys.push(`litrow-${secIdx}-${parentPath}-${node.id}`);
+            node.children.forEach(c => walk(c, `${parentPath}-${node.id}`));
+          }
+        };
+        section.nodes.forEach(n => walk(n, "root"));
+      });
+      setExpandedSet(new Set(keys));
+      return;
+    }
     setExpandedSet(new Set([...allAccountMap.keys()]));
-  }, [allAccountMap]);
+  }, [allAccountMap, plLiteral, bsLiteral, statementType]);
 
   const collapseAll = useCallback(() => setExpandedSet(new Set()), []);
 
@@ -948,10 +1033,9 @@ const buildPivot = useCallback((rows, grpFilter = selGroups, dimFilter = selDims
     rows.forEach(r => {
       const ac  = r.AccountCode ?? r.accountCode ?? "";
       const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
-      const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
-      const acType = r.AccountType ?? r.accountType ?? "";
+const acType = r.AccountType ?? r.accountType ?? "";
       if (!ac) return;
-      if (lac && lac !== "—") return;
+      // Keep all rows including leaf-level postings — descendants roll up via parentOf
       const targetType = statementType === "bs" ? "B/S" : "P/L";
       if (acType && acType !== targetType) return;
 
@@ -1117,8 +1201,13 @@ const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes,
 const activeMapping = statementType === "pl" ? plMapping : bsMapping;
   const targetAccountType = statementType === "pl" ? ["P/L", "DIS"] : ["B/S"];
 
-  const displayedTree = useMemo(() => {
+const displayedTree = useMemo(() => {
     if (!data.length) return [];
+
+    // Build the FULL chart-of-accounts hierarchy from groupAccounts (filtered
+    // to this statement type). Previously this only included accounts that had
+    // journal data this period + their ancestors, which dropped the leaf
+    // postings the user expects to see when drilling down.
     const groupMap = new Map();
     (groupAccounts || []).forEach(a => {
       const code = a.AccountCode ?? a.accountCode ?? "";
@@ -1134,52 +1223,23 @@ const activeMapping = statementType === "pl" ? plMapping : bsMapping;
       });
     });
 
-    const dataAccountInfo = new Map();
+    // Fallback for data-only codes (codes that exist in the journal but aren't
+    // in groupAccounts — orphan postings). Add them so they're not silently lost.
     data.forEach(r => {
       const code = r.AccountCode ?? r.accountCode ?? "";
-      if (!code) return;
-      const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
-      if (lac && lac !== "—") return;
+      if (!code || groupMap.has(code)) return;
       const acType = r.AccountType ?? r.accountType ?? "";
       if (!targetAccountType.includes(acType)) return;
-if (selGroups.size > 0) {
-        const pairs = parseDimensions(r.Dimensions);
-        if (pairs.length > 0 && !pairs.some(([g, dc]) => {
-          if (!selGroups.has(g)) return false;
-          if (selDims.size > 0 && !selDims.has(dc)) return false;
-          return true;
-        })) return;
-      }
-      if (!dataAccountInfo.has(code)) {
-        dataAccountInfo.set(code, {
-          AccountCode: code,
-          AccountName: r.AccountName ?? r.accountName ?? "",
-          SumAccountCode: r.SumAccountCode ?? r.sumAccountCode ?? "",
-          AccountType: acType,
-        });
-      }
+      groupMap.set(code, {
+        AccountCode: code,
+        AccountName: r.AccountName ?? r.accountName ?? "",
+        SumAccountCode: r.SumAccountCode ?? r.sumAccountCode ?? "",
+        AccountType: acType,
+      });
     });
 
-    const accountMap = new Map();
-    if (groupMap.size > 0) {
-      const includeWithAncestors = (code) => {
-        if (accountMap.has(code)) return;
-        const a = groupMap.get(code);
-        if (!a) {
-          const fb = dataAccountInfo.get(code);
-          if (fb) accountMap.set(code, fb);
-          return;
-        }
-        accountMap.set(code, a);
-        if (a.SumAccountCode) includeWithAncestors(a.SumAccountCode);
-      };
-      dataAccountInfo.forEach((_, code) => includeWithAncestors(code));
-    } else {
-      dataAccountInfo.forEach((info, code) => accountMap.set(code, info));
-    }
-
-    return buildTree([...accountMap.values()]);
- }, [data, groupAccounts, selGroups, selDims, statementType]);
+    return buildTree([...groupMap.values()]);
+ }, [data, groupAccounts, statementType]);
 
 const treeIndex = useMemo(() => {
   const idx = new Map();
@@ -1260,8 +1320,44 @@ if (isCustomMapping) {
         i++;
       }
     }
-    return out;
+return out;
   }, [activeMapping, orderedRows, colors]);
+
+  // Row keys that must be force-expanded because a descendant matches the search.
+  const searchExpansionSet = useMemo(() => {
+    const q = debouncedQuery.trim().toLowerCase();
+    if (!q) return null;
+    const result = new Set();
+    const matchesText = (...vals) => vals.some(v => String(v ?? "").toLowerCase().includes(q));
+
+    const literal = statementType === "pl" ? plLiteral : bsLiteral;
+    if (literal) {
+      literal.forEach((section, secIdx) => {
+        const walk = (node, parentPath) => {
+          const rowKey = `litrow-${secIdx}-${parentPath}-${node.id}`;
+          let descMatch = false;
+          (node.children || []).forEach(child => {
+            if (walk(child, `${parentPath}-${node.id}`)) descMatch = true;
+          });
+          const self = matchesText(node.code, node.name);
+          if (descMatch || self) result.add(rowKey);
+          return descMatch || self;
+        };
+        section.nodes.forEach(n => walk(n, "root"));
+      });
+    }
+
+    const walkFlat = (node) => {
+      let any = false;
+      (node.children || []).forEach(child => { if (walkFlat(child)) any = true; });
+      const self = matchesText(node.AccountCode, node.AccountName);
+      if (any || self) result.add(String(node.AccountCode));
+      return any || self;
+    };
+    (orderedRows || []).forEach(walkFlat);
+
+    return result;
+  }, [debouncedQuery, plLiteral, bsLiteral, statementType, orderedRows]);
 
 const { childrenByParent, parentOf } = useMemo(() => {
   const childrenByParent = new Map();
@@ -1287,27 +1383,62 @@ const { childrenByParent, parentOf } = useMemo(() => {
   return { childrenByParent, parentOf };
 }, [groupAccounts, data]);
 
-const getValWithDescendants = useCallback((code, dk) => {
-  // For each account in pivot, check if it rolls up to `code` via parentOf chain
-  let total = 0;
-  pivot.forEach((dimMap, ac) => {
-    if (ac === code) {
-      total += (dimMap.get(dk) ?? 0) * sign;
-      return;
-    }
-    let cur = parentOf.get(ac);
-    let hops = 0;
-    while (cur && hops < 25) {
-      if (cur === code) {
+const getCmpValWithDescendants = useCallback((code, dk) => {
+  const sumPivot = (p) => {
+    if (!p || p.size === 0) return 0;
+    let total = 0;
+    p.forEach((dimMap, ac) => {
+      if (ac === code) {
         total += (dimMap.get(dk) ?? 0) * sign;
-        break;
+        return;
       }
-      cur = parentOf.get(cur);
-      hops++;
-    }
-  });
-  return total;
-}, [pivot, sign, parentOf]);
+      let cur = parentOf.get(ac);
+      let hops = 0;
+      while (cur && hops < 25) {
+        if (cur === code) {
+          total += (dimMap.get(dk) ?? 0) * sign;
+          break;
+        }
+        cur = parentOf.get(cur);
+        hops++;
+      }
+    });
+    return total;
+  };
+  const ytd = sumPivot(pivot2);
+  if (viewMode === "ytd") return ytd;
+  const prevYtd = sumPivot(prevPivot2);
+  return ytd - prevYtd;
+}, [pivot2, prevPivot2, viewMode, sign, parentOf]);
+
+const getValWithDescendants = useCallback((code, dk) => {
+  // Sum a pivot map for `code` + everything that rolls up to it via parentOf.
+  const sumPivot = (p) => {
+    if (!p || p.size === 0) return 0;
+    let total = 0;
+    p.forEach((dimMap, ac) => {
+      if (ac === code) {
+        total += (dimMap.get(dk) ?? 0) * sign;
+        return;
+      }
+      let cur = parentOf.get(ac);
+      let hops = 0;
+      while (cur && hops < 25) {
+        if (cur === code) {
+          total += (dimMap.get(dk) ?? 0) * sign;
+          break;
+        }
+        cur = parentOf.get(cur);
+        hops++;
+      }
+    });
+    return total;
+  };
+  const ytd = sumPivot(pivot);
+  if (viewMode === "ytd") return ytd;
+  const prevYtd = sumPivot(prevPivotMain);
+  return ytd - prevYtd;
+}, [pivot, prevPivotMain, viewMode, sign, parentOf]);
 
 useEffect(() => {
   if (!activeMapping) return;
@@ -1333,174 +1464,478 @@ useEffect(() => {
   const filterStr = [masterSource, masterStructure, masterYear && masterMonth
     ? `${MONTHS[parseInt(masterMonth) - 1]?.label ?? masterMonth} ${masterYear}` : ""].filter(Boolean).join(" · ");
 
-  const handleExportXlsx = useCallback(async () => {
+const handleExportXlsx = useCallback(async (opts = {}) => {
+    const includePL = opts.statements?.pl ?? (statementType === "pl");
+    const includeBS = opts.statements?.bs ?? (statementType === "bs");
+    if (!includePL && !includeBS) { alert("Select at least one statement (P&L or B/S)."); return; }
+    const drilldown = opts.drilldown !== false;
+
     const wb = new ExcelJS.Workbook();
     wb.creator = "Konsolidator";
 
-    if (compareMode) {
-      // ── Compare sheet: rows = dims, cols = Std / Cmp1 / ΔAmt / Δ% / Cmp2 / ΔAmt / Δ%
-      const ws = wb.addWorksheet("Dimensions Compare", { views: [{ state: "frozen", xSplit: 1, ySplit: 4 }] });
-      const headers = ["Dimension", "Standard", "Compare 1", "Δ Amt", "Δ %", "Compare 2", "Δ Amt", "Δ %"];
-      const totalCols = headers.length;
+    const periodLabel = (y, m) => {
+      const mm = parseInt(m); const lbl = MONTHS[mm - 1]?.label ?? m;
+      return `${lbl} ${y}`;
+    };
+    const toArgbHex = (hex) => "FF" + String(hex ?? "#1a2f8a").replace("#", "").toUpperCase().padStart(6, "0");
 
-      ws.mergeCells(1, 1, 1, totalCols);
-      Object.assign(ws.getCell(1, 1), { value: "Dimensions — Compare", fill: { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } }, font: { name: "Calibri", size: 16, bold: true, color: { argb: C.white } }, alignment: { vertical: "middle", horizontal: "left", indent: 1 } });
-      ws.getRow(1).height = 28;
-      ws.mergeCells(2, 1, 2, totalCols);
-      Object.assign(ws.getCell(2, 1), { value: filterStr || "—", fill: { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } }, font: { name: "Calibri", size: 10, color: { argb: C.white } }, alignment: { vertical: "middle", horizontal: "left", indent: 1 } });
-      ws.getRow(2).height = 18;
-      ws.getRow(3).height = 6;
-
-      const hRow = ws.getRow(4);
-      hRow.height = 24;
-      headers.forEach((h, i) => {
-        const c = hRow.getCell(i + 1);
-        c.value = h;
-        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
-        c.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
-        c.alignment = { vertical: "middle", horizontal: i === 0 ? "left" : "right", indent: i === 0 ? 1 : 0 };
+    const buildSimplePivot = (rows, stType) => {
+      const p = new Map();
+      rows.forEach(r => {
+        const ac = r.AccountCode ?? r.accountCode ?? "";
+        const acType = r.AccountType ?? r.accountType ?? "";
+        const targetType = stType === "bs" ? "B/S" : "P/L";
+        if (!ac || (acType && acType !== targetType)) return;
+        const pairs = parseDimensions(r.Dimensions);
+        const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+        if (pairs.length === 0) {
+          if (!p.has(ac)) p.set(ac, new Map());
+          p.get(ac).set("__none__", (p.get(ac).get("__none__") ?? 0) + amt);
+          return;
+        }
+        for (const [grp, code] of pairs) {
+          if (selGroups.size > 0 && !selGroups.has(grp)) continue;
+          if (selDims.size > 0 && !selDims.has(code)) continue;
+          if (!p.has(ac)) p.set(ac, new Map());
+          p.get(ac).set(code, (p.get(ac).get(code) ?? 0) + amt);
+        }
       });
+      return p;
+    };
 
-      const visibleDims = dimCols.filter(d => !!d.code);
-      const flattenForDim = (p, pPrev, dk) => {
-        const flat = new Map();
-        p.forEach((dimMap, acCode) => {
-          const ytd = dimMap.get(dk) ?? 0;
-          if (viewMode === "monthly" && pPrev) {
-            flat.set(acCode, ytd - (pPrev.get(acCode)?.get(dk) ?? 0));
-          } else {
-            flat.set(acCode, ytd);
+const writeSheetForStatement = (stType, viewLevel = null) => {
+      const isActive = stType === statementType;
+      const useLiteral = viewLevel === null;
+      const sign = stType === "pl" ? -1 : 1;
+      const literal = stType === "pl" ? plLiteral : bsLiteral;
+      const sheetView = isActive ? viewMode : "ytd";
+      const sheetCompare = cmpVisible && (opts.includeCompare !== false);
+      const showTotals  = !sheetCompare && (opts.includeTotals !== false);
+      const showBreakers = opts.includeBreakers !== false;
+
+      const pivotMain = isActive ? pivot : buildSimplePivot(data, stType);
+      const prevMain  = isActive ? prevPivotMain : new Map();
+      const pivotCmp  = cmpVisible ? (isActive ? pivot2 : buildSimplePivot(cmp2Data, stType)) : new Map();
+      const prevCmp   = isActive ? prevPivot2 : new Map();
+
+      // Descendant-aware rollup (literal mode) — matches on-screen getValWithDescendants
+      const sumPivotFor = (p, code, dk) => {
+        if (!p || p.size === 0) return 0;
+        let total = 0;
+        p.forEach((dimMap, ac) => {
+          if (ac === code) { total += (dimMap.get(dk) ?? 0) * sign; return; }
+          let cur = parentOf.get(ac);
+          let hops = 0;
+          while (cur && hops < 25) {
+            if (cur === code) { total += (dimMap.get(dk) ?? 0) * sign; break; }
+            cur = parentOf.get(cur); hops++;
           }
         });
-        return flat;
+        return total;
       };
-      const evalLineExport = (p, pPrev, dk) => {
-        const flat = flattenForDim(p, pPrev, dk);
-        if (line === "all") { let t = 0; flat.forEach(v => { t += v; }); return t; }
-        const kpi = kpiList.find(k => k.id === line);
-        if (!kpi) return 0;
-        const cache = new Map();
-        const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes, resolveCcTag);
-        return (v === null || isNaN(v)) ? 0 : v;
+      const valFor = (code, dk) => {
+        const ytd = sumPivotFor(pivotMain, code, dk);
+        if (sheetView === "ytd") return ytd;
+        return ytd - sumPivotFor(prevMain, code, dk);
+      };
+      const cmpValFor = (code, dk) => {
+        const ytd = sumPivotFor(pivotCmp, code, dk);
+        if (sheetView === "ytd") return ytd;
+        return ytd - sumPivotFor(prevCmp, code, dk);
       };
 
-      let rn = 5;
-      visibleDims.forEach((dim, idx) => {
-        const dk = dim.code;
-        const v1 = evalLineExport(pivot,  prevPivot,  dk);
-        const v2 = evalLineExport(pivot2, prevPivot2, dk);
-        const v3 = evalLineExport(pivot3, prevPivot3, dk);
-        const band = idx % 2 === 0 ? C.band1 : C.band2;
-        const row = ws.getRow(rn);
-        row.height = 18;
-        const setCell = (col, val, opts = {}) => {
-          const c = row.getCell(col);
-          c.value = val;
-          c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: opts.bg ?? band } };
-          c.font = { name: "Calibri", size: 10, bold: !!opts.bold, color: { argb: opts.color ?? "FF000000" } };
-          c.alignment = { vertical: "middle", horizontal: col === 1 ? "left" : "right", indent: col === 1 ? 1 : 0 };
-          if (opts.numFmt) c.numFmt = opts.numFmt;
-        };
-        const numFmt = '#,##0.00;[Red]-#,##0.00';
-        setCell(1, dim.name);
-        setCell(2, v1 === 0 ? null : v1, { numFmt, color: v1 < 0 ? C.red : "FF000000" });
-        setCell(3, v2 === 0 ? null : v2, { numFmt, color: v2 < 0 ? C.red : "FF000000" });
-        const d12 = v1 - v2;
-        setCell(4, v1 === 0 && v2 === 0 ? null : d12, { numFmt, color: d12 >= 0 ? "FF059669" : C.red });
-        setCell(5, v2 === 0 ? null : parseFloat((((v1 - v2) / Math.abs(v2)) * 100).toFixed(1)), { numFmt: '0.0"%"', color: d12 >= 0 ? "FF059669" : C.red });
-        setCell(6, v3 === 0 ? null : v3, { numFmt, color: v3 < 0 ? C.red : "FF000000" });
-        const d13 = v1 - v3;
-        setCell(7, v1 === 0 && v3 === 0 ? null : d13, { numFmt, color: d13 >= 0 ? "FF059669" : C.red });
-        setCell(8, v3 === 0 ? null : parseFloat((((v1 - v3) / Math.abs(v3)) * 100).toFixed(1)), { numFmt: '0.0"%"', color: d13 >= 0 ? "FF059669" : C.red });
-        rn++;
+      // Flat lookup (tree mode) — matches on-screen DimensionRow.sumNode
+      const flatVal = (code, dk) => {
+        const ytd = (pivotMain.get(code)?.get(dk) ?? 0) * sign;
+        if (sheetView === "ytd") return ytd;
+        return ytd - (prevMain.get(code)?.get(dk) ?? 0) * sign;
+      };
+      const flatCmpVal = (code, dk) => {
+        const ytd = (pivotCmp.get(code)?.get(dk) ?? 0) * sign;
+        if (sheetView === "ytd") return ytd;
+        return ytd - (prevCmp.get(code)?.get(dk) ?? 0) * sign;
+      };
+// When a node has children with data, trust the children's sum and DON'T
+      // add self — the journal often carries the same money twice (once at the
+      // summary AccountCode and again at the leaf postings under it). Adding
+      // both gives 2× the real value. Fall back to self only when every child
+      // resolves to zero (e.g. data posted only at the summary level).
+      const sumTreeForDim = (n, dk) => {
+        if (n.children && n.children.length > 0) {
+          const childSum = n.children.reduce((s, c) => s + sumTreeForDim(c, dk), 0);
+          if (childSum !== 0) return childSum;
+        }
+        return flatVal(n.code, dk);
+      };
+      const sumTreeCmpForDim = (n, dk) => {
+        if (n.children && n.children.length > 0) {
+          const childSum = n.children.reduce((s, c) => s + sumTreeCmpForDim(c, dk), 0);
+          if (childSum !== 0) return childSum;
+        }
+        return flatCmpVal(n.code, dk);
+      };
+
+      const visibleDims = orderedDimCols;
+      const subColsPerDim = sheetCompare ? 4 : 1;
+      const totalCols = 1 + visibleDims.length * subColsPerDim + (showTotals ? 1 : 0);
+
+      const subLines = [];
+      if (masterYear && masterMonth) {
+        const seg = [`📅 ${periodLabel(masterYear, masterMonth)}`];
+        if (masterSource)    seg.push(`Source: ${masterSource}`);
+        if (masterStructure) seg.push(`Structure: ${masterStructure}`);
+        if (masterCompany)   seg.push(`Company: ${masterCompany}`);
+        subLines.push(seg.join("    ·    "));
+      }
+      const viewLevelLabel = viewLevel === "summary" ? "Summary" : viewLevel === "detailed" ? "Detailed" : "Mapped";
+      subLines.push(`Statement: ${stType.toUpperCase()}    ·    Level: ${viewLevelLabel}    ·    View: ${sheetView === "ytd" ? "YTD" : "Monthly"}${sheetCompare ? "    ·    Compare ON" : ""}${!isActive ? "    ·    (YTD only — switch tab for monthly/compare)" : ""}`);
+      subLines.push(`Dim Groups: ${selGroups.size > 0 ? [...selGroups].join(", ") : "All"}    ·    Dims: ${selDims.size > 0 ? [...selDims].join(", ") : "All"}`);
+      if (sheetCompare && cmp2Year && cmp2Month) {
+        const seg = [`🆚 vs ${periodLabel(cmp2Year, cmp2Month)}`];
+        if (cmp2Source)    seg.push(`Source: ${cmp2Source}`);
+        if (cmp2Structure) seg.push(`Structure: ${cmp2Structure}`);
+        if (cmp2Company)   seg.push(`Company: ${cmp2Company}`);
+        subLines.push(seg.join("    ·    "));
+      }
+
+      const sheetNameSuffix = viewLevel === "summary" ? " Summary" : viewLevel === "detailed" ? " Detailed" : "";
+      const ws = wb.addWorksheet(`Dim ${stType.toUpperCase()}${sheetNameSuffix}`, {
+        views: [{ state: "frozen", xSplit: 1, ySplit: 1 + subLines.length + 1 + (sheetCompare ? 2 : 1) }],
+        properties: { outlineLevelRow: 1, summaryBelow: false },
       });
-
-      ws.getColumn(1).width = 30;
-      for (let i = 2; i <= totalCols; i++) ws.getColumn(i).width = 17;
-
-    } else {
-      // ── Pivot sheet: rows = accounts, cols = dims
-      const ws = wb.addWorksheet(`Dimensions ${statementType.toUpperCase()}`, { views: [{ state: "frozen", xSplit: 1, ySplit: 4 }] });
-      const totalCols = 1 + dimCols.length + 1;
 
       ws.mergeCells(1, 1, 1, totalCols);
-      Object.assign(ws.getCell(1, 1), { value: `Dimensions — ${statementType === "pl" ? "P&L" : "Balance Sheet"}`, fill: { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } }, font: { name: "Calibri", size: 16, bold: true, color: { argb: C.white } }, alignment: { vertical: "middle", horizontal: "left", indent: 1 } });
+      const titleCell = ws.getCell(1, 1);
+      titleCell.value = `Dimensions — ${stType === "pl" ? "P&L" : "Balance Sheet"}`;
+      titleCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+      titleCell.font = { name: "Calibri", size: 16, bold: true, color: { argb: C.white } };
+      titleCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
       ws.getRow(1).height = 28;
-      ws.mergeCells(2, 1, 2, totalCols);
-      Object.assign(ws.getCell(2, 1), { value: filterStr || "—", fill: { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } }, font: { name: "Calibri", size: 10, color: { argb: C.white } }, alignment: { vertical: "middle", horizontal: "left", indent: 1 } });
-      ws.getRow(2).height = 18;
-      ws.getRow(3).height = 6;
 
-      const hRow = ws.getRow(4);
-      hRow.height = 24;
-      ["Account", ...dimCols.map(d => d.name ?? d.code ?? "—"), "TOTAL"].forEach((h, i) => {
-        const c = hRow.getCell(i + 1);
-        c.value = h;
+      subLines.forEach((line, i) => {
+        const r = 2 + i;
+        ws.mergeCells(r, 1, r, totalCols);
+        const c = ws.getCell(r, 1);
+        c.value = line;
         c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
-        c.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
-        c.alignment = { vertical: "middle", horizontal: i === 0 ? "left" : "right", indent: i === 0 ? 1 : 0 };
+        c.font = { name: "Calibri", size: 10, color: { argb: "FFE0E7FF" } };
+        c.alignment = { vertical: "middle", horizontal: "left", indent: 1, wrapText: true };
+        ws.getRow(r).height = 18;
       });
 
-      let rn = 5;
-     (orderedRows ?? displayedTree).forEach((node, idx) => {
-        const divider = dividerMap[String(node.AccountCode)];
-        if (divider) {
-          ws.mergeCells(rn, 1, rn, totalCols);
-          const dc = ws.getCell(rn, 1);
-          dc.value = divider.label.toUpperCase();
-          dc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: toArgb(divider.color) } };
-          dc.font = { name: "Calibri", size: 9, bold: true, color: { argb: C.white } };
-          dc.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
-          ws.getRow(rn).height = 18;
-          rn++;
-        }
+      let curRow = 2 + subLines.length;
+      ws.getRow(curRow).height = 6;
+      curRow++;
 
-        const band = idx % 2 === 0 ? C.band1 : C.band2;
-        const lc = ws.getCell(rn, 1);
-        lc.value = `${node.AccountCode}  ${node.AccountName ?? ""}`.trim();
-        lc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
-        lc.font = { name: "Calibri", size: 10, color: { argb: C.primary } };
-        lc.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+      if (sheetCompare) {
+        const r1 = curRow, r2 = curRow + 1;
+        const sup = ws.getRow(r1); sup.height = 22;
+        const sub = ws.getRow(r2); sub.height = 18;
+        const acc = sup.getCell(1);
+        acc.value = "Account";
+        acc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+        acc.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+        acc.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+        ws.mergeCells(r1, 1, r2, 1);
+        visibleDims.forEach((d, i) => {
+          const startCol = 2 + i * 4;
+          const sCell = sup.getCell(startCol);
+          sCell.value = d.name ?? d.code ?? "—";
+          sCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+          sCell.font = { name: "Calibri", size: 11, bold: true, color: { argb: C.white } };
+          sCell.alignment = { vertical: "middle", horizontal: "center" };
+          ws.mergeCells(r1, startCol, r1, startCol + 3);
+          ["A", "Σ CMP", "Δ AMT", "Δ %"].forEach((lbl, j) => {
+            const cc = sub.getCell(startCol + j);
+            cc.value = lbl;
+            cc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: j === 1 ? "FFCF305D" : (j >= 2 ? "FF13225C" : C.primary) } };
+            cc.font = { name: "Calibri", size: 9, bold: true, color: { argb: C.white } };
+            cc.alignment = { vertical: "middle", horizontal: "center" };
+          });
+        });
+        curRow = r2 + 1;
+      } else {
+        const hRow = ws.getRow(curRow); hRow.height = 24;
+        const headers = ["Account", ...visibleDims.map(d => d.name ?? d.code ?? "—")];
+        if (showTotals) headers.push("TOTAL");
+        headers.forEach((h, i) => {
+          const c = hRow.getCell(i + 1);
+          c.value = h;
+          c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+          c.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+          c.alignment = { vertical: "middle", horizontal: i === 0 ? "left" : "right", indent: i === 0 ? 1 : 0 };
+        });
+        curRow++;
+      }
+
+      const writeNum = (rowN, colN, val, fillArgb, opts2 = {}) => {
+        const cell = ws.getCell(rowN, colN);
+        if (val == null || !Number.isFinite(val) || val === 0) {
+          cell.value = "—";
+          cell.font = { name: "Calibri", size: 10, color: { argb: C.gray400 }, bold: !!opts2.bold };
+        } else {
+          cell.value = val;
+          cell.numFmt = opts2.percent ? '0.0"%"' : '#,##0.00;[Red]-#,##0.00';
+          cell.font = {
+            name: "Calibri", size: 10, bold: !!opts2.bold,
+            color: { argb: opts2.colorOverride ?? (val < 0 ? C.red : "FF1A2F8A") },
+          };
+        }
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fillArgb } };
+        cell.alignment = { vertical: "middle", horizontal: "center" };
+        cell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+      };
+
+      const leafVal = (n, dimKey) => {
+        if (n.dims && n.dims.length > 0) {
+          const match = n.dims.some(d => {
+            const i = d.indexOf(":");
+            const v = i === -1 ? d : d.slice(i + 1);
+            return String(v) === String(dimKey);
+          });
+          if (!match) return 0;
+        }
+        return valFor(n.code, dimKey);
+      };
+      const sumLitForDim = (n, dimKey) => {
+        if (n.isSum && n.children && n.children.length > 0) {
+          return n.children.reduce((s, c) => s + sumLitForDim(c, dimKey), 0);
+        }
+        return leafVal(n, dimKey);
+      };
+      const leafCmpVal = (n, dimKey) => {
+        if (n.dims && n.dims.length > 0) {
+          const match = n.dims.some(d => {
+            const i = d.indexOf(":");
+            const v = i === -1 ? d : d.slice(i + 1);
+            return String(v) === String(dimKey);
+          });
+          if (!match) return 0;
+        }
+        return cmpValFor(n.code, dimKey);
+      };
+      const sumLitCmpForDim = (n, dimKey) => {
+        if (n.isSum && n.children && n.children.length > 0) {
+          return n.children.reduce((s, c) => s + sumLitCmpForDim(c, dimKey), 0);
+        }
+        return leafCmpVal(n, dimKey);
+      };
+
+      let dataIdx = 0;
+      let maxDepth = 0;
+      const renderRow = (node, depth, mode = "literal") => {
+        const mainSum = mode === "tree" ? sumTreeForDim : sumLitForDim;
+        const cmpSum  = mode === "tree" ? sumTreeCmpForDim : sumLitCmpForDim;
+        maxDepth = Math.max(maxDepth, depth);
+        const band = dataIdx % 2 === 0 ? C.band1 : C.band2;
+        dataIdx++;
+        const labelCell = ws.getCell(curRow, 1);
+        const codeStr = String(node.code ?? "").trim();
+        const nameStr = String(node.name ?? node.code ?? "").trim() || "—";
+        const labelRuns = [];
+        if (codeStr) labelRuns.push({ text: `${codeStr}  `, font: { name: "Calibri", size: 9, color: { argb: "FF6B7280" } } });
+        labelRuns.push({ text: nameStr, font: { name: "Calibri", size: 11, bold: !!node.isSum, color: { argb: "FF1A2F8A" } } });
+        labelCell.value = labelRuns.length === 1 ? nameStr : { richText: labelRuns };
+        labelCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
+        labelCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+        labelCell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
 
         let rowTotal = 0;
-        dimCols.forEach((dim, di) => {
-          const val = getVal(node.AccountCode, dim.code ?? "__none__");
-          rowTotal += val;
-          const vc = ws.getCell(rn, 2 + di);
-          if (val === 0) {
-            vc.font = { name: "Calibri", size: 10, color: { argb: C.gray400 } };
+        visibleDims.forEach((dim, i) => {
+          const dk = dim.code ?? "__none__";
+          const a = mainSum(node, dk);
+          rowTotal += a;
+          if (sheetCompare) {
+            const startCol = 2 + i * 4;
+            const c = cmpSum(node, dk);
+            const delta    = (Number.isFinite(a) && Number.isFinite(c)) ? a - c : null;
+            const deltaPct = (Number.isFinite(a) && Number.isFinite(c) && Math.abs(c) > 1e-9) ? ((a - c) / Math.abs(c)) * 100 : null;
+            writeNum(curRow, startCol,     a, band,        { bold: node.isSum });
+            writeNum(curRow, startCol + 1, c, "FFFAFBFF",  { bold: node.isSum });
+            writeNum(curRow, startCol + 2, delta,    "FFF5F7FF", { bold: node.isSum, colorOverride: (delta == null || delta === 0) ? null : (delta < 0 ? C.red : "FF059669") });
+            writeNum(curRow, startCol + 3, deltaPct, "FFF0F3FF", { bold: node.isSum, percent: true, colorOverride: deltaPct == null ? null : (deltaPct < 0 ? C.red : "FF059669") });
           } else {
-            vc.value = val;
-            vc.numFmt = '#,##0.00;[Red]-#,##0.00';
-            vc.font = { name: "Calibri", size: 10, color: { argb: val < 0 ? C.red : "FF000000" } };
+            writeNum(curRow, 2 + i, a, band, { bold: node.isSum });
           }
-          vc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
-          vc.alignment = { vertical: "middle", horizontal: "right" };
         });
-
-        const tc = ws.getCell(rn, 2 + dimCols.length);
-        if (rowTotal !== 0) {
-          tc.value = rowTotal;
-          tc.numFmt = '#,##0.00;[Red]-#,##0.00';
-          tc.font = { name: "Calibri", size: 10, bold: true, color: { argb: rowTotal < 0 ? C.red : "FF000000" } };
-        } else {
-          tc.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.gray400 } };
+        if (showTotals) {
+          writeNum(curRow, 2 + visibleDims.length, rowTotal, C.highlight, { bold: true });
         }
-        tc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.highlight } };
-        tc.alignment = { vertical: "middle", horizontal: "right" };
-        ws.getRow(rn).height = 18;
-        rn++;
+        if (drilldown) {
+          const row = ws.getRow(curRow);
+          const cappedDepth = Math.min(7, depth);
+          row.outlineLevel = cappedDepth;
+          if (cappedDepth > 0) row.hidden = true;
+        }
+        curRow++;
+
+        if (node.children && node.children.length > 0) {
+          node.children.forEach(c => renderRow(c, depth + 1, mode));
+        }
+      };
+
+      const treeAsLit = (n, depth) => ({
+        id: String(n.AccountCode), code: String(n.AccountCode),
+        name: n.AccountName ?? n.accountName ?? "",
+        dims: null, isSum: (n.children?.length ?? 0) > 0, depth,
+        children: (n.children || []).map(c => treeAsLit(c, depth + 1)),
       });
 
+      const renderSectionBar = (label, colorArgb) => {
+        ws.mergeCells(curRow, 1, curRow, totalCols);
+        const cell = ws.getCell(curRow, 1);
+        cell.value = String(label).toUpperCase();
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: colorArgb } };
+        cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: C.white } };
+        cell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+        ws.getRow(curRow).height = 22;
+        curRow++;
+        dataIdx = 0;
+      };
+
+if (useLiteral && literal && literal.length > 0) {
+        // Custom mapping literal mode — matches on-screen literal renderer
+        literal.forEach(section => {
+          if (section.label && showBreakers) renderSectionBar(section.label, toArgbHex(section.color));
+          section.nodes.forEach(n => renderRow(n, 0, "literal"));
+        });
+      } else {
+        // No-literal mode (Summary or Detailed view): rebuild a tree from groupAccounts
+        // + the statement's mapping. Same logic as the on-screen Summary/Detailed toggle.
+        const mappingForSt = stType === "pl" ? plMapping : bsMapping;
+        const gaMap = new Map();
+        (groupAccounts || []).forEach(a => {
+          const code = String(a.AccountCode ?? a.accountCode ?? "");
+          if (!code) return;
+          gaMap.set(code, {
+            AccountCode: code,
+            AccountName: a.AccountName ?? a.accountName ?? "",
+            SumAccountCode: String(a.SumAccountCode ?? a.sumAccountCode ?? ""),
+            AccountType: a.AccountType ?? a.accountType ?? "",
+            IsSumAccount: !!(a.IsSumAccount ?? a.isSumAccount),
+          });
+        });
+        const targetType = stType === "bs" ? "B/S" : "P/L";
+        const stCodes = new Set();
+        gaMap.forEach((ga, code) => {
+          if (!ga.AccountType || ga.AccountType === targetType) stCodes.add(code);
+        });
+        const childrenIdx = new Map();
+        stCodes.forEach(code => {
+          const ga = gaMap.get(code);
+          const parent = ga.SumAccountCode;
+          if (parent && stCodes.has(parent) && parent !== code) {
+            if (!childrenIdx.has(parent)) childrenIdx.set(parent, []);
+            childrenIdx.get(parent).push(code);
+          }
+        });
+        const buildTreeNode = (code, depth) => {
+          const ga = gaMap.get(code);
+          const kids = (childrenIdx.get(code) || []).map(c => buildTreeNode(c, depth + 1));
+          return {
+            AccountCode: code,
+            AccountName: ga?.AccountName ?? "",
+            children: kids,
+            IsSumAccount: !!ga?.IsSumAccount,
+          };
+        };
+
+if (mappingForSt?.rows && mappingForSt?.sections) {
+          const filterFn = viewLevel === "summary"
+            ? (info => info.showInSummary)
+            : (info => info.isSum);
+          const orderedEntries = [...mappingForSt.rows.entries()]
+            .filter(([, info]) => filterFn(info))
+            .sort(([, a], [, b]) => a.sortOrder - b.sortOrder);
+          const palette = ["FF1A2F8A", "FFCF305D", "FF10B981", "FFD97706"];
+          const seenSections = new Set();
+          let sectionIdx = 0;
+          orderedEntries.forEach(([code, info]) => {
+            if (!stCodes.has(code)) return;
+            if (!seenSections.has(info.section) && showBreakers) {
+              const sec = mappingForSt.sections.get(info.section);
+              if (sec?.label) {
+                renderSectionBar(sec.label, palette[sectionIdx % palette.length]);
+                sectionIdx++;
+              }
+              seenSections.add(info.section);
+            }
+            renderRow(treeAsLit(buildTreeNode(code, 0), 0), 0, "tree");
+          });
+        } else {
+          // Truly nothing to lean on — just top-level codes
+          const topCodes = [...stCodes].filter(code => {
+            const p = gaMap.get(code).SumAccountCode;
+            return !p || !stCodes.has(p);
+          }).sort();
+          topCodes.forEach(code => renderRow(treeAsLit(buildTreeNode(code, 0), 0), 0, "tree"));
+        }
+      }
+
+      if (drilldown) {
+        ws.properties.outlineLevelRow = Math.min(7, Math.max(1, maxDepth));
+        ws.properties.summaryBelow = false;
+      }
+
       ws.getColumn(1).width = 44;
-      for (let i = 2; i <= totalCols; i++) ws.getColumn(i).width = 18;
+      if (sheetCompare) {
+        for (let i = 0; i < visibleDims.length; i++) {
+          ws.getColumn(2 + i * 4).width     = 15;
+          ws.getColumn(2 + i * 4 + 1).width = 14;
+          ws.getColumn(2 + i * 4 + 2).width = 12;
+          ws.getColumn(2 + i * 4 + 3).width = 10;
+        }
+      } else {
+        for (let i = 0; i < visibleDims.length; i++) ws.getColumn(2 + i).width = 18;
+        if (showTotals) ws.getColumn(2 + visibleDims.length).width = 18;
+      }
+    };
+
+console.log("[export] opts.statements:", opts.statements, "→ includePL=", includePL, "includeBS=", includeBS);
+    console.log("[export] statementType (active tab):", statementType);
+    console.log("[export] plLiteral:", plLiteral?.length, "sections, bsLiteral:", bsLiteral?.length, "sections");
+    console.log("[export] plMapping rows:", plMapping?.rows?.size, "bsMapping rows:", bsMapping?.rows?.size);
+    console.log("[export] groupAccounts:", groupAccounts?.length);
+
+const safeWriteSheet = (st, viewLevel = null) => {
+      const label = viewLevel ? `${st} ${viewLevel}` : st;
+      try {
+        console.log(`[export] ▶ writing sheet "${label}"…`);
+        writeSheetForStatement(st, viewLevel);
+        console.log(`[export] ✓ sheet "${label}" written. Workbook now has ${wb.worksheets.length} sheets:`, wb.worksheets.map(w => w.name));
+      } catch (e) {
+        console.error(`[export] ✗ FAILED writing sheet "${label}":`, e);
+        alert(`Failed to generate ${label.toUpperCase()} sheet:\n\n${e?.message ?? e}\n\nCheck the console for the full stack trace.`);
+      }
+    };
+
+    const dispatchStatement = (st) => {
+      const lit = st === "pl" ? plLiteral : bsLiteral;
+      if (lit && lit.length > 0) {
+        // Custom mapping active → single sheet using the literal structure
+        safeWriteSheet(st, null);
+      } else {
+        // No custom mapping → mirror on-screen Summary + Detailed views
+        safeWriteSheet(st, "summary");
+        safeWriteSheet(st, "detailed");
+      }
+    };
+
+    if (includePL) dispatchStatement("pl");
+    if (includeBS) dispatchStatement("bs");
+
+    console.log(`[export] final workbook has ${wb.worksheets.length} sheets:`, wb.worksheets.map(w => w.name));
+    if (wb.worksheets.length === 0) {
+      alert("No sheets were generated. Check the console for errors.");
+      return;
     }
 
     const buffer = await wb.xlsx.writeBuffer();
-    saveAs(new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+    const repaired = await repairDimXlsx(buffer);
+    saveAs(new Blob([repaired], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
       `Konsolidator_Dimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.xlsx`);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [compareMode, statementType, dimCols, getVal, getValWithDescendants, pivot, prevPivot, pivot2, prevPivot2, pivot3, prevPivot3, viewMode, line, kpiList, ccTagToCodes, resolveCcTag, masterYear, masterMonth, masterSource, masterStructure]);
+  }, [data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, orderedRows, displayedTree, dividerMap, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, selGroups, selDims, cmp2Source, cmp2Structure, cmp2Month, cmp2Year, cmp2Company, plMapping, bsMapping, groupAccounts]);
 
   const handleExportPdf = useCallback(() => {
     const H = { primary: "#1A2F8A", highlight: "#EEF1FB", white: "#FFFFFF", band2: "#F8F9FF", red: "#DC2626", green: "#059669", gray: "#9CA3AF" };
@@ -1617,33 +2052,48 @@ return (
           0%   { opacity: 0; transform: translateY(8px); }
           100% { opacity: 1; transform: translateY(0); }
         }
-        @keyframes cmpColIn {
-          0%   { opacity: 0; transform: scaleX(0.4) translateX(-12px); }
-          60%  { opacity: 1; }
-          100% { opacity: 1; transform: scaleX(1) translateX(0); }
-        }
 @keyframes cmpBarIn {
-          0%   { opacity: 0; transform: translateY(-16px) scaleY(0.7); }
-          60%  { opacity: 1; }
-          100% { opacity: 1; transform: translateY(0) scaleY(1); }
+          0%   { opacity: 0; transform: translateY(-14px) scale(0.98); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
         }
         @keyframes cmpBarOut {
-          0%   { opacity: 1; transform: translateY(0) scaleY(1); }
-          100% { opacity: 0; transform: translateY(-12px) scaleY(0.8); }
+          0%   { opacity: 1; transform: translateY(0) scale(1); }
+          100% { opacity: 0; transform: translateY(-14px) scale(0.98); }
         }
-        @keyframes cmpColOut {
-          0%   { opacity: 1; transform: scaleX(1) translateX(0); }
-          100% { opacity: 0; transform: scaleX(0.3) translateX(-8px); }
+        @keyframes cmpCellIn {
+          0%   { opacity: 0; transform: translateX(-12px); }
+          100% { opacity: 1; transform: translateX(0); }
         }
-        @keyframes totalColOut {
+        @keyframes cmpCellOut {
+          0%   { opacity: 1; transform: translateX(0); }
+          100% { opacity: 0; transform: translateX(12px); }
+        }
+@keyframes totalColOut {
           0%   { opacity: 1; max-width: 150px; }
           100% { opacity: 0; max-width: 0; overflow: hidden; }
         }
+@keyframes iconMorph {
+          0%   { opacity: 0; transform: scale(0.6) rotate(-45deg); }
+          60%  { opacity: 1; }
+          100% { opacity: 1; transform: scale(1) rotate(0); }
+        }
+        table td, table th { vertical-align: middle; }
 `}</style>
 
 
-{cmpVisible && (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex items-stretch gap-0 flex-shrink-0" style={{ height: "7vh", padding: "0 18px", position: "relative", zIndex: 10, animation: cmpExiting ? "cmpBarOut 380ms cubic-bezier(0.4,0,0.2,1) both" : "cmpBarIn 480ms cubic-bezier(0.34,1.56,0.64,1) both" }}>
+<div className="flex-shrink-0 overflow-hidden" style={{
+        maxHeight: compareMode ? 240 : 0,
+        marginTop: compareMode ? 0 : -12,
+        paddingTop: compareMode ? 4 : 0,
+        paddingBottom: compareMode ? 12 : 0,
+        paddingLeft: 4,
+        paddingRight: 4,
+        marginLeft: -4,
+        marginRight: -4,
+        transition: "max-height 450ms cubic-bezier(0.4,0,0.2,1), margin-top 450ms cubic-bezier(0.4,0,0.2,1), padding-top 450ms cubic-bezier(0.4,0,0.2,1), padding-bottom 450ms cubic-bezier(0.4,0,0.2,1)",
+      }}>
+      {cmpVisible && (
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex items-stretch gap-0" style={{ height: "7vh", padding: "0 18px", position: "relative", zIndex: 10, animation: `${cmpExiting ? "cmpBarOut" : "cmpBarIn"} 450ms cubic-bezier(0.4,0,0.2,1) forwards`, transformOrigin: "top center" }}>
           <div className="flex items-center gap-2.5 pr-4">
             <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
               style={{ background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)", boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)" }}>
@@ -1657,10 +2107,11 @@ return (
             {cmpStructures.length > 0 && <HeaderFilterPill label="Structure" value={cmp2Structure} onChange={setCmp2Structure} options={cmpStructures} />}
             {cmpCompanies.length > 0  && <HeaderFilterPill label="Company"   value={cmp2Company}   onChange={setCmp2Company}   options={cmpCompanies} />}
             {cmp2DimGroups.length > 0 && <MultiFilterPill label="Dim Group" values={cmp2SelGroups.size === 0 ? null : [...cmp2SelGroups]} onChange={next => { setCmp2SelGroups(next ? new Set(next) : new Set()); setCmp2SelDims(new Set()); }} options={cmp2DimGroups} />}
-            {cmp2SelGroups.size > 0 && cmp2AllDims.length > 0 && <MultiFilterPill label="Dimension" values={cmp2SelDims.size === 0 ? null : [...cmp2SelDims]} onChange={next => setCmp2SelDims(next ? new Set(next) : new Set())} options={cmp2AllDims} />}
+{cmp2SelGroups.size > 0 && cmp2AllDims.length > 0 && <MultiFilterPill label="Dimension" values={cmp2SelDims.size === 0 ? null : [...cmp2SelDims]} onChange={next => setCmp2SelDims(next ? new Set(next) : new Set())} options={cmp2AllDims} />}
           </div>
         </div>
       )}
+      </div>
 
       <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
 
@@ -1681,30 +2132,99 @@ return (
 
 <tr style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)" }}>
                   <th className="sticky left-0 z-30 text-left px-6" style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", height: "64px", boxShadow: "0 4px 12px -4px rgba(26,47,138,0.08)" }}>
-                    <div className="flex items-center gap-3" style={{ minWidth: ACOL }}>
-                      <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>Account</span>
-                      <div className="flex items-center gap-2">
-                        <button onClick={() => expandedSet.size > 0 ? collapseAll() : expandAll()}
+<div className="flex items-center gap-3" style={{ minWidth: ACOL }}>
+                      <div className="flex items-center gap-2.5">
+                        <button onClick={() => setSearchActive(a => !a)}
                           className="flex items-center justify-center"
-                          style={{ background: "#fff", color: colors.primary, width: 34, height: 34, borderRadius: 10, boxShadow: "0 1px 4px rgba(0,0,0,0.10), 0 0 0 1px rgba(26,47,138,0.06)", transition: "transform 200ms cubic-bezier(0.34,1.56,0.64,1), box-shadow 200ms ease" }}
-                          onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.08)"; e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.15), 0 0 0 1px rgba(26,47,138,0.10)"; }}
-                          onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = "0 1px 4px rgba(0,0,0,0.10), 0 0 0 1px rgba(26,47,138,0.06)"; }}
+                          style={{ background: "transparent", color: searchActive ? colors.primary : "#94a3b8", padding: 0, transition: "color 240ms" }}
+                          onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+                          onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary : "#94a3b8"; }}
+                          title="Search">
+                          <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+                            <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.6"/>
+                            <path d="M9.5 9.5L12.5 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+                          </svg>
+                        </button>
+                        {searchActive ? (
+                          <>
+                            <input
+                              ref={searchInputRef}
+                              autoFocus
+                              type="text"
+                              value={searchQuery}
+                              onChange={e => setSearchQuery(e.target.value)}
+                              onKeyDown={e => { if (e.key === "Escape") { setSearchActive(false); setSearchQuery(""); } }}
+                              placeholder="Search code or name"
+                              style={{ fontSize: 16, fontWeight: 700, color: colors.primary, border: "none", outline: "none", background: "transparent", width: 240, padding: 0, letterSpacing: "-0.02em" }}
+                            />
+                            <button onClick={() => { setSearchActive(false); setSearchQuery(""); }}
+                              className="flex items-center justify-center ml-1"
+                              style={{ background: "transparent", color: "#94a3b8", padding: 2, transition: "color 200ms" }}
+                              onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+                              onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
+                              title="Close search">
+                              <X size={14} />
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <span onClick={() => setSearchActive(true)} className="font-black tracking-tight"
+                              style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em", cursor: "pointer" }}>
+                              Account
+                            </span>
+                            <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
+                              {statementType === "pl" ? "P&L" : "B.SH."}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+<button onClick={() => expandedSet.size > 0 ? collapseAll() : expandAll()}
+                          className="flex items-center justify-center"
+                          style={{ background: "transparent", color: "#94a3b8", padding: 4, transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)" }}
+                          onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+                          onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
                           title={expandedSet.size > 0 ? "Collapse all" : "Expand all"}>
-                          <span style={{ display: "inline-flex", transition: "transform 320ms cubic-bezier(0.34,1.56,0.64,1)", transform: expandedSet.size > 0 ? "rotate(180deg)" : "rotate(0deg)" }}>
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                              {expandedSet.size > 0 ? <path d="M18 6L6 18M6 6l12 12"/> : <><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>}
-                            </svg>
+                          <span key={expandedSet.size > 0 ? "collapse" : "expand"} className="inline-flex"
+                            style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
+                            {expandedSet.size > 0
+                              ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                              : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                            }
                           </span>
                         </button>
-{!hasCustomMapping && <div className="flex items-center rounded-xl p-1" style={{ background: "#f3f4f6" }}>
-                          <button onClick={() => setSummaryMode(true)} className="rounded-lg font-black"
-                            style={{ fontSize: "10.5px", padding: "6px 16px", background: summaryMode ? "#fff" : "transparent", color: summaryMode ? colors.primary : "#9ca3af", boxShadow: summaryMode ? "0 1px 4px rgba(0,0,0,0.08)" : "none", transition: "background 250ms ease, color 250ms ease, box-shadow 250ms ease, transform 200ms cubic-bezier(0.34,1.56,0.64,1)", transform: summaryMode ? "scale(1.03)" : "scale(1)" }}>
-                            Summary
-                          </button>
-                          <button onClick={() => setSummaryMode(false)} className="rounded-lg font-black"
-                            style={{ fontSize: "10.5px", padding: "6px 16px", background: !summaryMode ? "#fff" : "transparent", color: !summaryMode ? colors.primary : "#9ca3af", boxShadow: !summaryMode ? "0 1px 4px rgba(0,0,0,0.08)" : "none", transition: "background 250ms ease, color 250ms ease, box-shadow 250ms ease, transform 200ms cubic-bezier(0.34,1.56,0.64,1)", transform: !summaryMode ? "scale(1.03)" : "scale(1)" }}>
-                            Detailed
-</button>
+{!hasCustomMapping && <div className="relative flex items-center"
+                          ref={el => {
+                            if (!el) return;
+                            const tabs = el.querySelectorAll("[data-dim-tab]");
+                            const idx = summaryMode ? 0 : 1;
+                            const active = tabs[idx];
+                            const indicator = el.querySelector(".dim-view-indicator");
+                            if (active && indicator) {
+                              indicator.style.left = active.offsetLeft + "px";
+                              indicator.style.width = active.offsetWidth + "px";
+                            }
+                          }}>
+                          <span className="dim-view-indicator" style={{
+                            position: "absolute", bottom: -4, height: 2,
+                            background: colors.primary, borderRadius: 1,
+                            transition: "left 320ms cubic-bezier(0.34, 1.56, 0.64, 1), width 320ms cubic-bezier(0.34, 1.56, 0.64, 1)",
+                            pointerEvents: "none",
+                          }} />
+                          {[["summary","Summary"],["detailed","Detailed"]].map(([v, label]) => {
+                            const active = (v === "summary" && summaryMode) || (v === "detailed" && !summaryMode);
+                            return (
+                              <button key={v} data-dim-tab onClick={() => setSummaryMode(v === "summary")}
+                                className="px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] whitespace-nowrap"
+                                style={{
+                                  background: "transparent",
+                                  color: active ? colors.primary : "#94a3b8",
+                                  transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)",
+                                }}>
+                                {label}
+                              </button>
+                            );
+                          })}
                         </div>}
                       </div>
                     </div>
@@ -1742,13 +2262,13 @@ return (
                         <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{dim.name}</span>
                       </th>
 {cmpVisible && <>
-                        <th className="text-center px-3 py-2 whitespace-nowrap" style={{ background: `${colors.primary}08`, animation: cmpExiting ? "cmpColOut 320ms cubic-bezier(0.4,0,0.2,1) 0ms both" : "cmpColIn 420ms cubic-bezier(0.34,1.56,0.64,1) 60ms both", transformOrigin: "left center" }}>
-                          <span style={{ ...header2Style, color: "#CF305D", opacity: 0.7 }}>CMP</span>
+                        <th className="text-center px-3 py-2 whitespace-nowrap" style={{ background: "#fafbff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 0ms forwards` }}>
+                         <span style={{ ...header2Style, color: "#CF305D", opacity: 0.7 }}>Σ CMP</span>
                         </th>
-                        <th className="text-center px-3 py-2 whitespace-nowrap" style={{ background: `${colors.primary}12`, animation: cmpExiting ? "cmpColOut 320ms cubic-bezier(0.4,0,0.2,1) 40ms both" : "cmpColIn 420ms cubic-bezier(0.34,1.56,0.64,1) 120ms both", transformOrigin: "left center" }}>
+                        <th className="text-center px-3 py-2 whitespace-nowrap" style={{ background: "#f5f7ff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 40ms forwards` }}>
                           <span style={{ ...header2Style, color: "#CF305D", opacity: 0.7 }}>Δ AMT</span>
                         </th>
-                        <th className="text-center px-3 py-2 whitespace-nowrap" style={{ background: `${colors.primary}1e`, animation: cmpExiting ? "cmpColOut 320ms cubic-bezier(0.4,0,0.2,1) 80ms both" : "cmpColIn 420ms cubic-bezier(0.34,1.56,0.64,1) 180ms both", transformOrigin: "left center" }}>
+                        <th className="text-center px-3 py-2 whitespace-nowrap" style={{ background: "#f0f3ff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 80ms forwards` }}>
                           <span style={{ ...header2Style, color: "#CF305D", opacity: 0.7 }}>Δ %</span>
                         </th>
                       </>}
@@ -1777,30 +2297,160 @@ return (
             </colgroup>
 <tbody>
               {(() => {
-                // Codes that are already siblings in the flat list — drill-down
-                // expansion should NOT re-render these as descendants, otherwise
-                // the same account appears twice (once as a sibling, once nested).
+                // ── SAVED-MAPPING LITERAL RENDER PATH ────────────────────────
+                // Mirrors AccountsDashboard's PLStatement/BalanceSheet rendering:
+                // walks the literal tree (with breakers, sum nodes, dim filters),
+                // indents by tree depth, and rolls up via own + descendants.
+                const literal = statementType === "pl" ? plLiteral : bsLiteral;
+                if (literal && literal.length > 0) {
+                  const rows = [];
+// Value resolver — uses descendant-aware rollup so sum codes (e.g. 11999)
+                  // pick up all postings that roll up to them via the chart's parentOf chain,
+                  // not just postings to the sum code itself (which is usually empty).
+                  const leafVal = (node, dimKey) => {
+                    if (node.dims && node.dims.length > 0) {
+                      const match = node.dims.some(d => {
+                        const i = d.indexOf(":");
+                        const v = i === -1 ? d : d.slice(i + 1);
+                        return String(v) === String(dimKey);
+                      });
+                      if (!match) return 0;
+                    }
+                    return getValWithDescendants(node.code, dimKey);
+                  };
+// Recursive rollup: sum-node returns sum of children; leaf returns own value
+                  const sumLitForDim = (node, dimKey) => {
+                    if (node.isSum && node.children && node.children.length > 0) {
+                      return node.children.reduce((s, c) => s + sumLitForDim(c, dimKey), 0);
+                    }
+                    return leafVal(node, dimKey);
+                  };
+                  // Same rollup but reading from the compare pivot.
+                  const leafValCmp = (node, dimKey) => {
+                    if (node.dims && node.dims.length > 0) {
+                      const match = node.dims.some(d => {
+                        const i = d.indexOf(":");
+                        const v = i === -1 ? d : d.slice(i + 1);
+                        return String(v) === String(dimKey);
+                      });
+                      if (!match) return 0;
+                    }
+                    return getCmpValWithDescendants(node.code, dimKey);
+                  };
+                  const sumLitCmpForDim = (node, dimKey) => {
+                    if (node.isSum && node.children && node.children.length > 0) {
+                      return node.children.reduce((s, c) => s + sumLitCmpForDim(c, dimKey), 0);
+                    }
+                    return leafValCmp(node, dimKey);
+                  };
+
+                  const renderNode = (node, depth, parentPath, secIdx) => {
+const rowKey = `litrow-${secIdx}-${parentPath}-${node.id}`;
+                    const hasKids = node.children && node.children.length > 0;
+                    const expanded = expandedSet.has(rowKey) || (searchExpansionSet?.has(rowKey) ?? false);
+                    const rowStyle = depth === 0 ? body1Style : body2Style;
+                    const rowTotal = orderedDimCols.reduce((s, d) => s + sumLitForDim(node, d.code ?? "__none__"), 0);
+                    const q = debouncedQuery.trim().toLowerCase();
+                    const isMatch = !!q && (String(node.code ?? "").toLowerCase().includes(q) || String(node.name ?? "").toLowerCase().includes(q));
+                    rows.push(
+                      <tr key={rowKey} className={`border-b border-gray-100 transition-colors ${isMatch ? "bg-[#fef3c7]" : "bg-white hover:bg-[#eef1fb]/60"}`}
+                          onClick={hasKids ? () => toggleExpand(rowKey) : undefined}
+                          style={{ cursor: hasKids ? "pointer" : "default" }}>
+                        <td className={`py-2.5 sticky left-0 z-10 border-r border-gray-100 ${isMatch ? "bg-[#fef3c7]" : "bg-white"}`}
+                            style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 300 }}>
+                          <div className="flex items-center">
+                            {hasKids
+                              ? <span className="flex-shrink-0 mr-2" style={{ color: colors.primary }}>
+                                  {expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
+                                </span>
+                              : <span className="inline-block mr-2" style={{ width: 12 }} />}
+                            {node.code && <span className="flex-shrink-0 mr-2" style={useTypo("subbody2")}>{node.code}</span>}
+                            <span className="truncate max-w-[280px]" style={rowStyle}>{node.name || node.code}</span>
+                          </div>
+                        </td>
+{orderedDimCols.map(dim => {
+                          const dk = dim.code ?? "__none__";
+                          const val = sumLitForDim(node, dk);
+                          if (!cmpVisible) return <DimAmountCell key={dk} value={val} typoStyle={rowStyle} />;
+                          const cmpVal = sumLitCmpForDim(node, dk);
+                          const diff = val - cmpVal;
+                          const pct = cmpVal !== 0 ? (diff / Math.abs(cmpVal)) * 100 : null;
+                          const devColor = diff === 0 ? "#D1D5DB" : diff > 0 ? "#059669" : "#EF4444";
+                          const fmt = (n) => Math.abs(n).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                          return (
+                            <React.Fragment key={dk}>
+<DimAmountCell value={val} typoStyle={rowStyle} />
+                             <DimAmountCell value={cmpVal} typoStyle={rowStyle} bgColor="#fafbff" extraStyle={{ animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 0ms forwards` }} />
+                              <td className="px-2 py-2.5 text-center whitespace-nowrap tabular-nums text-xs font-bold" style={{ color: devColor, width: 110, background: "#f5f7ff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 40ms forwards` }}>
+                                {diff === 0 ? "—" : diff < 0 ? `(${fmt(diff)})` : fmt(diff)}
+                              </td>
+                              <td className="px-2 py-2.5 text-center whitespace-nowrap tabular-nums text-xs font-bold" style={{ color: devColor, width: 90, background: "#f0f3ff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 80ms forwards` }}>
+                                {pct === null ? "—" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}
+                              </td>
+                            </React.Fragment>
+                          );
+                        })}
+{!cmpVisible && <DimAmountCell value={rowTotal} typoStyle={rowStyle} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
+                      </tr>
+                    );
+                    if (expanded && hasKids) {
+                      node.children.forEach(c => renderNode(c, depth + 1, `${parentPath}-${node.id}`, secIdx));
+                    }
+                  };
+
+                  literal.forEach((section, secIdx) => {
+                    if (section.label) {
+                      rows.push(
+                        <tr key={`litsec-${secIdx}`}>
+                          <td className="sticky left-0 z-20 px-6 py-1.5" style={{ backgroundColor: section.color }}>
+                            <span className="uppercase tracking-widest" style={header3Style}>{section.label}</span>
+                          </td>
+{Array.from({ length: cmpVisible ? orderedDimCols.length * 4 : orderedDimCols.length + 1 }).map((_, i) => (
+                            <td key={i} style={{ backgroundColor: section.color }} />
+                          ))}
+                        </tr>
+                      );
+                    }
+                    section.nodes.forEach(n => renderNode(n, 0, "root", secIdx));
+                  });
+                  return rows;
+                }
+
+                // ── DEFAULT FLAT RENDER PATH (no literal) ───────────────────
+                // Codes already rendered as flat siblings — drill-down expansion
+                // should skip them to avoid duplicate rows.
                 const flatCodes = new Set(orderedRows.map(n => String(n.AccountCode)));
-                return orderedRows.map(node => {
+                // Per-code indent level from the active mapping. Falls back to 0
+                // when no mapping is active (default tree rendering).
+// Only honor mapping `level` for indent when a CUSTOM saved mapping is active.
+// Default standard mappings (PGC / Danish / Spanish IFRS from Supabase) carry
+// level values intended for a different renderer and produce wrong indent here.
+const levelByCode = (hasCustomMapping && activeMapping?.rows)
+                  ? new Map([...activeMapping.rows.entries()].map(([code, info]) => [String(code), info.level ?? 0]))
+                  : null;                         
+                return orderedRows.map((node, idx) => {
                   const divider = dividerMap[String(node.AccountCode)];
+                  const depth = levelByCode?.get(String(node.AccountCode)) ?? 0;
                   return (
                     <React.Fragment key={node.AccountCode}>
-{divider && (
+                      {divider && (
                         <tr>
                           <td className="sticky left-0 z-20 px-6 py-1.5" style={{ backgroundColor: divider.color }}>
                             <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
                           </td>
-{Array.from({ length: dimCols.length * (cmpVisible ? 4 : 1) + 1 }).map((_, i) => (
+                          {Array.from({ length: dimCols.length * (cmpVisible ? 4 : 1) + 1 }).map((_, i) => (
                             <td key={i} style={{ backgroundColor: divider.color }} />
                           ))}
                         </tr>
                       )}
-<DimensionRow node={node} depth={0}
+<DimensionRow node={node} depth={depth}
                         expandedSet={expandedSet} onToggle={toggleExpand}
-                       dimCols={orderedDimCols} getVal={getVal}getCmpVal={compareMode ? getCmpVal : null} compareMode={compareMode} cmpVisible={cmpVisible} cmpExiting={cmpExiting}
+                        dimCols={orderedDimCols} getVal={getVal} getCmpVal={compareMode ? getCmpVal : null}
+                        compareMode={compareMode} cmpVisible={cmpVisible} cmpExiting={cmpExiting}
                         body1Style={body1Style} body2Style={body2Style}
                         header2Style={header2Style} colors={colors}
-                        excludeCodes={flatCodes} rowIndex={orderedRows.indexOf(node)} />
+                        excludeCodes={flatCodes} rowIndex={idx}
+                        searchQuery={debouncedQuery} searchExpansionSet={searchExpansionSet} />
                     </React.Fragment>
                   );
                 });
@@ -1815,8 +2465,9 @@ return (
 
 /* ── Main ─────────────────────────────────────────────────── */
 /* ── Main ─────────────────────────────────────────────────── */
-export default function DimensionesPage({ token, sources = [], structures = [], companies = [], dimensions = [], groupAccounts = [], cachedPeriod = null }) {
+export default function DimensionesPage({ token, onNavigate, sources = [], structures = [], companies = [], dimensions = [], groupAccounts = [], cachedPeriod = null }) {
 const { colors } = useSettings();
+const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();
 
   const [year,      setYear]      = useState("");
   const [month,     setMonth]     = useState("");
@@ -1839,23 +2490,146 @@ const [ytdOnly, setYtdOnly] = useState(false);
 const [exporting, setExporting] = useState(false);
   const pivotExportRef = useRef({ xlsx: null, pdf: null });
   const [viewsOpen, setViewsOpen] = useState(false);
+  const [exportModal, setExportModal] = useState(false);
+const [exportOpts, setExportOpts] = useState({
+    statements: { pl: true, bs: false },
+    includeBreakers: true,
+    includeTotals: true,
+    includeCompare: true,
+    drilldown: true,
+    format: "xlsx",
+  });
+
+  // Keep the statement toggle in sync with the active tab so the user's current view defaults to on
+  useEffect(() => {
+    setExportOpts(o => ({
+      ...o,
+      statements: { ...o.statements, [statementType]: true },
+    }));
+  }, [statementType]);
+
+const runExport = useCallback(async () => {
+    console.log("[export] runExport called, opts:", exportOpts);
+    console.log("[export] pivotExportRef.current:", pivotExportRef.current);
+    setExportModal(false);
+    setExporting(true);
+    try {
+      const fn = exportOpts.format === "pdf" ? pivotExportRef.current.pdf : pivotExportRef.current.xlsx;
+      console.log("[export] resolved fn:", typeof fn);
+      if (!fn) {
+        alert("Export not ready yet — the table needs to finish loading before exporting. Make sure you're not on the Mappings landing page.");
+        return;
+      }
+      console.log("[export] calling export fn…");
+      await fn(exportOpts);
+      console.log("[export] export fn returned");
+    } catch (e) {
+      console.error("[export] Export failed:", e);
+      alert(`Export failed: ${e?.message ?? e}\n\nCheck the console for the full stack trace.`);
+    } finally {
+      setExporting(false);
+    }
+  }, [exportOpts]);
 
 
-  const handleApplyMapping = useCallback((m) => {
+const handleApplyMapping = useCallback((m, kind = "structure") => {
+    console.log("[apply mapping]", {
+      kind,
+      hasPlTree: Array.isArray(m.pl_tree),
+      plTreeLen: m.pl_tree?.length,
+      plTreeSample: m.pl_tree?.[0],
+      bsTreeLen: m.bs_tree?.length,
+      plLiteralBuilt: buildSavedMappingLiteral(m.pl_tree),
+    });
     setActiveMapping({
       mapping_id:  m.mapping_id,
+      kind,
       name:        m.name,
       standard:    m.standard,
       plConverted: convertSavedMappingTree(m.pl_tree),
       bsConverted: convertSavedMappingTree(m.bs_tree),
       plSections:  extractSectionsFromTree(m.pl_tree),
       bsSections:  extractSectionsFromTree(m.bs_tree),
+      plLiteral:   buildSavedMappingLiteral(m.pl_tree),
+      bsLiteral:   buildSavedMappingLiteral(m.bs_tree),
     });
     setWarningDismissed(false);
   }, []);
 
-  const [rawData,   setRawData]   = useState([]);
+  // Recent mappings for the PageHeader hover-dropdown quick-access
+  const [recentMappings, setRecentMappings] = useState([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const { supabase } = await import("../../lib/supabaseClient");
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) return;
+        const { listMappings, getActiveCompanyId } = await import("../../lib/mappingsApi");
+        const { listMappings: listReportMappings } = await import("../../lib/reportMappingsApi");
+        const cid = await getActiveCompanyId(uid);
+        if (!cid) return;
+        const [structRows, reportRows] = await Promise.all([
+          listMappings({ companyId: cid }).catch(() => []),
+          listReportMappings({ companyId: cid }).catch(() => []),
+        ]);
+        const combined = [
+          ...(structRows || []).map(r => ({ id: r.mapping_id, name: r.name, kind: "structure", updated_at: r.updated_at, raw: r })),
+          ...(reportRows  || []).map(r => ({ id: r.mapping_id, name: r.name, kind: "report",    updated_at: r.updated_at, raw: r })),
+        ];
+        setRecentMappings(combined);
+      } catch (err) { console.error("[recent-mappings] error:", err); }
+    })();
+  }, []);
+
+// Inline mappings library (mirrors AccountsDashboard's viewsMode pattern)
+  const [viewsMode, setViewsMode] = useState(null); // null | "landing" | "structure" | "report"
+  const [savedMappings, setSavedMappings]           = useState([]);
+  const [savedMappingsLoading, setSavedMappingsLoading] = useState(false);
+  const [savedMappingsError, setSavedMappingsError] = useState(null);
+  const [reportMappings, setReportMappings]         = useState([]);
+  const [reportMappingsLoading, setReportMappingsLoading] = useState(false);
+  const [reportMappingsError, setReportMappingsError] = useState(null);
+
+  const fetchSavedMappings = useCallback(async () => {
+    setSavedMappingsLoading(true); setSavedMappingsError(null);
+    try {
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) throw new Error("Not authenticated");
+      const { listMappings, getActiveCompanyId } = await import("../../lib/mappingsApi");
+      const cid = await getActiveCompanyId(uid);
+      if (!cid) throw new Error("No active company");
+      const rows = await listMappings({ companyId: cid });
+      setSavedMappings(Array.isArray(rows) ? rows : []);
+    } catch (e) { setSavedMappingsError(e.message); setSavedMappings([]); }
+    finally { setSavedMappingsLoading(false); }
+  }, []);
+
+  const fetchReportMappings = useCallback(async () => {
+    setReportMappingsLoading(true); setReportMappingsError(null);
+    try {
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) throw new Error("Not authenticated");
+      const { listMappings: listRpt, getActiveCompanyId } = await import("../../lib/reportMappingsApi");
+      const cid = await getActiveCompanyId(uid);
+      if (!cid) throw new Error("No active company");
+      const rows = await listRpt({ companyId: cid });
+      setReportMappings(Array.isArray(rows) ? rows : []);
+    } catch (e) { setReportMappingsError(e.message); setReportMappings([]); }
+    finally { setReportMappingsLoading(false); }
+  }, []);
+
+  useEffect(() => { if (viewsMode === "structure") fetchSavedMappings(); }, [viewsMode, fetchSavedMappings]);
+  useEffect(() => { if (viewsMode === "report") fetchReportMappings(); }, [viewsMode, fetchReportMappings]);
+
+const [rawData,   setRawData]   = useState([]);
 const [loading,   setLoading]   = useState(true);
+const [hasCompletedFetch, setHasCompletedFetch] = useState(false);
+const [probeFinished, setProbeFinished] = useState(false);
 const animatedProgress = useAnimatedNumber(loading ? 60 : 100, 700);
   const [error,     setError]     = useState(null);
 
@@ -1998,51 +2772,44 @@ const defaultPlMapping = pgcPlMapping ?? danishPlMapping ?? spIfrsEsPlMapping;
       mappingUnmatched: unmatched,
     };
   }, [activeMapping, defaultCcTagToCodes, defaultResolveCcTag]);
+
 useEffect(() => {
     if (!token) return;
-    // Fast path: use cached period from login
+    // Year/month come from the LatestPeriodContext cache (populated on login),
+    // not from /v2/periods. The cache is the source of truth — we just need to
+    // wait until source/structure/company are set so we can look it up.
     if (cachedPeriod?.year && cachedPeriod?.month) {
       setYear(String(cachedPeriod.year));
       setMonth(String(cachedPeriod.month));
-      setMetaReady(true);
-      return;
     }
-    fetch(`${BASE_URL}/v2/periods`, {
-      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
-    })
-      .then(r => r.json())
-      .then(d => {
-        const all = d.value ?? (Array.isArray(d) ? d : []);
-        const getP = (p, k) => p[k] ?? p[k.charAt(0).toUpperCase() + k.slice(1)];
-        const latest = all
-          .filter(p => String(getP(p, "source") ?? "").toLowerCase() === "actual")
-          .sort((a, b) => {
-            const ay = Number(getP(a, "year") || 0), by = Number(getP(b, "year") || 0);
-            const am = Number(getP(a, "month") || 0), bm = Number(getP(b, "month") || 0);
-            return by !== ay ? by - ay : bm - am;
-          })[0];
-        if (latest) {
-          setYear(String(getP(latest, "year") ?? ""));
-          setMonth(String(getP(latest, "month") ?? ""));
-        }
-        setMetaReady(true);
-      })
-      .catch(() => setMetaReady(true));
+    setMetaReady(true);
   }, [token, cachedPeriod]);
 
 useEffect(() => {
     if (!source || !structure || !company) return;
-    // Only re-probe when source/structure/company actually change
     const key = `${source}|${structure}|${company}`;
     if (probedRef.current.key === key) return;
     probedRef.current.key = key;
 
+    // PRIMARY: shared LatestPeriodContext cache — populated on login. This is
+    // the whole point of the cache: we should never have to probe again here.
+    const cached = getLatestPeriod(source, structure, company);
+    if (cached?.year && cached?.month) {
+      setYear(String(cached.year));
+      setMonth(String(cached.month));
+      setProbeFinished(true);
+      return;
+    }
+
+    // FALLBACK: cache miss (user navigated here without visiting another page
+    // that populated it). Probe ourselves, write back to cache, force current
+    // real date as starting point so we never go into the future.
+    setProbeFinished(false);
     (async () => {
       const now = new Date();
-      // Start from the year/month we got from periods, or current date
-      let y = Number(year) || now.getFullYear();
-      let m = Number(month) || now.getMonth() + 1;
-      for (let i = 0; i < 24; i++) {
+      let y = now.getFullYear();
+      let m = now.getMonth() + 1;
+      for (let i = 0; i < 60; i++) {
         try {
           const filter = `Year eq ${y} and Month eq ${m} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
           const res = await fetch(
@@ -2055,6 +2822,8 @@ useEffect(() => {
             if (rows.length > 0) {
               setYear(String(y));
               setMonth(String(m));
+              setLatestPeriod(source, structure, company, y, m);
+              setProbeFinished(true);
               return;
             }
           }
@@ -2062,13 +2831,15 @@ useEffect(() => {
         m -= 1;
         if (m < 1) { m = 12; y -= 1; }
       }
-      // No data found — allow retry on next filter change
+      // Nothing found in 5 years — give up and show current date so user can
+      // pick manually. Don't leave year/month at some stale future value.
       probedRef.current.key = "";
+      setYear(String(now.getFullYear()));
+      setMonth(String(now.getMonth() + 1));
+      setProbeFinished(true);
     })();
 // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [metaReady, source, structure, company, token]);
-
-
+  }, [metaReady, source, structure, company, token, getLatestPeriod, setLatestPeriod]);
 
 useEffect(() => {
     if (sources.length > 0 && !source) {
@@ -2098,7 +2869,8 @@ const fetchData = useCallback(async () => {
     if (!metaReady || !year || !month || !source || !structure || !company) return;
     setLoading(true);
     setError(null);
-    setRawData([]);
+    // Don't clear rawData here — keep previous data visible during refetch so the
+    // UI doesn't flash empty → loading → data when filters change.
     try {
       const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
       const res = await fetch(
@@ -2106,12 +2878,14 @@ const fetchData = useCallback(async () => {
         { headers: authHeaders() }
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
+const json = await res.json();
       setRawData(json.value ?? (Array.isArray(json) ? json : []));
+      setHasCompletedFetch(true);
       // Defer setLoading(false) so React commits the new data first
       requestAnimationFrame(() => setLoading(false));
     } catch (e) {
       setError(e.message);
+      setHasCompletedFetch(true);
       setLoading(false);
     }
 }, [metaReady, year, month, source, structure, company, authHeaders]);
@@ -2152,12 +2926,16 @@ const dimDashProgress = useMemo(() => {
     if (year && month)                                           pct += 20;
     if (sources.length > 0 && structures.length > 0)            pct += 15;
     if (groupAccountsLocal.length > 0)                          pct += 25;
-    if (!loading && rawData.length > 0)                         pct += 40;
+    if (!loading)                                                pct += 40;
     return Math.min(100, pct);
-  }, [year, month, sources.length, structures.length, groupAccountsLocal.length, loading, rawData.length]);
+  }, [year, month, sources.length, structures.length, groupAccountsLocal.length, loading]);
 
-  const animatedDimProgress = useAnimatedNumber(dimDashProgress, 700);
-  const dimDashReady = dimDashProgress >= 100;
+const animatedDimProgress = useAnimatedNumber(dimDashProgress, 700);
+// Once we have data, we're ready — never go back to the loading screen on refetches.
+  // Otherwise wait until probe AND fetch both finish AND no fetch is in flight; this
+  // covers the gap where the first (wrong-period) fetch completes empty but the probe
+  // has already kicked off a second fetch — we don't want to flash "No data" in between.
+  const dimDashReady = rawData.length > 0 || (hasCompletedFetch && probeFinished && !loading);
 
   const sourceOpts    = [...new Set(sources.map(s  => typeof s === "object" ? (s.source    ?? s.Source    ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
   const structureOpts = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
@@ -2170,18 +2948,31 @@ const companyOpts   = companies.length > 0 && typeof companies[0] === "object"
 
 {/* Header */}
 <PageHeader
-        kicker="Dimensions"
-        title={statementType === "pl" ? "P&L" : "B.SH."}
-        tabs={[
+        kicker={viewsMode ? "Views · Mappings" : "Dimensions"}
+        title={
+          viewsMode === "landing"   ? "Mappings"
+          : viewsMode === "structure" ? "Structure Mappings"
+          : viewsMode === "report"    ? "Report Mappings"
+          : (statementType === "pl" ? "P&L" : "B.SH.")
+        }
+        tabs={viewsMode ? [] : [
           { id: "pl", label: "P&L",           icon: TrendingUp },
           { id: "bs", label: "B.SH.",          icon: BarChart2 },
         ]}
-        activeTab={statementType}
+        activeTab={viewsMode ? null : statementType}
         onTabChange={setStatementType}
-        filters={[
-          ...(YEARS.length > 0
+        onBack={viewsMode ? () => { if (viewsMode === "landing") setViewsMode(null); else setViewsMode("landing"); } : undefined}
+        filters={viewsMode ? [] : [
+...(YEARS.length > 0
             ? [{ label: "Year", value: year, onChange: setYear,
-                options: YEARS.map(y => ({ value: String(y), label: String(y) })) }]
+                options: (() => {
+                  const base = YEARS.map(y => String(y));
+                  // Include the currently selected year even if it's outside the
+                  // rolling 6-year window — otherwise the FilterPill renders "—"
+                  // and the filter looks "empty" to the user.
+                  if (year && !base.includes(String(year))) base.unshift(String(year));
+                  return base.map(y => ({ value: y, label: y }));
+                })() }]
             : []),
           ...(MONTHS.length > 0
             ? [{ label: "Month", value: month, onChange: setMonth,
@@ -2208,51 +2999,38 @@ const companyOpts   = companies.length > 0 && typeof companies[0] === "object"
               }, options: allDimsForGroups }]
             : []),
         ]}
-periodToggle={{
+periodToggle={(viewsMode || statementType === "bs") ? null : {
           value: ytdOnly ? "ytd" : "monthly",
           onChange: (next) => setYtdOnly(next === "ytd"),
         }}
-        compareToggle={{
+        compareToggle={viewsMode ? null : {
           active: compareMode,
           onChange: setCompareMode,
         }}
-fabActions={[
-
-          {
-            id: "export",
-            icon: Download,
-            label: "Export",
-            subActions: [
-              {
-                id: "excel",
-                label: "Excel",
-                src: "https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png",
-                alt: "Excel",
-                onClick: async () => {
-                  setExporting(true);
-                  try { await pivotExportRef.current.xlsx?.(); }
-                  finally { setExporting(false); }
-                },
-              },
-              {
-                id: "pdf",
-                label: "PDF",
-                src: "https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png",
-                alt: "PDF",
-                onClick: async () => {
-                  setExporting(true);
-                  try { await pivotExportRef.current.pdf?.(); }
-                  finally { setExporting(false); }
-                },
-              },
-            ],
-          },
-        ]}
+        onMappingsClick={viewsMode ? undefined : () => setViewsMode("landing")}
+        mappingsQuickAccess={viewsMode ? [] : recentMappings}
+  onQuickApplyMapping={async (m) => {
+          try {
+            const mod = await import(m.kind === "report" ? "../../lib/reportMappingsApi" : "../../lib/mappingsApi");
+            const full = await mod.getMapping(m.id);
+            handleApplyMapping(full ?? m.raw, m.kind);
+          } catch (err) {
+            console.error("[quick apply mapping]", err);
+          }
+        }}
+onExportXlsx={() => {
+          console.log("[export] onExportXlsx fired");
+          setExportOpts(o => ({ ...o, format: "xlsx" }));
+          setExportModal(true);
+        }}
+        onExportPdf={() => {
+          console.log("[export] onExportPdf fired");
+          setExportOpts(o => ({ ...o, format: "pdf" }));
+          setExportModal(true);
+        }}
       />
 
-
-
-      {activeMapping && (
+{activeMapping && (
         <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm flex-shrink-0">
           <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
           <span className="text-xs text-emerald-700 font-medium">
@@ -2260,8 +3038,24 @@ fabActions={[
             <span className="text-emerald-500/70 ml-2">· {activeMapping.standard}</span>
           </span>
           <button
-            onClick={() => setActiveMapping(null)}
+            onClick={() => {
+              try {
+                sessionStorage.setItem("mappings:openForEdit", JSON.stringify({
+                  mapping_id: activeMapping.mapping_id,
+                  kind: activeMapping.kind ?? "structure",
+                }));
+              } catch { /* ignore quota errors */ }
+              onNavigate?.("mappings");
+            }}
             className="ml-auto flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
+            title="Edit mapping"
+          >
+            <Pencil size={11} />
+            Edit
+          </button>
+          <button
+            onClick={() => setActiveMapping(null)}
+            className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
             title="Clear mapping and use default"
           >
             <X size={11} />
@@ -2272,8 +3066,160 @@ fabActions={[
 
 
 
-      {/* Content */}
-{!dimDashReady ? (
+{/* Inline mappings library (replaces dimensions content when active) */}
+      {viewsMode ? (
+        <div className="flex-1 flex flex-col min-h-0">
+          <style>{`
+            @keyframes floatOrb1 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(20px,-30px) scale(1.1); } }
+            @keyframes floatOrb2 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-15px,20px) scale(0.95); } }
+          `}</style>
+
+          {/* Landing: Structure vs Report cards */}
+          {viewsMode === "landing" && (
+            <div className="flex-1 grid grid-cols-2 gap-4 min-h-0">
+              <button onClick={() => setViewsMode("structure")}
+                className="relative text-left rounded-2xl border-2 border-gray-100 overflow-hidden transition-all group hover:border-[#1a2f8a] flex flex-col"
+                style={{ background: "linear-gradient(135deg, #ffffff 0%, #f4f6ff 40%, #eef1fb 100%)", boxShadow: "0 8px 32px -8px rgba(26,47,138,0.18)" }}>
+                <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                  <div className="absolute" style={{ top: "15%", right: "10%", width: 150, height: 150, borderRadius: "50%", background: "radial-gradient(circle, #1a2f8a18 0%, transparent 70%)", animation: "floatOrb1 8s ease-in-out infinite" }} />
+                  <div className="absolute inset-0" style={{ backgroundImage: "radial-gradient(#1a2f8a0d 1px, transparent 1px)", backgroundSize: "24px 24px" }} />
+                </div>
+                <div className="relative z-10 flex flex-col h-full p-8">
+                  <div className="mb-auto">
+                    <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-6"
+                      style={{ background: "linear-gradient(145deg, #1a2f8a 0%, #3b54b8 100%)" }}>
+                      <Layers size={26} className="text-white" strokeWidth={1.8} />
+                    </div>
+                    <p className="font-black text-xl text-gray-800 mb-2">Structure Mappings</p>
+                    <p className="text-xs text-gray-500 leading-relaxed max-w-xs">Map your chart of accounts to standard structures.</p>
+                  </div>
+                </div>
+              </button>
+
+              <button onClick={() => setViewsMode("report")}
+                className="relative text-left rounded-2xl border-2 border-gray-100 overflow-hidden transition-all group hover:border-[#CF305D] flex flex-col"
+                style={{ background: "linear-gradient(135deg, #ffffff 0%, #fff4f7 40%, #fef1f5 100%)", boxShadow: "0 8px 32px -8px rgba(207,48,93,0.18)" }}>
+                <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                  <div className="absolute" style={{ top: "15%", right: "10%", width: 150, height: 150, borderRadius: "50%", background: "radial-gradient(circle, #CF305D18 0%, transparent 70%)", animation: "floatOrb2 9s ease-in-out infinite" }} />
+                  <div className="absolute inset-0" style={{ backgroundImage: "radial-gradient(#CF305D0d 1px, transparent 1px)", backgroundSize: "24px 24px" }} />
+                </div>
+                <div className="relative z-10 flex flex-col h-full p-8">
+                  <div className="mb-auto">
+                    <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-6"
+                      style={{ background: "linear-gradient(145deg, #CF305D 0%, #e05585 100%)" }}>
+                      <FileText size={26} className="text-white" strokeWidth={1.8} />
+                    </div>
+                    <p className="font-black text-xl text-gray-800 mb-2">Report Mappings</p>
+                    <p className="text-xs text-gray-500 leading-relaxed max-w-xs">Custom report templates and layouts.</p>
+                  </div>
+                </div>
+              </button>
+            </div>
+          )}
+
+          {/* Structure library */}
+          {viewsMode === "structure" && (
+            <div className="flex-1 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col min-h-0">
+              <div className="px-5 py-3 border-b border-gray-100 flex-shrink-0">
+                <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Library</p>
+                <p className="font-black text-xs text-gray-700">Saved Structure Mappings</p>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {savedMappingsLoading && <div className="py-16 text-center"><Loader2 size={24} className="text-[#1a2f8a] animate-spin mx-auto mb-2" /><p className="text-gray-400 text-xs">Loading…</p></div>}
+                {savedMappingsError && !savedMappingsLoading && <div className="py-12 text-center"><p className="text-red-500 text-xs font-bold">{savedMappingsError}</p></div>}
+                {!savedMappingsLoading && !savedMappingsError && savedMappings.length === 0 && <div className="py-16 text-center"><Library size={24} className="text-[#1a2f8a] mx-auto mb-2" /><p className="text-gray-700 font-black text-sm">No mappings yet</p></div>}
+                {!savedMappingsLoading && !savedMappingsError && savedMappings.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+{savedMappings.map(m => {
+                      const isActive = activeMapping?.mapping_id === m.mapping_id;
+                      return (
+                        <button key={m.mapping_id}
+                          onClick={async () => {
+                            try {
+                              const { getMapping } = await import("../../lib/mappingsApi");
+                              const full = await getMapping(m.mapping_id);
+                              handleApplyMapping(full ?? m, "structure");
+                              setViewsMode(null);
+                            } catch (err) {
+                              console.error("[apply structure mapping]", err);
+                            }
+                          }}
+                          className="text-left bg-white rounded-xl border-2 p-4 transition-all hover:shadow-md group flex flex-col"
+                          style={{ borderColor: isActive ? colors.primary : "#f3f4f6", background: isActive ? `${colors.primary}06` : "white" }}>
+                          <div className="flex items-start gap-2.5 mb-3">
+                            <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: isActive ? colors.primary : "#eef1fb" }}>
+                              <Layers size={14} style={{ color: isActive ? "white" : colors.primary }} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="font-black text-xs text-gray-800 truncate">{m.name ?? "Untitled"}</p>
+                              <p className="text-[9px] font-bold uppercase tracking-widest mt-0.5" style={{ color: colors.primary }}>{m.standard ?? "—"}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-50 mt-auto">
+                            <span className="text-[9px] text-gray-400">Updated {m.updated_at ? new Date(m.updated_at).toLocaleDateString() : "—"}</span>
+                            <span className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-widest bg-emerald-500 group-hover:bg-emerald-600 text-white"><CheckCircle2 size={9} />Apply</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Report library */}
+          {viewsMode === "report" && (
+            <div className="flex-1 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col min-h-0">
+              <div className="px-5 py-3 border-b border-gray-100 flex-shrink-0">
+                <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Library</p>
+                <p className="font-black text-xs text-gray-700">Saved Report Mappings</p>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {reportMappingsLoading && <div className="py-16 text-center"><Loader2 size={24} className="text-[#CF305D] animate-spin mx-auto mb-2" /><p className="text-gray-400 text-xs">Loading…</p></div>}
+                {reportMappingsError && !reportMappingsLoading && <div className="py-12 text-center"><p className="text-red-500 text-xs font-bold">{reportMappingsError}</p></div>}
+                {!reportMappingsLoading && !reportMappingsError && reportMappings.length === 0 && <div className="py-16 text-center"><FileText size={24} className="text-[#CF305D] mx-auto mb-2" /><p className="text-gray-700 font-black text-sm">No mappings yet</p></div>}
+                {!reportMappingsLoading && !reportMappingsError && reportMappings.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+{reportMappings.map(m => {
+                      const isActive = activeMapping?.mapping_id === m.mapping_id;
+                      return (
+                        <button key={m.mapping_id}
+                          onClick={async () => {
+                            try {
+                              const { getMapping } = await import("../../lib/reportMappingsApi");
+                              const full = await getMapping(m.mapping_id);
+                              handleApplyMapping(full ?? m, "report");
+                              setViewsMode(null);
+                            } catch (err) {
+                              console.error("[apply report mapping]", err);
+                            }
+                          }}
+                          className="text-left bg-white rounded-xl border-2 p-4 transition-all hover:shadow-md group flex flex-col"
+                          style={{ borderColor: isActive ? "#CF305D" : "#f3f4f6", background: isActive ? "#CF305D06" : "white" }}>
+                          <div className="flex items-start gap-2.5 mb-3">
+                            <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: isActive ? "#CF305D" : "#fef1f5" }}>
+                              <FileText size={14} style={{ color: isActive ? "white" : "#CF305D" }} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="font-black text-xs text-gray-800 truncate">{m.name ?? "Untitled"}</p>
+                              <p className="text-[9px] font-bold uppercase tracking-widest mt-0.5" style={{ color: "#CF305D" }}>{m.standard ?? "—"}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-50 mt-auto">
+                            <span className="text-[9px] text-gray-400">Updated {m.updated_at ? new Date(m.updated_at).toLocaleDateString() : "—"}</span>
+                            <span className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-widest bg-emerald-500 group-hover:bg-emerald-600 text-white"><CheckCircle2 size={9} />Apply</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : !dimDashReady ? (
         <div className="relative flex-1 min-h-0 flex items-center justify-center rounded-2xl"
           style={{ background: "rgba(255,255,255,0.78)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
           <div className="relative rounded-3xl bg-white border border-gray-100 p-10 flex flex-col items-center"
@@ -2333,17 +3279,172 @@ fabActions={[
           </div>
         </div>
 ) : (
-<PivotTab data={rawData} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroups={selGroups} selDims={selDims} onSelGroupsChange={setSelGroups} onSelDimsChange={setSelDims} dimGroups={dimGroups}compareMode={compareMode} statementType={statementType} externalViewMode={ytdOnly ? "ytd" : "monthly"} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} kpiList={kpiList} ccTagToCodes={ccTagToCodes} resolveCcTag={resolveCcTag}plMapping={plMapping} bsMapping={bsMapping} exportRef={pivotExportRef} hasCustomMapping={!!activeMapping} />
+<PivotTab data={rawData} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroups={selGroups} selDims={selDims} onSelGroupsChange={setSelGroups} onSelDimsChange={setSelDims} dimGroups={dimGroups}compareMode={compareMode} statementType={statementType} externalViewMode={statementType === "bs" ? "ytd" : (ytdOnly ? "ytd" : "monthly")} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} kpiList={kpiList} ccTagToCodes={ccTagToCodes} resolveCcTag={resolveCcTag}plMapping={plMapping} bsMapping={bsMapping}
+plLiteral={activeMapping?.plLiteral ?? null}
+bsLiteral={activeMapping?.bsLiteral ?? null}
+exportRef={pivotExportRef} hasCustomMapping={!!activeMapping} />
 
       )}
 
-<ViewsSelector
-  open={viewsOpen}
-  onClose={() => setViewsOpen(false)}
-  activeMapping={activeMapping}
-  onApply={handleApplyMapping}
-  onClear={() => setActiveMapping(null)}
-/>
+
+
+{exportModal && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
+          style={{ background: "rgba(15,23,42,0.55)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", animation: "kBadgesPop 280ms cubic-bezier(0.34,1.56,0.64,1)" }}
+          onClick={() => setExportModal(false)}>
+          <div className="relative bg-white w-full max-w-xl overflow-hidden max-h-[92vh] flex flex-col"
+            style={{ borderRadius: 28, boxShadow: `0 30px 80px -12px ${colors.primary}40, 0 12px 24px -6px rgba(0,0,0,0.12)` }}
+            onClick={e => e.stopPropagation()}>
+
+            {/* Header */}
+            <div className="relative px-7 pt-7 pb-5 flex-shrink-0">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0"
+                    style={{ background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.primary}dd 100%)`, boxShadow: `0 8px 20px -6px ${colors.primary}60` }}>
+                    <Download size={17} className="text-white" strokeWidth={2.5} />
+                  </div>
+                  <div>
+                    <p className="font-black text-[20px] tracking-tight" style={{ color: colors.primary, letterSpacing: "-0.02em" }}>Export Dimensions</p>
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
+                        style={{ background: `${colors.primary}10`, color: colors.primary }}>
+                        {exportOpts.format === "pdf" ? "PDF" : "EXCEL"}
+                      </span>
+                      {compareMode && (
+                        <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
+                          style={{ background: "#CF305D15", color: "#CF305D" }}>COMPARE</span>
+                      )}
+                      {activeMapping && (
+                        <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
+                          style={{ background: "#10B98115", color: "#10B981" }}>MAPPED</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <button onClick={() => setExportModal(false)}
+                  className="w-9 h-9 rounded-xl flex items-center justify-center transition-all duration-200 hover:scale-[1.05]"
+                  style={{ background: "#f3f4f6", color: "#6b7280" }}>
+                  <X size={14} strokeWidth={2.5} />
+                </button>
+              </div>
+            </div>
+
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto px-7 pb-5 space-y-6 no-scrollbar">
+
+              {/* Statements */}
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">Statements to include</p>
+                  <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  {[
+                    ["pl", "P&L",            "Income statement — supports compare + monthly when active", colors.primary],
+                    ["bs", "Balance Sheet",  "Assets / Liabilities / Equity — YTD only when not active",   "#dc7533"],
+                  ].map(([k, label, sub, accent]) => {
+                    const checked = !!exportOpts.statements[k];
+                    return (
+                      <label key={k} className="flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all hover:bg-gray-50"
+                        style={{ borderColor: checked ? `${accent}40` : "#f3f4f6", background: checked ? `${accent}06` : "white" }}
+                        onClick={() => setExportOpts(o => ({ ...o, statements: { ...o.statements, [k]: !o.statements[k] } }))}>
+                        <div className="w-4 h-4 mt-0.5 rounded border-2 flex items-center justify-center transition-all flex-shrink-0"
+                          style={{ background: checked ? accent : "transparent", borderColor: checked ? accent : "#d1d5db" }}>
+                          {checked && <svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg>}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-black text-gray-800">{label}</p>
+                          <p className="text-[10px] text-gray-500 mt-0.5">{sub}</p>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Options */}
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">Layout options</p>
+                  <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    ["includeBreakers", "Section headers"],
+                    ["drilldown",       "Drill-down (collapsed)"],
+                    ["includeTotals",   "Row totals"],
+                    ["includeCompare",  "Compare columns"],
+                  ].map(([k, label]) => {
+                    const checked = !!exportOpts[k];
+                    const disabled = (k === "includeCompare" && !compareMode) || (k === "includeTotals" && compareMode);
+                    return (
+                      <label key={k}
+                        className={`flex items-center gap-2 p-2.5 rounded-xl border transition-all ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer hover:bg-gray-50"}`}
+                        style={{ borderColor: checked && !disabled ? `${colors.primary}40` : "#f3f4f6", background: checked && !disabled ? `${colors.primary}06` : "white" }}
+                        onClick={() => { if (!disabled) setExportOpts(o => ({ ...o, [k]: !o[k] })); }}>
+                        <div className="w-4 h-4 rounded border-2 flex items-center justify-center transition-all flex-shrink-0"
+                          style={{ background: checked && !disabled ? colors.primary : "transparent", borderColor: checked && !disabled ? colors.primary : "#d1d5db" }}>
+                          {checked && !disabled && <svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg>}
+                        </div>
+                        <span className="text-xs font-bold text-gray-700">{label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Current filters preview */}
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">Current filters</p>
+                  <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
+                </div>
+                <div className="rounded-xl p-4 text-xs text-gray-600 leading-relaxed space-y-0.5"
+                  style={{ background: "#f8f9ff", border: "1px solid #e8eaf0" }}>
+                  <div><span className="font-bold text-gray-500">Period:</span> {month && year ? `${MONTHS[parseInt(month) - 1]?.label ?? month} ${year}` : "—"}</div>
+                  <div><span className="font-bold text-gray-500">Source / Structure:</span> {source} · {structure}</div>
+                  <div><span className="font-bold text-gray-500">Company:</span> {company}</div>
+                  <div><span className="font-bold text-gray-500">View:</span> {viewMode === "ytd" ? "YTD" : "Monthly"}</div>
+                  <div><span className="font-bold text-gray-500">Dim Groups:</span> {selGroups.size > 0 ? [...selGroups].join(", ") : <span className="italic text-gray-400">All</span>}</div>
+                  <div><span className="font-bold text-gray-500">Dims:</span> {selDims.size > 0 ? [...selDims].join(", ") : <span className="italic text-gray-400">All</span>}</div>
+                  <div><span className="font-bold text-gray-500">Compare:</span> {compareMode ? "On" : <span className="italic text-gray-400">Off</span>}</div>
+                  {activeMapping && <div><span className="font-bold text-gray-500">Mapping:</span> {activeMapping.name}</div>}
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-7 py-5 flex items-center gap-3 flex-shrink-0"
+              style={{ background: "linear-gradient(180deg, transparent 0%, #f9fafb 100%)" }}>
+              <div className="relative flex items-center p-1 rounded-xl" style={{ background: "#f3f4f6" }}>
+                {[["xlsx","Excel"], ["pdf","PDF"]].map(([f, l]) => (
+                  <button key={f} onClick={() => setExportOpts(o => ({ ...o, format: f }))}
+                    className="relative z-10 px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all duration-200"
+                    style={{
+                      background: exportOpts.format === f ? "white" : "transparent",
+                      color: exportOpts.format === f ? colors.primary : "#9ca3af",
+                      boxShadow: exportOpts.format === f ? "0 2px 6px rgba(0,0,0,0.06)" : "none",
+                    }}>{l}</button>
+                ))}
+              </div>
+              <button
+                onClick={runExport}
+                disabled={exporting || (!exportOpts.statements.pl && !exportOpts.statements.bs)}
+                className="ml-auto flex items-center gap-2 px-5 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all duration-200 hover:scale-[1.03] disabled:opacity-40 disabled:hover:scale-100 disabled:cursor-not-allowed"
+                style={{
+                  background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.primary}e6 100%)`,
+                  color: "white",
+                  boxShadow: `0 8px 20px -6px ${colors.primary}80, 0 2px 6px -2px ${colors.primary}40`,
+                }}>
+                {exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} strokeWidth={2.5} />}
+                {exporting ? "Exporting…" : "Download"}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
 
       {showAccounts && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setShowAccounts(false)}>

@@ -68,6 +68,16 @@ useEffect(() => {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+  useEffect(() => {
+    if (open) return;
+    // Dropdown just closed. React's mouseenter/leave doesn't propagate cleanly through
+    // portals, so `hover` can be stuck at true even if the cursor left the pill.
+    // Use the browser's native :hover (portal-safe) as source of truth.
+    if (ref.current && !ref.current.matches(":hover")) {
+      setHover(false);
+    }
+  }, [open]);
+
 useEffect(() => {
     if (!open) return;
     let rafId;
@@ -258,6 +268,14 @@ useEffect(() => {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
+
+  useEffect(() => {
+    if (open) return;
+    // Portal-safe hover reset — see FilterPill for explanation.
+    if (ref.current && !ref.current.matches(":hover")) {
+      setHover(false);
+    }
+  }, [open]);
 
 useEffect(() => {
     if (!open) return;
@@ -789,7 +807,9 @@ aiToggle,
   headerExtra,
   onExportPdf,
   onExportXlsx,
-  onMappingsClick,
+onMappingsClick,
+  mappingsQuickAccess = [],   // [{ id, name, kind: "structure" | "report", updated_at }]
+  onQuickApplyMapping,        // (mapping) => void
   showAllFilters = false,
 }) {
 const { colors } = useSettings();
@@ -805,8 +825,9 @@ const { colors } = useSettings();
 
 const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
   const [moreFiltersClosing, setMoreFiltersClosing] = useState(false);
-  const moreFiltersHoverRef = useRef(false);
+const moreFiltersHoverRef = useRef(false);
   const moreFiltersCloseTimerRef = useRef(null);
+  const wasDropdownOpenRef = useRef(false);
   const [exportMode, setExportMode] = useState(false); // false = [Export, Mappings], true = [PDF, Excel]
   const exportButtonsRef = useRef(null);
 
@@ -821,14 +842,54 @@ useEffect(() => {
     return () => document.removeEventListener("mousedown", handler);
   }, [exportMode]);
 
+  // ── Mappings hover dropdown ─────────────────────────────────
+  const [mappingsHover, setMappingsHover] = useState(false);
+  const [mappingsRect, setMappingsRect] = useState(null);
+  const mappingsWrapRef = useRef(null);
+  const mappingsCloseTimerRef = useRef(null);
+
+  const openMappingsDropdown = () => {
+    if (mappingsCloseTimerRef.current) {
+      clearTimeout(mappingsCloseTimerRef.current);
+      mappingsCloseTimerRef.current = null;
+    }
+    if (mappingsWrapRef.current) {
+      setMappingsRect(mappingsWrapRef.current.getBoundingClientRect());
+    }
+    setMappingsHover(true);
+  };
+  const closeMappingsDropdown = () => {
+    if (mappingsCloseTimerRef.current) clearTimeout(mappingsCloseTimerRef.current);
+    mappingsCloseTimerRef.current = setTimeout(() => setMappingsHover(false), 140);
+  };
+
+  // Pick top 2 most-recent per kind, fall back if fewer
+  const quickMappings = React.useMemo(() => {
+    const byKind = { structure: [], report: [] };
+    [...(mappingsQuickAccess || [])]
+      .sort((a, b) => new Date(b.updated_at ?? 0) - new Date(a.updated_at ?? 0))
+      .forEach(m => { if (byKind[m.kind]) byKind[m.kind].push(m); });
+    return [...byKind.structure.slice(0, 2), ...byKind.report.slice(0, 2)];
+  }, [mappingsQuickAccess]);
+
   // When moreFiltersOpen is on but mouse is no longer hovering and no dropdown is open, close it.
   // Re-check periodically while open.
 useEffect(() => {
     if (!moreFiltersOpen) return;
     const interval = setInterval(() => {
-      if (moreFiltersHoverRef.current) return;
-      const anyDropdownOpen = document.querySelector(".fixed.z-\\[9999\\]");
-      if (!anyDropdownOpen) {
+      const anyDropdownOpen = !!document.querySelector(".fixed.z-\\[9999\\]");
+      if (anyDropdownOpen) { wasDropdownOpenRef.current = true; return; }
+      // A dropdown was open and just closed (user selected or dismissed) — force-collapse
+      // the filters area regardless of hover state. The interaction is over.
+      if (wasDropdownOpenRef.current) {
+        wasDropdownOpenRef.current = false;
+        setMoreFiltersClosing(true);
+        setMoreFiltersOpen(false);
+        setTimeout(() => setMoreFiltersClosing(false), 500);
+        return;
+      }
+      // No dropdown was opened during this expand — fall back to the normal hover-out close.
+      if (!moreFiltersHoverRef.current) {
         setMoreFiltersClosing(true);
         setMoreFiltersOpen(false);
         setTimeout(() => setMoreFiltersClosing(false), 500);
@@ -1109,7 +1170,14 @@ onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareTog
                     </span>
                   </button>
 
-<button
+{(exportMode || onMappingsClick) && (
+                  <div
+                    ref={mappingsWrapRef}
+                    className="relative"
+                    onMouseEnter={!exportMode && quickMappings.length > 0 ? openMappingsDropdown : undefined}
+                    onMouseLeave={!exportMode && quickMappings.length > 0 ? closeMappingsDropdown : undefined}
+                  >
+                  <button
                     onClick={() => {
                       if (exportMode) {
                         onExportXlsx?.();
@@ -1128,6 +1196,7 @@ onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareTog
                         ? "0 4px 12px -2px rgba(33,115,70,0.18)"
                         : "0 1px 3px -1px rgba(26,47,138,0.1)",
                       transition: `all 240ms ${SMOOTH}`,
+                      animation: exportMode && !onMappingsClick ? `excelSpawn 360ms ${SPRING}` : undefined,
                     }}
                     onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.03)"; }}
                     onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; }}
@@ -1146,6 +1215,64 @@ onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareTog
                    {exportMode ? "Excel" : t("mappings")}
                     </span>
                   </button>
+
+                  {/* Quick-access dropdown */}
+                  {mappingsHover && !exportMode && quickMappings.length > 0 && mappingsRect && createPortal(
+                    <div
+                      onMouseEnter={openMappingsDropdown}
+                      onMouseLeave={closeMappingsDropdown}
+                      className="fixed z-[9999] rounded-2xl overflow-hidden"
+                      style={{
+                        top: mappingsRect.bottom + 8,
+                        right: window.innerWidth - mappingsRect.right,
+                        minWidth: 260,
+                        background: "rgba(255,255,255,0.97)",
+                        backdropFilter: "blur(20px)",
+                        WebkitBackdropFilter: "blur(20px)",
+                        border: "1px solid rgba(26,47,138,0.08)",
+                        boxShadow: "0 20px 50px -12px rgba(26,47,138,0.22), 0 0 0 1px rgba(255,255,255,0.5) inset",
+                        animation: `dropdownIn 240ms ${SPRING}`,
+                      }}
+                    >
+                      <div className="px-3 pt-2.5 pb-1.5 border-b border-gray-50">
+                        <p className="text-[9px] font-black uppercase tracking-[0.18em]"
+                          style={{ color: colors.primary, opacity: 0.55 }}>
+                          {t("recent_mappings") ?? "Recent mappings"}
+                        </p>
+                      </div>
+                      <div className="p-1.5">
+                        {quickMappings.map((m, i) => (
+                          <button
+                            key={m.id ?? i}
+                            onClick={() => { onQuickApplyMapping?.(m); setMappingsHover(false); }}
+                            className="w-full text-left px-3 py-2 rounded-xl flex items-center gap-2.5"
+                            style={{
+                              transition: `background 160ms ${SMOOTH}`,
+                              animation: `dropdownIn 240ms ${SPRING} ${i * 35}ms both`,
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.background = "rgba(26,47,138,0.06)"; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+                          >
+                            <span
+                              className="text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-md flex-shrink-0"
+                              style={{
+                                background: m.kind === "report" ? "rgba(207,48,93,0.12)" : "rgba(26,47,138,0.10)",
+                                color: m.kind === "report" ? "#CF305D" : colors.primary,
+                              }}
+                            >
+                              {m.kind === "report" ? "REPORT" : "STRUCT"}
+                            </span>
+                            <span className="flex-1 min-w-0 text-xs font-bold truncate" style={{ color: "#475569" }}>
+                              {m.name ?? "—"}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>,
+                    document.body
+                  )}
+                  </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1194,10 +1321,15 @@ onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareTog
       </div>
 
 <style>{`
-        @keyframes titleMorph {
+@keyframes titleMorph {
           0%   { opacity: 0; transform: translateY(4px); filter: blur(2px); }
           60%  { opacity: 1; filter: blur(0px); }
           100% { opacity: 1; transform: translateY(0); filter: blur(0px); }
+        }
+        @keyframes excelSpawn {
+          0%   { opacity: 0; transform: translateX(-12px) scale(0.7); }
+          60%  { opacity: 1; }
+          100% { opacity: 1; transform: translateX(0) scale(1); }
         }
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }

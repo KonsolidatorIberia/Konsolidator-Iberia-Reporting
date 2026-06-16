@@ -128,7 +128,7 @@ function cloneSubtree(node, sourceSide) { __dropCounter++; return { id: `imp-${s
 function walkTransform(tree, fn) { const out = []; for (const n of tree) { const t = fn(n); if (t === null) continue; out.push({ ...t, children: walkTransform(t.children || [], fn) }); } return out; }
 function removeByNames(tree, namesSet) { return walkTransform(tree, n => namesSet.has(normalizeName(n.name)) ? null : n); }
 function insertAt(tree, targetId, position, newNode) {
-  if (position === "inside") return walkTransform(tree, n => (n.id === targetId || n.code === targetId) ? { ...n, children: [...(n.children || []), newNode] } : n);
+  if (position === "inside") return walkTransform(tree, n => (n.id === targetId || n.code === targetId) ? { ...n, children: [newNode, ...(n.children || [])] } : n);
   function walk(nodes) { const out = []; for (const n of nodes) { const isTarget = n.id === targetId || n.code === targetId; if (isTarget && position === "before") out.push(newNode); out.push({ ...n, children: walk(n.children || []) }); if (isTarget && position === "after") out.push(newNode); } return out; }
   return walk(tree);
 }
@@ -149,9 +149,24 @@ export default function MappingsPage({ token, preloadedData = {} }) {
   const { colors } = useSettings();
 const groupAccounts = preloadedData.groupAccounts ?? [];
   const preloadedDimensions = preloadedData.dimensions ?? [];
-  const [category, setCategory] = useState(null); // null | "account" | "cashflow"
-  const [selected, setSelected] = useState(null); // null | "structure" | "report"
+
+  // Read any "open this mapping in mapper" request stashed by another page (e.g. accounts dashboard banner).
+  // Done as a one-shot lazy initializer so we don't trigger a cascading render via useEffect.
+  const initialOpenForEdit = useMemo(() => {
+    try {
+      const raw = sessionStorage.getItem("mappings:openForEdit");
+      if (!raw) return null;
+      sessionStorage.removeItem("mappings:openForEdit");
+      const parsed = JSON.parse(raw);
+      if (parsed?.mapping_id && (parsed.kind === "structure" || parsed.kind === "report")) return parsed;
+    } catch { /* ignore */ }
+    return null;
+  }, []);
+
+  const [category, setCategory] = useState(initialOpenForEdit ? "account" : null); // null | "account" | "cashflow"
+  const [selected, setSelected] = useState(initialOpenForEdit?.kind ?? null);      // null | "structure" | "report"
   const [search, setSearch] = useState("");
+  const [pendingEdit, setPendingEdit] = useState(initialOpenForEdit);
 
   // ── Structure view ──────────────────────────────────────────
 if (category === "account" && selected === "structure") {
@@ -164,7 +179,9 @@ return (
         colors={colors}
         token={token}
         onBack={() => { setSelected(null); setSearch(""); }}
-        mappingKind="structure"
+mappingKind="structure"
+        pendingEdit={pendingEdit}
+        onPendingEditConsumed={() => setPendingEdit(null)}
       />
     );
   }
@@ -180,7 +197,9 @@ return (
         colors={colors}
         token={token}
         onBack={() => { setSelected(null); setSearch(""); }}
-        mappingKind="report"
+mappingKind="report"
+        pendingEdit={pendingEdit}
+        onPendingEditConsumed={() => setPendingEdit(null)}
       />
     );
   }
@@ -395,7 +414,7 @@ return (
 }
 
 // ─── Structure Mappings View ──────────────────────────────────
-function StructureMappingsView({ groupAccounts, dimensions = [], search, setSearch, colors, onBack, token, mappingKind = "structure", initialView = "list", initialStandard = null }) {
+function StructureMappingsView({ groupAccounts, dimensions = [], search, setSearch, colors, onBack, token, mappingKind = "structure", initialView = "list", initialStandard = null, pendingEdit = null, onPendingEditConsumed }) {
   const api = useMemo(() => (
     mappingKind === "report"
       ? { list: listReportMappings, create: createReportMapping, update: updateReportMapping, archive: archiveReportMapping }
@@ -411,7 +430,15 @@ const [editingMapping, setEditingMapping] = useState(null);
 const [standardMappingId, setStandardMappingId] = useState(null);
 const [pendingStandardMapping, setPendingStandardMapping] = useState(null);
   const [showBackConfirm, setShowBackConfirm] = useState(false);
-  const [mapperStatement, setMapperStatement] = useState("PL");
+ const [mapperStatement, setMapperStatement] = useState("PL");
+  const [filterYear, setFilterYear] = useState(null);
+  const [filterMonth, setFilterMonth] = useState(null);
+  const [filterSource, setFilterSource] = useState("");
+  const [filterStructure, setFilterStructure] = useState("");
+  const [filterCompany, setFilterCompany] = useState("");
+  const [sourcesList, setSourcesList] = useState([]);
+  const [structuresList, setStructuresList] = useState([]);
+  const [companiesList, setCompaniesList] = useState([]);
   const [favorites, setFavorites] = useState(new Set());
   const [filterStandard, setFilterStandard] = useState("");
   const [filterUser, setFilterUser] = useState("");
@@ -436,6 +463,19 @@ useEffect(() => {
     setMappingsLoading(true);
     api.list({ companyId }).then(rows => setMappings(rows)).finally(() => setMappingsLoading(false));
   }, [view, companyId, api]);
+
+  // Auto-open the requested mapping once the list has loaded
+  useEffect(() => {
+    if (!pendingEdit || !mappings.length) return;
+    const m = mappings.find(x => String(x.mapping_id) === String(pendingEdit.mapping_id));
+    if (!m) return;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setEditingMapping(m);
+    setSelectedStandard(m.standard);
+    setView("mapper");
+    /* eslint-enable react-hooks/set-state-in-effect */
+    onPendingEditConsumed?.();
+  }, [pendingEdit, mappings, onPendingEditConsumed]);
 
 useEffect(() => {
     if (!authUserId) return;
@@ -486,42 +526,76 @@ const handleSetStandard = async (id) => {
 
 const detectedStandard = useMemo(() => detectStandard(groupAccounts), [groupAccounts]);
 
-  const [uploadedAccounts, setUploadedAccounts] = useState([]);
+const [uploadedAccounts, setUploadedAccounts] = useState([]);
+
+  // Load sources/structures/companies once
   useEffect(() => {
-    if (!token || !groupAccounts.length) return;
-    const BASE_URL = "";
+    if (!token) return;
     const h = { Authorization: `Bearer ${token}`, Accept: "application/json" };
     (async () => {
       try {
-        // Get sources/structures/companies
         const [srcRes, strRes, coRes] = await Promise.all([
-          fetch(`${BASE_URL}/v2/sources`, { headers: h }).then(r => r.json()),
-          fetch(`${BASE_URL}/v2/structures`, { headers: h }).then(r => r.json()),
-          fetch(`${BASE_URL}/v2/companies`, { headers: h }).then(r => r.json()),
+          fetch(`/v2/sources`, { headers: h }).then(r => r.json()),
+          fetch(`/v2/structures`, { headers: h }).then(r => r.json()),
+          fetch(`/v2/companies`, { headers: h }).then(r => r.json()),
         ]);
-        const src = (srcRes.value ?? srcRes)[0];
-        const str = (strRes.value ?? strRes)[0];
-        const co = (coRes.value ?? coRes)[0];
-        if (!src || !str || !co) return;
-        const source = src.source ?? src.Source ?? src;
-        const structure = str.groupStructure ?? str.GroupStructure ?? str;
-        const company = co.companyShortName ?? co.CompanyShortName ?? co;
-        // Probe for latest period
-        const now = new Date();
-        let y = now.getFullYear(), m = now.getMonth() + 1;
-        for (let i = 0; i < 24; i++) {
-          const filter = `Year eq ${y} and Month eq ${m} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
-          const res = await fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h });
+        setSourcesList(srcRes.value ?? srcRes ?? []);
+        setStructuresList(strRes.value ?? strRes ?? []);
+        setCompaniesList(coRes.value ?? coRes ?? []);
+      } catch { /* ignore */ }
+    })();
+  }, [token]);
+
+  // Initial probe: when filters are empty and we have lists, find latest period and seed filters
+  useEffect(() => {
+    if (!token || !groupAccounts.length) return;
+    if (filterYear && filterMonth && filterSource && filterStructure && filterCompany) return;
+    if (!sourcesList.length || !structuresList.length || !companiesList.length) return;
+    const src = sourcesList[0];
+    const str = structuresList[0];
+    const co = companiesList[0];
+    const source = src.source ?? src.Source ?? src;
+    const structure = str.groupStructure ?? str.GroupStructure ?? str;
+    const company = co.companyShortName ?? co.CompanyShortName ?? co;
+    const h = { Authorization: `Bearer ${token}`, Accept: "application/json" };
+    (async () => {
+      const now = new Date();
+      let y = now.getFullYear(), m = now.getMonth() + 1;
+      for (let i = 0; i < 24; i++) {
+        const filter = `Year eq ${y} and Month eq ${m} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
+        try {
+          const res = await fetch(`/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}&$top=1`, { headers: h });
           if (res.ok) {
             const json = await res.json();
             const rows = json.value ?? (Array.isArray(json) ? json : []);
-            if (rows.length > 0) { console.log("[uploaded] fetched", rows.length, "rows, sample Dimensions:", rows.slice(0,3).map(r => r.Dimensions)); setUploadedAccounts(rows); return; }
+            if (rows.length > 0) {
+              setFilterYear(y); setFilterMonth(m);
+              setFilterSource(source); setFilterStructure(structure); setFilterCompany(company);
+              return;
+            }
           }
-          m--; if (m < 1) { m = 12; y--; }
-}
-      } catch { /* ignore probe failures */ }
+        } catch { /* keep probing */ }
+        m--; if (m < 1) { m = 12; y--; }
+      }
     })();
-}, [token, groupAccounts.length]);
+  }, [token, groupAccounts.length, sourcesList, structuresList, companiesList, filterYear, filterMonth, filterSource, filterStructure, filterCompany]);
+
+  // Refetch uploadedAccounts whenever filters change
+  useEffect(() => {
+    if (!token) return;
+    if (!filterYear || !filterMonth || !filterSource || !filterStructure || !filterCompany) return;
+    const h = { Authorization: `Bearer ${token}`, Accept: "application/json" };
+    const filter = `Year eq ${filterYear} and Month eq ${filterMonth} and Source eq '${filterSource}' and GroupStructure eq '${filterStructure}' and CompanyShortName eq '${filterCompany}'`;
+    (async () => {
+      try {
+        const res = await fetch(`/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h });
+        if (!res.ok) { setUploadedAccounts([]); return; }
+        const json = await res.json();
+const rows = json.value ?? (Array.isArray(json) ? json : []);
+        setUploadedAccounts(rows);
+      } catch { setUploadedAccounts([]); }
+    })();
+  }, [token, filterYear, filterMonth, filterSource, filterStructure, filterCompany]);
 
 const kindLabel = mappingKind === "report" ? "Report Mappings" : "Structure Mappings";
 const activeAccent = (selectedStandard && STANDARD_META[selectedStandard]?.accent) || colors?.primary || "#1a2f8a";
@@ -543,7 +617,19 @@ title={cfg.title}
         activeTab={null}
         onTabChange={() => {}}
 showAllFilters={view === "list"}
-        filters={view === "list" ? [
+       showAllFilters={view === "mapper" && mappingKind === "report"}
+        filters={view === "mapper" && mappingKind === "report" ? [
+          { label: "Year", value: String(filterYear ?? ""), onChange: v => setFilterYear(Number(v)),
+            options: Array.from({ length: 6 }, (_, i) => new Date().getFullYear() - i).map(y => ({ value: String(y), label: String(y) })) },
+          { label: "Month", value: String(filterMonth ?? ""), onChange: v => setFilterMonth(Number(v)),
+            options: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"].map((m, i) => ({ value: String(i+1), label: m })) },
+          { label: "Source", value: filterSource, onChange: setFilterSource,
+            options: sourcesList.map(s => { const v = s.source ?? s.Source ?? s; return { value: v, label: v }; }) },
+          { label: "Structure", value: filterStructure, onChange: setFilterStructure,
+            options: structuresList.map(s => { const v = s.groupStructure ?? s.GroupStructure ?? s; return { value: v, label: v }; }) },
+          { label: "Company", value: filterCompany, onChange: setFilterCompany,
+            options: companiesList.map(c => { const v = c.companyShortName ?? c.CompanyShortName ?? c; const label = c.companyLegalName ?? c.CompanyLegalName ?? v; return { value: v, label }; }) },
+        ] : view === "list" ? [
           { label: "Standard", value: filterStandard, onChange: setFilterStandard, options: [
             { value: "", label: "All standards", displayLabel: "Standard" },
             { value: "PGC", label: "PGC", displayLabel: "PGC" },
@@ -668,7 +754,7 @@ editingMapping={editingMapping}
             setStatement={setMapperStatement}
             saveRef={mapperSaveRef}
             resetRef={mapperResetRef}
-            api={api}
+api={api}
             mappingKind={mappingKind}
           />
         )}
@@ -1045,6 +1131,36 @@ if (!map.has(groupCode)) map.set(groupCode, new Set());
 return map;
   }, [uploadedAccounts, dimensions]);
 
+const amountsByCode = useMemo(() => {
+    const parentOf = new Map();
+    groupAccounts.forEach(g => {
+      const code = String(g.accountCode ?? g.AccountCode ?? "");
+      const parent = String(g.sumAccountCode ?? g.SumAccountCode ?? "");
+      if (code && parent && parent !== code) parentOf.set(code, parent);
+    });
+    // Also pick up parent links from the rows themselves (leaf codes may not be in groupAccounts)
+    uploadedAccounts.forEach(row => {
+      const code = String(row.AccountCode ?? row.accountCode ?? "");
+      const parent = String(row.SumAccountCode ?? row.sumAccountCode ?? row.ParentCode ?? row.parentCode ?? "");
+      if (code && parent && parent !== code && !parentOf.has(code)) parentOf.set(code, parent);
+    });
+    const map = new Map();
+    uploadedAccounts.forEach(row => {
+      const code = String(row.AccountCode ?? row.accountCode ?? "");
+      if (!code) return;
+      const raw = row.AmountYTD ?? row.amountYTD ?? 0;
+const rawAmt = typeof raw === "number" ? raw : parseFloat(String(raw).replace(/[^\d.-]/g, "")) || 0;
+      const amt = -rawAmt;
+      let cur = code;
+      const visited = new Set();
+      while (cur && !visited.has(cur)) {
+        visited.add(cur);
+        map.set(cur, (map.get(cur) ?? 0) + amt);
+        cur = parentOf.get(cur);
+      }
+    });
+return map;
+  }, [uploadedAccounts, groupAccounts]);
   const [tplRows, setTplRows] = useState([]);
   const [tplSections, setTplSections] = useState([]);
   const [tplLoading, setTplLoading] = useState(false);
@@ -1097,7 +1213,7 @@ return () => ac.abort();
     const tree = buildClientTree(groupAccounts);
     const filterFn = statement === "PL" ? n => ["P/L","DIS"].includes(n.accountType) : n => n.accountType === "B/S";
     function addIds(nodes) { return nodes.map(n => ({ ...n, id: `cli-${n.code}`, children: addIds(n.children || []) })); }
-    return addIds(tree.filter(filterFn));
+return addIds(tree.filter(filterFn));
   }, [groupAccounts, statement]);
 
   const baseTemplateTree = useMemo(() => {
@@ -1180,8 +1296,27 @@ walkTemplate(baseTemplateTree);
     });
   }, [editingMapping, standard, baseTemplateTree, groupAccounts]);
 
-  const clientTree = clientTreeBy[statement] ?? baseClientTree;
+const clientTree = clientTreeBy[statement] ?? baseClientTree;
   const templateTree = templateTreeBy[statement] ?? baseTemplateTree;
+  const templateAmountsById = useMemo(() => {
+    const out = new Map();
+    const walk = node => {
+      if (node.kind === "breaker") { (node.children || []).forEach(walk); return undefined; }
+      const id = node.id ?? node.code;
+      if (node.children?.length > 0) {
+        let sum = 0, any = false;
+        node.children.forEach(c => { const v = walk(c); if (v !== undefined) { sum += v; any = true; } });
+        const result = any ? sum : undefined;
+        out.set(id, result);
+        return result;
+      }
+      const amt = amountsByCode.get(node.code);
+      out.set(id, amt);
+      return amt;
+    };
+    templateTree.forEach(walk);
+    return out;
+  }, [templateTree, amountsByCode]);
   const sectionByCode = useMemo(() => { const m = new Map(); tplSections.forEach(s => m.set(s.section_code, { label: s.label, color: s.color })); return m; }, [tplSections]);
 
 const handleSave = async ({ asNew = false } = {}) => {
@@ -1298,59 +1433,42 @@ const handleDelete = (side, targetId) => {
         else next.set(nodeCode, existing);
         return next;
       });
-    } else {
-const deletedNode = findNodeById(templateTreeBy[statement] ?? templateTree, targetId);
-      setTemplateTreeBy(prev => ({ ...prev, [statement]: deleteNode(prev[statement] ?? templateTree, targetId) }));
-      if (deletedNode) {
-        // Walk the entire deleted subtree and collect per-code dim removals
-        const dimsToRemoveByCode = new Map(); // code → Set of dims (null = full delete)
-        const fullDeleteCodes = new Set();
-const walk = (n) => {
+} else {
+      const currentTree = templateTreeBy[statement] ?? templateTree;
+      const newTree = deleteNode(currentTree, targetId);
+      setTemplateTreeBy(prev => ({ ...prev, [statement]: newTree }));
+      // Recompute moved state from the resulting trees (both statements)
+      const otherTree = statement === "PL" ? (templateTreeBy.BS ?? []) : (templateTreeBy.PL ?? []);
+      const remainingFullCodes = new Set();
+      const remainingDimsByCode = new Map();
+      const walkCollect = (nodes) => {
+        (nodes || []).forEach(n => {
+          if (n.kind === "breaker") { walkCollect(n.children); return; }
           const code = String(n.code ?? "");
           if (code) {
-            const sourceAccountDims = dimsByGroupCode.get(code);
-            const isAllDimsCopy = Array.isArray(n.dims)
-              && n.dims.length > 0
-              && sourceAccountDims
-              && n.dims.length >= sourceAccountDims.size;
-            if (Array.isArray(n.dims) && n.dims.length > 0 && !isAllDimsCopy) {
-              // Partial dim mapping — only remove those specific dims
-              const s = dimsToRemoveByCode.get(code) ?? new Set();
+            if (Array.isArray(n.dims) && n.dims.length > 0) {
+              const s = remainingDimsByCode.get(code) ?? new Set();
               n.dims.forEach(d => s.add(d));
-              dimsToRemoveByCode.set(code, s);
+              remainingDimsByCode.set(code, s);
             } else {
-              // Full account mapping, all-dims copy, or regular account
-              fullDeleteCodes.add(code);
-              if (Array.isArray(n.dims) && n.dims.length > 0) {
-                const s = dimsToRemoveByCode.get(code) ?? new Set();
-                n.dims.forEach(d => s.add(d));
-                dimsToRemoveByCode.set(code, s);
-              }
+              remainingFullCodes.add(code);
             }
           }
-          (n.children || []).forEach(walk);
-        };
-        walk(deletedNode);
-
-        setMovedClientCodes(prev => {
-          const next = new Set(prev);
-          fullDeleteCodes.forEach(c => next.delete(c));
-          return next;
+          walkCollect(n.children);
         });
-        setMovedDimsByCode(prev => {
-          const next = new Map(prev);
-          // Full-delete codes: clear all dim tracking
-          fullDeleteCodes.forEach(c => next.delete(c));
-          // Dim-specific deletes: remove only those dims
-          dimsToRemoveByCode.forEach((dimsToRemove, code) => {
-            const existing = next.get(code) ?? new Set();
-            dimsToRemove.forEach(d => existing.delete(d));
-            if (existing.size === 0) next.delete(code);
-            else next.set(code, existing);
-          });
-          return next;
-        });
-      }
+      };
+      walkCollect(newTree);
+      walkCollect(otherTree);
+      setMovedClientCodes(prev => {
+        const next = new Set();
+        prev.forEach(c => { if (remainingFullCodes.has(c)) next.add(c); });
+        return next;
+      });
+      setMovedDimsByCode(() => {
+        const next = new Map();
+        remainingDimsByCode.forEach((dims, code) => { next.set(code, dims); });
+        return next;
+      });
     }
   };
 
@@ -1507,11 +1625,10 @@ if (choice === "replace-existing") {
             let tree = destTree;
             const deletedIds = new Set(existingDimCopies);
             existingDimCopies.forEach(id => { tree = deleteNode(tree, id); });
-            const allDims = dimsByGroupCode.get(sourceNode.code) ? [...dimsByGroupCode.get(sourceNode.code)] : null;
-            const clonedWithDims = { ...cloned, dims: allDims };
+            // Don't auto-attach dims (see performInsert).
             // If targetId was one of the deleted nodes, append to root instead
             const safeTargetId = deletedIds.has(targetId) ? null : targetId;
-            const newTree = safeTargetId ? insertAt(tree, safeTargetId, position, clonedWithDims) : appendToRoot(tree, clonedWithDims);
+            const newTree = safeTargetId ? insertAt(tree, safeTargetId, position, cloned) : appendToRoot(tree, cloned);
             setTemplateTreeBy(prev => ({ ...prev, [statement]: newTree }));
             setMovedClientCodes(prev => new Set([...prev, sourceNode.code]));
             setMovedDimsByCode(prev => {
@@ -1530,9 +1647,11 @@ if (choice === "replace-existing") {
 
    const duplicates = mappingKind === "report" ? [] : findDuplicates(cloned, destTree);
 const performInsert = (treeAfterDedupe, nodeToInsert) => {
-      const allDims = sourceSide === "client" && dimsByGroupCode.get(nodeToInsert.code) ? [...dimsByGroupCode.get(nodeToInsert.code)] : null;
-      const nodeWithDims = allDims ? { ...nodeToInsert, dims: allDims } : nodeToInsert;
-      const newTree = targetId ? insertAt(treeAfterDedupe, targetId, position, nodeWithDims) : appendToRoot(treeAfterDedupe, nodeWithDims);
+      // Do NOT auto-attach dims on full-account drags. dims must only be set when the
+      // user explicitly drags a single dim sub-row (handled in the dim-only branch above).
+      // Auto-attaching here causes the main file to dim-filter the rollup, dropping
+      // any untagged postings (e.g. 13100 shows -600 instead of -1200).
+      const newTree = targetId ? insertAt(treeAfterDedupe, targetId, position, nodeToInsert) : appendToRoot(treeAfterDedupe, nodeToInsert);
       if (destSide === "client") setClientTreeBy({ ...clientTreeBy, [statement]: newTree }); else setTemplateTreeBy({ ...templateTreeBy, [statement]: newTree });
 const sourceIds = collectIdsFromSubtree(sourceNode);
 if (sourceSide === "client") {
@@ -1561,8 +1680,8 @@ if (sourceSide === "client") {
   return (
     <div className="flex flex-col h-full overflow-hidden">
 
-      <div className="flex-1 grid grid-cols-2 gap-4 p-4 overflow-hidden">
-<ClientPanel mappingKind={mappingKind} onCopy={id => handleCopy("client", id)} tree={clientTree} statement={statement} movedIds={(() => {
+<div className="flex-1 grid grid-cols-2 gap-4 p-4 overflow-hidden">
+<ClientPanel mappingKind={mappingKind} amountsByCode={amountsByCode} onCopy={id => handleCopy("client", id)} tree={clientTree} statement={statement} movedIds={(() => {
   const effective = new Set(movedClientCodes);
   dimsByGroupCode.forEach((dims, code) => {
     const moved = movedDimsByCode.get(code);
@@ -1573,7 +1692,7 @@ if (sourceSide === "client") {
   });
   return effective;
 })()} movedDimsByCode={movedDimsByCode} onDrop={p => handleDrop({ ...p, destSide: "client" })} onRename={(id, name) => handleRename("client", id, name)} onDelete={id => handleDelete("client", id)} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} dimsByGroupCode={dimsByGroupCode} />
-       <TemplatePanel mappingKind={mappingKind} onCopy={id => handleCopy("template", id)} tree={templateTree} sectionByCode={sectionByCode} loading={tplLoading} accent={meta.accent} standardLabel={meta.label} movedIds={movedTemplateIds} onDrop={p => handleDrop({ ...p, destSide: "template" })} onRename={(id, name) => handleRename("template", id, name)} onDelete={id => handleDelete("template", id)} onAddRow={handleAddRow} onAddBreaker={handleAddBreaker} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} highlightedIds={highlightedIds} onToggleHighlight={id => setHighlightedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; })} />
+      <TemplatePanel mappingKind={mappingKind} templateAmountsById={templateAmountsById} onCopy={id => handleCopy("template", id)} tree={templateTree} sectionByCode={sectionByCode} loading={tplLoading} accent={meta.accent} standardLabel={meta.label} movedIds={movedTemplateIds} onDrop={p => handleDrop({ ...p, destSide: "template" })} onRename={(id, name) => handleRename("template", id, name)} onDelete={id => handleDelete("template", id)} onAddRow={handleAddRow} onAddBreaker={handleAddBreaker} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} highlightedIds={highlightedIds} onToggleHighlight={id => setHighlightedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; })} />
       </div>
       {conflict && <ConflictModal duplicates={conflict.duplicates} onResolve={conflict.onResolve} />}
       {showSaveForm && <SaveMappingForm name={currentName} setName={setCurrentName} description={currentDescription} setDescription={setCurrentDescription} error={saveError} saving={saving} asNew={!!editingMapping} accent={meta.accent} onCancel={() => { setShowSaveForm(false); setSaveError(null); }} onSave={() => handleSave({ asNew: !!editingMapping })} />}
@@ -1722,7 +1841,7 @@ function DimFilterDropdown({ value, onChange, options, placeholder, accent }) {
 }
 
 // ─── ClientPanel ──────────────────────────────────────────────
-function ClientPanel({ mappingKind = "structure", onCopy, tree, statement, movedIds, movedDimsByCode = new Map(), onDrop, onRename, onDelete, activeMultiSide, onSetMultiSide, dimsByGroupCode = new Map() }) {
+function ClientPanel({ mappingKind = "structure", amountsByCode = new Map(), onCopy, tree, statement, movedIds, movedDimsByCode = new Map(), onDrop, onRename, onDelete, activeMultiSide, onSetMultiSide, dimsByGroupCode = new Map() }) {
   const [search, setSearch] = useState("");
 const [expanded, setExpanded] = useState({});
 const [flatMode, setFlatMode] = useState(false);
@@ -1754,6 +1873,7 @@ const lastSelectedRef = useRef(null);
   }, [tree]);
 
 const [unmappedOnly, setUnmappedOnly] = useState(false);
+  const [hideZero, setHideZero] = useState(false);
   const [filterDimGroup, setFilterDimGroup] = useState("");
   const [filterDimValue, setFilterDimValue] = useState("");
   const unmappedFlatTree = useMemo(() => {
@@ -1765,6 +1885,11 @@ const [unmappedOnly, setUnmappedOnly] = useState(false);
 
 const filteredTree = useMemo(() => {
     const hasDimFilter = filterDimGroup || filterDimValue;
+    const amountPredicate = n => {
+      if (!hideZero) return true;
+      const amt = amountsByCode.get(n.code);
+      return amt !== undefined && Math.abs(amt) >= 0.5;
+    };
     const dimPredicate = n => {
       if (!hasDimFilter) return true;
       const dims = dimsByGroupCode.get(n.code);
@@ -1778,23 +1903,24 @@ const filteredTree = useMemo(() => {
         return true;
       });
     };
+const combinedPredicate = n => (!hasDimFilter || dimPredicate(n)) && amountPredicate(n);
     let source;
     if (unmappedOnly) {
-      source = unmappedFlatTree.filter(dimPredicate);
+      source = unmappedFlatTree.filter(combinedPredicate);
       if (!search.trim()) return source;
       const q = search.toLowerCase();
       return source.filter(n => n.code.toLowerCase().includes(q) || (n.name ?? "").toLowerCase().includes(q));
     }
-source = flatMode ? flatTree : tree;
+    source = flatMode ? flatTree : tree;
     const q = search.toLowerCase();
     const searchFiltered = !search.trim() ? source : flatMode
       ? source.filter(n => n.code.toLowerCase().includes(q) || (n.name ?? "").toLowerCase().includes(q))
       : filterTree(source, n => n.code.toLowerCase().includes(q) || (n.name ?? "").toLowerCase().includes(q));
-    if (!hasDimFilter) return searchFiltered;
+    if (!hasDimFilter && !hideZero) return searchFiltered;
     return flatMode
-      ? searchFiltered.filter(dimPredicate)
-      : filterTree(searchFiltered, dimPredicate);
-  }, [tree, flatTree, unmappedFlatTree, flatMode, unmappedOnly, search, filterDimGroup, filterDimValue, dimsByGroupCode]);
+      ? searchFiltered.filter(combinedPredicate)
+      : filterTree(searchFiltered, combinedPredicate);
+  }, [tree, flatTree, unmappedFlatTree, flatMode, unmappedOnly, hideZero, search, filterDimGroup, filterDimValue, dimsByGroupCode, amountsByCode]);
 const visibleCount = useMemo(() => countNodes(filteredTree), [filteredTree]);
 const allKeys = useMemo(() => collectAllCodes(tree, "client"), [tree]);
 
@@ -1804,7 +1930,6 @@ const flatSelectableIds = useMemo(() => {
     walk(tree);
     return out;
   }, [tree, mappingKind]);
-console.log("[dims] map size:", dimsByGroupCode.size, "sample:", [...dimsByGroupCode.entries()].slice(0,3));
 const dimGroups = useMemo(() => {
     const groups = new Set();
     dimsByGroupCode.forEach(dims => dims.forEach(d => { const idx = d.indexOf(":"); if (idx !== -1) groups.add(d.slice(0, idx).trim()); }));
@@ -1842,7 +1967,7 @@ const dimGroups = useMemo(() => {
       </svg>
     </button>
   );
-const unmappedToggleBtn = mappingKind === "report" ? null : (
+const unmappedToggleBtn = (
     <button onClick={() => setUnmappedOnly(u => !u)} title={unmappedOnly ? "Show all accounts" : "Show unmapped only"}
       className="w-6 h-6 rounded-md flex items-center justify-center transition-all"
       style={{ background: unmappedOnly ? "#1a2f8a" : "rgba(26,47,138,0.06)", color: unmappedOnly ? "white" : "#1a2f8a" }}>
@@ -1880,13 +2005,20 @@ const unmappedToggleBtn = mappingKind === "report" ? null : (
         )}
       </div>
     )}
-    {multiToggleBtn}{flatToggleBtn}{unmappedToggleBtn}
+   {multiToggleBtn}{flatToggleBtn}{unmappedToggleBtn}
+    <button onClick={() => setHideZero(z => !z)} title={hideZero ? "Show all accounts" : "Hide accounts with no values"}
+      className="w-6 h-6 rounded-md flex items-center justify-center transition-all"
+      style={{ background: hideZero ? "#1a2f8a" : "rgba(26,47,138,0.06)", color: hideZero ? "white" : "#1a2f8a" }}>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <line x1="12" y1="2" x2="12" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+      </svg>
+    </button>
   </div>
 }>
 <PanelToolbar search={search} setSearch={setSearch} placeholder="Search your accounts…" count={visibleCount} total={totalCount} />
 
       <div className="flex-1 overflow-y-auto px-1"onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); if (data.sourceSide === "template") onDrop({ sourceNode: data.node, sourceSide: "template", targetId: null, position: "after" }); } catch { /* ignore parse */ } }}>
-     {filteredTree.length === 0 ? <EmptyPanelState icon={FileText} message={search ? "No matches" : "No accounts"} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="client" mappingKind={mappingKind} onCopy={onCopy} movedIds={mappingKind === "report" ? new Set() : movedIds} movedDimsByCode={mappingKind === "report" ? new Map() : movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { selectedIds.forEach(sid => onDelete(sid)); setSelectedIds(new Set()); } else { onDelete(id); } }}multiMode={multiMode} selectedIds={selectedIds} clientTree={tree}
+     {filteredTree.length === 0 ? <EmptyPanelState icon={FileText} message={search ? "No matches" : "No accounts"} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="client" mappingKind={mappingKind} amountsByCode={amountsByCode} onCopy={onCopy} movedIds={movedIds} movedDimsByCode={movedDimsByCode}onDrop={onDrop} onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { selectedIds.forEach(sid => onDelete(sid)); setSelectedIds(new Set()); } else { onDelete(id); } }}multiMode={multiMode} selectedIds={selectedIds} clientTree={tree}
       onToggleSelect={(id, shiftKey) => {
   if (shiftKey && lastSelectedRef.current && lastSelectedRef.current !== id) {
     const from = flatSelectableIds.indexOf(lastSelectedRef.current);
@@ -1907,7 +2039,7 @@ setSelectedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(
 }
 
 // ─── TemplatePanel ────────────────────────────────────────────
-function TemplatePanel({ mappingKind = "structure", onCopy, tree, sectionByCode, loading, accent, standardLabel, movedIds, onDrop, onRename, onDelete, onAddRow, onAddBreaker, activeMultiSide, onSetMultiSide, highlightedIds, onToggleHighlight }) {
+function TemplatePanel({ mappingKind = "structure", templateAmountsById = new Map(), onCopy, tree, sectionByCode, loading, accent, standardLabel, movedIds, onDrop, onRename, onDelete, onAddRow, onAddBreaker, activeMultiSide, onSetMultiSide, highlightedIds, onToggleHighlight }) {
   const [pendingParentId, setPendingParentId] = useState(null);
 const [showBreakerForm, setShowBreakerForm] = useState(false);
   const [search, setSearch] = useState("");
@@ -1946,7 +2078,7 @@ const allKeys = useMemo(() => collectAllCodes(tree, "tpl"), [tree]);
       <AddBreakerForm accent={accent} open={showBreakerForm} onOpen={() => setShowBreakerForm(true)} onClose={() => setShowBreakerForm(false)} onAdd={onAddBreaker} />
 
 <div className="flex-1 overflow-y-auto px-1" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); if (data.sourceSide === "client") onDrop({ sourceNode: data.node, sourceSide: "client", targetId: null, position: "after" }); else if (data.sourceSide === "template") onDrop({ sourceNode: data.node, sourceSide: "template", targetId: null, position: "after" }); } catch { /* ignore parse */ } }}>
-        {loading ? <div className="text-center py-16 text-xs text-gray-400">Loading template…</div> : filteredTree.length === 0 ? <EmptyPanelState icon={Library} message={search ? "No matches" : "No rows"} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="template" mappingKind={mappingKind} onCopy={onCopy} movedIds={movedIds} onDrop={onDrop}onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { selectedIds.forEach(sid => onDelete(sid)); setSelectedIds(new Set()); } else { onDelete(id); } }} onAddChild={parentId => { setPendingParentId(parentId); setExpanded(prev => ({ ...prev, [`tpl-${parentId}`]: true })); }} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} templateTree={tree} onToggleSelect={(id, shiftKey) => {
+        {loading ? <div className="text-center py-16 text-xs text-gray-400">Loading template…</div> : filteredTree.length === 0 ? <EmptyPanelState icon={Library} message={search ? "No matches" : "No rows"} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="template" mappingKind={mappingKind} templateAmountsById={templateAmountsById} onCopy={onCopy}movedIds={movedIds} onDrop={onDrop}onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { selectedIds.forEach(sid => onDelete(sid)); setSelectedIds(new Set()); } else { onDelete(id); } }} onAddChild={parentId => { setPendingParentId(parentId); setExpanded(prev => ({ ...prev, [`tpl-${parentId}`]: true })); }} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} templateTree={tree} onToggleSelect={(id, shiftKey) => {
   if (shiftKey && lastSelectedRef.current && lastSelectedRef.current !== id) {
     const from = flatSelectableIds.indexOf(lastSelectedRef.current);
     const to = flatSelectableIds.indexOf(id);
@@ -1966,7 +2098,7 @@ lastSelectedRef.current = id;
 }
 
 // ─── DraggableTreeRow ─────────────────────────────────────────
-function DraggableTreeRow({ node, depth, expanded, onToggle, side, mappingKind = "structure", onCopy, movedIds, movedDimsByCode = new Map(), onDrop, onRename, onDelete, onAddChild, sectionByCode, multiMode, selectedIds, onToggleSelect, clientTree, templateTree, highlightedIds, onToggleHighlight, dimsByGroupCode }) {
+function DraggableTreeRow({ node, depth, expanded, onToggle, side, mappingKind = "structure", amountsByCode = new Map(), templateAmountsById = new Map(), onCopy, movedIds, movedDimsByCode = new Map(), onDrop, onRename, onDelete, onAddChild, sectionByCode, multiMode, selectedIds, onToggleSelect, clientTree, templateTree, highlightedIds, onToggleHighlight, dimsByGroupCode }) {
   const key = `${side === "client" ? "client" : "tpl"}-${node.code}`;
   const isOpen = !!expanded[key];
   const hasChildren = (node.children?.length ?? 0) > 0;
@@ -2047,7 +2179,7 @@ if (selected.length > 0) {
           {editControls}
         </div>
         {dropZone === "after" && <div className="h-0.5 mx-2 rounded-full" style={{ background: accent, boxShadow: `0 0 6px ${accent}80` }} />}
-     {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child}depth={1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onAddChild={onAddChild} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} />)}
+     {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child}depth={1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} amountsByCode={amountsByCode} templateAmountsById={templateAmountsById} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onAddChild={onAddChild} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} />)}
       </>
     );
   }
@@ -2059,7 +2191,7 @@ const cursorClass = editing ? "cursor-text" : (side === "client" && isSum && map
     <>
       {dropZone === "before" && <div className="h-0.5 mx-2 rounded-full" style={{ background: accent, boxShadow: `0 0 6px ${accent}80` }} />}
       <div className="flex items-stretch gap-2">
-      <div draggable={!editing} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragLeave={() => setDropZone(null)} onDrop={handleDrop} onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)} onClick={hasChildren && !editing ? e => { if (e.detail === 1) onToggle(key); } : undefined} className={`flex-1 min-w-0 flex items-center gap-2 px-2 py-2.5 rounded-lg transition-all ${cursorClass} ${dropZone === "inside" ? "ring-2 ring-offset-1" : "hover:bg-gray-50"} ${bgClass} ${isMoved ? "opacity-50" : ""}`}>
+      <div draggable={!editing} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragLeave={() => setDropZone(null)} onDrop={handleDrop} onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)} onClick={hasChildren && !editing ? e => { if (e.detail === 1) onToggle(key); } : undefined} className={`flex-1 min-w-0 flex items-center gap-2 px-2 py-2.5 rounded-lg transition-all ${cursorClass} ${dropZone === "inside" ? "ring-2 ring-offset-1" : "hover:bg-gray-50"} ${bgClass} ${isMoved ? "bg-emerald-50/30" : ""}`}>
 {multiMode && (side === "client" ? (!isSum || mappingKind === "report") : (!isSum && node.kind !== "breaker")) && (
             <span onClick={e => { e.stopPropagation(); onToggleSelect?.(node.id ?? node.code, e.shiftKey); }}
               className="w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 cursor-pointer transition-all"
@@ -2072,8 +2204,19 @@ const cursorClass = editing ? "cursor-text" : (side === "client" && isSum && map
             : <span className="w-3 flex-shrink-0" />}
           <span className={`text-[10px] font-mono flex-shrink-0 w-20 truncate ${isSum ? (side === "client" ? "font-bold text-[#1a2f8a]" : "font-bold text-gray-700") : "text-gray-400"}`}>{node.code}</span>
           {editing ? <input ref={editInputRef} type="text" value={editValue} onChange={e => setEditValue(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} onKeyDown={e => { e.stopPropagation(); if (e.key === "Enter") commitEdit(); if (e.key === "Escape") cancelEdit(); }} onBlur={commitEdit} className="text-xs flex-1 min-w-0 px-2 py-0.5 rounded border border-[#1a2f8a]/30 outline-none focus:border-[#1a2f8a] bg-white" />
-          : <span className={`text-xs flex-1 min-w-0 truncate ${isSum ? (side === "client" ? "font-bold text-[#1a2f8a]" : "font-bold text-gray-800") : "text-gray-600"}`}>{node.name}</span>}
-{hasDims && (
+: <span className={`text-xs flex-1 min-w-0 truncate ${isSum ? (side === "client" ? "font-bold text-[#1a2f8a]" : "font-bold text-gray-800") : "text-gray-600"}`}>{node.name}</span>}
+{node.kind !== "breaker" && (() => {
+            const amt = side === "client" ? amountsByCode.get(node.code) : templateAmountsById.get(node.id ?? node.code);
+            const hasAmt = amt !== undefined;
+            const isZero = hasAmt && Math.abs(amt) < 0.5;
+            return (
+              <span className={`text-[11px] font-mono font-semibold flex-shrink-0 tabular-nums ${!hasAmt || isZero ? "text-gray-300" : amt < 0 ? "text-red-500" : "text-gray-600"}`}
+                title={hasAmt ? amt.toLocaleString() : "Sin datos para este periodo"}>
+                {!hasAmt ? "—" : Math.round(amt).toLocaleString()}
+              </span>
+            );
+          })()}
+          {hasDims && (
             <div className="relative flex-shrink-0">
               <button onClick={e => { e.stopPropagation(); const next = !showDims; if (next) window.dispatchEvent(new CustomEvent("dim-popover-open", { detail: dimIdRef.current })); setShowDims(next); }} onMouseDown={e => e.stopPropagation()}
                 className="w-5 h-5 rounded-md flex items-center justify-center transition-colors flex-shrink-0"
@@ -2101,8 +2244,13 @@ const cursorClass = editing ? "cursor-text" : (side === "client" && isSum && map
             <button onMouseDown={e => { e.preventDefault(); commitEdit(); }} className="w-5 h-5 rounded flex items-center justify-center hover:bg-emerald-50 text-emerald-500 transition-colors"><Check size={10} /></button>
             <button onMouseDown={e => { e.preventDefault(); cancelEdit(); }} className="w-5 h-5 rounded flex items-center justify-center hover:bg-gray-100 text-gray-400 transition-colors"><X size={10} /></button>
           </div>}
-         {!editing && !hovering && <div className="flex items-center gap-1 flex-shrink-0">
-            {isMoved && <CheckCircle2 size={11} className="text-emerald-500" />}
+{!editing && !hovering && <div className="flex items-center gap-1 flex-shrink-0">
+            {isMoved && (
+              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-emerald-50 border border-emerald-200">
+                <CheckCircle2 size={11} className="text-emerald-600" strokeWidth={2.5} />
+                <span className="text-[9px] font-black uppercase tracking-wider text-emerald-600">Mapped</span>
+              </span>
+            )}
             {side !== "client" && highlightedIds?.has(node.id ?? node.code) && <svg width="10" height="10" viewBox="0 0 24 24" fill="#f59e0b" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>}
           </div>}
         </div>
@@ -2139,7 +2287,7 @@ className={`group/dim flex items-center gap-1 py-1.5 rounded-lg transition-color
           </div>
         );
       })}
-    {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onAddChild={onAddChild}sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} dimsByGroupCode={dimsByGroupCode} />)}
+    {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} amountsByCode={amountsByCode} templateAmountsById={templateAmountsById} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onAddChild={onAddChild}sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} dimsByGroupCode={dimsByGroupCode} />)}
     </>
   );
 }

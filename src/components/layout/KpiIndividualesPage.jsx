@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from "rea
 import { useTypo, useSettings } from "./SettingsContext";
 import { useLatestPeriod } from "./LatestPeriodContext.jsx";
 import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 
 function useAnimatedNumber(target, duration = 800) {
   const [display, setDisplay] = useState(0);
@@ -236,13 +237,14 @@ function useResolvedKpiList(groupAccounts) {
     error:        null,
   });
 
-  useEffect(() => {
+useEffect(() => {
     let cancelled = false;
     if (!standard) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setState(s => ({ ...s, ready: true, kpiList: [], standard: null }));
       return;
     }
-    setState(s => ({ ...s, ready: false, error: null }));
+setState(s => ({ ...s, ready: false, error: null }));
 
     Promise.all([loadStandardMapping(standard, groupAccounts), loadKpiLibrary(standard)])
       .then(([{ ccTagToCodes, sectionCodes }, fullKpiList]) => {
@@ -403,6 +405,7 @@ import {
   CheckCircle2, AlertTriangle, Search,
 } from "lucide-react";
 import PageHeader, { FilterPill as HeaderFilterPill, MultiFilterPill } from "./PageHeader.jsx";
+import { t } from "../../lib/i18n";
 
 import {
   listCompanyKpis, createCompanyKpi, updateCompanyKpi, archiveCompanyKpi, deleteCompanyKpi,
@@ -411,6 +414,7 @@ import {
 import { getActiveCompanyId } from "../../lib/mappingsApi";
 import { supabase } from "../../lib/supabaseClient";
 import ExcelJS from "exceljs";
+import JSZip from "jszip";
 import { saveAs } from "file-saver";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -450,90 +454,6 @@ const MONTHS = [
   { value: 11, label: "November" }, { value: 12, label: "December" },
 ];
 const YEARS = Array.from({ length: 6 }, (_, i) => new Date().getFullYear() - i);
-
-// ── Formula node types ────────────────────────────────────────────────────────
-// { type: "account",      accountCode, dimCode? }
-// { type: "accountGroup", prefix }
-// { type: "manual",       value }
-// { type: "op",           op: "+"|"-"|"*"|"/", left, right }
-// { type: "fn",           fn: "abs"|"neg"|"pct", arg }
-// { type: "ref",          kpiId }
-
-function makeId() { return Math.random().toString(36).slice(2, 10); }
-
-
-
-// ── Formula evaluator ─────────────────────────────────────────────────────────
-function evalFormula(node, pivot, cache, kpiList) {
-  if (!node) return 0;
-  switch (node.type) {
-case "account": {
-      if (node.dimGroup || node.dimCode) {
-        if (pivot.__dimPivot) {
-          const key = `${node.accountCode}:::${node.dimGroup ?? ""}:::${node.dimCode ?? ""}`;
-          return -(pivot.__dimPivot.get(key) ?? 0);
-        }
-      }
-      let total = 0;
-      pivot.forEach((val, ac) => { if (ac === node.accountCode) total += val; });
-      return -total;
-    }
-    case "accountGroup": {
-      let total = 0;
-      pivot.forEach((val, ac) => { if (node.prefix && ac.startsWith(node.prefix)) total += val; });
-      return -total;
-    }
-    case "manual": return Number(node.value) || 0;
-    case "op": {
-      const l = evalFormula(node.left, pivot, cache, kpiList);
-      const r = evalFormula(node.right, pivot, cache, kpiList);
-      if (node.op === "+") return l + r;
-      if (node.op === "-") return l - r;
-      if (node.op === "*") return l * r;
-      if (node.op === "/") return r === 0 ? null : l / r;
-      return 0;
-    }
-    case "fn": {
-      const a = evalFormula(node.arg, pivot, cache, kpiList);
-      if (a === null) return null;
-      if (node.fn === "abs") return Math.abs(a);
-      if (node.fn === "neg") return -a;
-      if (node.fn === "pct") return a * 100;
-      return a;
-    }
-    case "ref": {
-      if (cache.has(node.kpiId)) return cache.get(node.kpiId);
-      const ref = kpiList.find(k => k.id === node.kpiId);
-      if (!ref) return 0;
-      const val = evalFormula(ref.formula, pivot, cache, kpiList);
-      cache.set(node.kpiId, val);
-      return val;
-    }
-case "text": {
-      if (!node.expression || !node.variables) return 0;
-      try {
-        let expr = node.expression;
-        Object.entries(node.variables).forEach(([letter, varNode]) => {
-          const val = varNode ? evalFormula(varNode, pivot, cache, kpiList) : 0;
-          expr = expr.replaceAll(letter, `(${val ?? 0})`);
-        });
-return Function(`"use strict"; return (${expr})`)() ?? 0;
-      } catch { return null; }
-    }
-    default: return 0;
-  }
-}
-
-function computeAllKpis(kpiList, pivot) {
-  const cache = new Map();
-  kpiList.forEach(kpi => {
-    if (!cache.has(kpi.id)) {
-      const val = evalFormula(kpi.formula, pivot, cache, kpiList);
-      cache.set(kpi.id, val);
-    }
-  });
-  return cache;
-}
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 function fmtValue(val, format) {
@@ -617,30 +537,6 @@ function normalizeLabel(s) {
     .trim();
 }
 
-// Walks a saved mapping pl_tree / bs_tree and extracts { sectionLabel → [accountCodes] }.
-function extractSectionsFromTree(tree) {
-  if (!Array.isArray(tree) || tree.length === 0) return new Map();
-  const result = new Map();
-  function walk(nodes, currentLabel) {
-    for (const node of nodes) {
-      if (!node) continue;
-      if (node.kind === "breaker") {
-        const label = String(node.name ?? "").trim();
-        if (label && !result.has(label)) result.set(label, []);
-        walk(node.children || [], label);
-      } else {
-        const code = String(node.code ?? "");
-        if (code && currentLabel && result.has(currentLabel)) {
-          result.get(currentLabel).push(code);
-        }
-        walk(node.children || [], currentLabel);
-      }
-    }
-  }
-  walk(tree, null);
-  return result;
-}
-
 function parseAmt(val) {
   if (val === null || val === undefined) return 0;
   if (typeof val === "number") return isNaN(val) ? 0 : val;
@@ -675,30 +571,188 @@ function monthLabel(m) {
   return isNaN(n) ? String(m) : (MONTHS[n - 1]?.label ?? String(m));
 }
 
-function buildFilterString(f) {
+function buildFilterLines(f) {
+  if (!f) return ["—"];
+  const lines = [];
+
+  const period = [];
+  if (f.year && f.month) period.push(`📅 ${monthLabel(f.month)} ${f.year}`);
+  if (f.source)    period.push(`Source: ${f.source}`);
+  if (f.structure) period.push(`Structure: ${f.structure}`);
+  if (period.length) lines.push(period.join("    ·    "));
+
+  if (Array.isArray(f.companies) && f.companies.length > 0) {
+    const txt = f.companies.length > 6
+      ? `Companies (${f.companies.length}): ${f.companies.slice(0,4).join(", ")}, …`
+      : `Companies: ${f.companies.join(", ")}`;
+    lines.push(txt);
+  }
+
+  const dimLine = [];
+  if (Array.isArray(f.dimGroups) && f.dimGroups.length > 0) dimLine.push(`Dim Groups: ${f.dimGroups.join(", ")}`);
+  if (Array.isArray(f.dims)      && f.dims.length      > 0) dimLine.push(`Dims: ${f.dims.join(", ")}`);
+  if (dimLine.length) lines.push(dimLine.join("    ·    "));
+
+  if (f.compareMode && f.cmpYear && f.cmpMonth) {
+    const cmp = [`🆚 vs ${monthLabel(f.cmpMonth)} ${f.cmpYear}`];
+    if (f.cmpSource)    cmp.push(`Source: ${f.cmpSource}`);
+    if (f.cmpStructure) cmp.push(`Structure: ${f.cmpStructure}`);
+    lines.push(cmp.join("    ·    "));
+  }
+
+  return lines.length ? lines : ["—"];
+}
+
+function describeFormulaNode(node, kpiList, accountCodeLabels) {
+  if (!node) return "—";
+  switch (node.type) {
+    case "cc": return String(node.tag ?? "").replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+    case "ref": {
+      const k = (kpiList || []).find(k => k.id === node.kpiId);
+      return k?.label ?? node.kpiId ?? "?";
+    }
+case "account": {
+      const name = accountCodeLabels?.get?.(node.accountCode);
+      const base = `Local Account ${node.accountCode ?? "?"}${name ? ` — ${name}` : ""}`;
+      if (node.dimGroup || node.dimCode) return `${base} [${node.dimGroup ?? ""}:${node.dimName || node.dimCode || ""}]`;
+      return base;
+    }
+    case "accountGroup": {
+      const code = node.groupCode ?? node.prefix ?? "?";
+      const name = accountCodeLabels?.get?.(code);
+      return `Group Account ${code}${name ? ` — ${name}` : ""}`;
+    }
+    case "manual": return String(node.value ?? 0);
+    case "op": {
+      const sym = { "+": "+", "-": "−", "*": "×", "/": "÷" }[node.op] ?? node.op;
+      return `(${describeFormulaNode(node.left, kpiList, accountCodeLabels)} ${sym} ${describeFormulaNode(node.right, kpiList, accountCodeLabels)})`;
+    }
+    case "fn": {
+      const inner = describeFormulaNode(node.arg, kpiList, accountCodeLabels);
+      if (node.fn === "neg") return `−(${inner})`;
+      if (node.fn === "abs") return `|${inner}|`;
+      if (node.fn === "pct") return `(${inner}) × 100`;
+      return inner;
+    }
+    case "text": return node.expression ?? "—";
+    default: return "—";
+  }
+}
+
+function describeBenchmark(b) {
+  if (!b) return null;
+  const fmtRange = (r) => {
+    if (!r) return null;
+    const min = r.min !== "" && r.min !== undefined && r.min !== null ? r.min : null;
+    const max = r.max !== "" && r.max !== undefined && r.max !== null ? r.max : null;
+    if (min !== null && max !== null) return `${min} → ${max}`;
+    if (min !== null) return `> ${min}`;
+    if (max !== null) return `< ${max}`;
+    return null;
+  };
   const parts = [];
-  if (f.source) parts.push(f.source);
-  if (f.structure) parts.push(f.structure);
-  if (f.year && f.month) parts.push(`${monthLabel(f.month)} ${f.year}`);
-  if (Array.isArray(f.dimGroups) && f.dimGroups.length > 0) parts.push(`Dim Groups: ${f.dimGroups.join(", ")}`);
-  if (Array.isArray(f.dims) && f.dims.length > 0) parts.push(`Dims: ${f.dims.join(", ")}`);
-  return parts.join(" · ");
+  const un = fmtRange(b.unhealthy); if (un) parts.push(`Unhealthy: ${un}`);
+  const h  = fmtRange(b.healthy);   if (h)  parts.push(`Healthy: ${h}`);
+  const vh = fmtRange(b.vhealthy);  if (vh) parts.push(`Excellent: ${vh}`);
+  return parts.length ? parts.join("  ·  ") : null;
+}
+
+function kpiFormulaSummary(kpi, kpiList, accountCodeLabels) {
+  if (!kpi?.formula) return { expression: null, variables: [] };
+  const f = kpi.formula;
+  if (f.type === "text") {
+    const vars = Object.entries(f.variables ?? {}).map(([letter, node]) => ({
+      letter,
+      desc: node ? describeFormulaNode(node, kpiList, accountCodeLabels) : "—",
+    }));
+    return { expression: f.expression ?? "—", variables: vars };
+  }
+  return { expression: describeFormulaNode(f, kpiList, accountCodeLabels), variables: [] };
+}
+
+async function repairXlsxDimensions(buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+  const sheets = Object.keys(zip.files).filter(f => /^xl\/worksheets\/sheet\d+\.xml$/.test(f));
+  const colToNum = (c) => { let n = 0; for (const ch of c) n = n * 26 + (ch.charCodeAt(0) - 64); return n; };
+  const numToCol = (n) => { let s = ""; while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); } return s; };
+  for (const f of sheets) {
+    let xml = await zip.file(f).async("string");
+
+    // (1) Strip Infinity / NaN cell values — ExcelJS writes them as invalid XML
+    //     and Excel pops the "we found a problem with content" recovery dialog
+    xml = xml.replace(/<c r="[^"]+"[^>]*><v>-?Infinity<\/v><\/c>/g, "");
+    xml = xml.replace(/<c r="[^"]+"[^>]*><v>NaN<\/v><\/c>/g, "");
+
+    // (2) Strip collapsed="1" from grouped row members — only valid on the
+    //     summary row, ExcelJS incorrectly puts it on every grouped row
+    xml = xml.replace(/(<row[^>]*outlineLevel="\d+"[^>]*?)\s*collapsed="1"/g, "$1");
+
+    // (3) Fix the bogus x14ac:dyDescent="55" that ExcelJS sometimes writes
+    xml = xml.replace(/x14ac:dyDescent="55"/g, 'x14ac:dyDescent="0.25"');
+
+    // (4) Recompute dimension based on actual cells
+    const cells = [...xml.matchAll(/<c r="([A-Z]+)(\d+)"/g)];
+    if (cells.length > 0) {
+      const cs = cells.map(c => colToNum(c[1]));
+      const rs = cells.map(c => +c[2]);
+      const newDim = `${numToCol(Math.min(...cs))}${Math.min(...rs)}:${numToCol(Math.max(...cs))}${Math.max(...rs)}`;
+      xml = xml.replace(/<dimension ref="[^"]+"\s*\/>/, `<dimension ref="${newDim}"/>`);
+    }
+
+    zip.file(f, xml);
+  }
+  return await zip.generateAsync({ type: "arraybuffer" });
 }
 
 async function exportKpisToXlsx({
-  kpiList, companyCodes, companyResults,
-  dimensionCodes, dimensionResults, dimensionPivots,
-  graphSections, filters,
+  kpiList, companyCodes, companyLabels, companyResults, companyResultsCmp,
+  dimensionCodes, dimensionResults, dimensionResultsCmp, dimensionPivots,
+  graphSections, filters, exportOpts = {}, accountCodeLabels = new Map(),
 }) {
   const C = EXPORT_COLORS;
   const wb = new ExcelJS.Workbook();
   wb.creator = "Konsolidator";
   wb.created = new Date();
 
-  const addKpiMatrixSheet = (sheetName, titleText, cols, colLabels, resultsMap) => {
-    const ws = wb.addWorksheet(sheetName, { views: [{ state: "frozen", xSplit: 1, ySplit: 4 }] });
-    const totalCols = 2 + cols.length;
+const inlineDefs = exportOpts.inlineDefs !== false;
+  const cmpEnabled = !!filters?.compareMode;
 
+  const fmtBenchRange = (r) => {
+    if (!r) return "—";
+    const min = r.min !== "" && r.min !== undefined && r.min !== null ? r.min : null;
+    const max = r.max !== "" && r.max !== undefined && r.max !== null ? r.max : null;
+    if (min !== null && max !== null) return `${min} → ${max}`;
+    if (min !== null) return `> ${min}`;
+    if (max !== null) return `< ${max}`;
+    return "—";
+  };
+
+  const BENCH_HEAD = {
+    unhealthy: { label: "Unhealthy", hdrBg: "FFB91C1C", cellBg: "FFFEF2F2", text: "FFB91C1C" },
+    healthy:   { label: "Healthy",   hdrBg: "FF15803D", cellBg: "FFF0FDF4", text: "FF15803D" },
+    vhealthy:  { label: "Excellent", hdrBg: "FF1E40AF", cellBg: "FFEFF6FF", text: "FF1E40AF" },
+  };
+
+const addKpiMatrixSheet = (sheetName, titleText, cols, colLabels, sections) => {
+    // sections = [{ label, resultsMap, cmpResultsMap }, …]
+    const anyCmp = cmpEnabled && sections.some(s => s.cmpResultsMap);
+    const subColsPerCol = anyCmp ? 4 : 1;
+    const totalAvgCol = 1 + cols.length * subColsPerCol + 1;
+    const benchUnhCol = totalAvgCol + 1;
+    const benchHCol   = totalAvgCol + 2;
+    const benchVHCol  = totalAvgCol + 3;
+    const totalCols   = benchVHCol;
+
+    const subLines = buildFilterLines(filters);
+    const frozenY  = 1 + subLines.length + 1; // title + subs + spacer
+
+    const ws = wb.addWorksheet(sheetName, { views: [{ state: "frozen", xSplit: 1, ySplit: frozenY }] });
+    ws.properties.outlineLevelRow = 1;
+    ws.properties.outlineLevelCol = 0;
+    ws.properties.summaryBelow    = false;
+    ws.properties.summaryRight    = false;
+
+    // Title
     ws.mergeCells(1, 1, 1, totalCols);
     const titleCell = ws.getCell(1, 1);
     titleCell.value = titleText;
@@ -707,355 +761,1036 @@ async function exportKpisToXlsx({
     titleCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
     ws.getRow(1).height = 28;
 
-    ws.mergeCells(2, 1, 2, totalCols);
-    const filtCell = ws.getCell(2, 1);
-    filtCell.value = buildFilterString(filters) || "—";
-    filtCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
-    filtCell.font = { name: "Calibri", size: 10, color: { argb: C.white } };
-    filtCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
-    ws.getRow(2).height = 18;
-
-    ws.getRow(3).height = 6;
-
-    const headerRow = ws.getRow(4);
-    headerRow.height = 24;
-    const headerCells = ["KPI", ...colLabels, "Total / Avg"];
-    headerCells.forEach((label, i) => {
-      const cell = headerRow.getCell(i + 1);
-      cell.value = label;
-      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
-      cell.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
-      cell.alignment = { vertical: "middle", horizontal: i === 0 ? "left" : "right", indent: i === 0 ? 1 : 0 };
+    // Subtitle lines
+    subLines.forEach((line, idx) => {
+      const rowN = 2 + idx;
+      ws.mergeCells(rowN, 1, rowN, totalCols);
+      const c = ws.getCell(rowN, 1);
+      c.value = line;
+      c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+      c.font = { name: "Calibri", size: 10, color: { argb: "FFE0E7FF" } };
+      c.alignment = { vertical: "middle", horizontal: "left", indent: 1, wrapText: true };
+      ws.getRow(rowN).height = 18;
     });
 
-    kpiList.forEach((kpi, rowIdx) => {
-      const rowNum = 5 + rowIdx;
-      const bandColor = rowIdx % 2 === 0 ? C.band1 : C.band2;
+    const spacerRow = 2 + subLines.length;
+    ws.getRow(spacerRow).height = 6;
+    let curRow = spacerRow + 1;
 
-      const values = cols.map(col => {
-        const res = resultsMap.get(col);
-        if (!res) return null;
-        const v = res.get(kpi.id);
-        return (v === undefined || v === null || isNaN(v)) ? null : v;
-      });
-      const validVals = values.filter(v => v !== null);
-      const aggregate = validVals.length === 0 ? null
-        : kpi.format === "percent"
-          ? validVals.reduce((a, b) => a + b, 0) / validVals.length
-          : validVals.reduce((a, b) => a + b, 0);
+    // Section accent colors: YTD navy, Monthly pink
+    const SECTION_COLORS = [C.primary, "FFCF305D"];
 
-      const labelCell = ws.getCell(rowNum, 1);
-      labelCell.value = kpi.label + (kpi.description ? `\n${kpi.description}` : "");
-      labelCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: bandColor } };
-      labelCell.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.primary } };
-      labelCell.alignment = { vertical: "middle", horizontal: "left", indent: 1, wrapText: true };
-      labelCell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+    sections.forEach((section, sIdx) => {
+const sectAccent = C.primary;                                          // headers always navy (clear contrast with Cmp pink)
+      const sectBarBg  = SECTION_COLORS[sIdx % SECTION_COLORS.length]; // section divider bar color (YTD navy, Monthly pink)
+      const resultsMap    = section.resultsMap;
+      const cmpResultsMap = section.cmpResultsMap;
+      const showCmp       = anyCmp && cmpResultsMap;
 
-      values.forEach((val, i) => {
-        const cell = ws.getCell(rowNum, 2 + i);
-        if (val === null) {
-          cell.value = "—";
-          cell.font = { name: "Calibri", size: 10, color: { argb: C.gray400 } };
-        } else {
-          cell.value = val;
-          cell.numFmt = kpi.format === "percent" ? '0.0"%"' : '#,##0;[Red]-#,##0';
-          cell.font = {
-            name: "Calibri", size: 10,
-            color: { argb: val < 0 ? C.red : (kpi.format === "percent" && val >= 0 ? C.green : C.primary) },
-          };
-        }
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: bandColor } };
-        cell.alignment = { vertical: "middle", horizontal: "right", indent: 1 };
-        cell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
-      });
-
-      const aggCell = ws.getCell(rowNum, 2 + cols.length);
-      if (aggregate === null) {
-        aggCell.value = "—";
-        aggCell.font = { name: "Calibri", size: 10, color: { argb: C.gray400 }, bold: true };
-      } else {
-        aggCell.value = aggregate;
-        aggCell.numFmt = kpi.format === "percent" ? '0.0"%"' : '#,##0;[Red]-#,##0';
-        aggCell.font = {
-          name: "Calibri", size: 10, bold: true,
-          color: { argb: aggregate < 0 ? C.red : C.primary },
-        };
+      // Section divider bar (only when multiple sections)
+      if (sections.length > 1) {
+        ws.mergeCells(curRow, 1, curRow, totalCols);
+        const lbl = ws.getCell(curRow, 1);
+        lbl.value = section.label;
+lbl.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectBarBg } };
+        lbl.font = { name: "Calibri", size: 12, bold: true, color: { argb: C.white } };
+        lbl.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+        ws.getRow(curRow).height = 24;
+        curRow++;
       }
-      aggCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.highlight } };
-      aggCell.alignment = { vertical: "middle", horizontal: "right", indent: 1 };
-      aggCell.border = {
-        left:   { style: "thin", color: { argb: "FFE5E7EB" } },
-        bottom: { style: "thin", color: { argb: "FFE5E7EB" } },
-      };
+
+      // Headers
+      if (showCmp) {
+        const r1 = curRow, r2 = curRow + 1;
+        const superRow = ws.getRow(r1);
+        superRow.height = 22;
+        const kpiSuper = superRow.getCell(1);
+        kpiSuper.value = "KPI";
+        kpiSuper.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectAccent } };
+        kpiSuper.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+        kpiSuper.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+        ws.mergeCells(r1, 1, r2, 1);
+        cols.forEach((_, i) => {
+          const startCol = 2 + i * 4;
+          const cell = superRow.getCell(startCol);
+          cell.value = colLabels[i];
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectAccent } };
+          cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: C.white } };
+          cell.alignment = { vertical: "middle", horizontal: "center" };
+          ws.mergeCells(r1, startCol, r1, startCol + 3);
+        });
+        const totalSuper = superRow.getCell(totalAvgCol);
+        totalSuper.value = "Total / Avg";
+        totalSuper.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectAccent } };
+        totalSuper.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+        totalSuper.alignment = { vertical: "middle", horizontal: "center" };
+        ws.mergeCells(r1, totalAvgCol, r2, totalAvgCol);
+        [["unhealthy", benchUnhCol], ["healthy", benchHCol], ["vhealthy", benchVHCol]].forEach(([key, col]) => {
+          const cell = superRow.getCell(col);
+          cell.value = BENCH_HEAD[key].label;
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: BENCH_HEAD[key].hdrBg } };
+          cell.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+          cell.alignment = { vertical: "middle", horizontal: "center" };
+          ws.mergeCells(r1, col, r2, col);
+        });
+        const subRow = ws.getRow(r2);
+        subRow.height = 18;
+        cols.forEach((_, i) => {
+          const startCol = 2 + i * 4;
+          ["A", "Cmp", "Δ", "Δ %"].forEach((lbl, j) => {
+            const c = subRow.getCell(startCol + j);
+            c.value = lbl;
+            c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: j === 0 ? sectAccent : (j === 1 ? C.compareB : C.primaryDk) } };
+            c.font = { name: "Calibri", size: 9, bold: true, color: { argb: C.white } };
+            c.alignment = { vertical: "middle", horizontal: "center" };
+          });
+        });
+        curRow = r2 + 1;
+      } else {
+        const headerRow = ws.getRow(curRow);
+        headerRow.height = 24;
+        const kpiCell = headerRow.getCell(1);
+        kpiCell.value = "KPI";
+        kpiCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectAccent } };
+        kpiCell.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+        kpiCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+        colLabels.forEach((label, i) => {
+          const cell = headerRow.getCell(2 + i);
+          cell.value = label;
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectAccent } };
+          cell.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+          cell.alignment = { vertical: "middle", horizontal: "right" };
+        });
+        const totalCell = headerRow.getCell(totalAvgCol);
+        totalCell.value = "Total / Avg";
+        totalCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectAccent } };
+        totalCell.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+        totalCell.alignment = { vertical: "middle", horizontal: "center" };
+        [["unhealthy", benchUnhCol], ["healthy", benchHCol], ["vhealthy", benchVHCol]].forEach(([key, col]) => {
+          const cell = headerRow.getCell(col);
+          cell.value = BENCH_HEAD[key].label;
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: BENCH_HEAD[key].hdrBg } };
+          cell.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+          cell.alignment = { vertical: "middle", horizontal: "center" };
+        });
+        curRow++;
+      }
+
+      // Data rows
+      kpiList.forEach((kpi, rowIdx) => {
+        const bandColor = rowIdx % 2 === 0 ? C.band1 : C.band2;
+
+        const values = cols.map(col => {
+          const res = resultsMap?.get(col);
+          if (!res) return null;
+          const v = res.get(kpi.id);
+          return Number.isFinite(v) ? v : null;
+        });
+        const cmpValues = showCmp ? cols.map(col => {
+          const res = cmpResultsMap.get(col);
+          if (!res) return null;
+          const v = res.get(kpi.id);
+          return Number.isFinite(v) ? v : null;
+        }) : null;
+
+        const validVals = values.filter(v => v !== null);
+        const aggregateRaw = validVals.length === 0 ? null
+          : kpi.format === "percent"
+            ? validVals.reduce((a, b) => a + b, 0) / validVals.length
+            : validVals.reduce((a, b) => a + b, 0);
+        const aggregate = Number.isFinite(aggregateRaw) ? aggregateRaw : null;
+
+        const dataRowNum = curRow;
+        const kpiType = kpi._isOverridden
+          ? { label: "EDITED", color: "FF7C3AED" }
+          : (kpi._kpiType === "custom" || kpi._createdBy)
+            ? { label: "CUSTOM", color: "FF15803D" }
+            : { label: "SYSTEM", color: "FF6B7280" };
+        const labelCell = ws.getCell(dataRowNum, 1);
+        labelCell.value = {
+          richText: [
+            { text: kpi.label, font: { name: "Calibri", size: 11, bold: true, color: { argb: C.primary } } },
+            { text: `   ${kpiType.label}`, font: { name: "Calibri", size: 8, bold: true, color: { argb: kpiType.color } } },
+          ]
+        };
+        labelCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: bandColor } };
+        labelCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+        labelCell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+
+        const writeNumCell = (rowN, colN, val, format, fillArgb, opts = {}) => {
+          const cell = ws.getCell(rowN, colN);
+          if (!Number.isFinite(val)) {
+            cell.value = "—";
+            cell.font = { name: "Calibri", size: 10, color: { argb: C.gray400 }, bold: !!opts.bold };
+          } else {
+            cell.value = val;
+            cell.numFmt = format === "percent" ? '0.0"%"' : '#,##0;[Red]-#,##0';
+            cell.font = {
+              name: "Calibri", size: 10, bold: !!opts.bold,
+              color: { argb: opts.colorOverride ?? (val < 0 ? C.red : (format === "percent" && val >= 0 ? C.green : C.primary)) },
+            };
+          }
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fillArgb } };
+          cell.alignment = { vertical: "middle", horizontal: "right", indent: 1 };
+          cell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+        };
+
+        cols.forEach((_, i) => {
+          if (showCmp) {
+            const startCol = 2 + i * 4;
+            const a = values[i];
+            const c = cmpValues[i];
+            const deltaRaw    = (a !== null && c !== null) ? a - c : null;
+            const deltaPctRaw = (a !== null && c !== null && kpi.format !== "percent" && Math.abs(c) > 1e-9) ? ((a - c) / Math.abs(c)) * 100 : null;
+            const delta    = Number.isFinite(deltaRaw)    ? deltaRaw    : null;
+            const deltaPct = Number.isFinite(deltaPctRaw) ? deltaPctRaw : null;
+            writeNumCell(dataRowNum, startCol,     a, kpi.format, bandColor);
+            writeNumCell(dataRowNum, startCol + 1, c, kpi.format, bandColor, { colorOverride: c !== null && c < 0 ? C.red : C.compareB });
+            writeNumCell(dataRowNum, startCol + 2, delta, kpi.format, bandColor, { colorOverride: delta === null ? null : (delta < 0 ? C.red : C.green) });
+            const pctCell = ws.getCell(dataRowNum, startCol + 3);
+            if (deltaPct === null) {
+              pctCell.value = "—";
+              pctCell.font = { name: "Calibri", size: 10, color: { argb: C.gray400 } };
+            } else {
+              pctCell.value = deltaPct;
+              pctCell.numFmt = '0.0"%"';
+              pctCell.font = { name: "Calibri", size: 10, bold: true, color: { argb: deltaPct < 0 ? C.red : C.green } };
+            }
+            pctCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: bandColor } };
+            pctCell.alignment = { vertical: "middle", horizontal: "right", indent: 1 };
+            pctCell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+          } else {
+            writeNumCell(dataRowNum, 2 + i, values[i], kpi.format, bandColor);
+          }
+        });
+
+        writeNumCell(dataRowNum, totalAvgCol, aggregate, kpi.format, C.highlight, { bold: true });
+
+        // Benchmark columns
+        [["unhealthy", benchUnhCol], ["healthy", benchHCol], ["vhealthy", benchVHCol]].forEach(([key, col]) => {
+          const cell = ws.getCell(dataRowNum, col);
+          const txt = fmtBenchRange(kpi.benchmark?.[key]);
+          cell.value = txt;
+          cell.font = { name: "Calibri", size: 10, bold: txt !== "—", color: { argb: txt === "—" ? C.gray400 : BENCH_HEAD[key].text } };
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: BENCH_HEAD[key].cellBg } };
+          cell.alignment = { vertical: "middle", horizontal: "center" };
+          cell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+        });
+
+        curRow++;
+
+        // Collapsible trailers (only on first section to avoid duplication)
+        if (inlineDefs && sIdx === 0) {
+          const fSum = kpiFormulaSummary(kpi, kpiList, accountCodeLabels);
+          const trailerBg = "FFF8F9FF";
+          const addTrailerRow = (label, value, accentArgb) => {
+            if (!value) return;
+            const r = ws.getRow(curRow);
+            r.height = 16;
+            r.outlineLevel = 1;
+            r.hidden = true;
+            const cell = r.getCell(1);
+            cell.value = {
+              richText: [
+                { text: `  ${label}  `, font: { name: "Calibri", size: 9, bold: true, color: { argb: accentArgb } } },
+                { text: value, font: { name: "Calibri", size: 9, color: { argb: "FF374151" } } },
+              ]
+            };
+            cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: trailerBg } };
+            cell.alignment = { vertical: "middle", horizontal: "left", indent: 2 };
+            for (let cc = 2; cc <= totalCols; cc++) {
+              const blank = r.getCell(cc);
+              blank.fill = { type: "pattern", pattern: "solid", fgColor: { argb: trailerBg } };
+              blank.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+            }
+            curRow++;
+          };
+          if (kpi.description) addTrailerRow("DESCRIPTION", kpi.description, C.gray500);
+          if (fSum.expression) addTrailerRow("FORMULA", fSum.expression, C.primary);
+          if (fSum.variables.length > 0) {
+            const varsTxt = fSum.variables.map(v => `${v.letter} = ${v.desc}`).join("    •    ");
+            addTrailerRow("VARIABLES", varsTxt, C.primary);
+          }
+        }
+      });
+
+      // Spacer between sections
+      if (sIdx < sections.length - 1) {
+        ws.getRow(curRow).height = 14;
+        curRow++;
+      }
     });
 
-    ws.getColumn(1).width = 38;
-    for (let i = 2; i <= 2 + cols.length; i++) ws.getColumn(i).width = 18;
+    // Column widths
+    ws.getColumn(1).width = 42;
+    if (anyCmp) {
+      for (let i = 0; i < cols.length; i++) {
+        ws.getColumn(2 + i * 4).width     = 16;
+        ws.getColumn(2 + i * 4 + 1).width = 14;
+        ws.getColumn(2 + i * 4 + 2).width = 12;
+        ws.getColumn(2 + i * 4 + 3).width = 10;
+      }
+    } else {
+      for (let i = 2; i <= 1 + cols.length; i++) ws.getColumn(i).width = 18;
+    }
+    ws.getColumn(totalAvgCol).width = 16;
+    ws.getColumn(benchUnhCol).width = 14;
+    ws.getColumn(benchHCol).width   = 14;
+    ws.getColumn(benchVHCol).width  = 14;
   };
 
-  if (companyCodes && companyCodes.length > 0 && companyResults) {
-    addKpiMatrixSheet("KPIs by Company", "KPI Dashboard — By Company",
-      companyCodes, companyCodes, companyResults);
+if (companyCodes && companyCodes.length > 0 && companyResults?.ytd) {
+    const labels = (companyLabels && companyLabels.length === companyCodes.length) ? companyLabels : companyCodes;
+    addKpiMatrixSheet("Company KPIs", "KPI Dashboard — By Company",
+      companyCodes, labels,
+      [
+        { label: "YTD · Year-to-Date",     resultsMap: companyResults.ytd,     cmpResultsMap: companyResultsCmp?.ytd     ?? null },
+        { label: "Monthly · Period Delta", resultsMap: companyResults.monthly, cmpResultsMap: companyResultsCmp?.monthly ?? null },
+      ]);
   }
 
-  if (dimensionCodes && dimensionCodes.length > 0 && dimensionResults) {
+  if (dimensionCodes && dimensionCodes.length > 0 && dimensionResults?.ytd) {
     const dimLabels = dimensionCodes.map(dc => dimensionPivots?.get(dc)?.name ?? dc);
-    addKpiMatrixSheet("KPIs by Dimension", "KPI Dashboard — By Dimension",
-      dimensionCodes, dimLabels, dimensionResults);
+    addKpiMatrixSheet("Dimension KPIs", "KPI Dashboard — By Dimension",
+      dimensionCodes, dimLabels,
+      [
+        { label: "YTD · Year-to-Date",     resultsMap: dimensionResults.ytd,     cmpResultsMap: dimensionResultsCmp?.ytd     ?? null },
+        { label: "Monthly · Period Delta", resultsMap: dimensionResults.monthly, cmpResultsMap: dimensionResultsCmp?.monthly ?? null },
+      ]);
   }
 
-// Graphs tab — one sheet per section: chart image on left, data table on right
+  // ── KPI Definitions sheet ──
+  if (exportOpts.defsSheet !== false) {
+    const dws = wb.addWorksheet("KPI Definitions", { views: [{ state: "frozen", ySplit: 2 }] });
+    dws.mergeCells(1, 1, 1, 5);
+    const dTitle = dws.getCell(1, 1);
+    dTitle.value = "KPI Definitions · Formulas · Benchmarks";
+    dTitle.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+    dTitle.font = { name: "Calibri", size: 14, bold: true, color: { argb: C.white } };
+    dTitle.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+    dws.getRow(1).height = 26;
+
+    const dHead = dws.getRow(2);
+    dHead.height = 22;
+    ["KPI", "Category", "Format", "Formula · Variables", "Benchmark"].forEach((h, i) => {
+      const cell = dHead.getCell(i + 1);
+      cell.value = h;
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+      cell.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+      cell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+    });
+
+    kpiList.forEach((kpi, i) => {
+      const r = dws.getRow(3 + i);
+      const band = i % 2 === 0 ? C.band1 : C.band2;
+      const fSum = kpiFormulaSummary(kpi, kpiList, accountCodeLabels);
+      const bDesc = describeBenchmark(kpi.benchmark);
+      const formulaTxt = [
+        fSum.expression ? `Formula: ${fSum.expression}` : null,
+        fSum.variables.length > 0 ? fSum.variables.map(v => `${v.letter} = ${v.desc}`).join("\n") : null,
+        kpi.description ? `Description: ${kpi.description}` : null,
+      ].filter(Boolean).join("\n");
+
+      const cells = [
+        kpi.label,
+        kpi.category ?? "",
+        kpi.format ?? "",
+        formulaTxt || "—",
+        bDesc ?? "—",
+      ];
+      cells.forEach((v, j) => {
+        const c = r.getCell(j + 1);
+        c.value = v;
+        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
+        c.font = { name: "Calibri", size: 10, bold: j === 0, color: { argb: j === 0 ? C.primary : "FF374151" } };
+        c.alignment = { vertical: "top", horizontal: "left", indent: 1, wrapText: true };
+        c.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+      });
+      const formulaLineCount = formulaTxt.split("\n").length;
+      r.height = Math.max(20, formulaLineCount * 15);
+    });
+
+    dws.getColumn(1).width = 32;
+    dws.getColumn(2).width = 16;
+    dws.getColumn(3).width = 12;
+    dws.getColumn(4).width = 60;
+    dws.getColumn(5).width = 40;
+  }
+
+// Graphs tab — one sheet per section: YTD chart+table on top, Monthly chart+table below
   if (graphSections && graphSections.length > 0) {
     for (let secIdx = 0; secIdx < graphSections.length; secIdx++) {
-  const section = graphSections[secIdx];
+      const section = graphSections[secIdx];
       const { sectionId, company, startY, startM, endY, endM, source: secSource, structure: secStructure,
-              dimGroup, dim, mode, kpiIds, chartData } = section;
+              dimGroup, dim,
+              ytdData, ytdImg, monthlyData, monthlyImg, series } = section;
+      const seriesList = Array.isArray(series) ? series : [];
 
       const sheetName = `Graph ${sectionId}`;
-      const ws = wb.addWorksheet(sheetName, { views: [{ state: "frozen", ySplit: 4 }] });
+      const ws = wb.addWorksheet(sheetName, { views: [{ state: "frozen", ySplit: 3 }] });
 
-      // Title
-      ws.mergeCells(1, 1, 1, 20);
-      const t = ws.getCell(1, 1);
+      // Title row (merged narrow — over data-table cols only, prevents dimension corruption)
+      const TBL_COL = 12;                                                  // data table starts at L
+      const TBL_END_COL = Math.max(20, TBL_COL + seriesList.length);       // grows with series count
+      ws.mergeCells(1, TBL_COL, 1, TBL_END_COL);
+      const t = ws.getCell(1, TBL_COL);
       t.value = `Section ${sectionId} — ${company || "—"}`;
       t.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
-      t.font = { name: "Calibri", size: 16, bold: true, color: { argb: C.white } };
+      t.font = { name: "Calibri", size: 14, bold: true, color: { argb: C.white } };
       t.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
-      ws.getRow(1).height = 28;
+      ws.getRow(1).height = 26;
 
-      // Filter subtitle
-      ws.mergeCells(2, 1, 2, 20);
-      const s = ws.getCell(2, 1);
+      // Subtitle (filters)
+      ws.mergeCells(2, TBL_COL, 2, TBL_END_COL);
+      const s = ws.getCell(2, TBL_COL);
       const rangeStr = `${monthLabel(startM)} ${startY} → ${monthLabel(endM)} ${endY}`;
-      const descParts = [rangeStr, secSource, secStructure, mode === "ytd" ? "YTD" : "Monthly"];
-      if (dimGroup) descParts.push(`Dim Group: ${dimGroup}`);
-      if (dim) descParts.push(`Dim: ${dim}`);
+      const descParts = [rangeStr, secSource, secStructure];
+const dgArr = Array.isArray(dimGroup) ? dimGroup : (dimGroup ? [dimGroup] : []);
+      const dArr  = Array.isArray(dim)      ? dim      : (dim      ? [dim]      : []);
+      if (dgArr.length > 0) descParts.push(`Dim Groups: ${dgArr.join(", ")}`);
+      if (dArr.length  > 0) descParts.push(`Dims: ${dArr.join(", ")}`);
       s.value = descParts.join(" · ");
       s.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
-      s.font = { name: "Calibri", size: 10, color: { argb: C.white } };
+      s.font = { name: "Calibri", size: 10, color: { argb: "FFE0E7FF" } };
       s.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
       ws.getRow(2).height = 18;
       ws.getRow(3).height = 6;
 
-      const kpis = (kpiIds || []).map(id => kpiList.find(k => k.id === id)).filter(Boolean);
+// Per-series header background follows the in-app palette: A = section accent, B = pink, C = green
+      const headerBgFor = (s, sectAccent) => {
+        if (!s || s.barId === "a") return sectAccent;
+        if (s.barId === "B") return "FFCF305D";
+        if (s.barId === "C") return "FF10B981";
+        return sectAccent;
+      };
 
-const imageDataUrl = section.imageDataUrl;
-      if (imageDataUrl) {
-        try {
-          const imageId = wb.addImage({ base64: imageDataUrl, extension: "png" });
-          ws.addImage(imageId, {
-            tl: { col: 0, row: 3 },
-            br: { col: 10, row: 22 },
-            editAs: "oneCell",
-          });
-        } catch (e) {
-          console.warn(`Chart embed failed for section ${sectionId}:`, e);
+      const renderPeriodSection = (label, accentBg, imgB64, data, startRow) => {
+        ws.mergeCells(startRow, TBL_COL, startRow, TBL_END_COL);
+        const lbl = ws.getCell(startRow, TBL_COL);
+        lbl.value = label;
+        lbl.fill = { type: "pattern", pattern: "solid", fgColor: { argb: accentBg } };
+        lbl.font = { name: "Calibri", size: 11, bold: true, color: { argb: C.white } };
+        lbl.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+        ws.getRow(startRow).height = 20;
+
+        if (imgB64) {
+          try {
+            const imageId = wb.addImage({ base64: imgB64, extension: "png" });
+            ws.addImage(imageId, {
+              tl: { col: 0, row: startRow },
+              br: { col: 10, row: startRow + 19 },
+              editAs: "oneCell",
+            });
+          } catch (e) { console.warn(`Chart embed failed (${label}):`, e); }
         }
-      }
 
-      // Data table on right half, starting column 12 (L)
-      const tableStartCol = 12;
-      const tableStartRow = 4;
-      const headerRow = ws.getRow(tableStartRow);
-      headerRow.height = 22;
-      headerRow.getCell(tableStartCol).value = "Period";
-      kpis.forEach((kpi, i) => headerRow.getCell(tableStartCol + 1 + i).value = kpi.label);
-      for (let i = 0; i <= kpis.length; i++) {
-        const c = headerRow.getCell(tableStartCol + i);
-        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
-        c.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
-        c.alignment = { vertical: "middle", horizontal: i === 0 ? "left" : "right", indent: 1 };
-      }
-
-      (chartData || []).forEach((d, idx) => {
-        const r = ws.getRow(tableStartRow + 1 + idx);
-        r.height = 18;
-        const band = idx % 2 === 0 ? C.band1 : C.band2;
-        r.getCell(tableStartCol).value = d.period;
-        r.getCell(tableStartCol).fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
-        r.getCell(tableStartCol).font = { name: "Calibri", size: 10, color: { argb: C.primary }, bold: true };
-        r.getCell(tableStartCol).alignment = { vertical: "middle", horizontal: "left", indent: 1 };
-
-        kpis.forEach((kpi, i) => {
-          const val = d[kpi.id];
-          const c = r.getCell(tableStartCol + 1 + i);
-          if (val === null || val === undefined || isNaN(val)) {
-            c.value = null;
-            c.font = { name: "Calibri", size: 10, color: { argb: C.gray400 } };
-          } else {
-            c.value = val;
-            c.numFmt = kpi.format === "percent" ? '0.0"%"' : '#,##0;[Red]-#,##0';
-            c.font = {
-              name: "Calibri", size: 10,
-              color: { argb: val < 0 ? C.red : C.primary },
-            };
-          }
-          c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
-          c.alignment = { vertical: "middle", horizontal: "right", indent: 1 };
+        const headerRow = ws.getRow(startRow + 1);
+        headerRow.height = 22;
+        const periodHdr = headerRow.getCell(TBL_COL);
+        periodHdr.value = "Period";
+        periodHdr.fill = { type: "pattern", pattern: "solid", fgColor: { argb: accentBg } };
+        periodHdr.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+        periodHdr.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+        seriesList.forEach((s, i) => {
+          const c = headerRow.getCell(TBL_COL + 1 + i);
+          c.value = s.label;
+          c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: headerBgFor(s, accentBg) } };
+          c.font = { name: "Calibri", size: 9, bold: true, color: { argb: C.white } };
+          c.alignment = { vertical: "middle", horizontal: "right", indent: 1, wrapText: true };
         });
-      });
 
-      // Column widths: leave cols 1-10 for chart image, 11 as spacer, 12+ for table
+        (data || []).forEach((d, idx) => {
+          const r = ws.getRow(startRow + 2 + idx);
+          r.height = 18;
+          const band = idx % 2 === 0 ? C.band1 : C.band2;
+          const periodCell = r.getCell(TBL_COL);
+          periodCell.value = d.period;
+          periodCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
+          periodCell.font = { name: "Calibri", size: 10, color: { argb: C.primary }, bold: true };
+          periodCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+          seriesList.forEach((s, i) => {
+            const val = d[s.key];
+            const c = r.getCell(TBL_COL + 1 + i);
+            if (!Number.isFinite(val)) {
+              c.value = "—";
+              c.font = { name: "Calibri", size: 9, color: { argb: C.gray400 } };
+            } else {
+              c.value = val;
+              c.numFmt = s.format === "percent" ? '0.0"%"' : '#,##0;[Red]-#,##0';
+              c.font = { name: "Calibri", size: 9, color: { argb: val < 0 ? C.red : C.primary } };
+            }
+            c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
+            c.alignment = { vertical: "middle", horizontal: "right", indent: 1 };
+          });
+        });
+
+        return startRow + Math.max(22, (data?.length ?? 0) + 3);
+      };
+
+      let nextRow = 4;
+      nextRow = renderPeriodSection("YTD · Year-to-Date",  C.primary,   ytdImg,     ytdData,     nextRow);
+      nextRow += 1;
+      renderPeriodSection("Monthly · Period Delta",        "FFCF305D",  monthlyImg, monthlyData, nextRow);
+
+      // Column widths
       for (let i = 1; i <= 10; i++) ws.getColumn(i).width = 10;
       ws.getColumn(11).width = 2;
-      ws.getColumn(tableStartCol).width = 14;
-      kpis.forEach((_, i) => { ws.getColumn(tableStartCol + 1 + i).width = 16; });
+      ws.getColumn(TBL_COL).width = 14;
+      seriesList.forEach((_, i) => { ws.getColumn(TBL_COL + 1 + i).width = 15; });
     }
   }
 
-  const buffer = await wb.xlsx.writeBuffer();
-  const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-  const fname = `Konsolidator_KPIs_${filters?.year ?? ""}_${String(filters?.month ?? "").padStart(2, "0")}.xlsx`;
+const buffer   = await wb.xlsx.writeBuffer();
+  const repaired = await repairXlsxDimensions(buffer);
+  const blob     = new Blob([repaired], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const fname    = `Konsolidator_KPIs_${filters?.year ?? ""}_${String(filters?.month ?? "").padStart(2, "0")}.xlsx`;
   saveAs(blob, fname);
 }
-
 async function exportKpisToPdf({
-  kpiList, companyCodes, companyResults,
-  dimensionCodes, dimensionResults, dimensionPivots,
-  graphSections, filters,
+  kpiList, companyCodes, companyLabels, companyResults, companyResultsCmp,
+  dimensionCodes, dimensionResults, dimensionResultsCmp, dimensionPivots,
+  graphSections, filters, exportOpts = {}, accountCodeLabels = new Map(),
 }) {
   const H = {
-    primary:   "#1A2F8A",
-    primaryDk: "#1A2B6B",
-    highlight: "#EEF1FB",
-    band1:     "#FFFFFF",
-    band2:     "#F8F9FF",
-    white:     "#FFFFFF",
-    gray400:   "#9CA3AF",
-    gray500:   "#6B7280",
-    green:     "#059669",
-    red:       "#DC2626",
+    primary:   [26, 47, 138],
+    primaryDk: [13, 27, 84],
+    compareB:  [207, 48, 93],
+    compareC:  [16, 185, 129],
+    band2:     [248, 249, 255],
+    highlight: [238, 241, 251],
+    white:     [255, 255, 255],
+    gray400:   [156, 163, 175],
+    gray500:   [107, 114, 128],
+    gray700:   [55, 65, 81],
+    red:       [220, 38, 38],
+    green:     [5, 150, 105],
+    benchUnBg: [254, 242, 242], benchUnHd: [185, 28, 28],
+    benchHeBg: [240, 253, 244], benchHeHd: [21, 128, 61],
+    benchVHBg: [239, 246, 255], benchVHHd: [30, 64, 175],
   };
 
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
-  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
 
-  const drawHeader = (title, subtitle) => {
-    doc.setFillColor(H.primary);
-    doc.rect(0, 0, pageWidth, 60, "F");
-    doc.setTextColor(H.white);
+  const fmtBenchRange = (r) => {
+    if (!r) return "—";
+    const min = r.min !== "" && r.min !== undefined && r.min !== null ? r.min : null;
+    const max = r.max !== "" && r.max !== undefined && r.max !== null ? r.max : null;
+    if (min !== null && max !== null) return `${min} to ${max}`;
+    if (min !== null) return `> ${min}`;
+    if (max !== null) return `< ${max}`;
+    return "—";
+  };
+
+  const kpiTypeBadge = (kpi) => {
+    if (kpi._isOverridden) return "EDITED";
+    if (kpi._kpiType === "custom" || kpi._createdBy) return "CUSTOM";
+    return "SYSTEM";
+  };
+
+  // PDF-safe filter line builder — jsPDF's default helvetica can't render emoji or Greek
+  // characters, so we strip the calendar/vs emojis from the header version and use plain
+  // ASCII labels instead.
+  const buildPdfFilterLines = (f) => {
+    if (!f) return ["—"];
+    const lines = [];
+    const period = [];
+    if (f.year && f.month) period.push(`PERIOD: ${monthLabel(f.month)} ${f.year}`);
+    if (f.source)    period.push(`SOURCE: ${f.source}`);
+    if (f.structure) period.push(`STRUCTURE: ${f.structure}`);
+    if (period.length) lines.push(period.join("   ·   "));
+
+    if (Array.isArray(f.companies) && f.companies.length > 0) {
+      const txt = f.companies.length > 6
+        ? `COMPANIES (${f.companies.length}): ${f.companies.slice(0,4).join(", ")} +${f.companies.length - 4} more`
+        : `COMPANIES: ${f.companies.join(", ")}`;
+      lines.push(txt);
+    }
+
+    const dim = [];
+    if (Array.isArray(f.dimGroups) && f.dimGroups.length > 0) dim.push(`DIM GROUPS: ${f.dimGroups.join(", ")}`);
+    if (Array.isArray(f.dims)      && f.dims.length      > 0) dim.push(`DIMS: ${f.dims.join(", ")}`);
+    if (dim.length) lines.push(dim.join("   ·   "));
+
+    if (f.compareMode && f.cmpYear && f.cmpMonth) {
+      const cmp = [`COMPARED WITH: ${monthLabel(f.cmpMonth)} ${f.cmpYear}`];
+      if (f.cmpSource)    cmp.push(`SOURCE: ${f.cmpSource}`);
+      if (f.cmpStructure) cmp.push(`STRUCTURE: ${f.cmpStructure}`);
+      lines.push(cmp.join("   ·   "));
+    }
+
+    return lines.length ? lines : ["—"];
+  };
+
+  // Graph-page filters are different: section-scoped date range, the section's own
+  // companies (which can differ from the global multi-select), dim group/dim, and the
+  // KPIs being charted.
+  const buildGraphFilterLines = (section) => {
+    const lines = [];
+    const period = [];
+    period.push(`RANGE: ${monthLabel(section.startM)} ${section.startY}  to  ${monthLabel(section.endM)} ${section.endY}`);
+    if (section.source)    period.push(`SOURCE: ${section.source}`);
+    if (section.structure) period.push(`STRUCTURE: ${section.structure}`);
+    lines.push(period.join("   ·   "));
+
+    const companies = Array.isArray(section.companies) && section.companies.length > 0
+      ? section.companies
+      : (section.company ? section.company.split(", ").filter(Boolean) : []);
+    if (companies.length > 0) lines.push(`COMPANIES: ${companies.join(", ")}`);
+
+const dim = [];
+    const sgs = Array.isArray(section.dimGroup) ? section.dimGroup : (section.dimGroup ? [section.dimGroup] : []);
+    const sds = Array.isArray(section.dim)      ? section.dim      : (section.dim      ? [section.dim]      : []);
+    if (sgs.length > 0) dim.push(`DIM GROUPS: ${sgs.join(", ")}`);
+    if (sds.length > 0) dim.push(`DIMS: ${sds.join(", ")}`);
+    if (dim.length) lines.push(dim.join("   ·   "));
+
+    const seriesList = Array.isArray(section.series) ? section.series : [];
+    const kpiIds = [...new Set(seriesList.map(s => s.kpiId))];
+    const kpiNames = kpiIds.map(id => kpiList.find(k => k.id === id)?.label ?? id);
+    if (kpiNames.length > 0) {
+      const cmpNote = section.compareMode ? "   ·   WITH COMPARE OVERLAY" : "";
+      lines.push(`KPIs: ${kpiNames.join(", ")}${cmpNote}`);
+    }
+
+    return lines.length ? lines : ["—"];
+  };
+
+  const drawTitleBar = (title) => {
+    doc.setFillColor(...H.primary);
+    doc.rect(0, 0, pageW, 36, "F");
+    doc.setTextColor(...H.white);
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(16);
-    doc.text(title, 24, 28);
+    doc.setFontSize(14);
+    doc.text(title, 24, 24);
+  };
+
+  const drawSubtitleLines = (startY, lines) => {
+    const lineH = 12;
+    const totalH = lines.length * lineH + 10;
+    doc.setFillColor(...H.primary);
+    doc.rect(0, startY, pageW, totalH, "F");
+    doc.setTextColor(220, 230, 255);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5);
+    lines.forEach((line, i) => {
+      doc.text(line, 24, startY + 6 + lineH * (i + 0.7));
+    });
+    return startY + totalH;
+  };
+
+  const drawSectionBar = (label, startY, accentRgb) => {
+    doc.setFillColor(...accentRgb);
+    doc.rect(0, startY, pageW, 16, "F");
+    doc.setTextColor(...H.white);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.text(label, 24, startY + 11);
+    return startY + 16;
+  };
+
+  // Cover / contents page
+  const drawCoverPage = () => {
+    drawTitleBar("KPI Dashboard Report");
+
+    const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" });
+    doc.setTextColor(220, 230, 255);
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
-    doc.text(subtitle, 24, 46);
+    const todayLabel = `Generated ${today}`;
+    doc.text(todayLabel, pageW - 24 - doc.getTextWidth(todayLabel), 24);
+
+    let y = 110;
+    doc.setTextColor(...H.primary);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(38);
+    const bigPeriod = `${monthLabel(filters?.month) ?? ""} ${filters?.year ?? ""}`.trim() || "KPI Report";
+    doc.text(bigPeriod, 36, y);
+
+    y += 26;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    doc.setTextColor(...H.gray700);
+    const subPieces = [];
+    if (filters?.source)    subPieces.push(filters.source);
+    if (filters?.structure) subPieces.push(filters.structure);
+    if (subPieces.length > 0) doc.text(subPieces.join("   ·   "), 36, y);
+
+    if (filters?.compareMode && filters?.cmpYear && filters?.cmpMonth) {
+      y += 22;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      doc.setTextColor(...H.compareB);
+      doc.text(`Compared with  ${monthLabel(filters.cmpMonth)} ${filters.cmpYear}`, 36, y);
+    }
+
+    if (Array.isArray(filters?.companies) && filters.companies.length > 0) {
+      y += 32;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8);
+      doc.setTextColor(...H.gray500);
+      doc.text("COMPANIES IN THIS REPORT", 36, y);
+      y += 14;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.setTextColor(...H.primary);
+      const compText = filters.companies.join("   ·   ");
+      const split = doc.splitTextToSize(compText, pageW - 72);
+      split.forEach(line => { doc.text(line, 36, y); y += 13; });
+    }
+
+    // Contents
+    y = Math.max(y + 40, pageH * 0.58);
+    doc.setFillColor(...H.primary);
+    doc.rect(36, y - 12, 3, 16, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.setTextColor(...H.primary);
+    doc.text("CONTENTS", 46, y);
+    y += 24;
+
+    const tocItems = [];
+    if (companyCodes && companyCodes.length > 0)     tocItems.push({ label: "Company KPIs",     desc: "YTD + Monthly Delta per company, with compare period" });
+    if (dimensionCodes && dimensionCodes.length > 0) tocItems.push({ label: "Dimension KPIs",   desc: "YTD + Monthly Delta per dimension, with compare period" });
+    if (graphSections && graphSections.length > 0) {
+      graphSections.forEach(s => tocItems.push({
+        label: `Graphs — Section ${s.sectionId}`,
+        desc:  `${s.company || "—"}  ·  ${s.compareMode ? "with compare overlay" : "primary period"}`,
+      }));
+    }
+    if (exportOpts.defsSheet !== false) tocItems.push({ label: "KPI Definitions", desc: "Formulas, variables, benchmark ranges" });
+
+    tocItems.forEach((it, idx) => {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      doc.setTextColor(...H.gray400);
+      doc.text(String(idx + 1).padStart(2, "0"), 36, y);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.setTextColor(...H.primary);
+      doc.text(it.label, 70, y);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(...H.gray500);
+      doc.text(it.desc, 70, y + 13);
+      doc.setDrawColor(230, 232, 240);
+      doc.setLineWidth(0.5);
+      doc.line(36, y + 22, pageW - 36, y + 22);
+      y += 34;
+    });
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(...H.gray400);
+    doc.text("Konsolidator", 24, pageH - 18);
   };
 
-  const addKpiMatrix = (title, cols, colLabels, resultsMap, isFirst) => {
-    if (!isFirst) doc.addPage();
-    drawHeader(title, buildFilterString(filters) || "—");
+  const renderMatrixTable = (cols, colLabels, resultsMap, cmpResultsMap, startY) => {
+    const useCmp = cmpResultsMap != null;
 
-    const head = [["KPI", ...colLabels, "Total / Avg"]];
-    const body = kpiList.map(kpi => {
-      const values = cols.map(col => {
-        const res = resultsMap.get(col);
+    const kpiAggregates = kpiList.map(kpi => {
+      const allVals = cols.map(col => {
+        const res = resultsMap?.get(col);
         if (!res) return null;
         const v = res.get(kpi.id);
-        return (v === undefined || v === null || isNaN(v)) ? null : v;
-      });
-      const validVals = values.filter(v => v !== null);
-      const aggregate = validVals.length === 0 ? null
+        return Number.isFinite(v) ? v : null;
+      }).filter(v => v !== null);
+      const raw = allVals.length === 0 ? null
         : kpi.format === "percent"
-          ? validVals.reduce((a, b) => a + b, 0) / validVals.length
-          : validVals.reduce((a, b) => a + b, 0);
-
-      return [
-        kpi.label,
-        ...values.map(v => v === null ? "—" : fmtValue(v, kpi.format)),
-        aggregate === null ? "—" : fmtValue(aggregate, kpi.format),
-      ];
+          ? allVals.reduce((a,b) => a+b, 0) / allVals.length
+          : allVals.reduce((a,b) => a+b, 0);
+      return Number.isFinite(raw) ? raw : null;
     });
 
- autoTable(doc, {
-      head, body,
-      startY: 80,
-      theme: "plain",
-      styles: { font: "helvetica", fontSize: 8, cellPadding: 5, textColor: H.primary },
-      headStyles: { fillColor: H.primary, textColor: H.white, fontStyle: "bold", halign: "right" },
-      columnStyles: {
-        0: { halign: "left", fontStyle: "bold", cellWidth: 140 },
-        [cols.length + 1]: { fillColor: H.highlight, fontStyle: "bold" },
-      },
-      alternateRowStyles: { fillColor: H.band2 },
-      didParseCell: (data) => {
-        if (data.section === "body" && data.column.index > 0) {
-          data.cell.styles.halign = "right";
-          const raw = data.cell.raw;
-          if (typeof raw === "string" && raw.startsWith("-")) {
-            data.cell.styles.textColor = H.red;
-          }
-        }
-      },
-    });
-  };
+    const renderChunk = (chunkCols, chunkLabels, sY) => {
+      const nCols = chunkCols.length;
+      let head, body;
+      const totalAvgIdx = 1 + nCols * (useCmp ? 4 : 1);
+      const benchUnIdx  = totalAvgIdx + 1;
+      const benchHeIdx  = totalAvgIdx + 2;
+      const benchVHIdx  = totalAvgIdx + 3;
 
-  let firstPage = true;
-  if (companyCodes && companyCodes.length > 0 && companyResults) {
-    addKpiMatrix("KPI Dashboard — By Company", companyCodes, companyCodes, companyResults, firstPage);
-    firstPage = false;
-  }
+      if (useCmp) {
+        const headSuper = [
+          { content: "KPI", rowSpan: 2, styles: { halign: "left", valign: "middle", fillColor: H.primary, textColor: H.white, fontStyle: "bold", fontSize: 7.5 } },
+        ];
+        chunkLabels.forEach(l => {
+          headSuper.push({ content: l, colSpan: 4, styles: { halign: "center", valign: "middle", fillColor: H.primary, textColor: H.white, fontStyle: "bold", fontSize: 7.5 } });
+        });
+        headSuper.push({ content: "Total/Avg", rowSpan: 2, styles: { halign: "center", valign: "middle", fillColor: H.primary, textColor: H.white, fontStyle: "bold", fontSize: 7 } });
+        headSuper.push({ content: "Unhealthy", rowSpan: 2, styles: { halign: "center", valign: "middle", fillColor: H.benchUnHd, textColor: H.white, fontStyle: "bold", fontSize: 7 } });
+        headSuper.push({ content: "Healthy",   rowSpan: 2, styles: { halign: "center", valign: "middle", fillColor: H.benchHeHd, textColor: H.white, fontStyle: "bold", fontSize: 7 } });
+        headSuper.push({ content: "Excellent", rowSpan: 2, styles: { halign: "center", valign: "middle", fillColor: H.benchVHHd, textColor: H.white, fontStyle: "bold", fontSize: 7 } });
 
-  if (dimensionCodes && dimensionCodes.length > 0 && dimensionResults) {
-    const dimLabels = dimensionCodes.map(dc => dimensionPivots?.get(dc)?.name ?? dc);
-    addKpiMatrix("KPI Dashboard — By Dimension", dimensionCodes, dimLabels, dimensionResults, firstPage);
-    firstPage = false;
-  }
+        // Sub-row: A / Cmp / DIFF / DIFF % — no Greek (jsPDF helvetica can't render it)
+        const headSub = [];
+        chunkCols.forEach(() => {
+          headSub.push({ content: "A",       styles: { halign: "center", valign: "middle", fillColor: H.primary,   textColor: H.white, fontStyle: "bold", fontSize: 6.5 } });
+          headSub.push({ content: "Cmp",     styles: { halign: "center", valign: "middle", fillColor: H.compareB,  textColor: H.white, fontStyle: "bold", fontSize: 6.5 } });
+          headSub.push({ content: "DIFF",    styles: { halign: "center", valign: "middle", fillColor: H.primaryDk, textColor: H.white, fontStyle: "bold", fontSize: 6.5 } });
+          headSub.push({ content: "DIFF %",  styles: { halign: "center", valign: "middle", fillColor: H.primaryDk, textColor: H.white, fontStyle: "bold", fontSize: 6.5 } });
+        });
 
- if (graphSections && graphSections.length > 0) {
- for (const section of graphSections) {
-      const { sectionId, company, startY, startM, endY, endM, source: secSource, structure: secStructure,
-              dimGroup, dim, mode, kpiIds, chartData, imageDataUrl } = section;
+        head = [headSuper, headSub];
 
-      doc.addPage();
-      const rangeStr = `${monthLabel(startM)} ${startY} → ${monthLabel(endM)} ${endY}`;
-      const descParts = [rangeStr, secSource, secStructure, mode === "ytd" ? "YTD" : "Monthly"];
-      if (dimGroup) descParts.push(`Dim Group: ${dimGroup}`);
-      if (dim) descParts.push(`Dim: ${dim}`);
-
-      drawHeader(`Graphs — Section ${sectionId} · ${company || "—"}`, descParts.join(" · "));
-
-      // Embed pre-rendered chart image (from either live DOM or headless render)
-      let hasImage = false;
-      if (imageDataUrl) {
-        try {
-          doc.addImage(imageDataUrl, "PNG", 24, 80, 400, 240);
-          hasImage = true;
-        } catch (e) {
-          console.warn(`PDF chart embed failed for section ${sectionId}:`, e);
-        }
+        body = kpiList.map((kpi, ki) => {
+          const row = [`${kpi.label}  [${kpiTypeBadge(kpi)}]`];
+          chunkCols.forEach(col => {
+            const aRes = resultsMap?.get(col);
+            const cRes = cmpResultsMap?.get(col);
+            const aVal = aRes ? aRes.get(kpi.id) : null;
+            const cVal = cRes ? cRes.get(kpi.id) : null;
+            const a = Number.isFinite(aVal) ? aVal : null;
+            const c = Number.isFinite(cVal) ? cVal : null;
+            const delta = (a !== null && c !== null) ? a - c : null;
+            const dPct  = (a !== null && c !== null && kpi.format !== "percent" && Math.abs(c) > 1e-9) ? ((a - c) / Math.abs(c)) * 100 : null;
+            row.push(a === null ? "—" : fmtValue(a, kpi.format));
+            row.push(c === null ? "—" : fmtValue(c, kpi.format));
+            row.push(!Number.isFinite(delta) ? "—" : fmtValue(delta, kpi.format));
+            row.push(!Number.isFinite(dPct)  ? "—" : `${dPct > 0 ? "+" : ""}${dPct.toFixed(1)}%`);
+          });
+          const agg = kpiAggregates[ki];
+          row.push(agg === null ? "—" : fmtValue(agg, kpi.format));
+          row.push(fmtBenchRange(kpi.benchmark?.unhealthy));
+          row.push(fmtBenchRange(kpi.benchmark?.healthy));
+          row.push(fmtBenchRange(kpi.benchmark?.vhealthy));
+          return row;
+        });
+      } else {
+        head = [["KPI", ...chunkLabels, "Total/Avg", "Unhealthy", "Healthy", "Excellent"]];
+        body = kpiList.map((kpi, ki) => {
+          const vals = chunkCols.map(col => {
+            const res = resultsMap?.get(col);
+            if (!res) return null;
+            const v = res.get(kpi.id);
+            return Number.isFinite(v) ? v : null;
+          });
+          const row = [`${kpi.label}  [${kpiTypeBadge(kpi)}]`];
+          vals.forEach(v => row.push(v === null ? "—" : fmtValue(v, kpi.format)));
+          const agg = kpiAggregates[ki];
+          row.push(agg === null ? "—" : fmtValue(agg, kpi.format));
+          row.push(fmtBenchRange(kpi.benchmark?.unhealthy));
+          row.push(fmtBenchRange(kpi.benchmark?.healthy));
+          row.push(fmtBenchRange(kpi.benchmark?.vhealthy));
+          return row;
+        });
       }
 
-      const kpis = (kpiIds || []).map(id => kpiList.find(k => k.id === id)).filter(Boolean);
-      const head = [["Period", ...kpis.map(k => k.label)]];
-      const body = (chartData || []).map(d => [
-        d.period,
-        ...kpis.map(k => {
-          const v = d[k.id];
-          return (v === null || v === undefined || isNaN(v)) ? "—" : fmtValue(v, k.format);
-        }),
-      ]);
+      const colStyles = {
+        0: { halign: "left", fontStyle: "bold", cellWidth: useCmp ? 95 : 140 },
+      };
+      if (useCmp) {
+        // Explicit widths per sub-cell so the colSpan-4 super-header spans the right area
+        chunkCols.forEach((_, ci) => {
+          const start = 1 + ci * 4;
+          colStyles[start]     = { halign: "right", cellWidth: 40 };
+          colStyles[start + 1] = { halign: "right", cellWidth: 40 };
+          colStyles[start + 2] = { halign: "right", cellWidth: 36 };
+          colStyles[start + 3] = { halign: "right", cellWidth: 32 };
+        });
+      }
+      colStyles[totalAvgIdx] = { cellWidth: useCmp ? 48 : 60, halign: "right" };
+      colStyles[benchUnIdx]  = { cellWidth: useCmp ? 38 : 50, halign: "center" };
+      colStyles[benchHeIdx]  = { cellWidth: useCmp ? 38 : 50, halign: "center" };
+      colStyles[benchVHIdx]  = { cellWidth: useCmp ? 38 : 50, halign: "center" };
 
-    autoTable(doc, {
-        head, body,
-        startY: 80,
-        margin: { left: hasImage ? 440 : 24, right: 24 },
+      autoTable(doc, {
+        head, body, startY: sY,
         theme: "plain",
-        styles: { font: "helvetica", fontSize: 7, cellPadding: 3, textColor: H.primary },
-        headStyles: { fillColor: H.primary, textColor: H.white, fontStyle: "bold", halign: "right" },
-        columnStyles: { 0: { halign: "left", fontStyle: "bold" } },
+        styles: { font: "helvetica", fontSize: useCmp ? 6.5 : 7.5, cellPadding: useCmp ? 2 : 3.5, textColor: H.primary, valign: "middle", overflow: "linebreak", lineColor: [235, 237, 244], lineWidth: 0.25 },
+        headStyles: { fillColor: H.primary, textColor: H.white, fontStyle: "bold", halign: "center", fontSize: useCmp ? 7 : 7, valign: "middle", lineColor: [255, 255, 255], lineWidth: 0.5 },
+        columnStyles: colStyles,
         alternateRowStyles: { fillColor: H.band2 },
         didParseCell: (data) => {
-          if (data.section === "body" && data.column.index > 0) {
+          if (data.section === "body") {
+            const ci = data.column.index;
+            if (ci === 0) return;
+            if (ci === benchUnIdx) { data.cell.styles.fillColor = H.benchUnBg; data.cell.styles.textColor = H.benchUnHd; data.cell.styles.halign = "center"; return; }
+            if (ci === benchHeIdx) { data.cell.styles.fillColor = H.benchHeBg; data.cell.styles.textColor = H.benchHeHd; data.cell.styles.halign = "center"; return; }
+            if (ci === benchVHIdx) { data.cell.styles.fillColor = H.benchVHBg; data.cell.styles.textColor = H.benchVHHd; data.cell.styles.halign = "center"; return; }
+            if (ci === totalAvgIdx) {
+              data.cell.styles.fillColor = H.highlight; data.cell.styles.halign = "right"; data.cell.styles.fontStyle = "bold";
+              const raw = String(data.cell.raw ?? "");
+              if (raw.startsWith("-")) data.cell.styles.textColor = H.red;
+              return;
+            }
             data.cell.styles.halign = "right";
-            const raw = data.cell.raw;
-            if (typeof raw === "string" && raw.startsWith("-")) {
-              data.cell.styles.textColor = H.red;
+            const raw = String(data.cell.raw ?? "");
+            if (useCmp) {
+              const subOff = (ci - 1) % 4;
+              if (subOff === 1) {
+                if (raw.startsWith("-")) data.cell.styles.textColor = H.red;
+                else data.cell.styles.textColor = H.compareB;
+              } else if (subOff === 2 || subOff === 3) {
+                if (raw.startsWith("-")) data.cell.styles.textColor = H.red;
+                else if (raw !== "—" && !raw.startsWith("0")) data.cell.styles.textColor = H.green;
+              } else {
+                if (raw.startsWith("-")) data.cell.styles.textColor = H.red;
+              }
+            } else {
+              if (raw.startsWith("-")) data.cell.styles.textColor = H.red;
             }
           }
         },
       });
+
+      return doc.lastAutoTable.finalY;
+    };
+
+    if (!useCmp) {
+      return renderChunk(cols, colLabels, startY);
     }
+
+    const CHUNK = 3;
+    let y = startY;
+    for (let i = 0; i < cols.length; i += CHUNK) {
+      const chunkCols   = cols.slice(i, i + CHUNK);
+      const chunkLabels = colLabels.slice(i, i + CHUNK);
+      if (i > 0) {
+        if (y + 110 > pageH) { doc.addPage(); y = 24; }
+        else y += 12;
+      }
+      y = renderChunk(chunkCols, chunkLabels, y);
+    }
+    return y;
+  };
+
+  const renderViewSheet = (title, cols, colLabels, resultsBoth, cmpBoth) => {
+    drawTitleBar(title);
+    let y = drawSubtitleLines(36, buildPdfFilterLines(filters));
+
+    y = drawSectionBar("YTD · Year-to-Date", y + 6, H.primary);
+    y = renderMatrixTable(cols, colLabels, resultsBoth.ytd, cmpBoth?.ytd ?? null, y + 4);
+
+    if (y + 100 > pageH) {
+      doc.addPage();
+      y = 16;
+    }
+
+    y = drawSectionBar("Monthly · Period Delta", y + 12, H.compareB);
+    renderMatrixTable(cols, colLabels, resultsBoth.monthly, cmpBoth?.monthly ?? null, y + 4);
+  };
+
+  // ── Render order: Cover → Company → Dimension → Graphs → Definitions ──
+  drawCoverPage();
+
+  if (companyCodes && companyCodes.length > 0 && companyResults?.ytd) {
+    doc.addPage();
+    const labels = (companyLabels && companyLabels.length === companyCodes.length) ? companyLabels : companyCodes;
+    renderViewSheet("KPI Dashboard — By Company", companyCodes, labels, companyResults, companyResultsCmp);
+  }
+
+  if (dimensionCodes && dimensionCodes.length > 0 && dimensionResults?.ytd) {
+    doc.addPage();
+    const dimLabels = dimensionCodes.map(dc => dimensionPivots?.get(dc)?.name ?? dc);
+    renderViewSheet("KPI Dashboard — By Dimension", dimensionCodes, dimLabels, dimensionResults, dimensionResultsCmp);
+  }
+
+  if (graphSections && graphSections.length > 0) {
+    const PDF_CMP_BG = { B: [207, 48, 93], C: [16, 185, 129] };
+    for (const section of graphSections) {
+      const { sectionId, company, ytdData, ytdImg, monthlyData, monthlyImg, series } = section;
+      const seriesList = Array.isArray(series) ? series : [];
+      doc.addPage();
+      drawTitleBar(`Graphs — Section ${sectionId} · ${company || "—"}`);
+      // Graph pages get section-scoped filters, not the global ones
+      let y = drawSubtitleLines(36, buildGraphFilterLines(section));
+
+      const availH = pageH - y - 28;
+      const halfH = (availH - 2 * 16 - 10) / 2;
+      const imgW = pageW * 0.55 - 36;
+      const tableX = pageW * 0.55 + 12;
+
+      const renderTable = (data, sectAccent, sy) => {
+        const head = [[
+          { content: "Period", styles: { fillColor: sectAccent, textColor: H.white } },
+          ...seriesList.map(s => ({
+            content: s.label,
+            styles: {
+              fillColor: s.barId === "a" ? sectAccent : (PDF_CMP_BG[s.barId] ?? sectAccent),
+              textColor: H.white,
+              halign: "right",
+            },
+          })),
+        ]];
+        const body = (data || []).map(d => [
+          d.period,
+          ...seriesList.map(s => {
+            const v = d[s.key];
+            return Number.isFinite(v) ? fmtValue(v, s.format) : "—";
+          }),
+        ]);
+        autoTable(doc, {
+          head, body, startY: sy,
+          margin: { left: tableX, right: 24 },
+          theme: "plain",
+          styles: { font: "helvetica", fontSize: 6, cellPadding: 2, textColor: H.primary, overflow: "linebreak" },
+          headStyles: { fontStyle: "bold", fontSize: 6 },
+          columnStyles: { 0: { halign: "left", fontStyle: "bold", cellWidth: 30 } },
+          alternateRowStyles: { fillColor: H.band2 },
+          didParseCell: (info) => {
+            if (info.section === "body" && info.column.index > 0) {
+              info.cell.styles.halign = "right";
+              const raw = String(info.cell.raw ?? "");
+              if (raw.startsWith("-")) info.cell.styles.textColor = H.red;
+            }
+          },
+        });
+      };
+
+      y = drawSectionBar("YTD · Year-to-Date", y + 6, H.primary);
+      if (ytdImg) {
+        try { doc.addImage(ytdImg, "PNG", 24, y + 4, imgW, halfH - 8); } catch (e) { console.warn("YTD img:", e); }
+      }
+      renderTable(ytdData, H.primary, y + 4);
+      y = y + halfH;
+
+      y = drawSectionBar("Monthly · Period Delta", y + 8, H.compareB);
+      if (monthlyImg) {
+        try { doc.addImage(monthlyImg, "PNG", 24, y + 4, imgW, halfH - 8); } catch (e) { console.warn("Monthly img:", e); }
+      }
+      renderTable(monthlyData, H.compareB, y + 4);
+    }
+  }
+
+  if (exportOpts.defsSheet !== false) {
+    doc.addPage();
+    drawTitleBar("KPI Definitions · Formulas · Benchmarks");
+
+    const defHead = [["KPI", "Category", "Format", "Formula · Variables", "Benchmark"]];
+    const defBody = kpiList.map(kpi => {
+      const fSum = kpiFormulaSummary(kpi, kpiList, accountCodeLabels);
+      const bDesc = describeBenchmark(kpi.benchmark);
+      const formulaTxt = [
+        fSum.expression ? `Formula: ${fSum.expression}` : null,
+        fSum.variables.length > 0 ? fSum.variables.map(v => `${v.letter} = ${v.desc}`).join("\n") : null,
+        kpi.description ? `Description: ${kpi.description}` : null,
+      ].filter(Boolean).join("\n");
+      return [
+        `${kpi.label}  [${kpiTypeBadge(kpi)}]`,
+        kpi.category ?? "",
+        kpi.format ?? "",
+        formulaTxt || "—",
+        bDesc ?? "—",
+      ];
+    });
+
+    autoTable(doc, {
+      head: defHead, body: defBody,
+      startY: 44,
+      theme: "plain",
+      styles: { font: "helvetica", fontSize: 7, cellPadding: 4, textColor: H.gray700, overflow: "linebreak", valign: "top" },
+      headStyles: { fillColor: H.primary, textColor: H.white, fontStyle: "bold", halign: "left" },
+      columnStyles: {
+        0: { fontStyle: "bold", textColor: H.primary, cellWidth: 140 },
+        1: { cellWidth: 80 },
+        2: { cellWidth: 60 },
+        3: { cellWidth: 320 },
+        4: { cellWidth: "auto" },
+      },
+      alternateRowStyles: { fillColor: H.band2 },
+    });
   }
 
   const fname = `Konsolidator_KPIs_${filters?.year ?? ""}_${String(filters?.month ?? "").padStart(2, "0")}.pdf`;
@@ -1258,105 +1993,114 @@ const PRESETS = [
   { label: "Fixed number",               formula: { type: "text", expression: "0",           variables: {} } },
 ];
 
-const LIBRARY_SECTIONS = [
-{
-    key: "liquidez",
-    label: "Liquidez",
-    color: "bg-emerald-700",
-    kpis: [
-      { id: "_lib_current_ratio", label: "Ratio Liquidez", description: "Mide cuántos pesos de activos líquidos respaldan cada peso de deuda a corto plazo.", benchmark: "> 1.5 saludable; entre 1 y 1.5 aceptable", format: "number", category: "Liquidez",
-        formula: { type: "ref", kpiId: "current_ratio" } },
-      { id: "_lib_quick_ratio", label: "Prueba Ácida (Quick Ratio)", description: "Excluye inventarios por ser el activo menos líquido. Medida más estricta de la liquidez real.", benchmark: "> 1.0 ideal", format: "number", category: "Liquidez",
-        formula: { type: "ref", kpiId: "quick_ratio" } },
-      { id: "_lib_cash_ratio", label: "Ratio de Tesorería (Cash Ratio)", description: "Solo considera el efectivo y equivalentes disponibles de inmediato.", benchmark: "> 0.2 aceptable", format: "number", category: "Liquidez",
-        formula: { type: "ref", kpiId: "cash_ratio" } },
-      { id: "_lib_working_capital", label: "Capital Circulante (Working Capital)", description: "Recursos disponibles para operar la empresa luego de cubrir todas las obligaciones a corto plazo.", benchmark: "Positivo y creciente", format: "currency", category: "Liquidez",
-        formula: { type: "ref", kpiId: "working_capital" } },
-    ],
-  },
-{
-    key: "solvencia",
-    label: "Solvencia / Endeudamiento",
-    color: "bg-blue-700",
-    kpis: [
-      { id: "_lib_debt_ratio", label: "Razón de Endeudamiento", description: "Porcentaje de los activos financiados con deuda. A mayor valor, más apalancada y riesgosa la empresa.", benchmark: "< 50% conservador", format: "percent", category: "Solvencia",
-        formula: { type: "ref", kpiId: "debt_ratio" } },
-      { id: "_lib_debt_to_equity", label: "Apalancamiento Financiero (D/E)", description: "Compara la deuda total con el capital propio. Indica el nivel de riesgo financiero asumido.", benchmark: "< 1.0 conservador; varía por sector", format: "number", category: "Solvencia",
-        formula: { type: "ref", kpiId: "debt_to_equity" } },
-      { id: "_lib_net_debt_ebitda", label: "Deuda Neta / EBITDA", description: "Cuántos años le tomaría pagar su deuda neta con el flujo operativo generado.", benchmark: "< 3x manejable; > 5x elevado", format: "number", category: "Solvencia",
-        formula: { type: "ref", kpiId: "net_debt_to_ebitda" } },
-      { id: "_lib_interest_coverage", label: "Cobertura de Intereses", description: "Cuántas veces puede la empresa pagar sus intereses con su utilidad operativa. Requiere personalización manual.", benchmark: "> 3x saludable", format: "number", category: "Solvencia",
-        formula: { type: "op", op: "/", left: null, right: null } },
-    ],
-  },
-{
-    key: "rentabilidad",
-    label: "Rentabilidad",
-    color: "bg-[#1a2f8a]",
-    kpis: [
-      { id: "_lib_gross_margin", label: "Margen Bruto", description: "Porcentaje de las ventas que queda tras el costo directo de producción o compra.", benchmark: "Depende del sector", format: "percent", category: "Rentabilidad",
-        formula: { type: "fn", fn: "pct", arg: { type: "op", op: "/", left: { type: "ref", kpiId: "gross_profit" }, right: { type: "ref", kpiId: "revenue" } } } },
-      { id: "_lib_ebit_margin", label: "Margen Operativo (EBIT %)", description: "Utilidad generada por la operación principal antes de intereses e impuestos.", benchmark: "> 10% generalmente bueno", format: "percent", category: "Rentabilidad",
-        formula: { type: "fn", fn: "pct", arg: { type: "op", op: "/", left: { type: "ref", kpiId: "ebit" }, right: { type: "ref", kpiId: "revenue" } } } },
-      { id: "_lib_net_margin", label: "Margen Neto", description: "Cuántos centavos de utilidad neta genera cada peso de ventas.", benchmark: "Depende del sector", format: "percent", category: "Rentabilidad",
-        formula: { type: "fn", fn: "pct", arg: { type: "op", op: "/", left: { type: "ref", kpiId: "net_result" }, right: { type: "ref", kpiId: "revenue" } } } },
-      { id: "_lib_roa", label: "ROA — Rentabilidad sobre Activos", description: "Eficiencia con que la empresa usa todos sus activos para generar utilidad. Requiere KPI 'total_assets' en Supabase.", benchmark: "> 5% bueno; > 10% excelente", format: "percent", category: "Rentabilidad",
-        formula: { type: "fn", fn: "pct", arg: { type: "op", op: "/", left: { type: "ref", kpiId: "net_result" }, right: { type: "ref", kpiId: "total_assets" } } } },
-      { id: "_lib_roe", label: "ROE — Rentabilidad sobre Patrimonio", description: "Retorno generado para los accionistas sobre su inversión en la empresa. Requiere KPI 'total_equity' en Supabase.", benchmark: "> 15% atractivo", format: "percent", category: "Rentabilidad",
-        formula: { type: "fn", fn: "pct", arg: { type: "op", op: "/", left: { type: "ref", kpiId: "net_result" }, right: { type: "ref", kpiId: "total_equity" } } } },
-      { id: "_lib_ebitda", label: "EBITDA", description: "Aproximación al flujo de caja operativo antes de estructura financiera e impuestos.", benchmark: "Positivo y creciente", format: "currency", category: "Rentabilidad",
-        formula: { type: "ref", kpiId: "ebitda" } },
-      { id: "_lib_ebit", label: "EBIT", description: "Earnings before interest and tax.", benchmark: "Positivo y creciente", format: "currency", category: "Rentabilidad",
-        formula: { type: "ref", kpiId: "ebit" } },
-    ],
-  },
-{
-    key: "eficiencia",
-    label: "Eficiencia",
-    color: "bg-amber-600",
-    kpis: [
-      { id: "_lib_asset_turnover", label: "Rotación de Activos Totales", description: "Cuántos pesos en ventas genera cada peso invertido en activos.", benchmark: "> 1x generalmente bueno", format: "number", category: "Eficiencia",
-        formula: { type: "ref", kpiId: "asset_turnover" } },
-      { id: "_lib_dio", label: "Días de Inventario (DIO)", description: "Promedio de días que el inventario permanece almacenado antes de venderse.", benchmark: "Menor = más eficiente", format: "number", category: "Eficiencia",
-        formula: { type: "ref", kpiId: "inventory_days" } },
-      { id: "_lib_dso", label: "Días de Cobro (DSO)", description: "Días promedio que tarda la empresa en cobrar sus ventas a crédito.", benchmark: "Menor = más eficiente", format: "number", category: "Eficiencia",
-        formula: { type: "ref", kpiId: "dso" } },
-      { id: "_lib_dpo", label: "Días de Pago a Proveedores (DPO)", description: "Días promedio que la empresa demora en pagar a sus proveedores.", benchmark: "Mayor puede ser favorable", format: "number", category: "Eficiencia",
-        formula: { type: "ref", kpiId: "dpo" } },
-    ],
-  },
-  {
-    key: "mercado",
-    label: "Mercado",
-    color: "bg-rose-800",
-    kpis: [
-      { label: "EPS — Utilidad por Acción", description: "Cuánta utilidad corresponde a cada acción emitida.", benchmark: "Positivo y creciente", format: "number", category: "Mercado", formula: { type: "op", op: "/", left: null, right: null } },
-      { label: "P/E — Precio / Utilidad", description: "Cuántas veces paga el mercado la utilidad anual de la empresa.", benchmark: "10x–20x común; varía por sector", format: "number", category: "Mercado", formula: { type: "op", op: "/", left: null, right: null } },
-      { label: "P/BV — Precio / Valor en Libros", description: "Compara el valor de mercado con el patrimonio contable.", benchmark: "> 1x indica prima; < 1x posible subvaloración", format: "number", category: "Mercado", formula: { type: "op", op: "/", left: null, right: null } },
-      { label: "Dividend Yield", description: "Retorno anual en dividendos respecto al precio actual de la acción.", benchmark: "> 3% atractivo para renta", format: "percent", category: "Mercado", formula: { type: "fn", fn: "pct", arg: { type: "op", op: "/", left: null, right: null } } },
-      { label: "EV/EBITDA", description: "Múltiplo de valoración independiente de la estructura de capital y política fiscal.", benchmark: "6x–12x común en industria", format: "number", category: "Mercado", formula: { type: "op", op: "/", left: null, right: null } },
-    ],
-  },
-];
+function buildLibrarySections(tt) {
+  const mk = (id, refKpiId, format, category) => ({
+    id,
+    label:       tt(`kpilib_${id.replace(/^_lib_/, "")}_label`),
+    description: tt(`kpilib_${id.replace(/^_lib_/, "")}_desc`),
+    benchmark:   tt(`kpilib_${id.replace(/^_lib_/, "")}_bench`),
+    format,
+    category,
+    formula:     refKpiId ? { type: "ref", kpiId: refKpiId } : { type: "op", op: "/", left: null, right: null },
+  });
+  const mkPct = (id, leftRef, rightRef, format, category) => ({
+    id,
+    label:       tt(`kpilib_${id.replace(/^_lib_/, "")}_label`),
+    description: tt(`kpilib_${id.replace(/^_lib_/, "")}_desc`),
+    benchmark:   tt(`kpilib_${id.replace(/^_lib_/, "")}_bench`),
+    format,
+    category,
+    formula:     { type: "fn", fn: "pct", arg: { type: "op", op: "/", left: { type: "ref", kpiId: leftRef }, right: { type: "ref", kpiId: rightRef } } },
+  });
+  const mkMkt = (id) => ({
+    id: `_lib_mkt_${id}`,
+    label:       tt(`kpilib_mkt_${id}_label`),
+    description: tt(`kpilib_mkt_${id}_desc`),
+    benchmark:   tt(`kpilib_mkt_${id}_bench`),
+    format:      id === "dividend_yield" ? "percent" : "number",
+    category:    tt("kpilib_section_mercado_label"),
+    formula:     id === "dividend_yield"
+      ? { type: "fn", fn: "pct", arg: { type: "op", op: "/", left: null, right: null } }
+      : { type: "op", op: "/", left: null, right: null },
+  });
 
+  const liquidez = tt("kpilib_section_liquidez_label");
+  const solvencia = tt("kpilib_section_solvencia_label");
+  const rentabilidad = tt("kpilib_section_rentabilidad_label");
+  const eficiencia = tt("kpilib_section_eficiencia_label");
 
+  return [
+    {
+      key: "liquidez", label: liquidez, color: "bg-emerald-700",
+      kpis: [
+        mk("_lib_current_ratio",    "current_ratio",     "number",   liquidez),
+        mk("_lib_quick_ratio",      "quick_ratio",       "number",   liquidez),
+        mk("_lib_cash_ratio",       "cash_ratio",        "number",   liquidez),
+        mk("_lib_working_capital",  "working_capital",   "currency", liquidez),
+      ],
+    },
+    {
+      key: "solvencia", label: solvencia, color: "bg-blue-700",
+      kpis: [
+        mk("_lib_debt_ratio",         "debt_ratio",         "percent", solvencia),
+        mk("_lib_debt_to_equity",     "debt_to_equity",     "number",  solvencia),
+        mk("_lib_net_debt_ebitda",    "net_debt_to_ebitda", "number",  solvencia),
+        mk("_lib_interest_coverage",  null,                 "number",  solvencia),
+      ],
+    },
+    {
+      key: "rentabilidad", label: rentabilidad, color: "bg-[#1a2f8a]",
+      kpis: [
+        mkPct("_lib_gross_margin", "gross_profit", "revenue",      "percent",  rentabilidad),
+        mkPct("_lib_ebit_margin",  "ebit",         "revenue",      "percent",  rentabilidad),
+        mkPct("_lib_net_margin",   "net_result",   "revenue",      "percent",  rentabilidad),
+        mkPct("_lib_roa",          "net_result",   "total_assets", "percent",  rentabilidad),
+        mkPct("_lib_roe",          "net_result",   "total_equity", "percent",  rentabilidad),
+        mk("_lib_ebitda", "ebitda", "currency", rentabilidad),
+        mk("_lib_ebit",   "ebit",   "currency", rentabilidad),
+      ],
+    },
+    {
+      key: "eficiencia", label: eficiencia, color: "bg-amber-600",
+      kpis: [
+        mk("_lib_asset_turnover", "asset_turnover", "number", eficiencia),
+        mk("_lib_dio",            "inventory_days", "number", eficiencia),
+        mk("_lib_dso",            "dso",            "number", eficiencia),
+        mk("_lib_dpo",            "dpo",            "number", eficiencia),
+      ],
+    },
+    {
+      key: "mercado", label: tt("kpilib_section_mercado_label"), color: "bg-rose-800",
+      kpis: [
+        mkMkt("eps"),
+        mkMkt("pe"),
+        mkMkt("pbv"),
+        mkMkt("dividend_yield"),
+        mkMkt("ev_ebitda"),
+      ],
+    },
+  ];
+}
 
 function LibraryPicker({ onSave, onDuplicate }) {
+  const { locale } = useSettings();
+  const tt = (k, fb) => t(locale, k, fb);
+  const LIBRARY_SECTIONS = useMemo(() => buildLibrarySections(tt), [locale]); // eslint-disable-line react-hooks/exhaustive-deps
   const [activeSection, setActiveSection] = useState(null);
 
   if (!activeSection) {
-const SECTION_META = {
-      liquidez:      { icon: "💧", hint: "Capacidad de pagar obligaciones a corto plazo" },
-      solvencia:     { icon: "🏦", hint: "Nivel de deuda y solidez financiera estructural" },
-      rentabilidad:  { icon: "📈", hint: "Márgenes, retornos y generación de beneficios" },
-      eficiencia:    { icon: "⚙️", hint: "Gestión de activos, cobros, pagos e inventarios" },
-      mercado:       { icon: "📊", hint: "Valoración bursátil y métricas para inversores" },
+    const SECTION_META = {
+      liquidez:      { icon: "💧", hint: tt("kpilib_section_liquidez_hint") },
+      solvencia:     { icon: "🏦", hint: tt("kpilib_section_solvencia_hint") },
+      rentabilidad:  { icon: "📈", hint: tt("kpilib_section_rentabilidad_hint") },
+      eficiencia:    { icon: "⚙️", hint: tt("kpilib_section_eficiencia_hint") },
+      mercado:       { icon: "📊", hint: tt("kpilib_section_mercado_hint") },
     };
 
 // DESPUÉS — añade la tarjeta custom al final del grid:
 return (
   <div className="overflow-y-auto flex-1 p-5">
-    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-4">Selecciona una categoría</p>
+    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-4">{tt("kpilib_pick_category")}</p>
     <div className="grid grid-cols-2 gap-3">
       {LIBRARY_SECTIONS.map(sec => {
         const meta = SECTION_META[sec.key] ?? {};
@@ -1366,7 +2110,7 @@ return (
             <div className="flex items-start justify-between gap-2 mb-4">
               <span className="text-3xl leading-none inline-block group-hover:scale-110 transition-transform duration-200">{meta.icon}</span>
               <span className="text-[10px] font-black text-gray-300 group-hover:text-[#1a2f8a]/40 transition-colors">
-                {sec.kpis.length} indicadores
+                {sec.kpis.length} {tt("kpilib_indicators")}
               </span>
             </div>
             <p className="text-sm font-black text-[#1a2f8a] mb-1.5">{sec.label}</p>
@@ -1375,7 +2119,7 @@ return (
         );
       })}
 
-{/* Tarjeta Custom KPI */}
+{/* Custom KPI card */}
 <button onClick={() => onSave("__custom__")}
 className="text-left p-5 rounded-2xl border border-gray-100 hover:border-[#1a2f8a]/25 hover:shadow-md transition-all group bg-white hover:bg-[#f8f9ff]">
         <div className="flex items-start justify-between gap-2 mb-4">
@@ -1385,11 +2129,11 @@ className="text-left p-5 rounded-2xl border border-gray-100 hover:border-[#1a2f8
       </svg>
     </div>
     <span className="text-[9px] font-black text-gray-300 group-hover:text-[#1a2f8a]/40 transition-colors">
-      desde cero
+      {tt("kpilib_from_scratch")}
     </span>
   </div>
-  <p className="text-xs font-black text-[#1a2f8a] mb-1">KPI personalizado</p>
-  <p className="text-[10px] text-gray-400 leading-snug">Crea tu propia fórmula con cuentas, grupos y operaciones</p>
+  <p className="text-xs font-black text-[#1a2f8a] mb-1">{tt("kpi_custom_kpi")}</p>
+  <p className="text-[10px] text-gray-400 leading-snug">{tt("kpilib_custom_desc")}</p>
 </button>
     </div>
   </div>
@@ -1400,9 +2144,9 @@ className="text-left p-5 rounded-2xl border border-gray-100 hover:border-[#1a2f8
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
       <div className="px-5 pt-4 pb-2 flex items-center gap-2 flex-shrink-0">
-        <button onClick={() => setActiveSection(null)}
+<button onClick={() => setActiveSection(null)}
           className="flex items-center gap-1.5 text-[10px] font-black text-gray-400 hover:text-[#1a2f8a] transition-colors">
-          <ChevronDown size={11} className="rotate-90" /> Volver
+          <ChevronDown size={11} className="rotate-90" /> {tt("drill_back")}
         </button>
         <span className="text-[10px] text-gray-300">·</span>
         <span className={`text-[10px] font-black px-2 py-0.5 rounded-md text-white ${sec.color}`}>{sec.label}</span>
@@ -1612,8 +2356,7 @@ function SlotPicker({ onSelect, onClose, kpiList, accountCodes, localAccounts = 
   const [type, setType] = useState(null);
   const [prefix, setPrefix] = useState("");
   const [accountCode, setAccountCode] = useState("");
-  const [kpiId, setKpiId] = useState("");
-  const [manualVal, setManualVal] = useState(0);
+const [kpiId, setKpiId] = useState("");
 
   // derive group prefixes from accountCodes (unique 1-2 char prefixes)
   const groupPrefixes = useMemo(() => {
@@ -1644,7 +2387,6 @@ if (accountCode.includes(":::")) {
       }
     }
     else if (type === "ref")      onSelect({ type: "ref", kpiId });
-    else if (type === "manual")   onSelect({ type: "manual", value: manualVal });
     onClose();
   };
 
@@ -2179,7 +2921,6 @@ const CATEGORY_OPTIONS = [
 
 function CategoryPill({ value, onChange, options: optionsProp }) {
   const [open, setOpen] = useState(false);
-  const [hover, setHover] = useState(false);
   const ref = useRef(null);
   const { colors } = useSettings();
   const SPRING = "cubic-bezier(0.34, 1.56, 0.64, 1)";
@@ -2193,12 +2934,9 @@ function CategoryPill({ value, onChange, options: optionsProp }) {
 
 const options = optionsProp ?? CATEGORY_OPTIONS;
   const display = options.find(o => o.value === value)?.label ?? value ?? "—";
-  const showLabel = hover || open;
 
-  return (
-    <div ref={ref} className="relative w-full"
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}>
+return (
+    <div ref={ref} className="relative w-full">
       <button onClick={() => setOpen(o => !o)}
         className="w-full flex items-center justify-between rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-800 outline-none transition-all"
         style={{ background: "#f8f9ff", border: `1.5px solid ${open ? `${colors.primary}40` : "#e8eaf0"}` }}>
@@ -2387,7 +3125,7 @@ function TagInput({ tag, setTag, allLocalKpis }) {
   );
 }
 
-function KpiEditorModal({ kpi, onSave, onClose, onReset, onEditLibraryKpi, onDeleteLibraryKpi, onDuplicate, kpiList, allLocalKpis = [], systemKpis = [], accountCodes, localAccounts = [], groupAccountsList = [], accountCodeLabels = new Map(), builtInIds = new Set(), currentUserId, dimsByAccount = new Map(), localDimsByAccount = new Map() }) {
+function KpiEditorModal({ kpi, onSave, onClose, onReset, onEditLibraryKpi, onDeleteLibraryKpi, onDuplicate, allLocalKpis = [], systemKpis = [], accountCodes, localAccounts = [], groupAccountsList = [], accountCodeLabels = new Map(), builtInIds = new Set(), currentUserId, dimsByAccount = new Map(), localDimsByAccount = new Map() }) {
   const [mode, setMode] = useState(kpi ? "custom" : "library");
 
   const [label, setLabel] = useState(kpi?.label ?? "");
@@ -2583,7 +3321,7 @@ return (
               </p>
             </div>
           </div>
-<button onClick={() => setConfirmClose(true)}
+<button onClick={() => mode === "custom" ? setConfirmClose(true) : onClose()}
             className="w-8 h-8 rounded-xl flex items-center justify-center transition-all hover:scale-110"
             style={{ background: "#f3f4f6", color: "#6b7280" }}>
             <X size={13} />
@@ -2998,7 +3736,7 @@ function GraphSection({
   companyLegalName,
   viewPeriod,
   compareMode,
-  filterStyle, colors, body1Style, body2Style,
+  colors,
 }) {
   // Default: end = anchor year/month, start = 12 months earlier
   const anchorY = parseInt(year) || new Date().getFullYear();
@@ -3013,13 +3751,13 @@ function GraphSection({
   const [secEndMonth, setSecEndMonth] = useState(String(anchorM));
   const [secSource, setSecSource] = useState(source);
   const [secStructure, setSecStructure] = useState(structure);
-  const [secDimGroup, setSecDimGroup] = useState("");
-  const [secDim, setSecDim] = useState("");
+const [secDimGroup, setSecDimGroup] = useState(null);
+  const [secDim, setSecDim] = useState(null);
 const secMode = viewPeriod === "ytd" ? "ytd" : "monthly";
 const [secXAxis, setSecXAxis] = useState("month");
 const [cmpBars, setCmpBars] = useState([
-    { id: "B", companies: [], source, structure, dimGroup: "", dim: "" },
-    { id: "C", companies: [], source, structure, dimGroup: "", dim: "" },
+    { id: "B", companies: [], source, structure, dimGroup: null, dim: null },
+    { id: "C", companies: [], source, structure, dimGroup: null, dim: null },
   ]);
   const [cmpChartData, setCmpChartData] = useState({});
   const [cmpBarsCollapsed, setCmpBarsCollapsed] = useState(false);
@@ -3062,19 +3800,21 @@ const [tableOpen, setTableOpen] = useState(true);
     return groups.sort();
   }, [dimensions]);
 
-  const secGroupDimOptions = useMemo(() => {
-    if (!secDimGroup) return [];
-    return dimensions
-      .filter(d => (d.DimensionGroup ?? d.dimensionGroup ?? "") === secDimGroup)
-      .map(d => ({ code: d.DimensionCode ?? d.dimensionCode ?? "", name: d.DimensionName ?? d.dimensionName ?? "" }))
-      .filter(d => d.code);
-  }, [dimensions, secDimGroup]);
+const secGroupDimOptions = useMemo(() => {
+    const groups = (secDimGroup && secDimGroup.length > 0) ? secDimGroup : secDimGroups;
+    const seen = new Map();
+    groups.forEach(g => {
+      dimensions.forEach(d => {
+        const dg = d.DimensionGroup ?? d.dimensionGroup ?? "";
+        if (dg !== g) return;
+        const code = d.DimensionCode ?? d.dimensionCode ?? "";
+        const name = d.DimensionName ?? d.dimensionName ?? "";
+        if (code && !seen.has(code)) seen.set(code, name);
+      });
+    });
+    return [...seen.entries()].map(([code, name]) => ({ code, name }));
+  }, [dimensions, secDimGroup, secDimGroups]);
 
-  const secGroupDimCodes = useMemo(() => {
-    if (secDim) return new Set([secDim]);
-    if (!secDimGroup) return null;
-    return new Set(secGroupDimOptions.map(d => d.code));
-  }, [secDimGroup, secDim, secGroupDimOptions]);
 
 // secAdaptedKpis removed — kpiList is already standard-resolved by KpiResolver.
 
@@ -3099,89 +3839,97 @@ const [tableOpen, setTableOpen] = useState(true);
     return list;
   }, [secStartYear, secStartMonth, secEndYear, secEndMonth]);
 
-  const fetchChartData = useCallback(async () => {
-    if (!token || !secSource || !secStructure || !secCompanies?.length || periods.length < 2) { setChartData([]); return; }
-    setLoading(true);
+useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!token || !secSource || !secStructure || !secCompanies?.length || periods.length < 2) {
+        if (!cancelled) setChartData([]);
+        return;
+      }
+      setLoading(true);
 
-    try {
-      const results = await Promise.all(periods.map(async ({ y, m, isPrior }) => {
-      const companyFilter = secCompanies.map(c => `CompanyShortName eq '${c}'`).join(" or ");
-        const filter = `Year eq ${y} and Month eq ${m} and Source eq '${secSource}' and GroupStructure eq '${secStructure}' and (${companyFilter})`;
-        const res = await fetch(
-          `/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
-          { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }
-        );
-        if (!res.ok) return { y, m, isPrior, pivot: new Map(), hasData: false };
-        const json = await res.json();
-        const rows = json.value ?? (Array.isArray(json) ? json : []);
-const p = new Map();
-rows.forEach(r => {
-          const ac = r.AccountCode ?? r.accountCode ?? "";
-          const acType = r.AccountType ?? r.accountType ?? "";
-          if (!ac) return;
-          if (sumAccountCodes && sumAccountCodes.has(ac)) return;
-          if (acType && acType !== "P/L") return;
+      try {
+        const results = await Promise.all(periods.map(async ({ y, m, isPrior }) => {
+          const companyFilter = secCompanies.map(c => `CompanyShortName eq '${c}'`).join(" or ");
+          const filter = `Year eq ${y} and Month eq ${m} and Source eq '${secSource}' and GroupStructure eq '${secStructure}' and (${companyFilter})`;
+          const res = await fetch(
+            `/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
+            { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }
+          );
+          if (!res.ok) return { y, m, isPrior, pivot: new Map(), hasData: false };
+          const json = await res.json();
+          const rows = json.value ?? (Array.isArray(json) ? json : []);
+          const p = new Map();
+          rows.forEach(r => {
+            const ac = r.AccountCode ?? r.accountCode ?? "";
+            const acType = r.AccountType ?? r.accountType ?? "";
+            if (!ac) return;
+            if (sumAccountCodes && sumAccountCodes.has(ac)) return;
+            if (acType && acType !== "P/L") return;
 
-if (secDim || secDimGroup) {
-            const dimPairs = parseDimensions(r.Dimensions);
-            if (secDim) {
-              const rowDimCodes = new Set(dimPairs.map(([, code]) => code));
-              if (!rowDimCodes.has(secDim)) return;
-            } else if (secDimGroup) {
-              const hasGroupMatch = dimPairs.some(([g]) => g === secDimGroup);
-              if (!hasGroupMatch) return;
+            const hasDimFilter   = Array.isArray(secDim)      && secDim.length      > 0;
+            const hasGroupFilter = Array.isArray(secDimGroup) && secDimGroup.length > 0;
+            if (hasDimFilter || hasGroupFilter) {
+              const dimPairs = parseDimensions(r.Dimensions);
+              if (hasDimFilter) {
+                const rowDimCodes = new Set(dimPairs.map(([, code]) => code));
+                if (!secDim.some(d => rowDimCodes.has(d))) return;
+              } else if (hasGroupFilter) {
+                const rowGroups = new Set(dimPairs.map(([g]) => g));
+                if (!secDimGroup.some(g => rowGroups.has(g))) return;
+              }
             }
-          }
-          const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
-          p.set(ac, (p.get(ac) ?? 0) + amt);
-        });
-        return { y, m, isPrior, pivot: p, hasData: rows.length > 0 };
-      }));
-
-      // Build chart series
-      const series = [];
-      for (let i = 1; i < results.length; i++) {
-        const curr = results[i];
-        if (curr.isPrior) continue;
-
-        let pivotForKpi;
-        if (secMode === "ytd") {
-          pivotForKpi = curr.pivot;
-        } else {
-          // monthly delta
-          const prev = results[i - 1];
-          const mp = new Map();
-          const allCodes = new Set([...curr.pivot.keys(), ...prev.pivot.keys()]);
-          allCodes.forEach(ac => {
-            const currYTD = curr.pivot.get(ac) ?? 0;
-            const prevYTD = curr.m === 1 ? 0 : (prev.pivot.get(ac) ?? 0);
-            mp.set(ac, currYTD - prevYTD);
+            const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+            p.set(ac, (p.get(ac) ?? 0) + amt);
           });
-          pivotForKpi = mp;
+          return { y, m, isPrior, pivot: p, hasData: rows.length > 0 };
+        }));
+
+        const series = [];
+        for (let i = 1; i < results.length; i++) {
+          const curr = results[i];
+          if (curr.isPrior) continue;
+
+          let pivotForKpi;
+          if (secMode === "ytd") {
+            pivotForKpi = curr.pivot;
+          } else {
+            const prev = results[i - 1];
+            const mp = new Map();
+            const allCodes = new Set([...curr.pivot.keys(), ...prev.pivot.keys()]);
+            allCodes.forEach(ac => {
+              const currYTD = curr.pivot.get(ac) ?? 0;
+              const prevYTD = curr.m === 1 ? 0 : (prev.pivot.get(ac) ?? 0);
+              mp.set(ac, currYTD - prevYTD);
+            });
+            pivotForKpi = mp;
+          }
+
+          const kpis = computeAllKpisResolved(kpiList, pivotForKpi, ccTagToCodes, sectionCodes, allKpis);
+          const label = `${String(curr.m).padStart(2, "0")}/${String(curr.y).slice(-2)}`;
+          const row = { period: label, _hasData: curr.hasData };
+          secKpiIds.forEach(kid => {
+            const v = kpis.get(kid);
+            row[kid] = (v === null || v === undefined || isNaN(v)) ? null : v;
+          });
+          series.push(row);
         }
 
-const kpis = computeAllKpisResolved(kpiList, pivotForKpi, ccTagToCodes, sectionCodes, allKpis);
-        const label = `${String(curr.m).padStart(2, "0")}/${String(curr.y).slice(-2)}`;
-        const row = { period: label, _hasData: curr.hasData };
-        secKpiIds.forEach(kid => {
-          const v = kpis.get(kid);
-          row[kid] = (v === null || v === undefined || isNaN(v)) ? null : v;
-        });
-        series.push(row);
+        if (!cancelled) setChartData(series);
+      } catch (e) {
+        console.error("Graph fetch error:", e);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-
-      setChartData(series);
-    } catch (e) {
-      console.error("Graph fetch error:", e);
-    } finally {
-      setLoading(false);
-    }
-}, [token, secSource, secStructure, secCompanies, periods, secKpiIds, kpiList, allKpis, ccTagToCodes, sectionCodes, sumAccountCodes, secMode, secGroupDimCodes]);
-
-useEffect(() => { fetchChartData(); }, [fetchChartData]);
+    })();
+    return () => { cancelled = true; };
+  }, [token, secSource, secStructure, secCompanies, periods, secKpiIds, kpiList, allKpis, ccTagToCodes, sectionCodes, sumAccountCodes, secMode, secDim, secDimGroup]);
 
 useEffect(() => {
-    if (!compareMode || !token) { setCmpChartData({}); return; }
+    if (!compareMode || !token) return;
+    // No sync reset: stale cmp data is harmless because all consumers gate on
+    // `compareMode` before reading from cmpChartData, so when compare is off
+    // it's invisible anyway.
 cmpBars.forEach(bar => {
       if (!bar.source || !bar.structure || !bar.companies?.length) return;
       const sY = parseInt(secStartYear), sM = parseInt(secStartMonth);
@@ -3212,10 +3960,16 @@ cmpBars.forEach(bar => {
               const ac = r.AccountCode ?? r.accountCode ?? "";
               const acType = r.AccountType ?? r.accountType ?? "";
               if (!ac || (sumAccountCodes && sumAccountCodes.has(ac)) || (acType && acType !== "P/L")) return;
-              if (bar.dim) {
-                if (!parseDimensions(r.Dimensions).some(([, code]) => code === bar.dim)) return;
-              } else if (bar.dimGroup) {
-                if (!parseDimensions(r.Dimensions).some(([g]) => g === bar.dimGroup)) return;
+const barHasDim   = Array.isArray(bar.dim)      && bar.dim.length      > 0;
+              const barHasGroup = Array.isArray(bar.dimGroup) && bar.dimGroup.length > 0;
+              if (barHasDim || barHasGroup) {
+                const pairs = parseDimensions(r.Dimensions);
+                if (barHasDim) {
+                  const rowDimCodes = new Set(pairs.map(([, code]) => code));
+                  if (!bar.dim.some(d => rowDimCodes.has(d))) return;
+                } else if (barHasGroup) {
+                  if (!bar.dimGroup.some(g => pairs.some(([rg]) => rg === g))) return;
+                }
               }
               p.set(ac, (p.get(ac) ?? 0) + parseAmt(r.AmountYTD ?? r.amountYTD ?? 0));
             });
@@ -3248,23 +4002,33 @@ cmpBars.forEach(bar => {
 }, [compareMode, cmpBars, token, secMode, secKpiIds, kpiList, allKpis, ccTagToCodes, sectionCodes, sumAccountCodes, secStartYear, secStartMonth, secEndYear, secEndMonth]);
 
 
-  // Expose state up to parent for export
+// Expose state up to parent for export
   useEffect(() => {
     if (onStateChange) {
+      const activeBars = compareMode
+        ? cmpBars
+            .filter(b => Array.isArray(b.companies) && b.companies.length > 0)
+            .map(b => ({ id: b.id, companies: b.companies, source: b.source, structure: b.structure, dimGroup: b.dimGroup, dim: b.dim }))
+        : [];
       onStateChange(sectionId, {
         sectionId,
-   company: Array.isArray(secCompanies) ? secCompanies.join(", ") : "",
+        company: Array.isArray(secCompanies) ? secCompanies.join(", ") : "",
+        companies: Array.isArray(secCompanies) ? [...secCompanies] : [],
         startY: secStartYear, startM: secStartMonth,
         endY: secEndYear, endM: secEndMonth,
         source: secSource, structure: secStructure,
         dimGroup: secDimGroup, dim: secDim,
         mode: secMode, kpiIds: secKpiIds,
         chartData,
+        compareMode,
+        cmpBars: activeBars,
+        cmpChartData: compareMode ? cmpChartData : {},
         chartContainerRef,
       });
     }
 }, [sectionId, secCompanies, secStartYear, secStartMonth, secEndYear, secEndMonth,
-      secSource, secStructure, secDimGroup, secDim, secMode, secKpiIds, chartData, onStateChange]);
+      secSource, secStructure, secDimGroup, secDim, secMode, secKpiIds, chartData,
+      compareMode, cmpBars, cmpChartData, onStateChange]);
 
 const COLORS = [
     colors?.primary,
@@ -3312,8 +4076,8 @@ const graphFilters = [
     { label: "End Y", value: secEndYear, onChange: setSecEndYear, options: YEARS.map(y => ({ value: String(y), label: String(y) })) },
     ...(sourceOpts.length > 0 ? [{ label: "Source", value: secSource, onChange: setSecSource, options: sourceOpts }] : []),
     ...(structureOpts.length > 0 ? [{ label: "Structure", value: secStructure, onChange: setSecStructure, options: structureOpts }] : []),
-    ...(secDimGroups.length > 0 ? [{ label: "Dim Grp", value: secDimGroup, onChange: v => { setSecDimGroup(v); setSecDim(""); }, options: [{ value: "", label: "Dim Grp" }, ...secDimGroups.map(g => ({ value: g, label: g }))] }] : []),
-    ...(secDimGroup && secGroupDimOptions.length > 0 ? [{ label: "Dims", value: secDim, onChange: setSecDim, options: [{ value: "", label: "Dims" }, ...secGroupDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))] }] : []),
+...(secDimGroups.length > 0 ? [{ label: "Dim Grp", values: secDimGroup, onChange: v => { setSecDimGroup(v); setSecDim(null); }, options: secDimGroups.map(g => ({ value: g, label: g })), multiselect: true }] : []),
+    ...(secGroupDimOptions.length > 0 ? [{ label: "Dims", values: secDim, onChange: setSecDim, options: secGroupDimOptions.map(d => ({ value: d.code, label: d.name || d.code })), multiselect: true }] : []),
 
   ];
 return (
@@ -3459,7 +4223,7 @@ top: kpiPickerRect ? kpiPickerRect.bottom + 8 : 0,
           if (missingIds.length === 0) return null;
           return (
             <div className="flex items-center gap-1 ml-1">
-              {missingIds.map((id, i) => {
+{missingIds.map(id => {
                 const color = CMP_COLORS[allIds.indexOf(id)];
                 return (
 <button key={id} onClick={() => setCmpBars(prev => [...prev, {
@@ -3467,8 +4231,8 @@ top: kpiPickerRect ? kpiPickerRect.bottom + 8 : 0,
                     companies: [],
                     source: secSource,
                     structure: secStructure,
-                    dimGroup: "",
-                    dim: "",
+                    dimGroup: null,
+                    dim: null,
                   }])}
                     className="flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-[9px] font-black uppercase tracking-[0.15em] transition-all hover:scale-105 flex-shrink-0"
                     style={{ background: `${color}12`, color, border: `1px solid ${color}30` }}>
@@ -3502,7 +4266,20 @@ top: kpiPickerRect ? kpiPickerRect.bottom + 8 : 0,
 {cmpBars.map((bar, bi) => {
         const CMP_COLORS = ["#CF305D", "#10B981"];
         const cmpColor = CMP_COLORS[bi % CMP_COLORS.length];
-        const cmpDimOptions = bar.dimGroup ? dimensions.filter(d => (d.DimensionGroup ?? d.dimensionGroup ?? "") === bar.dimGroup).map(d => ({ code: d.DimensionCode ?? d.dimensionCode ?? "", name: d.DimensionName ?? d.dimensionName ?? "" })).filter(d => d.code) : [];
+const cmpDimOptions = (() => {
+          const groups = (bar.dimGroup && bar.dimGroup.length > 0) ? bar.dimGroup : secDimGroups;
+          const seen = new Map();
+          groups.forEach(g => {
+            dimensions.forEach(d => {
+              const dg = d.DimensionGroup ?? d.dimensionGroup ?? "";
+              if (dg !== g) return;
+              const code = d.DimensionCode ?? d.dimensionCode ?? "";
+              const name = d.DimensionName ?? d.dimensionName ?? "";
+              if (code && !seen.has(code)) seen.set(code, name);
+            });
+          });
+          return [...seen.entries()].map(([code, name]) => ({ code, name }));
+        })();
         return (
           <div key={bar.id} className="px-5 py-3 flex items-center gap-2 no-scrollbar border-t border-gray-50"
             style={{ flexWrap: "nowrap", overflowX: "auto", overflowY: "visible" }}>
@@ -3516,8 +4293,8 @@ top: kpiPickerRect ? kpiPickerRect.bottom + 8 : 0,
             <MultiFilterPill label="Company" values={bar.companies} onChange={v => updateCmpBar(bar.id, { companies: v })} options={companyCodes.map(c => ({ value: c, label: companyLegalName(c) }))} colors={{ primary: cmpColor }} />
             {sourceOpts.length > 0 && <HeaderFilterPill label="Source" value={bar.source} onChange={v => updateCmpBar(bar.id, { source: v })} options={sourceOpts} />}
             {structureOpts.length > 0 && <HeaderFilterPill label="Structure" value={bar.structure} onChange={v => updateCmpBar(bar.id, { structure: v })} options={structureOpts} />}
-            {secDimGroups.length > 0 && <HeaderFilterPill label="Dim Grp" value={bar.dimGroup} onChange={v => updateCmpBar(bar.id, { dimGroup: v, dim: "" })} options={[{ value: "", label: "Dim Grp" }, ...secDimGroups.map(g => ({ value: g, label: g }))]} />}
-            {bar.dimGroup && cmpDimOptions.length > 0 && <HeaderFilterPill label="Dims" value={bar.dim} onChange={v => updateCmpBar(bar.id, { dim: v })} options={[{ value: "", label: "Dims" }, ...cmpDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))]} />}
+{secDimGroups.length > 0 && <MultiFilterPill label="Dim Grp" values={bar.dimGroup} onChange={v => updateCmpBar(bar.id, { dimGroup: v, dim: null })} options={secDimGroups.map(g => ({ value: g, label: g }))} colors={{ primary: cmpColor }} />}
+            {cmpDimOptions.length > 0 && <MultiFilterPill label="Dims" values={bar.dim} onChange={v => updateCmpBar(bar.id, { dim: v })} options={cmpDimOptions.map(d => ({ value: d.code, label: d.name || d.code }))} colors={{ primary: cmpColor }} />}
 <button onClick={() => removeCmpBar(bar.id)}
               className="flex-shrink-0 w-7 h-7 rounded-xl flex items-center justify-center ml-2 transition-all hover:scale-110"
               style={{ background: `${cmpColor}15`, color: cmpColor }}>
@@ -3767,8 +4544,7 @@ return (
 }
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
-async function renderChartToImage({data, kpiIds, kpiList, width = 900, height = 420 }) {
-  const COLORS = ["#1a2f8a", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"];
+async function renderChartToImage({ data, series, width = 1100, height = 480 }) {
   const host = document.createElement("div");
   host.style.position = "fixed";
   host.style.left = "-99999px";
@@ -3782,25 +4558,25 @@ async function renderChartToImage({data, kpiIds, kpiList, width = 900, height = 
   try {
     root.render(
       <div style={{ width, height, background: "#fff", padding: 12 }}>
-        <LineChart data={data} width={width - 24} height={height - 24} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+        <LineChart data={data} width={width - 24} height={height - 56} margin={{ top: 10, right: 20, left: 10, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#eef1fb" />
           <XAxis dataKey="period" tick={{ fontSize: 11, fill: "#6b7280" }} interval={0} />
           <YAxis tick={{ fontSize: 11, fill: "#6b7280" }}
-            tickFormatter={v => Math.abs(v) >= 1000 ? `${(v/1000).toFixed(0)}k` : v.toFixed(0)} />
-          <Legend wrapperStyle={{ fontSize: 11 }}
-            formatter={(value) => kpiList.find(k => k.id === value)?.label ?? value} />
-          {kpiIds.map((kid, i) => (
-            <Line key={kid} type="monotone" dataKey={kid} isAnimationActive={false}
-              stroke={COLORS[i % COLORS.length]} strokeWidth={2}
-              dot={{ r: 3 }} activeDot={{ r: 5 }} connectNulls />
+            tickFormatter={v => Math.abs(v) >= 1000000 ? `${(v/1000000).toFixed(1)}M` : Math.abs(v) >= 1000 ? `${(v/1000).toFixed(0)}k` : v.toFixed(0)} />
+          <Legend wrapperStyle={{ fontSize: 10, paddingTop: 4 }} iconSize={10} />
+          {(series || []).map(s => (
+            <Line key={s.key} type="monotone" dataKey={s.key} name={s.label}
+              isAnimationActive={false}
+              stroke={s.color} strokeWidth={2.2}
+              strokeDasharray={s.dash ?? undefined}
+              dot={{ r: 2.5 }} activeDot={{ r: 5 }} connectNulls />
           ))}
         </LineChart>
       </div>
     );
 
-    // Wait two animation frames for recharts to actually paint the SVG
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-    await new Promise(r => setTimeout(r, 150));
+    await new Promise(r => setTimeout(r, 250));
 
     const canvas = await html2canvas(host, { backgroundColor: "#ffffff", scale: 2, logging: false });
     return canvas.toDataURL("image/png");
@@ -3896,31 +4672,32 @@ export default function KpiIndividualesPage({ token, sources = [], structures = 
 
 const groupAccounts = groupAccountsProp.length > 0 ? groupAccountsProp : groupAccountsLocal;
 
-  // Diagnostic: check if API codes (38450 etc) exist in groupAccounts
-  useEffect(() => {
-    if (groupAccounts.length === 0) return;
-    const sampleApiCodes = ["38450", "38999", "39999"];
-    const gaCodes = new Set(groupAccounts.map(g => String(g.accountCode ?? g.AccountCode ?? "")));
-    sampleApiCodes.forEach(c => {
-      console.log(`[KpiPage] is "${c}" in groupAccounts?`, gaCodes.has(c));
-    });
-    console.log(`[KpiPage] sample groupAccount:`, groupAccounts[0]);
-    console.log(`[KpiPage] groupAccount keys:`, Object.keys(groupAccounts[0] ?? {}));
-  }, [groupAccounts.length]);
 
-  const header1Style = useTypo("header1");
-  const header2Style = useTypo("header2");
-  const body1Style = useTypo("body1");
+const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
-  const underscore2Style = useTypo("underscore2");
-  const underscore3Style = useTypo("underscore3");
   const filterStyle = useTypo("filter");
-const { colors } = useSettings();
+const { colors, locale } = useSettings();
+const tt = (k, fb) => t(locale, k, fb);
   const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();
   const [year, setYear] = useState("");
   const [month, setMonth] = useState("");
-  const [source, setSource] = useState("");
-  const [structure, setStructure] = useState("");
+// source/structure: state holds the user's explicit override (null = not picked).
+  // The displayed value derives from the override-or-prop-default, so first-render
+  // already shows a sensible value without a sync setState in an effect.
+  const [sourceOverride, setSource] = useState(null);
+  const [structureOverride, setStructure] = useState(null);
+  const defaultSource = useMemo(() => {
+    if (sources.length === 0) return "";
+    const s = sources[0];
+    return typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s);
+  }, [sources]);
+  const defaultStructure = useMemo(() => {
+    if (structures.length === 0) return "";
+    const s = structures[0];
+    return typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s);
+  }, [structures]);
+  const source = sourceOverride ?? defaultSource;
+  const structure = structureOverride ?? defaultStructure;
   const [metaReady, setMetaReady] = useState(false);
   const [loading, setLoading] = useState(false);
 const [companyData, setCompanyData] = useState(new Map());
@@ -3976,17 +4753,6 @@ const { ccTagToCodes, mappingMatched, mappingUnmatched } = useMemo(() => {
   });
   return { ccTagToCodes: override, mappingMatched: matched, mappingUnmatched: unmatched };
 }, [activeMapping, defaultCcTagToCodes]);
-
-const handleApplyMapping = useCallback((m) => {
-  setActiveMapping({
-    mapping_id: m.mapping_id,
-    name: m.name,
-    standard: m.standard,
-    plSections: extractSectionsFromTree(m.pl_tree),
-    bsSections: extractSectionsFromTree(m.bs_tree),
-  });
-  setWarningDismissed(false);
-}, []);
 
 // Diagnostic logging — easy way to see what's going on in console
 useEffect(() => {
@@ -4250,7 +5016,17 @@ const [viewPeriod, setViewPeriod] = useState("ytd"); // "monthly" | "ytd"
 
 // Compare mode: when enabled, show 2 extra columns per existing column
 // (compare value + delta) using the comparison filter set below.
-const [compareMode, setCompareMode] = useState(false);
+const [exportModal, setExportModal] = useState(false);
+  const [exportOpts, setExportOpts] = useState({
+    company: true,
+    dimension: true,
+    graphs: true,
+    inlineDefs: true,
+    defsSheet: true,
+    format: "xlsx",
+  });
+
+  const [compareMode, setCompareMode] = useState(false);
 const [compareVisible, setCompareVisible] = useState(false);
 const [cmpBarCollapsed, setCmpBarCollapsed] = useState(false);
 useEffect(() => {
@@ -4259,15 +5035,21 @@ useEffect(() => {
     setCompareVisible(true);
     return;
   }
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  setCmpBarCollapsed(false);
+setCmpBarCollapsed(false);
   const t = setTimeout(() => setCompareVisible(false), 450);
   return () => clearTimeout(t);
 }, [compareMode]);
-const [cmpSource, setCmpSource] = useState("");
-const [cmpStructure, setCmpStructure] = useState("");
-const [cmpYear, setCmpYear] = useState("");
-const [cmpMonth, setCmpMonth] = useState("");
+// Cmp filters: state holds the user's override (null = not picked yet).
+// Displayed value derives from override-or-primary-fallback, so first render
+// after compareMode flips on already has sensible values and the fetch gate passes.
+const [cmpSourceOverride, setCmpSource]       = useState(null);
+const [cmpStructureOverride, setCmpStructure] = useState(null);
+const [cmpYearOverride, setCmpYear]           = useState(null);
+const [cmpMonthOverride, setCmpMonth]         = useState(null);
+const cmpSource    = cmpSourceOverride    ?? source;
+const cmpStructure = cmpStructureOverride ?? structure;
+const cmpYear      = cmpYearOverride      ?? (year ? String(parseInt(year) - 1) : "");
+const cmpMonth     = cmpMonthOverride     ?? month;
 const [cmpSelGroups, setCmpSelGroups] = useState(null);
 const [cmpSelDims, setCmpSelDims] = useState(null);
   const [dragIdx, setDragIdx] = useState(null);
@@ -4279,48 +5061,13 @@ const [selGroups, setSelGroups] = useState(null);
   const [selDims, setSelDims] = useState(null);
 const [selCompanies, setSelCompanies] = useState(null);
   const graphSectionsRef = useRef({}); // { 1: {...}, 2: {...}, 3: {...} }
-const [exporting, setExporting] = useState(false);
-  const [viewsModalOpen, setViewsModalOpen] = useState(false);
+const [, setExporting] = useState(false);
   const handleGraphSectionState = useCallback((sid, state) => {
     graphSectionsRef.current[sid] = state;
   }, []);
-  useEffect(() => { setColOrder(null); }, [viewMode]);
 
   // Auto-find the latest period with data once source/structure/company are known
 const autoPeriodDone = useRef(false);
-
-useEffect(() => {
-    if (sources.length > 0 && !source) {
-      const s = sources[0];
-      setSource(typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s));
-    }
-  }, [sources, source]);
-
-useEffect(() => {
-    if (structures.length > 0 && !structure) {
-      const s = structures[0];
-      setStructure(typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s));
-    }
-}, [structures, structure]);
-
-// Default the comparison filters once when the user enables compare mode.
-// We populate them on transition false→true so the user lands on a sensible
-// initial scenario (previous year, same month). After that, the user can
-// override freely without us forcing the values back.
-const compareInitDoneRef = useRef(false);
-useEffect(() => {
-  if (!compareMode) {
-    compareInitDoneRef.current = false;
-    return;
-  }
-  if (compareInitDoneRef.current) return;
-  if (!source || !structure || !year || !month) return;
-  setCmpSource(source);
-  setCmpStructure(structure);
-  setCmpYear(String(parseInt(year) - 1));
-  setCmpMonth(month);
-  compareInitDoneRef.current = true;
-}, [compareMode, source, structure, year, month]);
 
 const companyCodes = useMemo(() =>
     [...new Set(companies.map(c => typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : String(c)).filter(Boolean))],
@@ -4349,46 +5096,51 @@ const kpiDashReady = hasEverLoaded || kpiDashProgress >= 100;
 
 // Auto-find the latest period with data once source/structure/company are known.
   // Fast path: LatestPeriodContext (populated by EpicLoader). Slow path: 24-month probe.
-  useEffect(() => {
+useEffect(() => {
     if (autoPeriodDone.current) return;
     if (!token || !source || !structure || companyCodes.length === 0) return;
     autoPeriodDone.current = true;
+    let cancelled = false;
     const co = companyCodes[0];
 
-    // FAST PATH 1: React context cache
-    const cached = getLatestPeriod(source, structure, co);
-    if (cached) {
-      console.log("[KpiPage] CONTEXT CACHE HIT ✓", cached);
-      setYear(String(cached.year));
-      setMonth(String(cached.month));
-      setMetaReady(true);
-      return;
-    }
-
-    // FAST PATH 2: sessionStorage (EpicLoader's prefetchHomeData)
-    try {
-      const ssKey = `home_latest_period_${source}_${structure}_${co}`;
-      const ssRaw = sessionStorage.getItem(ssKey);
-      if (ssRaw) {
-        const parsed = JSON.parse(ssRaw);
-        if (parsed.year && parsed.month) {
-          console.log("[KpiPage] SESSION STORAGE HIT ✓", parsed);
-          setYear(String(parsed.year));
-          setMonth(String(parsed.month));
-          setLatestPeriod(source, structure, co, parsed.year, parsed.month);
-          setMetaReady(true);
-          return;
-        }
-      }
-    } catch { /* ignore */ }
-
-    console.log("[KpiPage] CACHE MISS - probing");
-
     (async () => {
+      // FAST PATH 1: React context cache
+      const cached = getLatestPeriod(source, structure, co);
+      if (cached) {
+        console.log("[KpiPage] CONTEXT CACHE HIT ✓", cached);
+        if (cancelled) return;
+        setYear(String(cached.year));
+        setMonth(String(cached.month));
+        setMetaReady(true);
+        return;
+      }
+
+      // FAST PATH 2: sessionStorage (EpicLoader's prefetchHomeData)
+      try {
+        const ssKey = `home_latest_period_${source}_${structure}_${co}`;
+        const ssRaw = sessionStorage.getItem(ssKey);
+        if (ssRaw) {
+          const parsed = JSON.parse(ssRaw);
+          if (parsed.year && parsed.month) {
+            console.log("[KpiPage] SESSION STORAGE HIT ✓", parsed);
+            if (cancelled) return;
+            setYear(String(parsed.year));
+            setMonth(String(parsed.month));
+            setLatestPeriod(source, structure, co, parsed.year, parsed.month);
+            setMetaReady(true);
+            return;
+          }
+        }
+      } catch { /* ignore */ }
+
+      console.log("[KpiPage] CACHE MISS - probing");
+
+      // SLOW PATH: probe backwards from current month
       const now = new Date();
       let y = now.getFullYear();
       let m = now.getMonth() + 1;
       for (let i = 0; i < 24; i++) {
+        if (cancelled) return;
         try {
           const filter = `Year eq ${y} and Month eq ${m} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${co}'`;
           const res = await fetch(
@@ -4399,6 +5151,7 @@ const kpiDashReady = hasEverLoaded || kpiDashProgress >= 100;
             const json = await res.json();
             const rows = json.value ?? (Array.isArray(json) ? json : []);
             if (rows.length > 0) {
+              if (cancelled) return;
               setYear(String(y));
               setMonth(String(m));
               setLatestPeriod(source, structure, co, y, m);
@@ -4410,8 +5163,10 @@ const kpiDashReady = hasEverLoaded || kpiDashProgress >= 100;
         m -= 1;
         if (m < 1) { m = 12; y -= 1; }
       }
-      setMetaReady(true);
+      if (!cancelled) setMetaReady(true);
     })();
+
+    return () => { cancelled = true; };
   }, [token, source, structure, companyCodes, getLatestPeriod, setLatestPeriod]);
 
 // Derive dim groups and codes from the journal's `Dimensions` field — more
@@ -4491,7 +5246,9 @@ const groupDimCodes = useMemo(() => {
     return null;
   }, [cmpSelGroups, cmpSelDims, cmpGroupDimOptions]);
 
-const fetchAllCompanies = useCallback(async () => {
+useEffect(() => {
+  let cancelled = false;
+  (async () => {
     if (!metaReady || !year || !month || !source || !structure || companyCodes.length === 0) return;
     setLoading(true);
 
@@ -4513,7 +5270,6 @@ const fetchAllCompanies = useCallback(async () => {
       return map;
     };
 
-    // Compute previous month (used for monthly delta in main + compare scenarios)
     const prevOf = (y, m) => {
       let pY = parseInt(y), pM = parseInt(m) - 1;
       if (pM < 1) { pM = 12; pY -= 1; }
@@ -4526,10 +5282,11 @@ const fetchAllCompanies = useCallback(async () => {
       fetchPeriod(year, month, source, structure),
       fetchPeriod(mainPrev.y, mainPrev.m, source, structure),
     ]);
+    if (cancelled) return;
     setCompanyData(curr);
     setCompanyDataPrev(prev);
 
-// Fetch comparison scenario only when compareMode is enabled and the
+    // Fetch comparison scenario only when compareMode is enabled and the
     // compare filters are populated (no point fetching otherwise).
     console.log("[KpiPage] compareMode check:", { compareMode, cmpSource, cmpStructure, cmpYear, cmpMonth });
     if (compareMode && cmpSource && cmpStructure && cmpYear && cmpMonth) {
@@ -4539,8 +5296,8 @@ const fetchAllCompanies = useCallback(async () => {
         fetchPeriod(cmpYear, cmpMonth, cmpSource, cmpStructure),
         fetchPeriod(cmpPrev.y, cmpPrev.m, cmpSource, cmpStructure),
       ]);
+      if (cancelled) return;
       console.log("[KpiPage] cmp data fetched:", { currCSize: currC.size, prevCSize: prevC.size });
-      // Sample inspection
       const sampleCo = [...currC.keys()][0];
       if (sampleCo) {
         console.log(`[KpiPage] cmp ${sampleCo} rows:`, currC.get(sampleCo)?.length);
@@ -4549,15 +5306,16 @@ const fetchAllCompanies = useCallback(async () => {
       setCompanyDataCmpPrev(prevC);
     } else {
       console.log("[KpiPage] skipping cmp fetch");
+      if (cancelled) return;
       setCompanyDataCmp(new Map());
       setCompanyDataCmpPrev(new Map());
     }
 
-    setLoading(false);
-  }, [metaReady, year, month, source, structure, companyCodes, token,
-      compareMode, cmpSource, cmpStructure, cmpYear, cmpMonth]);
-
-useEffect(() => { fetchAllCompanies(); }, [fetchAllCompanies]);
+    if (!cancelled) setLoading(false);
+  })();
+  return () => { cancelled = true; };
+}, [metaReady, year, month, source, structure, companyCodes, token,
+    compareMode, cmpSource, cmpStructure, cmpYear, cmpMonth]);
 
   // Build flat pivot per company (account code → YTD sum, P/L summary rows only)
 // Build a Set of sum account codes from groupAccounts so we can filter them
@@ -4845,7 +5603,7 @@ if (groupDimCodes && !groupDimCodes.has(code)) continue;
       result.set(key, { name: meta.name, group: meta.group, pivot: monthlyPivot });
     });
     return result;
-}, [companyData, companyDataPrev, viewPeriod, month, groupDimCodes, sumAccountCodes, selGroups, selCompanies]);
+}, [companyData, companyDataPrev, viewPeriod, month, groupDimCodes, sumAccountCodes, selGroups, selCompanies, dimensions]);
   // Compare-scenario dimension pivots — mirrors dimensionPivots but reads
   // from companyDataCmp / companyDataCmpPrev with cmpMonth as the period.
   const dimensionPivotsCmp = useMemo(() => {
@@ -4996,15 +5754,6 @@ const map = new Map();
     return result;
   }, [companyData, dimensions]);
 
-const allDimCodes = useMemo(() => {
-    const codes = new Set();
-    companyData.forEach(rows => rows.forEach(r => {
-      const dc = r.DimensionCode ?? r.dimensionCode ?? "";
-      if (dc) codes.add(dc);
-    }));
-    return [...codes].sort();
-  }, [companyData]);
-
 // Dims keyed by LOCAL account code (mirrors dimsByAccount but for the local picker)
 const localDimsByAccount = useMemo(() => {
   const dimNameLookup = new Map();
@@ -5095,8 +5844,7 @@ const companyResults = useMemo(() => {
 const inLibrary = companyKpis.some(k => k.kpi_id === editingKpi.id && !k.tag?.startsWith(OVERRIDE_TAG_PREFIX));
       const isBuiltIn = builtInKpiIds.has(editingKpi.id);
       const sourceSystemId = editingKpi._sourceSystemKpiId ?? null;
-      const labelChanged = data.label !== editingKpi.label;
-      const descChanged  = data.description !== editingKpi.description;
+const labelChanged = data.label !== editingKpi.label;
 
       // If editing a clean system clone, treat as editing the original system KPI
       if (!isBuiltIn && sourceSystemId && builtInKpiIds.has(sourceSystemId)) {
@@ -5300,8 +6048,8 @@ setCompanyKpis(prev => [...prev, created]);
     } catch (e) {
       alert(`No se pudo crear: ${e.message}`);
     }
-  }, [companyId, authUserId, editingKpi, activeMapping, companyKpis, addToDashboard, refreshCompanyKpis]);
-
+}, [companyId, authUserId, editingKpi, activeMapping, companyKpis, addToDashboard, refreshCompanyKpis,
+      builtInKpiIds, localKpis, resolvedAllKpis, saveSystemOverride, systemOverrides.comp, systemOverrides.dim, viewMode]);
   // Trash icon removes the KPI from THIS user's dashboard only — the library
   // entry stays so other users on the company still have it.
 const deleteKpi = useCallback((id) => {
@@ -5309,13 +6057,15 @@ const deleteKpi = useCallback((id) => {
     removeFromDashboard(id, scope);
   }, [removeFromDashboard, viewMode]);
 
- const fetchSectionData = useCallback(async (sectionConfig) => {
-    const { company, startY, startM, endY, endM, source: secSource, structure: secStructure,
-            dimGroupCodes, mode, kpiIds } = sectionConfig;
+const fetchSectionData = useCallback(async (sectionConfig) => {
+    const { company, companies: companiesArg, startY, startM, endY, endM, source: secSource, structure: secStructure,
+            dimGroup, dim, mode, kpiIds } = sectionConfig;
 
-    if (!token || !secSource || !secStructure || !company) return [];
+    const companies = Array.isArray(companiesArg) && companiesArg.length > 0
+      ? companiesArg
+      : (company ? [company] : []);
+    if (!token || !secSource || !secStructure || companies.length === 0) return [];
 
-    // Build period list
     const periods = [];
     let pY = parseInt(startY), pM = parseInt(startM) - 1;
     if (pM < 1) { pM = 12; pY -= 1; }
@@ -5329,8 +6079,9 @@ const deleteKpi = useCallback((id) => {
       if (periods.length > 120) break;
     }
 
+const cFilter = companies.map(c => `CompanyShortName eq '${c}'`).join(" or ");
     const results = await Promise.all(periods.map(async ({ y, m, isPrior }) => {
-      const filter = `Year eq ${y} and Month eq ${m} and Source eq '${secSource}' and GroupStructure eq '${secStructure}' and CompanyShortName eq '${company}'`;
+      const filter = `Year eq ${y} and Month eq ${m} and Source eq '${secSource}' and GroupStructure eq '${secStructure}' and (${cFilter})`;
       try {
         const res = await fetch(
           `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
@@ -5340,18 +6091,25 @@ const deleteKpi = useCallback((id) => {
         const json = await res.json();
         const rows = json.value ?? (Array.isArray(json) ? json : []);
         const p = new Map();
+        // Same filter logic as on-screen GraphSection.fetchChartData
         rows.forEach(r => {
           const ac = r.AccountCode ?? r.accountCode ?? "";
-          const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
           const acType = r.AccountType ?? r.accountType ?? "";
-          const dc = r.DimensionCode ?? r.dimensionCode ?? "";
           if (!ac) return;
-          if (lac && lac !== "—") return;
+          if (sumAccountCodes && sumAccountCodes.has(ac)) return;
           if (acType && acType !== "P/L") return;
-          if (dimGroupCodes) {
-            if (!dc || !dimGroupCodes.has(dc)) return;
-          } else {
-            if (dc) return;
+const hasDim   = Array.isArray(dim)      ? dim.length      > 0 : !!dim;
+          const hasGroup = Array.isArray(dimGroup) ? dimGroup.length > 0 : !!dimGroup;
+          if (hasDim || hasGroup) {
+            const dimPairs = parseDimensions(r.Dimensions);
+            if (hasDim) {
+              const dimArr = Array.isArray(dim) ? dim : [dim];
+              const rowDimCodes = new Set(dimPairs.map(([, code]) => code));
+              if (!dimArr.some(d => rowDimCodes.has(d))) return;
+            } else if (hasGroup) {
+              const grpArr = Array.isArray(dimGroup) ? dimGroup : [dimGroup];
+              if (!grpArr.some(g => dimPairs.some(([rg]) => rg === g))) return;
+            }
           }
           const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
           p.set(ac, (p.get(ac) ?? 0) + amt);
@@ -5390,68 +6148,306 @@ const kpis = computeAllKpisResolved(kpiList, pivotForKpi, ccTagToCodes, sectionC
       series.push(row);
     }
     return series;
-}, [token, kpiList, ccTagToCodes, sectionCodes, resolvedAllKpis]);
+}, [token, kpiList, ccTagToCodes, sectionCodes, resolvedAllKpis, sumAccountCodes]);
 
-  // Build graph sections — use live refs if user visited Graphs tab, else synthesize defaults
-  const buildGraphSections = useCallback(async () => {
+// Build graph sections — read live state (incl. compare bars), fetch both modes for primary + each cmp bar, merge into wide rows
+const buildGraphSections = useCallback(async () => {
     const result = [];
-    for (const sid of [1, 2, 3]) {
+    for (const sid of [1]) {
       const live = graphSectionsRef.current[sid];
-      if (live && live.chartData && live.chartData.length > 0) {
-        // Use the live section's data and render image headlessly from it (for Excel consistency)
-const imageDataUrl = await renderChartToImage({
-          data: live.chartData,
-          kpiIds: live.kpiIds,
-          kpiList,
-        }).catch(e => { console.warn("Chart render failed:", e); return null; });
-        result.push({ ...live, imageDataUrl });
-        continue;
+
+      const defaults = (() => {
+        const anchorY = parseInt(year) || new Date().getFullYear();
+        const anchorM = parseInt(month) || new Date().getMonth() + 1;
+        let sY = anchorY, sM = anchorM - 11;
+        while (sM < 1) { sM += 12; sY -= 1; }
+        return {
+          startY: String(sY), startM: String(sM),
+          endY:   String(anchorY), endM: String(anchorM),
+          source, structure,
+        };
+      })();
+
+      const baseConfig = {
+        sectionId: sid,
+        companies: (live?.companies?.length ? live.companies : (companyCodes[0] ? [companyCodes[0]] : [])),
+        startY:   live?.startY   ?? defaults.startY,
+        startM:   live?.startM   ?? defaults.startM,
+        endY:     live?.endY     ?? defaults.endY,
+        endM:     live?.endM     ?? defaults.endM,
+        source:   live?.source   ?? defaults.source,
+        structure: live?.structure ?? defaults.structure,
+        dimGroup: live?.dimGroup ?? "",
+        dim:      live?.dim      ?? "",
+        kpiIds:   (live?.kpiIds?.length ? live.kpiIds : ["revenue", "gross_profit", "net_result"]),
+      };
+
+      const cmpBars = Array.isArray(live?.cmpBars) ? live.cmpBars : [];
+      const isCompare = cmpBars.length > 0;
+      const liveCmpData = live?.cmpChartData ?? {};
+      const liveMain = Array.isArray(live?.chartData) ? live.chartData : null;
+      const liveMode = live?.mode ?? "ytd";
+
+      // Build series config — primary uses navy (or rainbow when not in compare),
+      // each cmp bar gets its own color, dashes differentiate KPIs within a source
+      const CMP_COLORS = { B: "#CF305D", C: "#10B981" };
+      const RAINBOW    = ["#1a2f8a", "#10b981", "#f59e0b", "#8b5cf6", "#ef4444", "#06b6d4"];
+      const series = [];
+      baseConfig.kpiIds.forEach((kid, i) => {
+        const kpi = kpiList.find(k => k.id === kid);
+        series.push({
+          key:    `a__${kid}`,
+          label:  isCompare ? `A · ${kpi?.label ?? kid}` : (kpi?.label ?? kid),
+          color:  isCompare ? "#1a2f8a" : RAINBOW[i % RAINBOW.length],
+          dash:   isCompare && i === 1 ? "5 4" : undefined,
+          kpiId:  kid,
+          barId:  "a",
+          format: kpi?.format,
+        });
+      });
+      cmpBars.forEach(bar => {
+        baseConfig.kpiIds.slice(0, 2).forEach((kid, i) => {
+          const kpi = kpiList.find(k => k.id === kid);
+          series.push({
+            key:    `${bar.id}__${kid}`,
+            label:  `${bar.id} · ${kpi?.label ?? kid}`,
+            color:  CMP_COLORS[bar.id] ?? "#CF305D",
+            dash:   i === 1 ? "5 4" : undefined,
+            kpiId:  kid,
+            barId:  bar.id,
+            format: kpi?.format,
+          });
+        });
+      });
+
+      // Merge primary array + cmp data map into wide rows keyed by `barId__kpiId`
+      const mergeRows = (primaryArr, cmpDataMap) => {
+        const allPeriods = new Set();
+        (primaryArr ?? []).forEach(d => allPeriods.add(d.period));
+        Object.values(cmpDataMap ?? {}).forEach(arr => (arr ?? []).forEach(d => allPeriods.add(d.period)));
+        return [...allPeriods].sort().map(period => {
+          const row = { period };
+          const pRow = (primaryArr ?? []).find(d => d.period === period) ?? {};
+          baseConfig.kpiIds.forEach(kid => { row[`a__${kid}`] = Number.isFinite(pRow[kid]) ? pRow[kid] : null; });
+          Object.entries(cmpDataMap ?? {}).forEach(([barId, arr]) => {
+            const barRow = (arr ?? []).find(d => d.period === period) ?? {};
+            baseConfig.kpiIds.forEach(kid => { row[`${barId}__${kid}`] = Number.isFinite(barRow[kid]) ? barRow[kid] : null; });
+          });
+          return row;
+        });
+      };
+
+      // Fetch fresh data for one mode — primary + each cmp bar
+      const fetchModeData = async (mode) => {
+        const primary = await fetchSectionData({ ...baseConfig, mode });
+        const cmpMap = {};
+        for (const bar of cmpBars) {
+          cmpMap[bar.id] = await fetchSectionData({
+            mode,
+            companies: bar.companies,
+            startY: baseConfig.startY, startM: baseConfig.startM,
+            endY:   baseConfig.endY,   endM:   baseConfig.endM,
+            source: bar.source, structure: bar.structure,
+            dimGroup: bar.dimGroup ?? "", dim: bar.dim ?? "",
+            kpiIds: baseConfig.kpiIds,
+          });
+        }
+        return { primary, cmpMap };
+      };
+
+      // Use live data for the mode user is currently viewing, fetch the other
+      let ytdMerged, monthlyMerged;
+      if (liveMain && liveMain.length > 0 && liveMode === "ytd") {
+        ytdMerged = mergeRows(liveMain, liveCmpData);
+        const m = await fetchModeData("monthly");
+        monthlyMerged = mergeRows(m.primary, m.cmpMap);
+      } else if (liveMain && liveMain.length > 0 && liveMode === "monthly") {
+        monthlyMerged = mergeRows(liveMain, liveCmpData);
+        const y = await fetchModeData("ytd");
+        ytdMerged = mergeRows(y.primary, y.cmpMap);
+      } else {
+        const [y, m] = await Promise.all([fetchModeData("ytd"), fetchModeData("monthly")]);
+        ytdMerged     = mergeRows(y.primary, y.cmpMap);
+        monthlyMerged = mergeRows(m.primary, m.cmpMap);
       }
 
-      // Synthesize defaults: same logic as GraphSection defaults
-      const anchorY = parseInt(year) || new Date().getFullYear();
-      const anchorM = parseInt(month) || new Date().getMonth() + 1;
-      let startY = anchorY, startM = anchorM - 11;
-      while (startM < 1) { startM += 12; startY -= 1; }
-
-      const defaultKpiIds = ["revenue", "ebitda", "net_result"];
-      const config = {
-        sectionId: sid,
-        company: companyCodes[0] || "",
-        startY: String(startY), startM: String(startM),
-        endY: String(anchorY), endM: String(anchorM),
-        source, structure,
-        dimGroup: "", dim: "",
-        mode: "monthly",
-        kpiIds: defaultKpiIds,
-        dimGroupCodes: null,
+      const renderImg = async (data) => {
+        if (!data || data.length === 0) return null;
+        try { return await renderChartToImage({ data, series }); }
+        catch (e) { console.warn("Chart render failed:", e); return null; }
       };
-      const chartData = await fetchSectionData(config);
-      const imageDataUrl = chartData.length > 0
-? await renderChartToImage({
-            data: chartData, kpiIds: defaultKpiIds, kpiList,
-          }).catch(e => { console.warn("Chart render failed:", e); return null; })
-        : null;
-      result.push({ ...config, chartData, imageDataUrl });
+      const [ytdImg, monthlyImg] = await Promise.all([renderImg(ytdMerged), renderImg(monthlyMerged)]);
+
+      result.push({
+        sectionId: sid,
+        company: baseConfig.companies.join(", "),
+        companies: baseConfig.companies,
+        startY: baseConfig.startY, startM: baseConfig.startM,
+        endY:   baseConfig.endY,   endM:   baseConfig.endM,
+        source: baseConfig.source, structure: baseConfig.structure,
+        dimGroup: baseConfig.dimGroup, dim: baseConfig.dim,
+        kpiIds: baseConfig.kpiIds,
+        ytdData:     ytdMerged,     ytdImg,
+        monthlyData: monthlyMerged, monthlyImg,
+        series,
+        compareMode: isCompare,
+      });
     }
     return result;
 }, [companyCodes, source, structure, year, month, kpiList, fetchSectionData]);
 
-  const buildExportPayload = async () => ({
-    kpiList,
-    companyCodes,
-    companyResults,
-    dimensionCodes,
-    dimensionResults,
-    dimensionPivots,
-    graphSections: await buildGraphSections(),
-filters: {
-      source, structure, year, month,
-      dimGroups: selGroups, dims: selDims,
-    },
-  });
+const buildExportPayload = async () => {
+    const fullCompanyLabels = filteredCompanyCodes.map(c => companyLegalName(c));
 
-  const handleExportXlsx = async () => {
+    // === Compute YTD + Monthly results inline for export ===
+    const buildPivotOne = (rows, applyDimFilter, gFilter, dFilter) => {
+      const p = new Map();
+      const localPivot = new Map();
+      const localDimPivot = new Map();
+      const dimPivot = new Map();
+      rows.forEach(r => {
+        const ac = r.AccountCode ?? r.accountCode ?? "";
+        const lac = String(r.LocalAccountCode ?? r.localAccountCode ?? "").trim();
+        const acType = r.AccountType ?? r.accountType ?? "";
+        if (!ac) return;
+        if (sumAccountCodes.has(ac)) return;
+        if (acType && acType !== "P/L") return;
+        const dimPairs = parseDimensions(r.Dimensions ?? r.dimensions ?? "");
+        if (applyDimFilter) {
+          if (Array.isArray(dFilter)) {
+            if (dFilter.length === 0) return;
+            const rowDimCodes = new Set(dimPairs.map(([, code]) => code));
+            if (!dFilter.some(d => rowDimCodes.has(d))) return;
+          } else if (Array.isArray(gFilter)) {
+            if (gFilter.length === 0) return;
+            const rowGroups = new Set(dimPairs.map(([g]) => g));
+            if (!gFilter.some(g => rowGroups.has(g))) return;
+          }
+        }
+        const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+        p.set(ac, (p.get(ac) ?? 0) + amt);
+        if (lac && lac !== "—") localPivot.set(lac, (localPivot.get(lac) ?? 0) + amt);
+        dimPairs.forEach(([dGroup, dCode]) => {
+          if (!dGroup || !dCode) return;
+          const key = `${ac}:::${dGroup}:::${dCode}`;
+          dimPivot.set(key, (dimPivot.get(key) ?? 0) + amt);
+          if (lac && lac !== "—") localDimPivot.set(`${lac}:::${dGroup}:::${dCode}`, (localDimPivot.get(`${lac}:::${dGroup}:::${dCode}`) ?? 0) + amt);
+        });
+      });
+      p.__dimPivot      = dimPivot;
+      p.__localPivot    = localPivot;
+      p.__localDimPivot = localDimPivot;
+      p.__groupDescendants = groupDescendantsMap;
+      return p;
+    };
+
+    const diffPivots = (curr, prev, isJan) => {
+      const out = new Map();
+      new Set([...curr.keys(), ...prev.keys()]).forEach(k => {
+        out.set(k, (curr.get(k) ?? 0) - (isJan ? 0 : (prev.get(k) ?? 0)));
+      });
+      const diffSub = (a, b) => {
+        const r = new Map();
+        new Set([...(a ?? new Map()).keys(), ...(b ?? new Map()).keys()]).forEach(k => {
+          r.set(k, ((a?.get(k)) ?? 0) - (isJan ? 0 : ((b?.get(k)) ?? 0)));
+        });
+        return r;
+      };
+      out.__dimPivot      = diffSub(curr.__dimPivot, prev.__dimPivot);
+      out.__localPivot    = diffSub(curr.__localPivot, prev.__localPivot);
+      out.__localDimPivot = diffSub(curr.__localDimPivot, prev.__localDimPivot);
+      out.__groupDescendants = groupDescendantsMap;
+      return out;
+    };
+
+    const buildResultsFor = (dataMap, prevMap, monthNum, gFilter, dFilter) => {
+      const isJan = parseInt(monthNum) === 1;
+      const ytdResults = new Map();
+      const monthlyResults = new Map();
+      dataMap.forEach((rows, co) => {
+        const curr = buildPivotOne(rows, true, gFilter, dFilter);
+        const prev = buildPivotOne(prevMap.get(co) ?? [], true, gFilter, dFilter);
+        const monthly = diffPivots(curr, prev, isJan);
+        ytdResults.set(co,     computeAllKpisResolved(kpiList, curr,    ccTagToCodes, sectionCodes, resolvedAllKpis));
+        monthlyResults.set(co, computeAllKpisResolved(kpiList, monthly, ccTagToCodes, sectionCodes, resolvedAllKpis));
+      });
+      return { ytd: ytdResults, monthly: monthlyResults };
+    };
+
+    const buildDimResultsFor = (dataMap, prevMap, monthNum) => {
+      const isJan = parseInt(monthNum) === 1;
+      const buildDim = (dMap) => {
+        const out = new Map();
+        dMap.forEach((rows, co) => {
+          if (selCompanies && selCompanies.length > 0 && !selCompanies.includes(co)) return;
+          rows.forEach(r => {
+            const ac = r.AccountCode ?? r.accountCode ?? "";
+            const acType = r.AccountType ?? r.accountType ?? "";
+            if (!ac || sumAccountCodes.has(ac) || (acType && acType !== "P/L")) return;
+            const pairs = parseDimensions(r.Dimensions);
+            if (pairs.length === 0) return;
+            for (const [group, code] of pairs) {
+              if (groupDimCodes && !groupDimCodes.has(code)) continue;
+              if (Array.isArray(selGroups)) {
+                if (selGroups.length === 0) continue;
+                if (!selGroups.includes(group)) continue;
+              }
+              const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+              if (!out.has(code)) out.set(code, new Map());
+              const m = out.get(code);
+              m.set(ac, (m.get(ac) ?? 0) + amt);
+            }
+          });
+        });
+        return out;
+      };
+      const currMap = buildDim(dataMap);
+      const prevMap2 = buildDim(prevMap);
+      const ytdResults = new Map();
+      const monthlyResults = new Map();
+      const allCodes = new Set([...currMap.keys(), ...prevMap2.keys()]);
+      allCodes.forEach(code => {
+        const curr = currMap.get(code) ?? new Map();
+        const prev = prevMap2.get(code) ?? new Map();
+        const monthly = new Map();
+        new Set([...curr.keys(), ...prev.keys()]).forEach(ac => {
+          monthly.set(ac, (curr.get(ac) ?? 0) - (isJan ? 0 : (prev.get(ac) ?? 0)));
+        });
+        ytdResults.set(code,     computeAllKpisResolved(kpiList, curr,    ccTagToCodes, sectionCodes, resolvedAllKpis));
+        monthlyResults.set(code, computeAllKpisResolved(kpiList, monthly, ccTagToCodes, sectionCodes, resolvedAllKpis));
+      });
+      return { ytd: ytdResults, monthly: monthlyResults };
+    };
+
+    const companyBoth    = buildResultsFor(companyData,    companyDataPrev,    month, selGroups, selDims);
+    const companyCmpBoth = compareMode ? buildResultsFor(companyDataCmp, companyDataCmpPrev, cmpMonth, cmpSelGroups, cmpSelDims) : null;
+    const dimBoth        = buildDimResultsFor(companyData,    companyDataPrev,    month);
+    const dimCmpBoth     = compareMode ? buildDimResultsFor(companyDataCmp, companyDataCmpPrev, cmpMonth) : null;
+
+    return {
+      kpiList,
+      companyCodes:        exportOpts.company   ? filteredCompanyCodes : [],
+      companyLabels:       exportOpts.company   ? fullCompanyLabels    : [],
+      companyResults:      companyBoth,
+      companyResultsCmp:   companyCmpBoth,
+      dimensionCodes:      exportOpts.dimension ? dimensionCodes : [],
+      dimensionResults:    dimBoth,
+      dimensionResultsCmp: dimCmpBoth,
+      dimensionPivots,
+      graphSections:       exportOpts.graphs    ? await buildGraphSections() : [],
+      exportOpts,
+      accountCodeLabels,
+      filters: {
+        source, structure, year, month,
+        dimGroups: selGroups, dims: selDims,
+        companies: fullCompanyLabels,
+        compareMode,
+        cmpYear, cmpMonth, cmpSource, cmpStructure,
+      },
+    };
+  };
+
+  const _handleExportXlsxRun = async () => {
     setExporting(true);
     try {
       const payload = await buildExportPayload();
@@ -5460,13 +6456,22 @@ filters: {
     finally { setExporting(false); }
   };
 
-  const handleExportPdf = async () => {
+  const _handleExportPdfRun = async () => {
     setExporting(true);
     try {
       const payload = await buildExportPayload();
       await exportKpisToPdf(payload);
     } catch (e) { console.error("PDF export failed:", e); alert("PDF export failed — check console"); }
     finally { setExporting(false); }
+  };
+
+  const handleExportXlsx = () => {
+    setExportOpts(o => ({ ...o, format: "xlsx" }));
+    setExportModal(true);
+  };
+  const handleExportPdf = () => {
+    setExportOpts(o => ({ ...o, format: "pdf" }));
+    setExportModal(true);
   };
 
 const handleDragEnd = useCallback(() => {
@@ -5488,7 +6493,7 @@ const scope = viewMode === "dimension" ? "individual_dimension" : "individual_co
       persistDashboard(newDashboard, scope);
     }
     setDragIdx(null); setDragOverIdx(null);
-  }, [dragIdx, dragOverIdx, kpiList, dashboardKpiIds, persistDashboard]);
+}, [dragIdx, dragOverIdx, kpiList, dashboardKpiIds, dashboardKpiIdsDim, viewMode, persistDashboard]);
 
   const handleColDragEnd = () => {
     if (colDragIdx !== null && colDragOverIdx !== null && colDragIdx !== colDragOverIdx) {
@@ -5503,20 +6508,151 @@ const scope = viewMode === "dimension" ? "individual_dimension" : "individual_co
 
 
 
-const filteredCompanyCodes = useMemo(() => {
-  if (!selCompanies || selCompanies.length === 0) return companyCodes;
-  const set = new Set(selCompanies);
-  return companyCodes.filter(c => set.has(c));
-}, [companyCodes, selCompanies]);
+// React Compiler memoizes this automatically; manual useMemo here was blocking optimization.
+const filteredCompanyCodes = (!selCompanies || selCompanies.length === 0)
+  ? companyCodes
+  : companyCodes.filter(c => new Set(selCompanies).has(c));
 const activeCols = viewMode === "company" ? filteredCompanyCodes : dimensionCodes;
 const activeResults = viewMode === "company" ? companyResults : dimensionResults;
-const orderedCols = colOrder && colOrder.length === activeCols.length ? colOrder : activeCols;
+// Falls back to activeCols when colOrder doesn't match the current view's columns
+// (either different length or different content). Derived so viewMode swaps don't need a reset effect.
+const orderedCols = (colOrder && colOrder.length === activeCols.length && colOrder.every(c => activeCols.includes(c))) ? colOrder : activeCols;
 
   const sourceOpts = [...new Set(sources.map(s => typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
   const structureOpts = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
 
 return (
     <div className="flex flex-col gap-4 h-full min-h-0 relative">
+      {exportModal && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
+          style={{ background: "rgba(15,23,42,0.55)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", animation: "kBadgesPop 280ms cubic-bezier(0.34,1.56,0.64,1)" }}
+          onClick={() => setExportModal(false)}>
+          <div className="relative bg-white w-full max-w-xl overflow-hidden max-h-[92vh] flex flex-col"
+            style={{ borderRadius: 28, boxShadow: `0 30px 80px -12px ${colors.primary}40, 0 12px 24px -6px rgba(0,0,0,0.12)`, animation: "plRowSlideIn 340ms cubic-bezier(0.34,1.56,0.64,1)" }}
+            onClick={e => e.stopPropagation()}>
+            <div className="relative px-7 pt-7 pb-5 flex-shrink-0">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0"
+                    style={{ background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.primary}dd 100%)`, boxShadow: `0 8px 20px -6px ${colors.primary}60` }}>
+                    <Download size={17} className="text-white" strokeWidth={2.5} />
+                  </div>
+                  <div>
+                    <p className="font-black text-[20px] tracking-tight" style={{ color: colors.primary, letterSpacing: "-0.02em" }}>Export KPIs</p>
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
+                        style={{ background: `${colors.primary}10`, color: colors.primary }}>
+                        {(exportOpts.format ?? "xlsx") === "pdf" ? "PDF" : "EXCEL"}
+                      </span>
+                      {compareMode && (
+                        <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
+                          style={{ background: "#CF305D15", color: "#CF305D" }}>COMPARE</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <button onClick={() => setExportModal(false)}
+                  className="w-9 h-9 rounded-xl flex items-center justify-center transition-all duration-200 hover:scale-[1.05]"
+                  style={{ background: "#f3f4f6", color: "#6b7280" }}>
+                  <X size={14} strokeWidth={2.5} />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-7 pb-5 space-y-6 no-scrollbar">
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">Views to include</p>
+                  <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  {[
+                    ["company",   "Company KPIs",   "KPI values per selected company",     colors.primary],
+                    ["dimension", "Dimension KPIs", "KPI values broken down by dimension", "#dc7533"],
+                    ["graphs",    "Graphs",         "Time series table + chart image",     "#10B981"],
+                  ].map(([k, label, sub, accent]) => {
+                    const checked = !!exportOpts[k];
+                    return (
+                      <label key={k} className="flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all hover:bg-gray-50"
+                        style={{ borderColor: checked ? `${accent}40` : "#f3f4f6", background: checked ? `${accent}06` : "white" }}
+                        onClick={() => setExportOpts(o => ({ ...o, [k]: !o[k] }))}>
+                        <div className="w-4 h-4 mt-0.5 rounded border-2 flex items-center justify-center transition-all flex-shrink-0"
+                          style={{ background: checked ? accent : "transparent", borderColor: checked ? accent : "#d1d5db" }}>
+                          {checked && <svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg>}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-black text-gray-800">{label}</p>
+                          <p className="text-[10px] text-gray-500 mt-0.5">{sub}</p>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">KPI definitions (formula · variables · benchmarks)</p>
+                  <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    ["inlineDefs", "Inline under each KPI"],
+                    ["defsSheet",  "Separate definitions sheet"],
+                  ].map(([k, label]) => {
+                    const checked = !!exportOpts[k];
+                    return (
+                      <label key={k} className="flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all hover:bg-gray-50"
+                        style={{ borderColor: checked ? `${colors.primary}40` : "#f3f4f6", background: checked ? `${colors.primary}06` : "white" }}
+                        onClick={() => setExportOpts(o => ({ ...o, [k]: !o[k] }))}>
+                        <div className="w-4 h-4 rounded border-2 flex items-center justify-center transition-all flex-shrink-0"
+                          style={{ background: checked ? colors.primary : "transparent", borderColor: checked ? colors.primary : "#d1d5db" }}>
+                          {checked && <svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg>}
+                        </div>
+                        <span className="text-xs font-bold text-gray-700">{label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+</div>
+
+            <div className="px-7 py-5 flex items-center gap-3 flex-shrink-0"
+              style={{ background: "linear-gradient(180deg, transparent 0%, #f9fafb 100%)" }}>
+              <div className="relative flex items-center p-1 rounded-xl" style={{ background: "#f3f4f6" }}>
+                {[["xlsx","Excel"], ["pdf","PDF"]].map(([f, l]) => (
+                  <button key={f} onClick={() => setExportOpts(o => ({ ...o, format: f }))}
+                    className="relative z-10 px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all duration-200"
+                    style={{
+                      background: (exportOpts.format ?? "xlsx") === f ? "white" : "transparent",
+                      color: (exportOpts.format ?? "xlsx") === f ? colors.primary : "#9ca3af",
+                      boxShadow: (exportOpts.format ?? "xlsx") === f ? "0 2px 6px rgba(0,0,0,0.06)" : "none",
+                    }}>{l}</button>
+                ))}
+              </div>
+              <button
+                onClick={() => {
+                  setExportModal(false);
+                  const fmt = exportOpts.format ?? "xlsx";
+                  if (fmt === "pdf") _handleExportPdfRun?.();
+                  else _handleExportXlsxRun?.();
+                }}
+                disabled={!exportOpts.company && !exportOpts.dimension && !exportOpts.graphs}
+                className="ml-auto flex items-center gap-2 px-5 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all duration-200 hover:scale-[1.03] disabled:opacity-40 disabled:hover:scale-100 disabled:cursor-not-allowed"
+                style={{
+                  background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.primary}e6 100%)`,
+                  color: "white",
+                  boxShadow: `0 8px 20px -6px ${colors.primary}80, 0 2px 6px -2px ${colors.primary}40`,
+                }}>
+                <Download size={13} strokeWidth={2.5} />
+                Download
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
 <style>{`
         @keyframes plRowSlideIn {
           0%   { opacity: 0; transform: translateY(8px); }
@@ -5547,42 +6683,42 @@ return (
       `}</style>
 
 {/* Header — built from shared <PageHeader> */}
-      <PageHeader
-        kicker="Individual"
-        title="KPIs"
+<PageHeader
+        kicker={tt("nav_individual")}
+        title={tt("page_kpis")}
         tabs={[
-          { id: "company",   label: "Company",   icon: Building2 },
-          { id: "dimension", label: "Dimension", icon: Layers },
-          { id: "graphs",    label: "Graphs",    icon: BarChart3 },
+          { id: "company",   label: tt("tab_company"),       icon: Building2 },
+          { id: "dimension", label: tt("filter_dimension"),  icon: Layers },
+          { id: "graphs",    label: tt("tab_graphs"),        icon: BarChart3 },
         ]}
         activeTab={viewMode}
         onTabChange={setViewMode}
 filters={viewMode === "graphs" ? [] : [
-          { label: "Year",  value: year,  onChange: setYear,
+          { label: tt("filter_year"),  value: year,  onChange: setYear,
             options: YEARS.map(y => ({ value: String(y), label: String(y) })) },
-          { label: "Month", value: month, onChange: setMonth,
-            options: MONTHS.map(m => ({ value: String(m.value), label: m.label })) },
+          { label: tt("filter_month"), value: month, onChange: setMonth,
+            options: MONTHS.map(m => ({ value: String(m.value), label: tt(`month_${m.value}`) })) },
           ...(sourceOpts.length > 0
-            ? [{ label: "Source", value: source, onChange: setSource, options: sourceOpts }]
+            ? [{ label: tt("filter_source"), value: source, onChange: setSource, options: sourceOpts }]
             : []),
           ...(structureOpts.length > 0
-            ? [{ label: "Structure", value: structure, onChange: setStructure, options: structureOpts }]
+            ? [{ label: tt("filter_structure"), value: structure, onChange: setStructure, options: structureOpts }]
             : []),
-...(companyCodes.length > 0 && (viewMode === "company" || viewMode === "dimension")
-            ? [{ label: "Company", values: selCompanies, onChange: setSelCompanies, options: companyCodes.map(c => ({ value: c, label: companyLegalName(c) })), multiselect: true }]
+          ...(companyCodes.length > 0 && (viewMode === "company" || viewMode === "dimension")
+            ? [{ label: tt("filter_company"), values: selCompanies, onChange: setSelCompanies, options: companyCodes.map(c => ({ value: c, label: companyLegalName(c) })), multiselect: true }]
             : []),
-...(dimGroups.length > 0
+          ...(dimGroups.length > 0
             ? [{
-                label: "Dim Group",
+                label: tt("filter_dim_group"),
                 values: selGroups,
                 onChange: v => { setSelGroups(v); setSelDims(null); },
                 options: dimGroups.map(g => ({ value: g, label: g })),
                 multiselect: true,
               }]
             : []),
-...(groupDimOptions.length > 0
+          ...(groupDimOptions.length > 0
             ? [{
-                label: "Dimension",
+                label: tt("filter_dimension"),
                 values: selDims,
                 onChange: setSelDims,
                 options: groupDimOptions.map(d => ({ value: d.code, label: d.name || d.code })),
@@ -5598,29 +6734,8 @@ periodToggle={{
           active: compareMode,
           onChange: setCompareMode,
         }}
-fabActions={[
-          {
-            id: "export",
-            icon: Download,
-            label: "Export",
-            subActions: [
-              {
-                id: "excel",
-                label: "Excel",
-                src: "https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png",
-                alt: "Excel",
-                onClick: handleExportXlsx,
-              },
-              {
-                id: "pdf",
-                label: "PDF",
-                src: "https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png",
-                alt: "PDF",
-                onClick: handleExportPdf,
-              },
-            ],
-          },
-        ]}
+onExportPdf={handleExportPdf}
+        onExportXlsx={handleExportXlsx}
       />
 
 
@@ -5628,17 +6743,17 @@ fabActions={[
       {activeMapping && (
         <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm flex-shrink-0">
           <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
-          <span className="text-xs text-emerald-700 font-medium">
-            Custom mapping active: <strong className="font-black">{activeMapping.name}</strong>
+<span className="text-xs text-emerald-700 font-medium">
+            {tt("mapping_active")}: <strong className="font-black">{activeMapping.name}</strong>
             <span className="text-emerald-500/70 ml-2">· {activeMapping.standard}</span>
           </span>
           <button
             onClick={() => setActiveMapping(null)}
             className="ml-auto flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
-            title="Clear mapping and use default"
+            title={tt("clear_mapping_title")}
           >
             <X size={11} />
-            Clear
+            {tt("mapping_clear")}
           </button>
         </div>
       )}
@@ -5646,19 +6761,19 @@ fabActions={[
       {activeMapping && !warningDismissed && (
         <div className="flex items-start gap-2 px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-200 shadow-sm flex-shrink-0">
           <AlertTriangle size={14} className="text-amber-600 mt-0.5 flex-shrink-0" />
-          <div className="flex-1 text-xs text-amber-800 leading-relaxed">
-            <strong className="font-black">Heads up:</strong> los cálculos de KPI se han recalculado con el nuevo mapeo en lo posible.
+<div className="flex-1 text-xs text-amber-800 leading-relaxed">
+            <strong className="font-black">{tt("mapping_warning_head")}:</strong> {tt("kpi_mapping_recomputed_body")}
             {mappingMatched.length > 0 && (
-              <> <span className="font-black text-amber-900">{mappingMatched.length}</span> sección{mappingMatched.length === 1 ? "" : "es"} emparejada{mappingMatched.length === 1 ? "" : "s"} ({mappingMatched.slice(0, 3).map(m => m.label).join(", ")}{mappingMatched.length > 3 ? "…" : ""}).</>
+              <> <span className="font-black text-amber-900">{mappingMatched.length}</span> {tt(mappingMatched.length === 1 ? "kpi_mapping_section_matched_one" : "kpi_mapping_section_matched_many")} ({mappingMatched.slice(0, 3).map(m => m.label).join(", ")}{mappingMatched.length > 3 ? "…" : ""}).</>
             )}
             {mappingUnmatched.length > 0 && (
-              <> <span className="font-black text-amber-900">{mappingUnmatched.length}</span> sin emparejar — siguen usando la taxonomía por defecto, revísalos.</>
+              <> <span className="font-black text-amber-900">{mappingUnmatched.length}</span> {tt("kpi_mapping_unmatched_suffix")}</>
             )}
           </div>
           <button
             onClick={() => setWarningDismissed(true)}
             className="flex-shrink-0 w-6 h-6 rounded-md hover:bg-amber-100 text-amber-600 flex items-center justify-center transition-colors"
-            title="Dismiss"
+            title={tt("unmapped_dismiss")}
           >
             <X size={11} />
           </button>
@@ -5705,19 +6820,19 @@ fabActions={[
                 </span>
               </div>
             </div>
-            <p className="text-sm font-black text-gray-800 mt-6 tracking-wide">
+<p className="text-sm font-black text-gray-800 mt-6 tracking-wide">
               {!metaReady
-                ? "Finding latest period with data…"
+                ? tt("loading_overlay_period")
                 : sources.length === 0 || structures.length === 0 || companies.length === 0
-                  ? "Loading filter options…"
+                  ? tt("kpi_loading_filter_options")
                   : groupAccounts.length === 0
-                    ? "Loading group accounts…"
+                    ? tt("loading_overlay_group_accounts")
                     : companyData.size === 0
-                      ? `Loading KPIs for ${companyCodes.length} ${companyCodes.length === 1 ? "company" : "companies"}…`
-                      : "Finalizing…"}
+                      ? `${tt("kpi_loading_kpis_for")} ${companyCodes.length} ${tt(companyCodes.length === 1 ? "kpi_company_singular" : "kpi_company_plural")}…`
+                      : tt("loading_overlay_finish")}
             </p>
             <p className="text-[10px] text-gray-300 mt-1.5 uppercase tracking-widest font-bold">
-              Setting up your dashboard
+              {tt("loading_overlay_subtitle")}
             </p>
           </div>
           <style>{`
@@ -5781,7 +6896,7 @@ viewPeriod={viewPeriod}
           style={{ background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)", boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)" }}>
           <span className="text-white text-[11px] font-black">B</span>
         </div>
-        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Compare With</span>
+       <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>{tt("kpi_compare_with")}</span>
       </div>
       {sourceOpts.length > 0 && (
         <HeaderFilterPill label="Source" value={cmpSource} onChange={setCmpSource} options={sourceOpts} />
@@ -5818,9 +6933,9 @@ viewPeriod={viewPeriod}
 }}>
 <th className="sticky left-0 top-0 z-20 text-left px-6 py-3 border-r border-gray-100 min-w-[250px]"
   style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", height: "64px" }}>
-  <div className="flex items-baseline gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
-    <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>KPI</span>
-    <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>Dashboard</span>
+<div className="flex items-baseline gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
+    <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em" }}>{tt("col_kpi")}</span>
+    <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>{tt("kpi_dashboard_label")}</span>
   </div>
 </th>
 {orderedCols.flatMap((col, ci) => {
@@ -5845,17 +6960,17 @@ if (compareVisible) {
 <th key={`${col}__cmp`}
                           className="text-center px-4 py-3 whitespace-nowrap min-w-[120px]"
                           style={{ background: "transparent", animation: cmpAnim }}>
-                          <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}50`, fontSize: 10 }}>Σ cmp</span>
+<span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}50`, fontSize: 10 }}>{tt("kpi_col_sigma_cmp")}</span>
                         </th>,
                         <th key={`${col}__delta`}
                           className="text-center px-4 py-3 whitespace-nowrap min-w-[100px]"
                           style={{ background: "transparent", animation: cmpAnim, animationDelay: '40ms' }}>
-                          <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}50`, fontSize: 10 }}>Δ amt</span>
+                          <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}50`, fontSize: 10 }}>{tt("col_delta_amt")}</span>
                         </th>,
                         <th key={`${col}__deltapct`}
                           className="text-center px-4 py-3 whitespace-nowrap min-w-[90px]"
                           style={{ background: "transparent", animation: cmpAnim, animationDelay: '80ms' }}>
-                          <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}50`, fontSize: 10 }}>Δ %</span>
+                          <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}50`, fontSize: 10 }}>{tt("kpi_col_delta_pct")}</span>
                         </th>
                       );
                     }
@@ -5864,8 +6979,8 @@ if (compareVisible) {
 <th className="sticky right-0 top-0 z-20 px-4 py-3 whitespace-nowrap border-l border-gray-100 min-w-[160px] text-center"
   style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}>
   <span className="font-black tracking-tight inline-block"
-    style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em", animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
-    Total / Avg
+style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em", animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
+    {tt("col_total_avg")}
   </span>
 </th>
                 </tr>
@@ -5989,13 +7104,6 @@ if (compareVisible) {
                             }
                           }
 
-                          const cmpStyle = !cmpValid
-                            ? { ...body1Style, color: "#D1D5DB" }
-                            : { ...body1Style, color: cmpVal < 0 ? "#EF4444" : "#000000" };
-                          const deltaStyle = delta === null
-                            ? { ...body1Style, color: "#D1D5DB" }
-                            : { ...body1Style, color: delta < 0 ? "#EF4444" : "#059669" };
-
 out.push(
                             <td key={`${col}__cmp`}
                               className="px-4 py-3 text-center whitespace-nowrap bg-[#fafbff]"
@@ -6066,9 +7174,9 @@ out.push(
                 style={{ background: colors.primary, color: "white", boxShadow: `0 4px 10px -2px ${colors.primary}50` }}>
                 <Plus size={12} strokeWidth={3} />
               </div>
-              <span className="text-[11px] font-black uppercase tracking-[0.18em] transition-colors duration-200"
+<span className="text-[11px] font-black uppercase tracking-[0.18em] transition-colors duration-200"
                 style={{ color: colors.primary, opacity: 0.6 }}>
-                Add KPI
+                {tt("btn_add_kpi")}
               </span>
             </button>
           </div>

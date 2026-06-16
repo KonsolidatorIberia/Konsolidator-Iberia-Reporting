@@ -39,7 +39,7 @@ function PageFallback() {
   );
 }
 
-function AppRoutesInner({ token, user, activePage, preloadedData }) {
+function AppRoutesInner({ token, user, activePage, onNavigate, preloadedData }) {
   const rawData = preloadedData ?? {};
   const { can, loaded } = useCurrentUserPermissions();
   const { loaded: accessLoaded, access } = useCurrentUserResourceAccess();
@@ -87,6 +87,7 @@ if (activePage === "home") return (
 if (activePage === "individual-data") return (
     <IndividualesPage
       token={token}
+      onNavigate={onNavigate}
       sources={rawData.sources ?? []}
       structures={rawData.structures ?? []}
       companies={rawData.companies ?? []}
@@ -106,9 +107,10 @@ if (activePage === "individual-data") return (
     />
   );
 
-  if (activePage === "individual-dimensiones") return (
+if (activePage === "individual-dimensiones") return (
     <DimensionesPage
       token={token}
+      onNavigate={onNavigate}
       sources={sharedData.sources ?? []}
       structures={sharedData.structures ?? []}
       companies={sharedData.companies ?? []}

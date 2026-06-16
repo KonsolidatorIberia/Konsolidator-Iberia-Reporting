@@ -402,7 +402,7 @@ function getField(obj, ...names) {
    ORDERING: all siblings sorted numerically by accountCode ascending.
    AMOUNTS:  each node shows the rolled-up sum of all descendant rows.
 ═══════════════════════════════════════════════════════════════ */
-function buildTree(groupAccounts, uploadedAccounts, skipSumAccounts = true) {
+function buildTree(groupAccounts, uploadedAccounts) {
   if (!groupAccounts.length || !uploadedAccounts.length) return [];
 
   const gaByCode = new Map();
@@ -436,10 +436,9 @@ function buildTree(groupAccounts, uploadedAccounts, skipSumAccounts = true) {
   const uploadIdx = new Map();
 
 uploadedAccounts.forEach(row => {
-    const gac    = String(getField(row, "accountCode") ?? "");
-
-const ga = gaByCode.get(gac);
-    if (skipSumAccounts && ga && getField(ga, "isSumAccount")) return;
+const gac    = String(getField(row, "accountCode") ?? "");
+    // Always attach postings to their matching group account, even sum-flagged ones.
+    // sumNode handles roll-up correctly via children recursion.
 
     const lacRaw = getField(row, "localAccountCode");
     const lac    = lacRaw && String(lacRaw) !== "—" && String(lacRaw) !== "null" && String(lacRaw) !== "" ? String(lacRaw) : null;
@@ -506,15 +505,10 @@ function sumNode(node) {
   if (node.type === "localAccount" || node.type === "dimension" || node.type === "plain")
     return node.amount ?? 0;
 
-  // If this node has direct upload leaves, sum only those (posting level)
-  if (node.uploadLeaves?.length > 0) {
-    let s = 0;
-    node.uploadLeaves.forEach(l => { s += sumNode(l); });
-    return s;
-  }
-
-  // Otherwise sum direct children only (no double-counting through grandchildren)
+  // Any node with children acts as a sum: own postings + all descendants.
+  // Matches the mapper's amountsByCode walk-up behavior.
   let s = 0;
+  node.uploadLeaves?.forEach(l => { s += sumNode(l); });
   node.children?.forEach(c => { s += sumNode(c); });
   return s;
 }
@@ -13528,7 +13522,7 @@ function useAnimatedNumber(target, duration = 800) {
   return display;
 }
 
-const AccountsDashboard = React.memo(function AccountsDashboard({ token, sources = [], structures = [], companies = [], dimensions = [] }) {
+const AccountsDashboard = React.memo(function AccountsDashboard({ token, onNavigate, sources = [], structures = [], companies = [], dimensions = [] }) {
 const { colors } = useSettings();
 const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();
 const TABS = useTabs();
@@ -14117,9 +14111,10 @@ useEffect(() => {
 const [activeMapping, setActiveMapping] = useState(null);
 // activeMapping shape: { mapping_id, name, standard, plConverted, bsConverted } | null
 
-const handleApplyMapping = useCallback((m) => {
+const handleApplyMapping = useCallback((m, kind = "structure") => {
   setActiveMapping({
     mapping_id: m.mapping_id,
+    kind,
     name: m.name,
     standard: m.standard,
     plConverted: convertSavedMappingTree(m.pl_tree),
@@ -14128,6 +14123,32 @@ const handleApplyMapping = useCallback((m) => {
     bsLiteral: buildSavedMappingLiteral(m.bs_tree),
     highlightedIds: Array.isArray(m.highlighted_ids) ? new Set(m.highlighted_ids) : new Set(),
   });
+}, []);
+
+// Recent mappings for the PageHeader hover-dropdown quick-access
+const [recentMappings, setRecentMappings] = useState([]);
+useEffect(() => {
+  (async () => {
+    try {
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) return;
+      const { listMappings, getActiveCompanyId } = await import("../../lib/mappingsApi");
+      const { listMappings: listReportMappings } = await import("../../lib/reportMappingsApi");
+      const cid = await getActiveCompanyId(uid);
+      if (!cid) return;
+      const [structRows, reportRows] = await Promise.all([
+        listMappings({ companyId: cid }).catch(() => []),
+        listReportMappings({ companyId: cid }).catch(() => []),
+      ]);
+      const combined = [
+        ...(structRows || []).map(r => ({ id: r.mapping_id, name: r.name, kind: "structure", updated_at: r.updated_at, raw: r })),
+        ...(reportRows  || []).map(r => ({ id: r.mapping_id, name: r.name, kind: "report",    updated_at: r.updated_at, raw: r })),
+      ];
+      setRecentMappings(combined);
+    } catch (err) { console.error("[recent-mappings] error:", err); }
+  })();
 }, []);
 
 // Auto-activate the user's saved standard mapping on mount (from AccountsDashboard preference)
@@ -15219,6 +15240,8 @@ setBsCmp2Year(String(upYear)); setBsCmp2Month(String(upMonth));
     } : null
   }
 onMappingsClick={viewsMode ? undefined : () => setViewsMode("landing")}
+mappingsQuickAccess={viewsMode ? [] : recentMappings}
+onQuickApplyMapping={(m) => handleApplyMapping(m.raw, m.kind)}
 onExportPdf={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
   ? () => { setExportOpts(o => ({ ...o, format: "pdf" })); setExportModal(true); }
   : undefined}
@@ -15236,8 +15259,24 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
       <span className="text-emerald-500/70 ml-2">· {activeMapping.standard}</span>
     </span>
     <button
-      onClick={() => setActiveMapping(null)}
+      onClick={() => {
+        try {
+          sessionStorage.setItem("mappings:openForEdit", JSON.stringify({
+            mapping_id: activeMapping.mapping_id,
+            kind: activeMapping.kind ?? "structure",
+          }));
+        } catch { /* ignore quota errors */ }
+        onNavigate?.("mappings");
+      }}
       className="ml-auto flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
+      title={t("edit_mapping_title") ?? "Edit mapping"}
+    >
+      <Pencil size={11} />
+      {t("btn_edit") ?? "Edit"}
+    </button>
+    <button
+      onClick={() => setActiveMapping(null)}
+      className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
       title={t("clear_mapping_title")}
     >
       <X size={11} />
@@ -15444,7 +15483,7 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
                 const isActive = activeMapping?.mapping_id === m.mapping_id;
                 return (
                   <button key={m.mapping_id}
-                    onClick={() => { handleApplyMapping(m); setViewsMode(null); }}
+                    onClick={() => { handleApplyMapping(m, "report"); setViewsMode(null); }}
                     className="text-left bg-white rounded-xl border-2 p-4 transition-all hover:shadow-md group flex flex-col"
                     style={{ borderColor: isActive ? "#CF305D" : "#f3f4f6", background: isActive ? "#CF305D06" : "white" }}>
                     <div className="flex items-start gap-2.5 mb-3">
