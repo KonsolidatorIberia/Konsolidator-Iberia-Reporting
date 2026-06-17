@@ -28,8 +28,23 @@ function useAnimatedNumber(target, duration = 800) {
 }
 import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Search, Database, GitMerge, Maximize2, Minimize2, Library, CheckCircle2, AlertTriangle, TrendingUp, Scale, BarChart2, Download, Layers, Pencil, FileText } from "lucide-react";
 
+let __globalResizing = false;
+const __resizeListeners = new Set();
+if (typeof window !== "undefined") {
+  let __rt;
+  window.addEventListener("resize", () => {
+    __globalResizing = true;
+    __resizeListeners.forEach(fn => fn(true));
+    clearTimeout(__rt);
+    __rt = setTimeout(() => {
+      __globalResizing = false;
+      __resizeListeners.forEach(fn => fn(false));
+    }, 200);
+  });
+}
+
 function useCountUp(target, duration = 900) {
-  const [display, setDisplay] = useState(0);
+  const [display, setDisplay] = useState(target);
   const fromRef = useRef(target);
   const startRef = useRef(null);
   const rafRef = useRef(null);
@@ -40,6 +55,9 @@ function useCountUp(target, duration = 900) {
     const from = Number(fromRef.current) || 0;
     const to = Number(target) || 0;
     if (from === to) { setDisplay(to); return; }
+    // Skip animation entirely during window resize — prevents RAF storms
+    // across thousands of cells while the sidebar is animating.
+    if (__globalResizing) { setDisplay(to); return; }
     const tick = (ts) => {
       if (startRef.current === null) startRef.current = ts;
       const elapsed = ts - startRef.current;
@@ -82,18 +100,18 @@ xml = xml.replace(/(<row[^>]*outlineLevel="\d+"[^>]*?)\s*collapsed="1"/g, "$1");
   return await zip.generateAsync({ type: "arraybuffer" });
 }
 
-function DimAmountCell({ value, typoStyle, borderLeft, bgColor, extraStyle }) {
-  const animated = useCountUp(value ?? 0, 900);
-  const isEmpty = value === 0 || value == null;
-  const isNeg = animated < 0;
+const DimAmountCell = React.memo(function DimAmountCell({ value, typoStyle, borderLeft, bgColor, extraStyle }) {
+  const v = value ?? 0;
+  const isEmpty = v === 0;
+  const isNeg = v < 0;
   const color = isEmpty ? "#D1D5DB" : isNeg ? "#EF4444" : "#000000";
   const fmt = (n) => Math.abs(n).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return (
 <td className="px-4 py-2.5 text-center whitespace-nowrap tabular-nums" style={{ ...typoStyle, color, borderLeft: borderLeft ? "2px solid #f0f0f0" : undefined, background: bgColor ?? undefined, ...extraStyle }}>
-      {isEmpty ? "—" : isNeg ? `(${fmt(animated)})` : fmt(animated)}
+      {isEmpty ? "—" : isNeg ? `(${fmt(v)})` : fmt(v)}
     </td>
   );
-}
+});
 import { useTypo, useSettings } from "./SettingsContext";
 import { useLatestPeriod } from "./LatestPeriodContext.jsx";
 import PageHeader, { FilterPill as HeaderFilterPill, MultiFilterPill } from "./PageHeader.jsx";
@@ -394,7 +412,16 @@ function buildSavedMappingLiteral(tree) {
   let current = { label: null, color: null, nodes: [] };
   sections.push(current);
 
-  function literal(node, depth) {
+function literal(node, depth, visited = new WeakSet()) {
+    if (!node || depth > 50 || visited.has(node)) {
+      return {
+        id: String(node?.id ?? `truncated-${Math.random()}`),
+        code: String(node?.code ?? ""),
+        name: String(node?.name ?? ""),
+        dims: null, isSum: false, depth, children: [],
+      };
+    }
+    visited.add(node);
     return {
       id: String(node.id ?? `${node.code}-${Math.random()}`),
       code: String(node.code ?? ""),
@@ -404,7 +431,7 @@ function buildSavedMappingLiteral(tree) {
       depth,
       children: (node.children || [])
         .filter(c => c && c.kind !== "breaker")
-        .map(c => literal(c, depth + 1)),
+        .map(c => literal(c, depth + 1, visited)),
     };
   }
 
@@ -546,9 +573,12 @@ function buildTree(accounts) {
   // children. The two need different attachment rules.
   const hasPgcSummaries = sorted.some(a => /\.S$/i.test(a.AccountCode));
 
-  const roots = [];
+const roots = [];
   sorted.forEach(a => {
-    const parent = a.SumAccountCode ? map.get(a.SumAccountCode) : null;
+    // Defend against self-referencing SumAccountCode rows that would otherwise
+    // attach a node as its own child and break every recursion downstream.
+    const isSelfRef = a.SumAccountCode && String(a.SumAccountCode) === String(a.AccountCode);
+    const parent = !isSelfRef && a.SumAccountCode ? map.get(a.SumAccountCode) : null;
 
     // Attach to parent when:
     // - PGC: parent must NOT be a `.S` summary (PGC quirk: `.S` siblings, not parents)
@@ -612,7 +642,7 @@ function FilterPill({ label, value, onChange, options }) {
 }
 
 const INDENT = 14;
-function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null }) {
+const DimensionRow = React.memo(function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null, valCache = null, cmpCache = null }) {
   const subbody2Style = useTypo("subbody2");
   const code = node.AccountCode;
   const visibleChildren = excludeCodes
@@ -628,25 +658,45 @@ function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, get
   // AccountCode and its leaf postings, so adding self on top double-counts.
   // Fall back to self's own value only when every child resolves to zero (covers
   // accounts posted directly at the summary level with no separate leaf rows).
-  const getNodeVal = (dimKey) => {
-    const sumNode = (n) => {
-      if (n.children && n.children.length > 0) {
-        const childSum = n.children.reduce((s, c) => s + sumNode(c), 0);
-        if (childSum !== 0) return childSum;
+const getNodeVal = (dimKey) => {
+    const sumNode = (n, depth = 0) => {
+      if (depth > 25) return 0;
+      const k = `${n.AccountCode}|${dimKey}`;
+      if (valCache) {
+        const cached = valCache.get(k);
+        if (cached !== undefined) return cached;
       }
-      return getVal(n.AccountCode, dimKey);
+      let v;
+      if (n.children && n.children.length > 0) {
+        const childSum = n.children.reduce((s, c) => s + sumNode(c, depth + 1), 0);
+        v = childSum !== 0 ? childSum : getVal(n.AccountCode, dimKey);
+      } else {
+        v = getVal(n.AccountCode, dimKey);
+      }
+      if (valCache) valCache.set(k, v);
+      return v;
     };
     return sumNode(node);
   };
 
   const getCmpNodeVal = (dimKey) => {
     if (!getCmpVal) return 0;
-    const sumNode = (n) => {
-      if (n.children && n.children.length > 0) {
-        const childSum = n.children.reduce((s, c) => s + sumNode(c), 0);
-        if (childSum !== 0) return childSum;
+    const sumNode = (n, depth = 0) => {
+      if (depth > 25) return 0;
+      const k = `${n.AccountCode}|${dimKey}`;
+      if (cmpCache) {
+        const cached = cmpCache.get(k);
+        if (cached !== undefined) return cached;
       }
-      return getCmpVal(n.AccountCode, dimKey);
+      let v;
+      if (n.children && n.children.length > 0) {
+        const childSum = n.children.reduce((s, c) => s + sumNode(c, depth + 1), 0);
+        v = childSum !== 0 ? childSum : getCmpVal(n.AccountCode, dimKey);
+      } else {
+        v = getCmpVal(n.AccountCode, dimKey);
+      }
+      if (cmpCache) cmpCache.set(k, v);
+      return v;
     };
     return sumNode(node);
   };
@@ -660,9 +710,9 @@ function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, get
         className={`border-b border-gray-100 transition-colors ${isMatch ? "bg-[#fef3c7]" : "bg-white hover:bg-[#eef1fb]/60"}`}
         style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 25) * 35 + 50}ms both` }}
       >
-        <td
+<td
           className={`py-2.5 sticky left-0 z-10 border-r border-gray-100 ${isMatch ? "bg-[#fef3c7]" : "bg-white"}`}
-          style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 300 }}
+          style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 300, willChange: "transform" }}
           onClick={() => hasChildren && onToggle(code)}
         >
           <div className={`flex items-center ${hasChildren ? "cursor-pointer" : ""}`}>
@@ -699,18 +749,39 @@ function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, get
         })}
 {!cmpVisible && <DimAmountCell value={rowTotal} typoStyle={rowStyle} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
       </tr>
-      {isExpanded && hasChildren && visibleChildren.map((child, ci) => (
+{isExpanded && hasChildren && visibleChildren.map((child, ci) => (
 <DimensionRow key={child.AccountCode} node={child} depth={depth + 1}
           expandedSet={expandedSet} onToggle={onToggle}
           dimCols={dimCols} getVal={getVal} getCmpVal={getCmpVal} compareMode={compareMode} cmpVisible={cmpVisible} cmpExiting={cmpExiting}
           body1Style={body1Style} body2Style={body2Style}
           header2Style={header2Style} colors={colors}
           excludeCodes={excludeCodes} rowIndex={rowIndex + ci + 1}
-          searchQuery={searchQuery} searchExpansionSet={searchExpansionSet} />
+          searchQuery={searchQuery} searchExpansionSet={searchExpansionSet}
+          valCache={valCache} cmpCache={cmpCache} />
       ))}
     </>
   );
-}
+}, (prev, next) => {
+  // Skip re-render if this row's own state didn't change.
+  if (prev.node !== next.node) return false;
+  if (prev.depth !== next.depth) return false;
+  if (prev.dimCols !== next.dimCols) return false;
+  if (prev.getVal !== next.getVal) return false;
+  if (prev.getCmpVal !== next.getCmpVal) return false;
+  if (prev.compareMode !== next.compareMode) return false;
+  if (prev.cmpVisible !== next.cmpVisible) return false;
+  if (prev.searchQuery !== next.searchQuery) return false;
+  if (prev.valCache !== next.valCache) return false;
+  if (prev.cmpCache !== next.cmpCache) return false;
+  // expandedSet changes constantly — only re-render if OUR row's expansion flipped.
+  const code = prev.node.AccountCode;
+  if (prev.expandedSet.has(code) !== next.expandedSet.has(code)) return false;
+  // Or if search expansion for our row flipped.
+  const prevSE = prev.searchExpansionSet?.has(String(code)) ?? false;
+  const nextSE = next.searchExpansionSet?.has(String(code)) ?? false;
+  if (prevSE !== nextSE) return false;
+  return true;
+});
 
 
 
@@ -776,10 +847,11 @@ function AccountsTab({ data }) {
 /* ── Pivot Tab ────────────────────────────────────────────── */
 function PivotTab({ data, dimensions, groupAccounts = [], onShowAccounts, selGroups = new Set(), selDims = new Set(), onSelGroupsChange = () => {}, onSelDimsChange = () => {}, dimGroups = [], compareMode, statementType = "pl", externalViewMode = null,sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false }) {
 
-  const header2Style = useTypo("header2");
-    const body1Style = useTypo("body1");
+const header2Style = useTypo("header2");
+  const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
   const header3Style = useTypo("header3");
+  const subbody2Style = useTypo("subbody2");
   const { colors } = useSettings();
 
 // Account header search — magnifier toggles to input, matches highlight in yellow.
@@ -992,12 +1064,6 @@ const [colOrder, setColOrder] = useState(null); // null = use natural order
   const collapseAll = useCallback(() => setExpandedSet(new Set()), []);
 
 const sign = statementType === "pl" ? -1 : 1;
-  const getVal = (ac, dk) => {
-    const ytd = (pivot.get(ac)?.get(dk) ?? 0) * sign;
-    if (viewMode === "ytd") return ytd;
-    const prevYtd = (prevPivotMain.get(ac)?.get(dk) ?? 0) * sign;
-    return ytd - prevYtd;
-  };
 
 
 
@@ -1022,6 +1088,18 @@ const [prevPivot, setPrevPivot] = useState(new Map());
   const [prevPivotMain, setPrevPivotMain] = useState(new Map());
   const [prevPivot2, setPrevPivot2] = useState(new Map());
   const [prevPivot3, setPrevPivot3] = useState(new Map());
+
+const getVal = useCallback((ac, dk) => {
+    const ytd = (pivot.get(ac)?.get(dk) ?? 0) * sign;
+    if (viewMode === "ytd") return ytd;
+    const prevYtd = (prevPivotMain.get(ac)?.get(dk) ?? 0) * sign;
+    return ytd - prevYtd;
+  }, [pivot, prevPivotMain, sign, viewMode]);
+
+// Shared rollup cache. New Map() when underlying data changes; otherwise
+  // the same Map is reused across every DimensionRow + expand/collapse, so
+  // walking the BS tree only happens once per node per render cycle.
+  const valCache = useMemo(() => new Map(), [getVal]);
 
   const [cmp2Data, setCmp2Data] = useState([]);
   const [cmp3Data, setCmp3Data] = useState([]);
@@ -1058,6 +1136,8 @@ const acType = r.AccountType ?? r.accountType ?? "";
 
 const pivot2 = useMemo(() => buildPivot(cmp2Data, cmp2SelGroups, cmp2SelDims), [cmp2Data, cmp2SelGroups, cmp2SelDims, buildPivot]);
   const pivot3 = useMemo(() => buildPivot(cmp3Data), [cmp3Data, buildPivot]);
+
+  const cmpCache = useMemo(() => new Map(), [pivot2, prevPivot2, sign, viewMode]);
 
 
 
@@ -1555,21 +1635,18 @@ const writeSheetForStatement = (stType, viewLevel = null) => {
         if (sheetView === "ytd") return ytd;
         return ytd - (prevCmp.get(code)?.get(dk) ?? 0) * sign;
       };
-// When a node has children with data, trust the children's sum and DON'T
-      // add self — the journal often carries the same money twice (once at the
-      // summary AccountCode and again at the leaf postings under it). Adding
-      // both gives 2× the real value. Fall back to self only when every child
-      // resolves to zero (e.g. data posted only at the summary level).
-      const sumTreeForDim = (n, dk) => {
+const sumTreeForDim = (n, dk, depth = 0) => {
+        if (depth > 25) return 0;
         if (n.children && n.children.length > 0) {
-          const childSum = n.children.reduce((s, c) => s + sumTreeForDim(c, dk), 0);
+          const childSum = n.children.reduce((s, c) => s + sumTreeForDim(c, dk, depth + 1), 0);
           if (childSum !== 0) return childSum;
         }
         return flatVal(n.code, dk);
       };
-      const sumTreeCmpForDim = (n, dk) => {
+      const sumTreeCmpForDim = (n, dk, depth = 0) => {
+        if (depth > 25) return 0;
         if (n.children && n.children.length > 0) {
-          const childSum = n.children.reduce((s, c) => s + sumTreeCmpForDim(c, dk), 0);
+          const childSum = n.children.reduce((s, c) => s + sumTreeCmpForDim(c, dk, depth + 1), 0);
           if (childSum !== 0) return childSum;
         }
         return flatCmpVal(n.code, dk);
@@ -1686,7 +1763,7 @@ const writeSheetForStatement = (stType, viewLevel = null) => {
         cell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
       };
 
-      const leafVal = (n, dimKey) => {
+const leafVal = (n, dimKey) => {
         if (n.dims && n.dims.length > 0) {
           const match = n.dims.some(d => {
             const i = d.indexOf(":");
@@ -1697,9 +1774,10 @@ const writeSheetForStatement = (stType, viewLevel = null) => {
         }
         return valFor(n.code, dimKey);
       };
-      const sumLitForDim = (n, dimKey) => {
+      const sumLitForDim = (n, dimKey, depth = 0) => {
+        if (depth > 50) return 0;
         if (n.isSum && n.children && n.children.length > 0) {
-          return n.children.reduce((s, c) => s + sumLitForDim(c, dimKey), 0);
+          return n.children.reduce((s, c) => s + sumLitForDim(c, dimKey, depth + 1), 0);
         }
         return leafVal(n, dimKey);
       };
@@ -1714,16 +1792,18 @@ const writeSheetForStatement = (stType, viewLevel = null) => {
         }
         return cmpValFor(n.code, dimKey);
       };
-      const sumLitCmpForDim = (n, dimKey) => {
+      const sumLitCmpForDim = (n, dimKey, depth = 0) => {
+        if (depth > 50) return 0;
         if (n.isSum && n.children && n.children.length > 0) {
-          return n.children.reduce((s, c) => s + sumLitCmpForDim(c, dimKey), 0);
+          return n.children.reduce((s, c) => s + sumLitCmpForDim(c, dimKey, depth + 1), 0);
         }
         return leafCmpVal(n, dimKey);
       };
 
       let dataIdx = 0;
       let maxDepth = 0;
-      const renderRow = (node, depth, mode = "literal") => {
+const renderRow = (node, depth, mode = "literal", excludeCodes = null) => {
+        if (depth > 50 || !node) return;  // cycle / runaway guard
         const mainSum = mode === "tree" ? sumTreeForDim : sumLitForDim;
         const cmpSum  = mode === "tree" ? sumTreeCmpForDim : sumLitCmpForDim;
         maxDepth = Math.max(maxDepth, depth);
@@ -1769,17 +1849,34 @@ const writeSheetForStatement = (stType, viewLevel = null) => {
         }
         curRow++;
 
-        if (node.children && node.children.length > 0) {
-          node.children.forEach(c => renderRow(c, depth + 1, mode));
+if (node.children && node.children.length > 0) {
+          node.children.forEach(c => {
+            // Skip children that will render at the top level as their own row
+            // (mirrors on-screen DimensionRow's excludeCodes behavior). Values
+            // still roll up correctly because sumTreeForDim walks the full tree
+            // — this only affects what's emitted as a separate row.
+            if (excludeCodes && excludeCodes.has(String(c.code ?? c.AccountCode ?? ""))) return;
+            renderRow(c, depth + 1, mode, excludeCodes);
+          });
         }
       };
 
-      const treeAsLit = (n, depth) => ({
-        id: String(n.AccountCode), code: String(n.AccountCode),
-        name: n.AccountName ?? n.accountName ?? "",
-        dims: null, isSum: (n.children?.length ?? 0) > 0, depth,
-        children: (n.children || []).map(c => treeAsLit(c, depth + 1)),
-      });
+const treeAsLit = (n, depth, visited = new WeakSet()) => {
+        if (!n || depth > 50 || visited.has(n)) {
+          return {
+            id: String(n?.AccountCode ?? ""), code: String(n?.AccountCode ?? ""),
+            name: n?.AccountName ?? n?.accountName ?? "",
+            dims: null, isSum: false, depth, children: [],
+          };
+        }
+        visited.add(n);
+        return {
+          id: String(n.AccountCode), code: String(n.AccountCode),
+          name: n.AccountName ?? n.accountName ?? "",
+          dims: null, isSum: (n.children?.length ?? 0) > 0, depth,
+          children: (n.children || []).map(c => treeAsLit(c, depth + 1, visited)),
+        };
+      };
 
       const renderSectionBar = (label, colorArgb) => {
         ws.mergeCells(curRow, 1, curRow, totalCols);
@@ -1829,9 +1926,22 @@ if (useLiteral && literal && literal.length > 0) {
             childrenIdx.get(parent).push(code);
           }
         });
-        const buildTreeNode = (code, depth) => {
+const buildTreeNode = (code, depth, visited = new Set()) => {
+          // Cycle / runaway-depth guard: chart-of-accounts data sometimes carries
+          // circular SumAccountCode chains (A → B → A) that would otherwise
+          // recurse forever.
+          if (visited.has(code) || depth > 25) {
+            return {
+              AccountCode: code,
+              AccountName: gaMap.get(code)?.AccountName ?? "",
+              children: [],
+              IsSumAccount: false,
+            };
+          }
+          const nextVisited = new Set(visited);
+          nextVisited.add(code);
           const ga = gaMap.get(code);
-          const kids = (childrenIdx.get(code) || []).map(c => buildTreeNode(c, depth + 1));
+          const kids = (childrenIdx.get(code) || []).map(c => buildTreeNode(c, depth + 1, nextVisited));
           return {
             AccountCode: code,
             AccountName: ga?.AccountName ?? "",
@@ -1847,6 +1957,10 @@ if (mappingForSt?.rows && mappingForSt?.sections) {
           const orderedEntries = [...mappingForSt.rows.entries()]
             .filter(([, info]) => filterFn(info))
             .sort(([, a], [, b]) => a.sortOrder - b.sortOrder);
+          // Set of codes that render as their own top-level row. Passed to
+          // renderRow so descendants matching these are skipped, mirroring
+          // the on-screen `excludeCodes` filter in DimensionRow.
+          const topLevelCodes = new Set(orderedEntries.map(([code]) => String(code)));
           const palette = ["FF1A2F8A", "FFCF305D", "FF10B981", "FFD97706"];
           const seenSections = new Set();
           let sectionIdx = 0;
@@ -1860,7 +1974,7 @@ if (mappingForSt?.rows && mappingForSt?.sections) {
               }
               seenSections.add(info.section);
             }
-            renderRow(treeAsLit(buildTreeNode(code, 0), 0), 0, "tree");
+            renderRow(treeAsLit(buildTreeNode(code, 0), 0), 0, "tree", topLevelCodes);
           });
         } else {
           // Truly nothing to lean on — just top-level codes
@@ -1930,93 +2044,665 @@ const safeWriteSheet = (st, viewLevel = null) => {
       return;
     }
 
-    const buffer = await wb.xlsx.writeBuffer();
-    const repaired = await repairDimXlsx(buffer);
+console.log("[export] all sheets built. Calling writeBuffer…", wb.worksheets.map(s => `${s.name}: ${s.rowCount} rows, ${s.columnCount} cols`));
+    let buffer;
+    try {
+      buffer = await wb.xlsx.writeBuffer();
+      console.log("[export] writeBuffer OK, bytes:", buffer.byteLength);
+    } catch (e) {
+      console.error("[export] writeBuffer threw:", e);
+      throw new Error(`writeBuffer failed: ${e?.message ?? e}`);
+    }
+
+    console.log("[export] running repairDimXlsx…");
+    let repaired;
+    try {
+      repaired = await repairDimXlsx(buffer);
+      console.log("[export] repairDimXlsx OK");
+    } catch (e) {
+      console.error("[export] repairDimXlsx threw:", e);
+      console.warn("[export] saving UNREPAIRED buffer for inspection");
+      repaired = buffer;
+    }
+
     saveAs(new Blob([repaired], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
       `Konsolidator_Dimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.xlsx`);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, orderedRows, displayedTree, dividerMap, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, selGroups, selDims, cmp2Source, cmp2Structure, cmp2Month, cmp2Year, cmp2Company, plMapping, bsMapping, groupAccounts]);
 
-  const handleExportPdf = useCallback(() => {
-    const H = { primary: "#1A2F8A", highlight: "#EEF1FB", white: "#FFFFFF", band2: "#F8F9FF", red: "#DC2626", green: "#059669", gray: "#9CA3AF" };
-    const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
-    const pageWidth = doc.internal.pageSize.getWidth();
+const handleExportPdf = useCallback((opts = {}) => {
+    const includePL = opts.statements?.pl ?? (statementType === "pl");
+    const includeBS = opts.statements?.bs ?? (statementType === "bs");
+    if (!includePL && !includeBS) { alert("Select at least one statement (P&L or B/S)."); return; }
+    const includeCompareOpt = (opts.includeCompare !== false) && cmpVisible;
 
-    doc.setFillColor(H.primary);
-    doc.rect(0, 0, pageWidth, 60, "F");
-    doc.setTextColor(H.white);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(16);
-    doc.text(`Dimensions — ${compareMode ? "Compare" : statementType === "pl" ? "P&L" : "Balance Sheet"}`, 24, 28);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(9);
-    doc.text(filterStr || "—", 24, 46);
+    // Palette
+    const NAVY     = [26, 47, 138];
+    const NAVYMID  = [40, 64, 168];
+    const NAVYDK   = [10, 20, 70];
+    const RED      = [207, 48, 93];
+    const REDDK    = [160, 30, 65];
+    const GRN      = [16, 185, 129];
+    const GRNDK    = [4, 120, 87];
+    const LIGHT    = [238, 241, 251];
+    const WHITE    = [255, 255, 255];
+    const OFFWHITE = [250, 251, 255];
+    const GRAY     = [140, 150, 175];
+    const GRAYLT   = [210, 215, 230];
+    const TEXTDK   = [20, 35, 80];
 
-    if (compareMode) {
-      const visibleDims = dimCols.filter(d => !!d.code);
-      const flattenForDim = (p, pPrev, dk) => {
-        const flat = new Map();
-        p.forEach((dMap, ac) => {
-          const ytd = dMap.get(dk) ?? 0;
-          flat.set(ac, viewMode === "monthly" && pPrev ? ytd - (pPrev.get(ac)?.get(dk) ?? 0) : ytd);
+    const allDims = orderedDimCols;
+    const TARGET_DIMS_PER_PAGE = 4;
+
+    // When comparing, split dims into balanced chunks of ~4 dims/page.
+    // Each page renders A | B | Diff | Diff% side-by-side for its dims.
+    const dimChunks = includeCompareOpt && allDims.length > TARGET_DIMS_PER_PAGE
+      ? (() => {
+          const nPages = Math.ceil(allDims.length / TARGET_DIMS_PER_PAGE);
+          const perPage = Math.ceil(allDims.length / nPages);
+          const out = [];
+          for (let i = 0; i < allDims.length; i += perPage) {
+            out.push({
+              dims: allDims.slice(i, i + perPage),
+              startIdx: i,
+              endIdx: Math.min(i + perPage, allDims.length) - 1,
+            });
+          }
+          return out;
+        })()
+      : [{ dims: allDims, startIdx: 0, endIdx: allDims.length - 1 }];
+
+    // Widest layout: compare → 4 sub-cols × chunk size + Account. Single → dims + Account + Total.
+    const widestPerPage = includeCompareOpt
+      ? Math.max(...dimChunks.map(c => c.dims.length * 4 + 1))
+      : allDims.length + 2;
+    const useA3 = widestPerPage > 11;
+
+    const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: useA3 ? "a3" : "a4" });
+    const W = doc.internal.pageSize.getWidth();
+    const H = doc.internal.pageSize.getHeight();
+// Page 1 is reserved for the index (drawn last). Content starts at page 2,
+    // so pageNum is pre-set to 1 — first drawPageHeader call adds page 2 and
+    // increments pageNum to match the physical jsPDF page.
+    let pageNum = 1;
+    const pageManifest = []; // { displayedPage, title }
+    const monthLabel = MONTHS[parseInt(masterMonth) - 1]?.label ?? masterMonth;
+
+    const buildSimplePivot = (rows, stType) => {
+      const p = new Map();
+      rows.forEach(r => {
+        const ac = r.AccountCode ?? r.accountCode ?? "";
+        const acType = r.AccountType ?? r.accountType ?? "";
+        const targetType = stType === "bs" ? "B/S" : "P/L";
+        if (!ac || (acType && acType !== targetType)) return;
+        const pairs = parseDimensions(r.Dimensions);
+        const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+        if (pairs.length === 0) {
+          if (!p.has(ac)) p.set(ac, new Map());
+          p.get(ac).set("__none__", (p.get(ac).get("__none__") ?? 0) + amt);
+          return;
+        }
+        for (const [grp, code] of pairs) {
+          if (selGroups.size > 0 && !selGroups.has(grp)) continue;
+          if (selDims.size > 0 && !selDims.has(code)) continue;
+          if (!p.has(ac)) p.set(ac, new Map());
+          p.get(ac).set(code, (p.get(ac).get(code) ?? 0) + amt);
+        }
+      });
+      return p;
+    };
+
+const drawPageHeader = (isFirst, stType, level, chunkInfo) => {
+      // Always add a page — first content page lands at page 2 (page 1 is TOC).
+      doc.addPage();
+      pageNum++;
+      // Record this page in the manifest so the index can list it.
+      const lvlTxt  = level === "summary" ? "Summary" : level === "detailed" ? "Detailed" : "Mapped";
+      const stTxt   = stType === "pl" ? "P&L" : "Balance Sheet";
+      const partTxt = chunkInfo && chunkInfo.totalChunks > 1
+        ? ` — Part ${chunkInfo.idx + 1}/${chunkInfo.totalChunks}`
+        : "";
+      pageManifest.push({
+        displayedPage: pageNum,
+        title: `${stTxt} · ${lvlTxt}${partTxt}`,
+      });
+      doc.setFillColor(...NAVY); doc.rect(0, 0, W, 38, "F");
+      doc.setFillColor(...RED);  doc.rect(0, 0, 5, 38, "F");
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(17);
+      doc.setTextColor(...WHITE);
+      doc.text(`DIMENSIONS — ${stType === "pl" ? "P&L" : "BALANCE SHEET"}`, 12, 14);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8.5);
+      doc.setTextColor(180, 200, 255);
+      const sub = [`${monthLabel} ${masterYear}`, masterSource, masterStructure, masterCompany].filter(Boolean).join("  ·  ");
+      doc.text(sub, 12, 22);
+
+      doc.setFontSize(7);
+      doc.setTextColor(160, 180, 235);
+      const filterBits = [
+        `Groups: ${selGroups.size > 0 ? [...selGroups].join(", ") : "All"}`,
+        `Dims: ${selDims.size > 0 ? [...selDims].join(", ") : "All"}`,
+      ];
+      doc.text(filterBits.join("    ·    "), 12, 29);
+
+      if (includeCompareOpt && cmp2Year && cmp2Month) {
+        const cmpMo = MONTHS[parseInt(cmp2Month) - 1]?.label ?? cmp2Month;
+        const cmpSub = [`B: ${cmpMo} ${cmp2Year}`, cmp2Source, cmp2Structure, cmp2Company].filter(Boolean).join("  ·  ");
+        doc.setFillColor(...REDDK);
+        doc.roundedRect(12, 32, Math.min(W - 24, 220), 5.5, 1, 1, "F");
+        doc.setFontSize(7);
+        doc.setTextColor(...WHITE);
+        doc.text(cmpSub, 14, 35.7);
+      }
+
+      // Top-right badges (right-to-left)
+      let curX = W - 8;
+      const placeBadge = (label, fill, textColor) => {
+        const w = Math.max(22, doc.getTextWidth(label) + 8);
+        doc.setFillColor(...fill);
+        doc.roundedRect(curX - w, 6, w, 9, 2, 2, "F");
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(7.5);
+        doc.setTextColor(...textColor);
+        doc.text(label, curX - w / 2, 11.8, { align: "center" });
+        curX -= (w + 3);
+      };
+
+      const lvlLabel = level === "summary" ? "SUMMARY" : level === "detailed" ? "DETAILED" : "MAPPED";
+      placeBadge(lvlLabel, RED, WHITE);
+      placeBadge(stType === "pl" ? "P&L" : "B/S", NAVYDK, [160, 185, 255]);
+      if (includeCompareOpt) {
+        if (chunkInfo && chunkInfo.totalChunks > 1) {
+          placeBadge(`PART ${chunkInfo.idx + 1}/${chunkInfo.totalChunks}`, REDDK, WHITE);
+        } else {
+          placeBadge("COMPARE", REDDK, WHITE);
+        }
+      }
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(6);
+      doc.setTextColor(...GRAY);
+      doc.text(`Generated ${new Date().toLocaleDateString()}`, W - 8, 22, { align: "right" });
+
+      doc.setDrawColor(...NAVYMID);
+      doc.setLineWidth(0.4);
+      doc.line(0, 38, W, 38);
+
+      return 42;
+    };
+
+    const drawFooter = (stType, level, chunkInfo) => {
+      doc.setFillColor(...LIGHT);
+      doc.rect(0, H - 10, W, 10, "F");
+      doc.setDrawColor(...GRAYLT);
+      doc.setLineWidth(0.3);
+      doc.line(0, H - 10, W, H - 10);
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(6.5);
+      doc.setTextColor(...NAVY);
+      doc.text(`DIMENSIONS — ${stType === "pl" ? "P&L" : "B/S"}`, 10, H - 4.5);
+
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(...GRAY);
+      const lvl = level === "summary" ? "Summary" : level === "detailed" ? "Detailed" : "Mapped";
+      const chunkPart = chunkInfo && chunkInfo.totalChunks > 1 ? ` · Part ${chunkInfo.idx + 1}/${chunkInfo.totalChunks}` : "";
+      doc.text(`${lvl}  ·  ${monthLabel} ${masterYear}  ·  ${masterSource}${chunkPart}`, 56, H - 4.5);
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(7);
+      doc.setTextColor(...NAVY);
+      doc.text(`${pageNum}`, W - 10, H - 4.5, { align: "right" });
+    };
+
+    const writePageForStatement = (stType, viewLevel, dimSlice, chunkInfo, isFirst) => {
+      const isCompare = includeCompareOpt;
+      const showTotals = (opts.includeTotals !== false) && !isCompare;
+      const showBreakers = opts.includeBreakers !== false;
+
+      const subCols = isCompare ? 4 : 1;
+      const valueColCount = dimSlice.length * subCols + (showTotals ? 1 : 0);
+      const totalColCount = 1 + valueColCount;
+
+      const bodyFont = totalColCount <= 8  ? 8
+                     : totalColCount <= 12 ? 7.5
+                     : totalColCount <= 18 ? 7
+                     : 6.5;
+      const headFont = Math.max(6, bodyFont - 0.5);
+
+      const isActive   = stType === statementType;
+      const literal    = stType === "pl" ? plLiteral : bsLiteral;
+      const useLiteral = viewLevel === null;
+      const sign       = stType === "pl" ? -1 : 1;
+
+      const pivotMain = isActive ? pivot : buildSimplePivot(data, stType);
+      const prevMain  = isActive ? prevPivotMain : new Map();
+      const pivotCmp  = isCompare ? (isActive ? pivot2 : buildSimplePivot(cmp2Data, stType)) : new Map();
+      const prevCmp   = isActive ? prevPivot2 : new Map();
+      const sheetView = isActive ? viewMode : "ytd";
+
+      const sumPivotFor = (p, code, dk) => {
+        if (!p || p.size === 0) return 0;
+        let total = 0;
+        p.forEach((dimMap, ac) => {
+          if (ac === code) { total += (dimMap.get(dk) ?? 0) * sign; return; }
+          let cur = parentOf.get(ac); let hops = 0;
+          while (cur && hops < 25) {
+            if (cur === code) { total += (dimMap.get(dk) ?? 0) * sign; break; }
+            cur = parentOf.get(cur); hops++;
+          }
         });
-        return flat;
+        return total;
       };
-      const evalLine = (p, pPrev, dk) => {
-        const flat = flattenForDim(p, pPrev, dk);
-        if (line === "all") { let t = 0; flat.forEach(v => { t += v; }); return t; }
-        const kpi = kpiList.find(k => k.id === line);
-        if (!kpi) return 0;
-        const cache = new Map();
-        const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes, resolveCcTag);
-        return (v === null || isNaN(v)) ? 0 : v;
+      const valFor = (code, dk) => {
+        const ytd = sumPivotFor(pivotMain, code, dk);
+        if (sheetView === "ytd") return ytd;
+        return ytd - sumPivotFor(prevMain, code, dk);
+      };
+      const cmpValFor = (code, dk) => {
+        const ytd = sumPivotFor(pivotCmp, code, dk);
+        if (sheetView === "ytd") return ytd;
+        return ytd - sumPivotFor(prevCmp, code, dk);
+      };
+      const flatVal = (code, dk) => {
+        const ytd = (pivotMain.get(code)?.get(dk) ?? 0) * sign;
+        if (sheetView === "ytd") return ytd;
+        return ytd - (prevMain.get(code)?.get(dk) ?? 0) * sign;
+      };
+      const flatCmpVal = (code, dk) => {
+        const ytd = (pivotCmp.get(code)?.get(dk) ?? 0) * sign;
+        if (sheetView === "ytd") return ytd;
+        return ytd - (prevCmp.get(code)?.get(dk) ?? 0) * sign;
+      };
+      const sumTreeForDim = (n, dk, depth = 0) => {
+        if (depth > 25) return 0;
+        if (n.children && n.children.length > 0) {
+          const cs = n.children.reduce((s, c) => s + sumTreeForDim(c, dk, depth + 1), 0);
+          if (cs !== 0) return cs;
+        }
+        return flatVal(n.code, dk);
+      };
+      const sumTreeCmpForDim = (n, dk, depth = 0) => {
+        if (depth > 25) return 0;
+        if (n.children && n.children.length > 0) {
+          const cs = n.children.reduce((s, c) => s + sumTreeCmpForDim(c, dk, depth + 1), 0);
+          if (cs !== 0) return cs;
+        }
+        return flatCmpVal(n.code, dk);
+      };
+      const leafVal = (n, dimKey) => {
+        if (n.dims && n.dims.length > 0) {
+          const match = n.dims.some(d => {
+            const i = d.indexOf(":");
+            const v = i === -1 ? d : d.slice(i + 1);
+            return String(v) === String(dimKey);
+          });
+          if (!match) return 0;
+        }
+        return valFor(n.code, dimKey);
+      };
+      const leafCmpVal = (n, dimKey) => {
+        if (n.dims && n.dims.length > 0) {
+          const match = n.dims.some(d => {
+            const i = d.indexOf(":");
+            const v = i === -1 ? d : d.slice(i + 1);
+            return String(v) === String(dimKey);
+          });
+          if (!match) return 0;
+        }
+        return cmpValFor(n.code, dimKey);
+      };
+      const sumLitForDim = (n, dimKey, depth = 0) => {
+        if (depth > 50) return 0;
+        if (n.isSum && n.children && n.children.length > 0) {
+          return n.children.reduce((s, c) => s + sumLitForDim(c, dimKey, depth + 1), 0);
+        }
+        return leafVal(n, dimKey);
+      };
+      const sumLitCmpForDim = (n, dimKey, depth = 0) => {
+        if (depth > 50) return 0;
+        if (n.isSum && n.children && n.children.length > 0) {
+          return n.children.reduce((s, c) => s + sumLitCmpForDim(c, dimKey, depth + 1), 0);
+        }
+        return leafCmpVal(n, dimKey);
       };
 
-      const head = [["Dimension", "Standard", "Compare 1", "Δ Amt", "Δ %", "Compare 2", "Δ Amt", "Δ %"]];
-      const body = visibleDims.map(dim => {
-        const dk = dim.code;
-        const v1 = evalLine(pivot, prevPivot, dk);
-        const v2 = evalLine(pivot2, prevPivot2, dk);
-        const v3 = evalLine(pivot3, prevPivot3, dk);
-        const fmt = v => v === 0 ? "—" : v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        return [
-          dim.name,
-          fmt(v1), fmt(v2),
-          v1 === 0 && v2 === 0 ? "—" : fmt(v1 - v2),
-          v2 === 0 ? "—" : `${(((v1 - v2) / Math.abs(v2)) * 100).toFixed(1)}%`,
-          fmt(v3),
-          v1 === 0 && v3 === 0 ? "—" : fmt(v1 - v3),
-          v3 === 0 ? "—" : `${(((v1 - v3) / Math.abs(v3)) * 100).toFixed(1)}%`,
-        ];
+      const rows = [];
+      const renderRow = (node, depth, mode, excludeCodes = null) => {
+        if (depth > 50 || !node) return;
+        const mainSum = mode === "tree" ? sumTreeForDim : sumLitForDim;
+        const cmpSum  = mode === "tree" ? sumTreeCmpForDim : sumLitCmpForDim;
+        const values    = dimSlice.map(d => mainSum(node, d.code ?? "__none__"));
+        const cmpValues = isCompare ? dimSlice.map(d => cmpSum(node, d.code ?? "__none__")) : [];
+        const total = values.reduce((s, v) => s + v, 0);
+        rows.push({ code: node.code, name: node.name || node.code || "", values, cmpValues, total, isSum: !!node.isSum, depth });
+        if (node.children && node.children.length > 0) {
+          node.children.forEach(c => {
+            if (excludeCodes && excludeCodes.has(String(c.code ?? c.AccountCode ?? ""))) return;
+            renderRow(c, depth + 1, mode, excludeCodes);
+          });
+        }
+      };
+
+      const treeAsLit = (n, depth, visited = new WeakSet()) => {
+        if (!n || depth > 50 || visited.has(n)) {
+          return { code: String(n?.AccountCode ?? ""), name: n?.AccountName ?? "", dims: null, isSum: false, depth, children: [] };
+        }
+        visited.add(n);
+        return {
+          code: String(n.AccountCode), name: n.AccountName ?? "",
+          dims: null, isSum: (n.children?.length ?? 0) > 0, depth,
+          children: (n.children || []).map(c => treeAsLit(c, depth + 1, visited)),
+        };
+      };
+
+      if (useLiteral && literal && literal.length > 0) {
+        literal.forEach(section => {
+          if (section.label && showBreakers) rows.push({ isBreaker: true, label: section.label });
+          section.nodes.forEach(n => renderRow(n, 0, "literal"));
+        });
+      } else {
+        const mappingForSt = stType === "pl" ? plMapping : bsMapping;
+        const gaMap = new Map();
+        (groupAccounts || []).forEach(a => {
+          const code = String(a.AccountCode ?? a.accountCode ?? "");
+          if (!code) return;
+          gaMap.set(code, {
+            AccountCode: code,
+            AccountName: a.AccountName ?? a.accountName ?? "",
+            SumAccountCode: String(a.SumAccountCode ?? a.sumAccountCode ?? ""),
+            AccountType: a.AccountType ?? a.accountType ?? "",
+          });
+        });
+        const targetType = stType === "bs" ? "B/S" : "P/L";
+        const stCodes = new Set();
+        gaMap.forEach((ga, code) => { if (!ga.AccountType || ga.AccountType === targetType) stCodes.add(code); });
+        const childrenIdx = new Map();
+        stCodes.forEach(code => {
+          const parent = gaMap.get(code).SumAccountCode;
+          if (parent && stCodes.has(parent) && parent !== code) {
+            if (!childrenIdx.has(parent)) childrenIdx.set(parent, []);
+            childrenIdx.get(parent).push(code);
+          }
+        });
+        const buildTreeNode = (code, depth, visited = new Set()) => {
+          if (visited.has(code) || depth > 25) {
+            return { AccountCode: code, AccountName: gaMap.get(code)?.AccountName ?? "", children: [] };
+          }
+          const next = new Set(visited); next.add(code);
+          const kids = (childrenIdx.get(code) || []).map(c => buildTreeNode(c, depth + 1, next));
+          return { AccountCode: code, AccountName: gaMap.get(code)?.AccountName ?? "", children: kids };
+        };
+
+        if (mappingForSt?.rows && mappingForSt?.sections) {
+          const filterFn = viewLevel === "summary" ? (info => info.showInSummary) : (info => info.isSum);
+          const orderedEntries = [...mappingForSt.rows.entries()]
+            .filter(([, info]) => filterFn(info))
+            .sort(([, a], [, b]) => a.sortOrder - b.sortOrder);
+          const topLevelCodes = new Set(orderedEntries.map(([code]) => String(code)));
+          const seenSections = new Set();
+          orderedEntries.forEach(([code, info]) => {
+            if (!stCodes.has(code)) return;
+            if (!seenSections.has(info.section) && showBreakers) {
+              const sec = mappingForSt.sections.get(info.section);
+              if (sec?.label) rows.push({ isBreaker: true, label: sec.label });
+              seenSections.add(info.section);
+            }
+            renderRow(treeAsLit(buildTreeNode(code, 0), 0), 0, "tree", topLevelCodes);
+          });
+        } else {
+          const topCodes = [...stCodes].filter(code => {
+            const p = gaMap.get(code).SumAccountCode;
+            return !p || !stCodes.has(p);
+          }).sort();
+          topCodes.forEach(code => renderRow(treeAsLit(buildTreeNode(code, 0), 0), 0, "tree"));
+        }
+      }
+
+      const startY = drawPageHeader(isFirst, stType, viewLevel, chunkInfo);
+      const fmt = v => (v == null || v === 0 || !Number.isFinite(v))
+        ? "—"
+        : v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const fmtPct = v => v == null || !Number.isFinite(v)
+        ? "—"
+        : `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+
+      // Header
+      let head;
+      if (isCompare) {
+        const top = [{ content: "Account", rowSpan: 2, styles: { halign: "left", fillColor: NAVYDK, valign: "middle" } }];
+        const bot = [];
+        dimSlice.forEach(d => {
+          top.push({ content: d.name ?? d.code ?? "—", colSpan: 4, styles: { halign: "center", fillColor: NAVY } });
+        });
+dimSlice.forEach(() => {
+          // A = actual (navy). B / Diff / Diff% are all comparison-side, so
+          // share the red palette for visual grouping.
+          bot.push({ content: "A",     styles: { halign: "right", fillColor: NAVYMID } });
+          bot.push({ content: "B",     styles: { halign: "right", fillColor: REDDK } });
+          bot.push({ content: "Diff",  styles: { halign: "right", fillColor: REDDK } });
+          bot.push({ content: "Diff%", styles: { halign: "right", fillColor: REDDK } });
+        });
+        head = [top, bot];
+      } else {
+        const top = ["Account", ...dimSlice.map(d => d.name ?? d.code ?? "—")];
+        if (showTotals) top.push("TOTAL");
+        head = [top];
+      }
+
+      const body = rows.map(r => {
+        if (r.isBreaker) {
+          return [{
+            content: r.label.toUpperCase(),
+            colSpan: totalColCount,
+            styles: { fillColor: NAVYDK, textColor: WHITE, fontStyle: "bold", halign: "left", fontSize: bodyFont + 0.5 },
+          }];
+        }
+        const indent = "  ".repeat(Math.min(r.depth, 6));
+        const name = `${indent}${r.code ? r.code + "  " : ""}${r.name}`;
+        const cells = [{ content: name, styles: { fontStyle: r.isSum ? "bold" : "normal" } }];
+
+        if (isCompare) {
+          r.values.forEach((a, i) => {
+            const b = r.cmpValues[i] ?? 0;
+            const delta = (Number.isFinite(a) && Number.isFinite(b)) ? a - b : null;
+            const deltaPct = (Number.isFinite(a) && Number.isFinite(b) && Math.abs(b) > 1e-9)
+              ? ((a - b) / Math.abs(b)) * 100 : null;
+            const dColor = (delta == null || delta === 0) ? GRAY : (delta > 0 ? GRN : RED);
+            cells.push({ content: fmt(a),        styles: { fontStyle: r.isSum ? "bold" : "normal" } });
+            cells.push({ content: fmt(b),        styles: { fontStyle: r.isSum ? "bold" : "normal", textColor: RED } });
+            cells.push({ content: fmt(delta),    styles: { fontStyle: r.isSum ? "bold" : "normal", textColor: dColor } });
+            cells.push({ content: fmtPct(deltaPct), styles: { fontStyle: r.isSum ? "bold" : "normal", textColor: dColor } });
+          });
+        } else {
+          r.values.forEach(v => cells.push({ content: fmt(v), styles: { fontStyle: r.isSum ? "bold" : "normal" } }));
+          if (showTotals) cells.push({ content: fmt(r.total), styles: { fontStyle: "bold", fillColor: LIGHT } });
+        }
+        return cells;
       });
 
-      autoTable(doc, { head, body, startY: 80, theme: "plain",
-        styles: { font: "helvetica", fontSize: 8, cellPadding: 4, textColor: H.primary },
-        headStyles: { fillColor: H.primary, textColor: H.white, fontStyle: "bold", halign: "right" },
-        columnStyles: { 0: { halign: "left", fontStyle: "bold", cellWidth: 120 } },
-        alternateRowStyles: { fillColor: H.band2 },
-      });
-    } else {
-      const head = [["Account", ...dimCols.map(d => d.name ?? d.code ?? "—"), "TOTAL"]];
-     const body = (orderedRows ?? displayedTree).map(node => {
-        const fmt = v => v === 0 ? "—" : v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        const vals = dimCols.map(dim => getVal(node.AccountCode, dim.code ?? "__none__"));
-        const total = vals.reduce((s, v) => s + v, 0);
-        return [`${node.AccountCode}  ${node.AccountName ?? ""}`.trim(), ...vals.map(fmt), fmt(total)];
-      });
+      // Column widths
+      const usable = W - 16;
+      const nameW  = usable * (totalColCount > 16 ? 0.18 : totalColCount > 10 ? 0.22 : 0.28);
+      const remaining = usable - nameW;
 
-      autoTable(doc, { head, body, startY: 80, theme: "plain",
-        styles: { font: "helvetica", fontSize: 7, cellPadding: 3, textColor: H.primary },
-        headStyles: { fillColor: H.primary, textColor: H.white, fontStyle: "bold", halign: "right" },
-        columnStyles: { 0: { halign: "left", fontStyle: "bold", cellWidth: 140 }, [dimCols.length + 1]: { fillColor: H.highlight, fontStyle: "bold" } },
-        alternateRowStyles: { fillColor: H.band2 },
-        didParseCell: (d) => { if (d.section === "body" && d.column.index > 0) d.cell.styles.halign = "right"; },
-      });
-    }
+      const columnStyles = { 0: { halign: "left", cellWidth: nameW } };
+      if (isCompare) {
+        // Per dim: A | B | Diff | Diff%   split 30 / 30 / 25 / 15
+        const dimBlock = remaining / dimSlice.length;
+        const wA = dimBlock * 0.30;
+        const wB = dimBlock * 0.30;
+        const wD = dimBlock * 0.25;
+        const wP = dimBlock * 0.15;
+        for (let i = 0; i < dimSlice.length; i++) {
+          columnStyles[1 + i * 4]     = { halign: "right", cellWidth: wA };
+          columnStyles[1 + i * 4 + 1] = { halign: "right", cellWidth: wB };
+          columnStyles[1 + i * 4 + 2] = { halign: "right", cellWidth: wD };
+          columnStyles[1 + i * 4 + 3] = { halign: "right", cellWidth: wP };
+        }
+      } else {
+        const colW = remaining / Math.max(1, valueColCount);
+        for (let i = 0; i < valueColCount; i++) columnStyles[i + 1] = { halign: "right", cellWidth: colW };
+        if (showTotals) columnStyles[valueColCount] = { halign: "right", cellWidth: colW, fillColor: LIGHT, fontStyle: "bold" };
+      }
 
+      autoTable(doc, {
+        startY,
+        head,
+        body,
+        margin: { left: 8, right: 8, bottom: 14 },
+        tableWidth: usable,
+        styles: {
+          fontSize: bodyFont,
+          cellPadding: { top: 1.8, bottom: 1.8, left: 2.5, right: 2.5 },
+          overflow: "linebreak",
+          font: "helvetica",
+          textColor: TEXTDK,
+          lineColor: GRAYLT,
+          lineWidth: 0.12,
+          valign: "middle",
+        },
+        headStyles: {
+          fillColor: NAVY, textColor: WHITE, fontStyle: "bold", fontSize: headFont,
+          cellPadding: { top: 2.5, bottom: 2.5, left: 2.5, right: 2.5 },
+          halign: "right", lineWidth: 0,
+          overflow: "linebreak",
+          valign: "middle",
+        },
+        columnStyles,
+        alternateRowStyles: { fillColor: OFFWHITE },
+        didParseCell: d => {
+          if (d.section === "head" && d.column.index === 0) {
+            d.cell.styles.fillColor = NAVYDK; d.cell.styles.halign = "left";
+          }
+        },
+        didDrawPage: () => drawFooter(stType, viewLevel, chunkInfo),
+      });
+    };
+
+    const dispatchStatement = (stType, isFirstRef) => {
+      const lit = stType === "pl" ? plLiteral : bsLiteral;
+      const levels = lit && lit.length > 0 ? [null] : ["summary", "detailed"];
+      for (const level of levels) {
+        for (let ci = 0; ci < dimChunks.length; ci++) {
+          const chunkInfo = { idx: ci, totalChunks: dimChunks.length };
+          writePageForStatement(stType, level, dimChunks[ci].dims, chunkInfo, isFirstRef.first);
+          isFirstRef.first = false;
+        }
+      }
+    };
+
+    console.log("[pdf] === EXPORT START ===");
+    console.log("[pdf] compare:", includeCompareOpt, "dims:", allDims.length, "chunks:", dimChunks.length, "useA3:", useA3);
+
+    const isFirstRef = { first: true };
+    if (includePL) dispatchStatement("pl", isFirstRef);
+    if (includeBS) dispatchStatement("bs", isFirstRef);
+
+// ── Render the index on page 1 (reserved at doc creation) ───────────────
+    doc.setPage(1);
+
+    // Navy banner header (matches content pages)
+    doc.setFillColor(...NAVY); doc.rect(0, 0, W, 50, "F");
+    doc.setFillColor(...RED);  doc.rect(0, 0, 5, 50, "F");
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(22);
+    doc.setTextColor(...WHITE);
+    doc.text("DIMENSIONS REPORT", 12, 22);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(180, 200, 255);
+    const tocSub = [`${monthLabel} ${masterYear}`, masterSource, masterStructure, masterCompany].filter(Boolean).join("  ·  ");
+    doc.text(tocSub, 12, 33);
+
+    doc.setFontSize(8);
+    doc.setTextColor(160, 180, 235);
+    doc.text(
+      `${includeCompareOpt ? "Compare ON" : "Single period"}  ·  Generated ${new Date().toLocaleDateString()}  ·  ${pageManifest.length} content page${pageManifest.length === 1 ? "" : "s"}`,
+      12, 42,
+    );
+
+    // CONTENTS heading
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.setTextColor(...NAVY);
+    doc.text("CONTENTS", 12, 70);
+    doc.setDrawColor(...NAVY);
+    doc.setLineWidth(0.5);
+    doc.line(12, 73, W - 12, 73);
+
+    // Entries
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    const lineH = 9;
+    let tocY = 84;
+    const tocBottom = H - 16;
+
+    pageManifest.forEach((entry, i) => {
+      if (tocY > tocBottom) return; // hard cap — drop overflow rather than spill
+
+      // Alternating subtle row band
+      if (i % 2 === 0) {
+        doc.setFillColor(248, 249, 255);
+        doc.rect(10, tocY - 6, W - 20, lineH, "F");
+      }
+
+      doc.setTextColor(...TEXTDK);
+      doc.setFont("helvetica", "normal");
+      doc.text(entry.title, 16, tocY);
+
+      // Dotted leader
+      const titleW = doc.getTextWidth(entry.title);
+      const pgStr  = String(entry.displayedPage);
+      const pgW    = doc.getTextWidth(pgStr);
+      const dotsStart = 16 + titleW + 4;
+      const dotsEnd   = W - 16 - pgW - 4;
+      if (dotsEnd > dotsStart) {
+        doc.setTextColor(...GRAY);
+        doc.setFontSize(8);
+        let dotStr = "";
+        const dotW = doc.getTextWidth(". ");
+        const dotCount = Math.max(0, Math.floor((dotsEnd - dotsStart) / dotW));
+        for (let j = 0; j < dotCount; j++) dotStr += ". ";
+        doc.text(dotStr, dotsStart, tocY);
+        doc.setFontSize(11);
+      }
+
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(...NAVY);
+      doc.text(pgStr, W - 16, tocY, { align: "right" });
+
+      tocY += lineH;
+    });
+
+    // Footer on the index page
+    doc.setFillColor(...LIGHT);
+    doc.rect(0, H - 10, W, 10, "F");
+    doc.setDrawColor(...GRAYLT);
+    doc.setLineWidth(0.3);
+    doc.line(0, H - 10, W, H - 10);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(6.5);
+    doc.setTextColor(...NAVY);
+    doc.text("DIMENSIONS REPORT", 10, H - 4.5);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(...GRAY);
+    doc.text(`Index  ·  ${monthLabel} ${masterYear}  ·  ${masterSource}`, 56, H - 4.5);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(7);
+    doc.setTextColor(...NAVY);
+    doc.text("1", W - 10, H - 4.5, { align: "right" });
+
+    console.log("[pdf] === EXPORT END === total pages:", pageNum);
     doc.save(`Konsolidator_Dimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.pdf`);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compareMode, statementType, dimCols, getVal, getValWithDescendants, pivot, prevPivot, pivot2, prevPivot2, pivot3, prevPivot3, viewMode, line, kpiList, ccTagToCodes, resolveCcTag, masterYear, masterMonth, masterSource, masterStructure, filterStr]);
+  }, [data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, plMapping, bsMapping, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, selGroups, selDims, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, groupAccounts]);
+
 
   // Wire export functions to the ref so DimensionesPage FAB can call them
   useEffect(() => {
@@ -2077,7 +2763,8 @@ return (
           60%  { opacity: 1; }
           100% { opacity: 1; transform: scale(1) rotate(0); }
         }
-        table td, table th { vertical-align: middle; }
+table td, table th { vertical-align: middle; }
+        tbody tr { content-visibility: auto; contain-intrinsic-size: 44px; }
 `}</style>
 
 
@@ -2116,7 +2803,7 @@ return (
       <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
 
         {/* Synced header */}
-        <div ref={headerRef} style={{ overflowX: "auto", overflowY: "hidden", flexShrink: 0, scrollbarWidth: "none", msOverflowStyle: "none", boxShadow: "0 4px 12px -4px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)" }} onScroll={onHeaderScroll}>
+        <div ref={headerRef} style={{ overflowX: "auto", overflowY: "hidden", flexShrink: 0, scrollbarWidth: "none", msOverflowStyle: "none", boxShadow: "0 4px 12px -4px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)", contain: "layout paint style" }} onScroll={onHeaderScroll}>
 <table style={{ borderCollapse: "collapse", minWidth: totalWidth, width: "100%", tableLayout: "fixed" }}>
 <colgroup>
               <col style={{ width: 480, minWidth: 480 }} />
@@ -2283,7 +2970,7 @@ return (
         </div>
 
         {/* Synced body */}
-        <div ref={bodyRef} className="scrollbar-hide" style={{ flex: 1, minHeight: 0, overflowX: "auto", overflowY: "auto" }} onScroll={onBodyScroll}>
+        <div ref={bodyRef} className="scrollbar-hide" style={{ flex: 1, minHeight: 0, overflowX: "auto", overflowY: "auto", contain: "layout paint style" }} onScroll={onBodyScroll}>
           <table style={{ borderCollapse: "collapse", minWidth: totalWidth, width: "100%", tableLayout: "fixed" }}>
 <colgroup>
               <col style={{ width: ACOL, minWidth: ACOL }} />
@@ -2307,6 +2994,8 @@ return (
 // Value resolver — uses descendant-aware rollup so sum codes (e.g. 11999)
                   // pick up all postings that roll up to them via the chart's parentOf chain,
                   // not just postings to the sum code itself (which is usually empty).
+const __sumCache = new Map();
+                  const __sumCmpCache = new Map();
                   const leafVal = (node, dimKey) => {
                     if (node.dims && node.dims.length > 0) {
                       const match = node.dims.some(d => {
@@ -2318,14 +3007,16 @@ return (
                     }
                     return getValWithDescendants(node.code, dimKey);
                   };
-// Recursive rollup: sum-node returns sum of children; leaf returns own value
                   const sumLitForDim = (node, dimKey) => {
-                    if (node.isSum && node.children && node.children.length > 0) {
-                      return node.children.reduce((s, c) => s + sumLitForDim(c, dimKey), 0);
-                    }
-                    return leafVal(node, dimKey);
+                    const k = `${node.id}|${dimKey}`;
+                    const cached = __sumCache.get(k);
+                    if (cached !== undefined) return cached;
+                    const v = (node.isSum && node.children && node.children.length > 0)
+                      ? node.children.reduce((s, c) => s + sumLitForDim(c, dimKey), 0)
+                      : leafVal(node, dimKey);
+                    __sumCache.set(k, v);
+                    return v;
                   };
-                  // Same rollup but reading from the compare pivot.
                   const leafValCmp = (node, dimKey) => {
                     if (node.dims && node.dims.length > 0) {
                       const match = node.dims.some(d => {
@@ -2338,10 +3029,14 @@ return (
                     return getCmpValWithDescendants(node.code, dimKey);
                   };
                   const sumLitCmpForDim = (node, dimKey) => {
-                    if (node.isSum && node.children && node.children.length > 0) {
-                      return node.children.reduce((s, c) => s + sumLitCmpForDim(c, dimKey), 0);
-                    }
-                    return leafValCmp(node, dimKey);
+                    const k = `${node.id}|${dimKey}`;
+                    const cached = __sumCmpCache.get(k);
+                    if (cached !== undefined) return cached;
+                    const v = (node.isSum && node.children && node.children.length > 0)
+                      ? node.children.reduce((s, c) => s + sumLitCmpForDim(c, dimKey), 0)
+                      : leafValCmp(node, dimKey);
+                    __sumCmpCache.set(k, v);
+                    return v;
                   };
 
                   const renderNode = (node, depth, parentPath, secIdx) => {
@@ -2364,7 +3059,7 @@ const rowKey = `litrow-${secIdx}-${parentPath}-${node.id}`;
                                   {expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
                                 </span>
                               : <span className="inline-block mr-2" style={{ width: 12 }} />}
-                            {node.code && <span className="flex-shrink-0 mr-2" style={useTypo("subbody2")}>{node.code}</span>}
+                           {node.code && <span className="flex-shrink-0 mr-2" style={subbody2Style}>{node.code}</span>}
                             <span className="truncate max-w-[280px]" style={rowStyle}>{node.name || node.code}</span>
                           </div>
                         </td>
@@ -2450,7 +3145,8 @@ const levelByCode = (hasCustomMapping && activeMapping?.rows)
                         body1Style={body1Style} body2Style={body2Style}
                         header2Style={header2Style} colors={colors}
                         excludeCodes={flatCodes} rowIndex={idx}
-                        searchQuery={debouncedQuery} searchExpansionSet={searchExpansionSet} />
+                        searchQuery={debouncedQuery} searchExpansionSet={searchExpansionSet}
+                        valCache={valCache} cmpCache={cmpCache} />
                     </React.Fragment>
                   );
                 });
@@ -2492,14 +3188,13 @@ const [exporting, setExporting] = useState(false);
   const [viewsOpen, setViewsOpen] = useState(false);
   const [exportModal, setExportModal] = useState(false);
 const [exportOpts, setExportOpts] = useState({
-    statements: { pl: true, bs: false },
+    statements: { pl: true, bs: true },
     includeBreakers: true,
     includeTotals: true,
     includeCompare: true,
     drilldown: true,
     format: "xlsx",
   });
-
   // Keep the statement toggle in sync with the active tab so the user's current view defaults to on
   useEffect(() => {
     setExportOpts(o => ({
@@ -2529,10 +3224,9 @@ const runExport = useCallback(async () => {
     } finally {
       setExporting(false);
     }
-  }, [exportOpts]);
+}, [exportOpts]);
 
-
-const handleApplyMapping = useCallback((m, kind = "structure") => {
+  const handleApplyMapping = useCallback((m, kind = "structure") => {
     console.log("[apply mapping]", {
       kind,
       hasPlTree: Array.isArray(m.pl_tree),
@@ -2555,6 +3249,39 @@ const handleApplyMapping = useCallback((m, kind = "structure") => {
     });
     setWarningDismissed(false);
   }, []);
+
+  // Auto-apply the user's saved standard mapping once per page load. Mirrors
+  // the same flow used by AccountsDashboard / KpiIndividualesPage so jumping
+  // between tabs doesn't lose your default view.
+  const autoMappingAppliedRef = useRef(false);
+  useEffect(() => {
+    if (autoMappingAppliedRef.current) return;
+    autoMappingAppliedRef.current = true;
+    (async () => {
+      try {
+        const { supabase } = await import("../../lib/supabaseClient");
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) return;
+        const { data: settingsData } = await supabase
+          .from("user_settings")
+          .select("preferences")
+          .eq("user_id", uid)
+          .single();
+        const mid = settingsData?.preferences?.standard_mapping_id;
+        if (!mid) return;
+        const { listMappings, getMapping, getActiveCompanyId } = await import("../../lib/mappingsApi");
+        const cid = await getActiveCompanyId(uid);
+        if (!cid) return;
+        const allMappings = await listMappings({ companyId: cid });
+        const match = (allMappings || []).find(m => String(m.mapping_id) === String(mid));
+        if (!match) return;
+        // Fetch the full mapping (with pl_tree / bs_tree) — list endpoint omits them
+        const full = await getMapping(match.mapping_id);
+        handleApplyMapping(full ?? match, "structure");
+      } catch (err) { console.error("[auto-mapping] error:", err); }
+    })();
+  }, [handleApplyMapping]);
 
   // Recent mappings for the PageHeader hover-dropdown quick-access
   const [recentMappings, setRecentMappings] = useState([]);
