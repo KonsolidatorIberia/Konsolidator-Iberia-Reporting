@@ -43,24 +43,28 @@ if (typeof window !== "undefined") {
   });
 }
 
-function useCountUp(target, duration = 900) {
+function useCountUp(target, animate = true, duration = 900) {
+  // Track display via state (for re-renders) AND via ref (for accurate `from`
+  // value inside the effect — closure capture would otherwise be stale).
   const [display, setDisplay] = useState(target);
-  const fromRef = useRef(target);
-  const startRef = useRef(null);
+  const displayRef = useRef(target);
+  displayRef.current = display;
   const rafRef = useRef(null);
+
+  // Effect reacts purely to `target` changes — the `animate` flag is kept in
+  // the signature for backward compat with existing call sites, but doesn't
+  // gate the animation. Windowing already bounds how many cells animate
+  // simultaneously, so we don't need this flag to throttle.
   useEffect(() => {
     cancelAnimationFrame(rafRef.current);
-    fromRef.current = display;
-    startRef.current = null;
-    const from = Number(fromRef.current) || 0;
+    const from = displayRef.current;
     const to = Number(target) || 0;
-    if (from === to) { setDisplay(to); return; }
-    // Skip animation entirely during window resize — prevents RAF storms
-    // across thousands of cells while the sidebar is animating.
-    if (__globalResizing) { setDisplay(to); return; }
+    if (from === to) return;                       // mount or no-op
+    if (__globalResizing) { setDisplay(to); return; } // skip during sidebar resize
+    let start = null;
     const tick = (ts) => {
-      if (startRef.current === null) startRef.current = ts;
-      const elapsed = ts - startRef.current;
+      if (start === null) start = ts;
+      const elapsed = ts - start;
       const t = Math.min(1, elapsed / duration);
       const eased = 1 - Math.pow(1 - t, 3);
       setDisplay(from + (to - from) * eased);
@@ -68,7 +72,9 @@ function useCountUp(target, duration = 900) {
     };
     rafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [target, duration]); // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, duration]);
+
   return display;
 }
 
@@ -100,15 +106,41 @@ xml = xml.replace(/(<row[^>]*outlineLevel="\d+"[^>]*?)\s*collapsed="1"/g, "$1");
   return await zip.generateAsync({ type: "arraybuffer" });
 }
 
-const DimAmountCell = React.memo(function DimAmountCell({ value, typoStyle, borderLeft, bgColor, extraStyle }) {
-  const v = value ?? 0;
-  const isEmpty = v === 0;
+const DimAmountCell = React.memo(function DimAmountCell({ value, animate, typoStyle, borderLeft, bgColor, extraStyle }) {
+  const target = value ?? 0;
+  const v = useCountUp(target, !!animate, 900);
+  const isEmpty = target === 0;
   const isNeg = v < 0;
   const color = isEmpty ? "#D1D5DB" : isNeg ? "#EF4444" : "#000000";
   const fmt = (n) => Math.abs(n).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return (
 <td className="px-4 py-2.5 text-center whitespace-nowrap tabular-nums" style={{ ...typoStyle, color, borderLeft: borderLeft ? "2px solid #f0f0f0" : undefined, background: bgColor ?? undefined, ...extraStyle }}>
       {isEmpty ? "—" : isNeg ? `(${fmt(v)})` : fmt(v)}
+    </td>
+  );
+});
+
+// Animated diff amount cell — same format as DimAmountCell but with a color
+// driven by the sign of the diff (green/red/gray) rather than the value itself.
+const DimDiffCell = React.memo(function DimDiffCell({ value, animate, color, width, bgColor, extraStyle }) {
+  const target = value ?? 0;
+  const v = useCountUp(target, !!animate, 900);
+  const fmt = (n) => Math.abs(n).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return (
+    <td className="px-2 py-2.5 text-center whitespace-nowrap tabular-nums text-xs font-bold" style={{ color, width, background: bgColor, ...extraStyle }}>
+      {target === 0 ? "—" : v < 0 ? `(${fmt(v)})` : fmt(v)}
+    </td>
+  );
+});
+
+// Animated percent cell — handles null target (renders "—") and signed display.
+const DimPctCell = React.memo(function DimPctCell({ value, animate, color, width, bgColor, extraStyle }) {
+  const isNull = value === null || value === undefined;
+  const target = isNull ? 0 : value;
+  const v = useCountUp(target, !!animate, 900);
+  return (
+    <td className="px-2 py-2.5 text-center whitespace-nowrap tabular-nums text-xs font-bold" style={{ color, width, background: bgColor, ...extraStyle }}>
+      {isNull ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`}
     </td>
   );
 });
@@ -642,7 +674,7 @@ function FilterPill({ label, value, onChange, options }) {
 }
 
 const INDENT = 14;
-const DimensionRow = React.memo(function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null, valCache = null, cmpCache = null }) {
+const DimensionRow = React.memo(function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null, valCache = null, cmpCache = null, isAnimatingData = false, tableJustLoaded = false, cmpRecentlyToggled = false }) {
   const subbody2Style = useTypo("subbody2");
   const code = node.AccountCode;
   const visibleChildren = excludeCodes
@@ -707,8 +739,8 @@ const getNodeVal = (dimKey) => {
   return (
     <>
 <tr
-        className={`border-b border-gray-100 transition-colors ${isMatch ? "bg-[#fef3c7]" : "bg-white hover:bg-[#eef1fb]/60"}`}
-        style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 25) * 35 + 50}ms both` }}
+        className={`border-b border-gray-100 ${isMatch ? "bg-[#fef3c7]" : "bg-white hover:bg-[#eef1fb]/60"}`}
+        style={tableJustLoaded && rowIndex < 25 ? { animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 25) * 35 + 50}ms both` } : undefined}
       >
 <td
           className={`py-2.5 sticky left-0 z-10 border-r border-gray-100 ${isMatch ? "bg-[#fef3c7]" : "bg-white"}`}
@@ -732,22 +764,21 @@ const getNodeVal = (dimKey) => {
           const diff = val - cmpVal;
           const pct = cmpVal !== 0 ? (diff / Math.abs(cmpVal)) * 100 : null;
           const devColor = diff === 0 ? "#D1D5DB" : diff > 0 ? "#059669" : "#EF4444";
+          const cmpAnim = cmpRecentlyToggled
+            ? { animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 0ms forwards` }
+            : undefined;
           return (
             <React.Fragment key={dk}>
-              <DimAmountCell value={val} typoStyle={rowStyle} />
+              <DimAmountCell value={val} typoStyle={rowStyle} animate={isAnimatingData} />
 {cmpVisible && <>
-                <DimAmountCell value={cmpVal} typoStyle={rowStyle} bgColor="#fafbff" extraStyle={{ animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 0ms forwards` }} />
-                <td className="px-2 py-2.5 text-center whitespace-nowrap tabular-nums text-xs font-bold" style={{ color: devColor, width: 110, background: "#f5f7ff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 40ms forwards` }}>
-                  {diff === 0 ? "—" : diff < 0 ? `(${Math.abs(diff).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : diff.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </td>
-                <td className="px-2 py-2.5 text-center whitespace-nowrap tabular-nums text-xs font-bold" style={{ color: devColor, width: 90, background: "#f0f3ff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 80ms forwards` }}>
-                  {pct === null ? "—" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}
-                </td>
+                <DimAmountCell value={cmpVal} typoStyle={rowStyle} animate={isAnimatingData} bgColor="#fafbff" extraStyle={cmpAnim} />
+                <DimDiffCell value={diff} animate={isAnimatingData} color={devColor} width={110} bgColor="#f5f7ff" extraStyle={cmpRecentlyToggled ? { animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 40ms forwards` } : undefined} />
+                <DimPctCell value={pct} animate={isAnimatingData} color={devColor} width={90} bgColor="#f0f3ff" extraStyle={cmpRecentlyToggled ? { animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 80ms forwards` } : undefined} />
               </>}
             </React.Fragment>
           );
         })}
-{!cmpVisible && <DimAmountCell value={rowTotal} typoStyle={rowStyle} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
+{!cmpVisible && <DimAmountCell value={rowTotal} typoStyle={rowStyle} animate={isAnimatingData} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
       </tr>
 {isExpanded && hasChildren && visibleChildren.map((child, ci) => (
 <DimensionRow key={child.AccountCode} node={child} depth={depth + 1}
@@ -757,7 +788,8 @@ const getNodeVal = (dimKey) => {
           header2Style={header2Style} colors={colors}
           excludeCodes={excludeCodes} rowIndex={rowIndex + ci + 1}
           searchQuery={searchQuery} searchExpansionSet={searchExpansionSet}
-          valCache={valCache} cmpCache={cmpCache} />
+          valCache={valCache} cmpCache={cmpCache}
+          isAnimatingData={isAnimatingData} tableJustLoaded={tableJustLoaded} cmpRecentlyToggled={cmpRecentlyToggled} />
       ))}
     </>
   );
@@ -771,8 +803,11 @@ const getNodeVal = (dimKey) => {
   if (prev.compareMode !== next.compareMode) return false;
   if (prev.cmpVisible !== next.cmpVisible) return false;
   if (prev.searchQuery !== next.searchQuery) return false;
-  if (prev.valCache !== next.valCache) return false;
+if (prev.valCache !== next.valCache) return false;
   if (prev.cmpCache !== next.cmpCache) return false;
+  if (prev.isAnimatingData !== next.isAnimatingData) return false;
+  if (prev.tableJustLoaded !== next.tableJustLoaded) return false;
+  if (prev.cmpRecentlyToggled !== next.cmpRecentlyToggled) return false;
   // expandedSet changes constantly — only re-render if OUR row's expansion flipped.
   const code = prev.node.AccountCode;
   if (prev.expandedSet.has(code) !== next.expandedSet.has(code)) return false;
@@ -882,7 +917,43 @@ const header2Style = useTypo("header2");
   const onBodyScroll   = useCallback(() => { if (headerRef.current) headerRef.current.scrollLeft = bodyRef.current.scrollLeft; }, []);
   const onHeaderScroll = useCallback(() => { if (bodyRef.current)   bodyRef.current.scrollLeft = headerRef.current.scrollLeft; }, []);
 
-const [expandedSet, setExpandedSet] = useState(new Set());
+// Each tab keeps its own expansion state — switching tabs doesn't lose what
+// you had open, and going back restores it.
+  const [expandedSetPL, setExpandedSetPL] = useState(new Set());
+  const [expandedSetBS, setExpandedSetBS] = useState(new Set());
+  const expandedSet    = statementType === "pl" ? expandedSetPL    : expandedSetBS;
+  const setExpandedSet = statementType === "pl" ? setExpandedSetPL : setExpandedSetBS;
+
+// Track viewport so we can window large render passes.
+  const [scrollTop, setScrollTop] = useState(0);
+  const [bodyHeight, setBodyHeight] = useState(800);
+
+  // Three short-lived animation flags. Each one gates a specific animation so
+  // it only fires on the event that warrants it, never during scroll or expand.
+  //   - isAnimatingData : true for ~1s after pivot identity changes (count-up)
+  //   - tableJustLoaded : true for ~1.5s after data load (row slide-in)
+  //   - cmpRecentlyToggled : true for ~500ms after compare flips (cmp cells in/out)
+  const [isAnimatingData, setIsAnimatingData] = useState(false);
+  const [tableJustLoaded, setTableJustLoaded] = useState(false);
+  const [cmpRecentlyToggled, setCmpRecentlyToggled] = useState(false);
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    let ticking = false;
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        setScrollTop(el.scrollTop);
+        ticking = false;
+      });
+    };
+    const ro = new ResizeObserver(() => setBodyHeight(el.clientHeight));
+    el.addEventListener("scroll", onScroll, { passive: true });
+    ro.observe(el);
+    setBodyHeight(el.clientHeight);
+    return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); };
+  }, []);
 
   const toggleExpand = useCallback(code => {
     setExpandedSet(prev => {
@@ -1030,6 +1101,36 @@ const targetType = statementType === "bs" ? "B/S" : "P/L";
 
 return { tree, accountMap, dimCols, pivot };
 }, [data, selGroups, selDims, groupAccounts, statementType]);
+
+// Row slide-in fires only when the table itself appears: first time data lands,
+// or when the user switches between PL and BS. Filter changes / view-mode
+// toggles produce the count-up animation but never re-slide rows.
+const hasLoadedOnceRef = useRef(false);
+useEffect(() => {
+  if (pivot.size === 0) return;
+  if (!hasLoadedOnceRef.current) {
+    hasLoadedOnceRef.current = true;
+    setTableJustLoaded(true);
+    const t = setTimeout(() => setTableJustLoaded(false), 1500);
+    return () => clearTimeout(t);
+  }
+}, [pivot]);
+
+// Statement type switch (PL ↔ BS) also re-runs the slide-in — it's effectively
+// a different table appearing.
+useEffect(() => {
+  if (!hasLoadedOnceRef.current) return; // skip initial mount; handled above
+  setTableJustLoaded(true);
+  const t = setTimeout(() => setTableJustLoaded(false), 1500);
+  return () => clearTimeout(t);
+}, [statementType]);
+
+useEffect(() => {
+  setCmpRecentlyToggled(true);
+  const t = setTimeout(() => setCmpRecentlyToggled(false), 500);
+  return () => clearTimeout(t);
+}, [cmpVisible]);
+
 const [colOrder, setColOrder] = useState(null); // null = use natural order
   const [draggingCol, setDraggingCol] = useState(null);
   const [dragOverCol, setDragOverCol] = useState(null);
@@ -1463,62 +1564,53 @@ const { childrenByParent, parentOf } = useMemo(() => {
   return { childrenByParent, parentOf };
 }, [groupAccounts, data]);
 
-const getCmpValWithDescendants = useCallback((code, dk) => {
-  const sumPivot = (p) => {
-    if (!p || p.size === 0) return 0;
-    let total = 0;
-    p.forEach((dimMap, ac) => {
-      if (ac === code) {
-        total += (dimMap.get(dk) ?? 0) * sign;
-        return;
-      }
+// Precompute rolled-up pivots: walk the source pivot ONCE; for each posting,
+// add its value to itself + every ancestor via parentOf. After this, looking up
+// a sum-code's total is a single Map.get instead of a full pivot scan. This is
+// the difference between O(N) per lookup and O(1) — the BS literal path was
+// calling the old version thousands of times per render.
+const rollUpPivot = useCallback((p) => {
+  const r = new Map();
+  if (!p || p.size === 0) return r;
+  p.forEach((dimMap, ac) => {
+    dimMap.forEach((val, dk) => {
+      // self
+      let m = r.get(ac);
+      if (!m) { m = new Map(); r.set(ac, m); }
+      m.set(dk, (m.get(dk) ?? 0) + val);
+      // ancestors
       let cur = parentOf.get(ac);
       let hops = 0;
       while (cur && hops < 25) {
-        if (cur === code) {
-          total += (dimMap.get(dk) ?? 0) * sign;
-          break;
-        }
+        let am = r.get(cur);
+        if (!am) { am = new Map(); r.set(cur, am); }
+        am.set(dk, (am.get(dk) ?? 0) + val);
         cur = parentOf.get(cur);
         hops++;
       }
     });
-    return total;
-  };
-  const ytd = sumPivot(pivot2);
-  if (viewMode === "ytd") return ytd;
-  const prevYtd = sumPivot(prevPivot2);
-  return ytd - prevYtd;
-}, [pivot2, prevPivot2, viewMode, sign, parentOf]);
+  });
+  return r;
+}, [parentOf]);
+
+const rolledPivot      = useMemo(() => rollUpPivot(pivot),         [pivot,         rollUpPivot]);
+const rolledPrevPivot  = useMemo(() => rollUpPivot(prevPivotMain), [prevPivotMain, rollUpPivot]);
+const rolledPivot2     = useMemo(() => rollUpPivot(pivot2),        [pivot2,        rollUpPivot]);
+const rolledPrevPivot2 = useMemo(() => rollUpPivot(prevPivot2),    [prevPivot2,    rollUpPivot]);
 
 const getValWithDescendants = useCallback((code, dk) => {
-  // Sum a pivot map for `code` + everything that rolls up to it via parentOf.
-  const sumPivot = (p) => {
-    if (!p || p.size === 0) return 0;
-    let total = 0;
-    p.forEach((dimMap, ac) => {
-      if (ac === code) {
-        total += (dimMap.get(dk) ?? 0) * sign;
-        return;
-      }
-      let cur = parentOf.get(ac);
-      let hops = 0;
-      while (cur && hops < 25) {
-        if (cur === code) {
-          total += (dimMap.get(dk) ?? 0) * sign;
-          break;
-        }
-        cur = parentOf.get(cur);
-        hops++;
-      }
-    });
-    return total;
-  };
-  const ytd = sumPivot(pivot);
+  const ytd = (rolledPivot.get(code)?.get(dk) ?? 0) * sign;
   if (viewMode === "ytd") return ytd;
-  const prevYtd = sumPivot(prevPivotMain);
+  const prevYtd = (rolledPrevPivot.get(code)?.get(dk) ?? 0) * sign;
   return ytd - prevYtd;
-}, [pivot, prevPivotMain, viewMode, sign, parentOf]);
+}, [rolledPivot, rolledPrevPivot, viewMode, sign]);
+
+const getCmpValWithDescendants = useCallback((code, dk) => {
+  const ytd = (rolledPivot2.get(code)?.get(dk) ?? 0) * sign;
+  if (viewMode === "ytd") return ytd;
+  const prevYtd = (rolledPrevPivot2.get(code)?.get(dk) ?? 0) * sign;
+  return ytd - prevYtd;
+}, [rolledPivot2, rolledPrevPivot2, viewMode, sign]);
 
 useEffect(() => {
   if (!activeMapping) return;
@@ -2718,6 +2810,15 @@ const getCmpVal = useCallback((ac, dk) => {
     return ytd - prevYtd;
   }, [pivot2, prevPivot2, sign, viewMode]);
 
+  // Count-up fires on anything that changes a displayed number. getVal/getCmpVal
+  // are useCallbacks whose deps already cover pivot, prevPivot, sign, viewMode;
+  // cmpVisible covers the compare-toggle case.
+  useEffect(() => {
+    setIsAnimatingData(true);
+    const t = setTimeout(() => setIsAnimatingData(false), 1100);
+    return () => clearTimeout(t);
+  }, [getVal, getCmpVal, cmpVisible]);
+
   const allDimsForGroups = useMemo(() => {
     if (selGroups.size === 0) return [];
     const seen = new Set();
@@ -2769,15 +2870,16 @@ table td, table th { vertical-align: middle; }
 
 
 <div className="flex-shrink-0 overflow-hidden" style={{
-        maxHeight: compareMode ? 240 : 0,
-        marginTop: compareMode ? 0 : -12,
-        paddingTop: compareMode ? 4 : 0,
-        paddingBottom: compareMode ? 12 : 0,
-        paddingLeft: 4,
-        paddingRight: 4,
-        marginLeft: -4,
-        marginRight: -4,
-        transition: "max-height 450ms cubic-bezier(0.4,0,0.2,1), margin-top 450ms cubic-bezier(0.4,0,0.2,1), padding-top 450ms cubic-bezier(0.4,0,0.2,1), padding-bottom 450ms cubic-bezier(0.4,0,0.2,1)",
+        maxHeight: compareMode ? 280 : 0,
+        marginTop: compareMode ? -20 : -12,
+        marginBottom: compareMode ? -28 : 0,
+        paddingTop: compareMode ? 24 : 0,
+        paddingBottom: compareMode ? 40 : 0,
+        paddingLeft: 24,
+        paddingRight: 24,
+        marginLeft: -24,
+        marginRight: -24,
+        transition: "max-height 450ms cubic-bezier(0.4,0,0.2,1), margin-top 450ms cubic-bezier(0.4,0,0.2,1), margin-bottom 450ms cubic-bezier(0.4,0,0.2,1), padding-top 450ms cubic-bezier(0.4,0,0.2,1), padding-bottom 450ms cubic-bezier(0.4,0,0.2,1)",
       }}>
       {cmpVisible && (
         <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex items-stretch gap-0" style={{ height: "7vh", padding: "0 18px", position: "relative", zIndex: 10, animation: `${cmpExiting ? "cmpBarOut" : "cmpBarIn"} 450ms cubic-bezier(0.4,0,0.2,1) forwards`, transformOrigin: "top center" }}>
@@ -2803,7 +2905,7 @@ table td, table th { vertical-align: middle; }
       <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
 
         {/* Synced header */}
-        <div ref={headerRef} style={{ overflowX: "auto", overflowY: "hidden", flexShrink: 0, scrollbarWidth: "none", msOverflowStyle: "none", boxShadow: "0 4px 12px -4px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)", contain: "layout paint style" }} onScroll={onHeaderScroll}>
+        <div ref={headerRef} style={{ overflowX: "auto", overflowY: "hidden", flexShrink: 0, scrollbarWidth: "none", msOverflowStyle: "none", boxShadow: "0 4px 12px -4px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",contain: "layout style" }} onScroll={onHeaderScroll}>
 <table style={{ borderCollapse: "collapse", minWidth: totalWidth, width: "100%", tableLayout: "fixed" }}>
 <colgroup>
               <col style={{ width: 480, minWidth: 480 }} />
@@ -2970,7 +3072,7 @@ table td, table th { vertical-align: middle; }
         </div>
 
         {/* Synced body */}
-        <div ref={bodyRef} className="scrollbar-hide" style={{ flex: 1, minHeight: 0, overflowX: "auto", overflowY: "auto", contain: "layout paint style" }} onScroll={onBodyScroll}>
+        <div ref={bodyRef} className="scrollbar-hide" style={{ flex: 1, minHeight: 0, overflowX: "auto", overflowY: "auto", contain: "layout style" }} onScroll={onBodyScroll}>
           <table style={{ borderCollapse: "collapse", minWidth: totalWidth, width: "100%", tableLayout: "fixed" }}>
 <colgroup>
               <col style={{ width: ACOL, minWidth: ACOL }} />
@@ -2988,13 +3090,12 @@ table td, table th { vertical-align: middle; }
                 // Mirrors AccountsDashboard's PLStatement/BalanceSheet rendering:
                 // walks the literal tree (with breakers, sum nodes, dim filters),
                 // indents by tree depth, and rolls up via own + descendants.
-                const literal = statementType === "pl" ? plLiteral : bsLiteral;
+const literal = statementType === "pl" ? plLiteral : bsLiteral;
                 if (literal && literal.length > 0) {
-                  const rows = [];
-// Value resolver — uses descendant-aware rollup so sum codes (e.g. 11999)
-                  // pick up all postings that roll up to them via the chart's parentOf chain,
-                  // not just postings to the sum code itself (which is usually empty).
-const __sumCache = new Map();
+                  const ROW_H = 44;
+                  const BUFFER = 10;
+
+                  const __sumCache = new Map();
                   const __sumCmpCache = new Map();
                   const leafVal = (node, dimKey) => {
                     if (node.dims && node.dims.length > 0) {
@@ -3039,18 +3140,62 @@ const __sumCache = new Map();
                     return v;
                   };
 
-                  const renderNode = (node, depth, parentPath, secIdx) => {
-const rowKey = `litrow-${secIdx}-${parentPath}-${node.id}`;
+                  // PASS 1: build a flat list of descriptors for every visible row.
+                  // No JSX yet — just data. Cheap.
+                  const descriptors = [];
+                  const walkLit = (node, depth, parentPath, secIdx) => {
+                    const rowKey = `litrow-${secIdx}-${parentPath}-${node.id}`;
                     const hasKids = node.children && node.children.length > 0;
                     const expanded = expandedSet.has(rowKey) || (searchExpansionSet?.has(rowKey) ?? false);
+                    descriptors.push({ kind: "row", rowKey, node, depth, hasKids, expanded });
+                    if (expanded && hasKids) {
+                      node.children.forEach(c => walkLit(c, depth + 1, `${parentPath}-${node.id}`, secIdx));
+                    }
+                  };
+                  literal.forEach((section, secIdx) => {
+                    if (section.label) descriptors.push({ kind: "section", secIdx, section });
+                    section.nodes.forEach(n => walkLit(n, 0, "root", secIdx));
+                  });
+
+                  // PASS 2: window — only build JSX for visible slice + buffer.
+                  const totalRows = descriptors.length;
+                  const firstVisible = Math.max(0, Math.floor(scrollTop / ROW_H) - BUFFER);
+                  const lastVisible  = Math.min(totalRows, Math.ceil((scrollTop + bodyHeight) / ROW_H) + BUFFER);
+                  const topPad    = firstVisible * ROW_H;
+                  const bottomPad = (totalRows - lastVisible) * ROW_H;
+
+                  const out = [];
+                  if (topPad > 0) {
+                    out.push(<tr key="__top_pad" style={{ height: topPad }}><td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + 2} /></tr>);
+                  }
+
+                  const q = debouncedQuery.trim().toLowerCase();
+                  for (let i = firstVisible; i < lastVisible; i++) {
+                    const d = descriptors[i];
+                    if (d.kind === "section") {
+                      out.push(
+                        <tr key={`litsec-${d.secIdx}`}>
+                          <td className="sticky left-0 z-20 px-6 py-1.5" style={{ backgroundColor: d.section.color }}>
+                            <span className="uppercase tracking-widest" style={header3Style}>{d.section.label}</span>
+                          </td>
+                          {Array.from({ length: cmpVisible ? orderedDimCols.length * 4 : orderedDimCols.length + 1 }).map((_, j) => (
+                            <td key={j} style={{ backgroundColor: d.section.color }} />
+                          ))}
+                        </tr>
+                      );
+                      continue;
+                    }
+                    const { node, depth, hasKids, expanded, rowKey } = d;
                     const rowStyle = depth === 0 ? body1Style : body2Style;
-                    const rowTotal = orderedDimCols.reduce((s, d) => s + sumLitForDim(node, d.code ?? "__none__"), 0);
-                    const q = debouncedQuery.trim().toLowerCase();
+                    const rowTotal = orderedDimCols.reduce((s, dim) => s + sumLitForDim(node, dim.code ?? "__none__"), 0);
                     const isMatch = !!q && (String(node.code ?? "").toLowerCase().includes(q) || String(node.name ?? "").toLowerCase().includes(q));
-                    rows.push(
-                      <tr key={rowKey} className={`border-b border-gray-100 transition-colors ${isMatch ? "bg-[#fef3c7]" : "bg-white hover:bg-[#eef1fb]/60"}`}
+const rowAnim = tableJustLoaded && i < 25
+                      ? { animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(i, 25) * 35 + 50}ms both` }
+                      : null;
+                    out.push(
+                      <tr key={rowKey} className={`border-b border-gray-100 ${isMatch ? "bg-[#fef3c7]" : "bg-white hover:bg-[#eef1fb]/60"}`}
                           onClick={hasKids ? () => toggleExpand(rowKey) : undefined}
-                          style={{ cursor: hasKids ? "pointer" : "default" }}>
+                          style={{ cursor: hasKids ? "pointer" : "default", ...(rowAnim ?? {}) }}>
                         <td className={`py-2.5 sticky left-0 z-10 border-r border-gray-100 ${isMatch ? "bg-[#fef3c7]" : "bg-white"}`}
                             style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 300 }}>
                           <div className="flex items-center">
@@ -3059,56 +3204,38 @@ const rowKey = `litrow-${secIdx}-${parentPath}-${node.id}`;
                                   {expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
                                 </span>
                               : <span className="inline-block mr-2" style={{ width: 12 }} />}
-                           {node.code && <span className="flex-shrink-0 mr-2" style={subbody2Style}>{node.code}</span>}
+                            {node.code && <span className="flex-shrink-0 mr-2" style={subbody2Style}>{node.code}</span>}
                             <span className="truncate max-w-[280px]" style={rowStyle}>{node.name || node.code}</span>
                           </div>
                         </td>
 {orderedDimCols.map(dim => {
                           const dk = dim.code ?? "__none__";
                           const val = sumLitForDim(node, dk);
-                          if (!cmpVisible) return <DimAmountCell key={dk} value={val} typoStyle={rowStyle} />;
+                          if (!cmpVisible) return <DimAmountCell key={dk} value={val} typoStyle={rowStyle} animate={isAnimatingData} />;
                           const cmpVal = sumLitCmpForDim(node, dk);
                           const diff = val - cmpVal;
                           const pct = cmpVal !== 0 ? (diff / Math.abs(cmpVal)) * 100 : null;
                           const devColor = diff === 0 ? "#D1D5DB" : diff > 0 ? "#059669" : "#EF4444";
                           const fmt = (n) => Math.abs(n).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                          const cmpA = cmpRecentlyToggled ? { animation: `cmpCellIn 420ms cubic-bezier(0.4,0,0.2,1) 0ms forwards` } : undefined;
                           return (
                             <React.Fragment key={dk}>
-<DimAmountCell value={val} typoStyle={rowStyle} />
-                             <DimAmountCell value={cmpVal} typoStyle={rowStyle} bgColor="#fafbff" extraStyle={{ animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 0ms forwards` }} />
-                              <td className="px-2 py-2.5 text-center whitespace-nowrap tabular-nums text-xs font-bold" style={{ color: devColor, width: 110, background: "#f5f7ff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 40ms forwards` }}>
-                                {diff === 0 ? "—" : diff < 0 ? `(${fmt(diff)})` : fmt(diff)}
-                              </td>
-                              <td className="px-2 py-2.5 text-center whitespace-nowrap tabular-nums text-xs font-bold" style={{ color: devColor, width: 90, background: "#f0f3ff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 80ms forwards` }}>
-                                {pct === null ? "—" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}
-                              </td>
+                              <DimAmountCell value={val} typoStyle={rowStyle} animate={isAnimatingData} />
+<DimAmountCell value={cmpVal} typoStyle={rowStyle} animate={isAnimatingData} bgColor="#fafbff" extraStyle={cmpA} />
+                              <DimDiffCell value={diff} animate={isAnimatingData} color={devColor} width={110} bgColor="#f5f7ff" extraStyle={cmpRecentlyToggled ? { animation: `cmpCellIn 420ms cubic-bezier(0.4,0,0.2,1) 40ms forwards` } : undefined} />
+                              <DimPctCell value={pct} animate={isAnimatingData} color={devColor} width={90} bgColor="#f0f3ff" extraStyle={cmpRecentlyToggled ? { animation: `cmpCellIn 420ms cubic-bezier(0.4,0,0.2,1) 80ms forwards` } : undefined} />
                             </React.Fragment>
                           );
                         })}
-{!cmpVisible && <DimAmountCell value={rowTotal} typoStyle={rowStyle} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
+                        {!cmpVisible && <DimAmountCell value={rowTotal} typoStyle={rowStyle} animate={isAnimatingData} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
                       </tr>
                     );
-                    if (expanded && hasKids) {
-                      node.children.forEach(c => renderNode(c, depth + 1, `${parentPath}-${node.id}`, secIdx));
-                    }
-                  };
+                  }
 
-                  literal.forEach((section, secIdx) => {
-                    if (section.label) {
-                      rows.push(
-                        <tr key={`litsec-${secIdx}`}>
-                          <td className="sticky left-0 z-20 px-6 py-1.5" style={{ backgroundColor: section.color }}>
-                            <span className="uppercase tracking-widest" style={header3Style}>{section.label}</span>
-                          </td>
-{Array.from({ length: cmpVisible ? orderedDimCols.length * 4 : orderedDimCols.length + 1 }).map((_, i) => (
-                            <td key={i} style={{ backgroundColor: section.color }} />
-                          ))}
-                        </tr>
-                      );
-                    }
-                    section.nodes.forEach(n => renderNode(n, 0, "root", secIdx));
-                  });
-                  return rows;
+                  if (bottomPad > 0) {
+                    out.push(<tr key="__bot_pad" style={{ height: bottomPad }}><td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + 2} /></tr>);
+                  }
+                  return out;
                 }
 
                 // ── DEFAULT FLAT RENDER PATH (no literal) ───────────────────
@@ -3146,7 +3273,8 @@ const levelByCode = (hasCustomMapping && activeMapping?.rows)
                         header2Style={header2Style} colors={colors}
                         excludeCodes={flatCodes} rowIndex={idx}
                         searchQuery={debouncedQuery} searchExpansionSet={searchExpansionSet}
-                        valCache={valCache} cmpCache={cmpCache} />
+                        valCache={valCache} cmpCache={cmpCache}
+                        isAnimatingData={isAnimatingData} tableJustLoaded={tableJustLoaded} cmpRecentlyToggled={cmpRecentlyToggled} />
                     </React.Fragment>
                   );
                 });
