@@ -947,17 +947,17 @@ style={{
 
         {/* Divider */}
         {titleSuffix && (<><SoftDivider /><div className="px-3 flex items-center"><span className="text-sm font-bold" style={{ color: colors.primary, opacity: 0.65 }}>{titleSuffix}</span></div></>)}
-        {(tabs || filters.length > 0) && <SoftDivider />}
+{((tabs?.length > 0) || filters.length > 0) && <SoftDivider />}
 
         {/* Tabs */}
-        {tabs && (
+        {tabs?.length > 0 && (
           <div className="flex items-center px-3">
             <TabSwitcher tabs={tabs} activeTab={activeTab} onChange={onTabChange} />
           </div>
         )}
 
-        {/* Divider */}
-        {tabs && filters.length > 0 && <SoftDivider />}
+{/* Divider */}
+        {tabs?.length > 0 && filters.length > 0 && <SoftDivider />}
 
 {/* Filters — primary always visible; secondary revealed on More filters hover */}
 {filters.length > 0 && (

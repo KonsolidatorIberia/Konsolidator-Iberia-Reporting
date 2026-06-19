@@ -53,8 +53,8 @@ const NAV_KEYS = [
 ];
 
 
-const W_OPEN     = "10vw";
-const W_CLOSED   = "4.5vw";
+const W_OPEN     = "clamp(190px, 11vw, 230px)";
+const W_CLOSED   = "clamp(84px,  5vw, 84px)";
 const TRANSITION = "350ms cubic-bezier(0.25,0.1,0.25,1)";
 
 export default function Sidebar({ activePage, onNavigate, user, height = "100vh" }) {
@@ -170,11 +170,11 @@ const handleNavigate = (key) => {
                   onClick={() => !hasChildren ? handleNavigate(item.key) : undefined}
                   onMouseEnter={(e) => { if (!isActiveParent) { e.currentTarget.style.backgroundColor = `${colors.primary}10`; e.currentTarget.style.color = colors.primary; } }}
                   onMouseLeave={(e) => { if (!isActiveParent) { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = body1Style?.color ?? "#2f3138"; } }}
-                  className="w-full flex items-center py-2.5 transition-all duration-200"
+className="w-full flex items-center py-2.5 transition-all duration-200"
                   style={{
-                    justifyContent: "flex-start",
-                    paddingLeft: "1.25rem",
-                    paddingRight: "1rem",
+                    justifyContent: isOpen ? "flex-start" : "center",
+                    paddingLeft: isOpen ? "1.25rem" : 0,
+                    paddingRight: isOpen ? "1rem" : 0,
                     color: isActiveParent ? colors.primary : (body1Style?.color ?? "#2f3138"),
                     backgroundColor: "transparent",
                   }}
@@ -185,9 +185,9 @@ const handleNavigate = (key) => {
                     style={{
                       ...body1Style,
                       color: isActiveParent ? colors.primary : body1Style?.color,
-                      maxWidth:   isOpen ? 140 : 0,
+maxWidth:   isOpen ? 140 : 0,
                       opacity:    isOpen ? 1 : 0,
-                      marginLeft: "0.75rem",
+                      marginLeft: isOpen ? "0.75rem" : 0,
                       transition: `max-width ${TRANSITION}, opacity ${TRANSITION}`,
                     }}
                   >
@@ -244,11 +244,11 @@ const handleNavigate = (key) => {
                   onClick={() => handleNavigate("settings")}
                   onMouseEnter={(e) => { if (!isActive) { e.currentTarget.style.backgroundColor = `${colors.primary}10`; e.currentTarget.style.color = colors.primary; } }}
                   onMouseLeave={(e) => { if (!isActive) { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = body1Style?.color ?? "#2f3138"; } }}
-                  className="w-full flex items-center py-2.5 transition-all duration-200"
+className="w-full flex items-center py-2.5 transition-all duration-200"
                   style={{
-                    justifyContent: "flex-start",
-                    paddingLeft: "1.25rem",
-                    paddingRight: "1rem",
+                    justifyContent: isOpen ? "flex-start" : "center",
+                    paddingLeft: isOpen ? "1.25rem" : 0,
+                    paddingRight: isOpen ? "1rem" : 0,
                     color: isActive ? colors.primary : (body1Style?.color ?? "#2f3138"),
                     backgroundColor: "transparent",
                   }}

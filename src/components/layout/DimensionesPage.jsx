@@ -46,21 +46,28 @@ if (typeof window !== "undefined") {
 function useCountUp(target, animate = true, duration = 900) {
   // Track display via state (for re-renders) AND via ref (for accurate `from`
   // value inside the effect — closure capture would otherwise be stale).
-  const [display, setDisplay] = useState(target);
+const [display, setDisplay] = useState(target);
   const displayRef = useRef(target);
-  displayRef.current = display;
   const rafRef = useRef(null);
 
-  // Effect reacts purely to `target` changes — the `animate` flag is kept in
+  useEffect(() => {
+    displayRef.current = display;
+  }, [display]);
+
+  // Effect reacts to `target` changes; `animate=false` snaps without tweening.
   // the signature for backward compat with existing call sites, but doesn't
   // gate the animation. Windowing already bounds how many cells animate
   // simultaneously, so we don't need this flag to throttle.
-  useEffect(() => {
+useEffect(() => {
     cancelAnimationFrame(rafRef.current);
     const from = displayRef.current;
     const to = Number(target) || 0;
     if (from === to) return;                       // mount or no-op
-    if (__globalResizing) { setDisplay(to); return; } // skip during sidebar resize
+    if (!animate || __globalResizing) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setDisplay(to); // intentional: snap to target without tweening
+      return;
+    }
     let start = null;
     const tick = (ts) => {
       if (start === null) start = ts;
@@ -71,9 +78,8 @@ function useCountUp(target, animate = true, duration = 900) {
       if (t < 1) rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafRef.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target, duration]);
+return () => cancelAnimationFrame(rafRef.current);
+  }, [target, animate, duration]);
 
   return display;
 }
@@ -146,6 +152,7 @@ const DimPctCell = React.memo(function DimPctCell({ value, animate, color, width
 });
 import { useTypo, useSettings } from "./SettingsContext";
 import { useLatestPeriod } from "./LatestPeriodContext.jsx";
+import { t } from "../../lib/i18n";
 import PageHeader, { FilterPill as HeaderFilterPill, MultiFilterPill } from "./PageHeader.jsx";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
@@ -265,46 +272,36 @@ async function loadKpiLibrary() {
 // Hook: load standard mapping + KPI library reactively
 function useKpiResolver(groupAccounts) {
   const standard = useMemo(() => detectStandard(groupAccounts), [groupAccounts]);
-  const [state, setState] = useState({
+const [loadedStandard, setLoadedStandard] = useState(null);
+  const [loaded, setLoaded] = useState({
     kpiList: [],
     ccTagToCodes: new Map(),
     resolveCcTag: () => null,
-    standard: null,
-    ready: false,
   });
 
-  useEffect(() => {
+useEffect(() => {
+    if (!standard) return; // initial state already represents "no standard"
     let cancelled = false;
-    if (!standard) { setState(s => ({ ...s, ready: true })); return; }
-    setState(s => ({ ...s, ready: false }));
     Promise.all([loadStandardMapping(standard, groupAccounts), loadKpiLibrary()])
       .then(([mapping, kpiList]) => {
         if (cancelled) return;
-        setState({
+        setLoaded({
           kpiList,
           ccTagToCodes: mapping?.ccTagToCodes ?? new Map(),
           resolveCcTag: mapping?.resolveCcTag ?? (() => null),
-          standard,
-          ready: true,
         });
+        setLoadedStandard(standard);
       })
       .catch(e => {
         if (cancelled) return;
         console.error("[DimResolver] load failed:", e);
-        setState(s => ({ ...s, ready: true }));
+        setLoadedStandard(standard);
       });
     return () => { cancelled = true; };
   }, [standard, groupAccounts]);
 
-  return state;
-}
-
-// Pivot helpers
-function pivotSum(pivot, codes) {
-  if (!codes || codes.length === 0) return 0;
-  let total = 0;
-  codes.forEach(code => { total += (pivot.get(code) ?? 0); });
-  return total;
+  const ready = !standard || loadedStandard === standard;
+  return { ...loaded, standard, ready };
 }
 
 // Evaluator that understands cc/ref/op/fn/manual/text formula nodes.
@@ -531,12 +528,15 @@ const MONTHS = [
 
 const YEARS = Array.from({ length: 6 }, (_, i) => new Date().getFullYear() - i);
 
-function fmtAmt(n) {
-  if (n == null || n === 0) return "—";
-  const num = typeof n === "number" ? n : Number(n);
-  if (isNaN(num) || num === 0) return "—";
-  return num.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
+const C = {
+  primary:   "FF1A2F8A",
+  highlight: "FFEEF1FB",
+  white:     "FFFFFFFF",
+  band1:     "FFFFFFFF",
+  band2:     "FFF8F9FF",
+  gray400:   "FF9CA3AF",
+  red:       "FFDC2626",
+};
 
 // Parses the API's Dimensions field which is a string like "Group:Code" or
 // "Group1:Code1||Group2:Code2" when a transaction is tagged with multiple dimensions.
@@ -823,6 +823,8 @@ if (prev.valCache !== next.valCache) return false;
 
 /* ── Accounts Tab ─────────────────────────────────────────── */
 function AccountsTab({ data }) {
+  const { locale } = useSettings();
+  const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
   const [search, setSearch] = useState("");
   const cols = data.length > 0 ? Object.keys(data[0]) : [];
   const filtered = search.trim()
@@ -832,12 +834,12 @@ function AccountsTab({ data }) {
   return (
     <div className="flex flex-col gap-3 flex-1 min-h-0">
       <div className="flex items-center gap-3 flex-shrink-0">
-        <span className="text-xs font-bold text-[#1a2f8a] bg-[#eef1fb] px-3 py-1.5 rounded-xl">{data.length} records</span>
-        {search && <span className="text-xs font-bold text-amber-600 bg-amber-50 px-3 py-1.5 rounded-xl">{filtered.length} matching</span>}
+<span className="text-xs font-bold text-[#1a2f8a] bg-[#eef1fb] px-3 py-1.5 rounded-xl">{data.length} {T("table_records")}</span>
+        {search && <span className="text-xs font-bold text-amber-600 bg-amber-50 px-3 py-1.5 rounded-xl">{filtered.length} {T("table_matching")}</span>}
         <div className="ml-auto flex items-center gap-2 bg-white border border-gray-100 rounded-xl px-3 py-2 shadow-sm">
           <Search size={13} className="text-gray-400" />
-          <input type="text" value={search} onChange={e => setSearch(e.target.value)}
-            placeholder="Search…"
+<input type="text" value={search} onChange={e => setSearch(e.target.value)}
+            placeholder={T("search_placeholder")}
             className="text-xs outline-none text-gray-700 w-40 bg-transparent placeholder:text-gray-300" />
           {search && <button onClick={() => setSearch("")}><X size={12} className="text-gray-400" /></button>}
         </div>
@@ -862,7 +864,7 @@ function AccountsTab({ data }) {
                   {cols.map((col, j) => {
                     const val = row[col];
                     if (val === null || val === undefined || val === "") return <td key={j} className="px-4 py-2.5 text-gray-200 italic">—</td>;
-                    if (typeof val === "boolean") return <td key={j} className={`px-4 py-2.5 font-semibold ${val ? "text-emerald-600" : "text-gray-400"}`}>{val ? "Yes" : "No"}</td>;
+                    if (typeof val === "boolean") return <td key={j} className={`px-4 py-2.5 font-semibold ${val ? "text-emerald-600" : "text-gray-400"}`}>{val ? T("cell_yes") : T("cell_no")}</td>;
                     if (typeof val === "number") return <td key={j} className="px-4 py-2.5 font-mono text-center">{val.toLocaleString()}</td>;
                     if (typeof val === "string" && val.match(/^\d{4}-\d{2}-\d{2}T/)) return <td key={j} className="px-4 py-2.5 font-mono text-gray-500 whitespace-nowrap">{new Date(val).toLocaleDateString()}</td>;
                     return <td key={j} className="px-4 py-2.5 text-gray-700 whitespace-nowrap">{String(val)}</td>;
@@ -880,14 +882,15 @@ function AccountsTab({ data }) {
 
 
 /* ── Pivot Tab ────────────────────────────────────────────── */
-function PivotTab({ data, dimensions, groupAccounts = [], onShowAccounts, selGroups = new Set(), selDims = new Set(), onSelGroupsChange = () => {}, onSelDimsChange = () => {}, dimGroups = [], compareMode, statementType = "pl", externalViewMode = null,sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false }) {
+function PivotTab({ data, dimensions, groupAccounts = [], selGroups = new Set(), selDims = new Set(), compareMode, statementType = "pl", externalViewMode = null, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false }) {
 
 const header2Style = useTypo("header2");
   const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
   const header3Style = useTypo("header3");
   const subbody2Style = useTypo("subbody2");
-  const { colors } = useSettings();
+const { colors, locale } = useSettings();
+  const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
 
 // Account header search — magnifier toggles to input, matches highlight in yellow.
   const [searchActive, setSearchActive] = useState(false);
@@ -897,21 +900,27 @@ const header2Style = useTypo("header2");
 
   // Summary/Detailed toggle (only used in non-compare mode). statementType
   // is lifted to DimensionesPage to drive PageHeader tabs.
-  const [summaryMode, setSummaryMode] = useState(true);
-  const [cmpVisible, setCmpVisible] = useState(false);
+const [summaryMode, setSummaryMode] = useState(true);
+  // `cmpExiting` is the only stored state — `cmpVisible` is derived.
+  // Trigger logic runs at render (adjust-state-on-prop-change); the actual
+  // exit timer lives in an effect keyed off `cmpExiting`.
   const [cmpExiting, setCmpExiting] = useState(false);
+  const [prevCompareMode, setPrevCompareMode] = useState(compareMode);
+  if (prevCompareMode !== compareMode) {
+    setPrevCompareMode(compareMode);
+    if (compareMode) {
+      if (cmpExiting) setCmpExiting(false); // re-entered before exit finished
+    } else {
+      setCmpExiting(true); // start exit animation
+    }
+  }
+  const cmpVisible = compareMode || cmpExiting;
 
   useEffect(() => {
-    if (compareMode) {
-      setCmpExiting(false);
-      setCmpVisible(true);
-    } else if (cmpVisible) {
-      setCmpExiting(true);
-      const t = setTimeout(() => { setCmpVisible(false); setCmpExiting(false); }, 450);
-      return () => clearTimeout(t);
-    }
-  }, [compareMode]);
-
+    if (!cmpExiting) return;
+    const t = setTimeout(() => setCmpExiting(false), 450);
+    return () => clearTimeout(t);
+  }, [cmpExiting]);
   const headerRef = useRef(null);
   const bodyRef   = useRef(null);
   const onBodyScroll   = useCallback(() => { if (headerRef.current) headerRef.current.scrollLeft = bodyRef.current.scrollLeft; }, []);
@@ -955,17 +964,17 @@ const header2Style = useTypo("header2");
     return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); };
   }, []);
 
-  const toggleExpand = useCallback(code => {
+const toggleExpand = useCallback(code => {
     setExpandedSet(prev => {
       const n = new Set(prev);
       if (n.has(code)) n.delete(code); else n.add(code);
       return n;
     });
-  }, []);
+  }, [setExpandedSet]);
 
 // Build pivot from data
-  const { tree, accountMap: allAccountMap, dimCols, pivot } = useMemo(() => {
-    if (!data.length) return { tree: [], accountMap: new Map(), dimCols: [], pivot: new Map() };
+const { accountMap: allAccountMap, dimCols, pivot } = useMemo(() => {
+    if (!data.length) return { accountMap: new Map(), dimCols: [], pivot: new Map() };
 
     // Filter rows by selected group: keep rows that have AT LEAST ONE dim
     // in the selected group, OR rows with no dim at all (totals).
@@ -1040,8 +1049,6 @@ const acType = a.AccountType ?? a.accountType ?? "";
       dataAccountInfo.forEach((info, code) => accountMap.set(code, info));
     }
 
-    const tree = buildTree([...accountMap.values()]);
-
 // Unique dim columns — derived from the journal's Dimensions field.
     // When a Dim Group is selected, we restrict columns to that group; otherwise
     // we show ALL groups together (each dim code as its own column).
@@ -1056,7 +1063,7 @@ const acType = a.AccountType ?? a.accountType ?? "";
     rows.forEach(r => {
       const pairs = parseDimensions(r.Dimensions);
       if (pairs.length === 0) {
-        if (!dimMap.has("__none__")) dimMap.set("__none__", { code: null, name: "No Dimension", group: null });
+        if (!dimMap.has("__none__")) dimMap.set("__none__", { code: null, name: T("no_dimension"), group: null });
         return;
       }
       for (const [group, code] of pairs) {
@@ -1077,8 +1084,7 @@ const acType = a.AccountType ?? a.accountType ?? "";
     rows.forEach(r => {
       const ac  = r.AccountCode ?? r.accountCode ?? "";
       const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? r.AmountPeriod ?? r.amountPeriod ?? 0);
-const lacCheck = r.LocalAccountCode ?? r.localAccountCode ?? "";
-      const acType = r.AccountType ?? r.accountType ?? "";
+const acType = r.AccountType ?? r.accountType ?? "";
       if (!ac) return;
      // Keep all rows including leaf-level postings — descendants roll up via parentOf
 const targetType = statementType === "bs" ? "B/S" : "P/L";
@@ -1099,8 +1105,8 @@ const targetType = statementType === "bs" ? "B/S" : "P/L";
       }
     });
 
-return { tree, accountMap, dimCols, pivot };
-}, [data, selGroups, selDims, groupAccounts, statementType]);
+return { accountMap, dimCols, pivot };
+}, [data, selGroups, selDims, groupAccounts, statementType, dimensions, T]);
 
 // Row slide-in fires only when the table itself appears: first time data lands,
 // or when the user switches between PL and BS. Filter changes / view-mode
@@ -1125,11 +1131,17 @@ useEffect(() => {
   return () => clearTimeout(t);
 }, [statementType]);
 
-useEffect(() => {
+// Flip the flag at render on cmpVisible change, then clear it in an effect.
+const [prevCmpVisibleForToggle, setPrevCmpVisibleForToggle] = useState(cmpVisible);
+if (prevCmpVisibleForToggle !== cmpVisible) {
+  setPrevCmpVisibleForToggle(cmpVisible);
   setCmpRecentlyToggled(true);
+}
+useEffect(() => {
+  if (!cmpRecentlyToggled) return;
   const t = setTimeout(() => setCmpRecentlyToggled(false), 500);
   return () => clearTimeout(t);
-}, [cmpVisible]);
+}, [cmpRecentlyToggled]);
 
 const [colOrder, setColOrder] = useState(null); // null = use natural order
   const [draggingCol, setDraggingCol] = useState(null);
@@ -1141,9 +1153,17 @@ const [colOrder, setColOrder] = useState(null); // null = use natural order
     return colOrder.map(k => map.get(k)).filter(Boolean);
   }, [dimCols, colOrder]);
 
-// Reset col order only when the actual set of dim codes changes, not on compare toggle
+// Reset col order only when the actual set of dim codes changes, not on compare toggle.
+  // Done during render (React's recommended pattern for "adjust state on prop change")
+  // rather than in an effect — avoids an extra render cycle.
   const dimColKeys = useMemo(() => dimCols.map(d => d.code ?? "__none__").join(","), [dimCols]);
-  useEffect(() => { setColOrder(null); }, [dimColKeys]); const expandAll = useCallback(() => {
+  const [prevDimColKeys, setPrevDimColKeys] = useState(dimColKeys);
+  if (prevDimColKeys !== dimColKeys) {
+    setPrevDimColKeys(dimColKeys);
+    setColOrder(null);
+  }
+
+  const expandAll = useCallback(() => {
     const literal = statementType === "pl" ? plLiteral : bsLiteral;
     if (literal && literal.length > 0) {
       const keys = [];
@@ -1159,10 +1179,10 @@ const [colOrder, setColOrder] = useState(null); // null = use natural order
       setExpandedSet(new Set(keys));
       return;
     }
-    setExpandedSet(new Set([...allAccountMap.keys()]));
-  }, [allAccountMap, plLiteral, bsLiteral, statementType]);
+setExpandedSet(new Set([...allAccountMap.keys()]));
+  }, [allAccountMap, plLiteral, bsLiteral, statementType, setExpandedSet]);
 
-  const collapseAll = useCallback(() => setExpandedSet(new Set()), []);
+const collapseAll = useCallback(() => setExpandedSet(new Set()), [setExpandedSet]);
 
 const sign = statementType === "pl" ? -1 : 1;
 
@@ -1177,15 +1197,15 @@ const [cmp2Source, setCmp2Source]       = useState(masterSource);
   const [cmp2Company, setCmp2Company]     = useState(masterCompany);
   const [cmp2SelGroups, setCmp2SelGroups] = useState(new Set());
   const [cmp2SelDims,   setCmp2SelDims]   = useState(new Set());
-  const [cmp3Source, setCmp3Source]       = useState(masterSource);
-  const [cmp3Year, setCmp3Year]           = useState(masterYear);
-  const [cmp3Month, setCmp3Month]         = useState(masterMonth);
-  const [cmp3Structure, setCmp3Structure] = useState(masterStructure);
-  const [cmp3Company, setCmp3Company]     = useState(masterCompany);
+const [cmp3Source]    = useState(masterSource);
+  const [cmp3Year]      = useState(masterYear);
+  const [cmp3Month]     = useState(masterMonth);
+  const [cmp3Structure] = useState(masterStructure);
+  const [cmp3Company]   = useState(masterCompany);
 
 const [line, setLine] = useState("all");
 const viewMode = externalViewMode ?? "monthly";
-const [prevPivot, setPrevPivot] = useState(new Map());
+const [prevPivot] = useState(new Map());
   const [prevPivotMain, setPrevPivotMain] = useState(new Map());
   const [prevPivot2, setPrevPivot2] = useState(new Map());
   const [prevPivot3, setPrevPivot3] = useState(new Map());
@@ -1200,7 +1220,9 @@ const getVal = useCallback((ac, dk) => {
 // Shared rollup cache. New Map() when underlying data changes; otherwise
   // the same Map is reused across every DimensionRow + expand/collapse, so
   // walking the BS tree only happens once per node per render cycle.
-  const valCache = useMemo(() => new Map(), [getVal]);
+ // `getVal` referenced solely as cache-invalidation key — when its identity
+  // changes (data/sign/viewMode shifts), the cache resets.
+  const valCache = useMemo(() => { void getVal; return new Map(); }, [getVal]);
 
   const [cmp2Data, setCmp2Data] = useState([]);
   const [cmp3Data, setCmp3Data] = useState([]);
@@ -1238,7 +1260,12 @@ const acType = r.AccountType ?? r.accountType ?? "";
 const pivot2 = useMemo(() => buildPivot(cmp2Data, cmp2SelGroups, cmp2SelDims), [cmp2Data, cmp2SelGroups, cmp2SelDims, buildPivot]);
   const pivot3 = useMemo(() => buildPivot(cmp3Data), [cmp3Data, buildPivot]);
 
-  const cmpCache = useMemo(() => new Map(), [pivot2, prevPivot2, sign, viewMode]);
+// Same cache-invalidation pattern as valCache — deps are referenced via
+  // `void` so ESLint sees them as used.
+  const cmpCache = useMemo(() => {
+    void pivot2; void prevPivot2; void sign; void viewMode;
+    return new Map();
+  }, [pivot2, prevPivot2, sign, viewMode]);
 
 
 
@@ -1310,7 +1337,7 @@ const cmp2DimGroups = useMemo(() => {
 
   const cmpSources    = [...new Set(sources.map(s => typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
   const cmpYears      = YEARS.map(y => ({ value: String(y), label: String(y) }));
-  const cmpMonths     = MONTHS.map(m => ({ value: String(m.value), label: m.label }));
+  const cmpMonths     = MONTHS.map(m => ({ value: String(m.value), label: T(`month_${m.value}`) }));
   const cmpStructures = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
 const cmpCompanies  = companies.length > 0 && typeof companies[0] === "object"
     ? companies.map(c => ({ value: c.companyShortName ?? c.CompanyShortName ?? String(c), label: c.CompanyLegalName ?? c.companyLegalName ?? c.companyShortName ?? c.CompanyShortName ?? String(c) })).filter(o => o.value)
@@ -1368,22 +1395,22 @@ const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes,
     return opts;
  }, [kpiList, ccTagToCodes, resolveCcTag, dimCols, viewMode, pivot, prevPivot, pivot2, prevPivot2, pivot3, prevPivot3]);
 
-// If the selected line was filtered out (no data anymore), reset to "all"
-  useEffect(() => {
-    if (line !== "all" && !lineOptions.some(o => o.value === line)) {
-      setLine("all");
-    }
-  }, [lineOptions, line]);
+// If the selected line was filtered out (no data anymore), reset to "all".
+  // Done during render — React's recommended pattern for adjusting state on
+  // derived-value changes (no extra render, no lint exception needed).
+  if (line !== "all" && !lineOptions.some(o => o.value === line)) {
+    setLine("all");
+  }
 
   // ─────────────────────────────────────────────────────────
   // Filter & order accounts by accountType + Supabase mapping
   // (Hooks must run unconditionally — placed BEFORE early return)
   // ─────────────────────────────────────────────────────────
 const activeMapping = statementType === "pl" ? plMapping : bsMapping;
-  const targetAccountType = statementType === "pl" ? ["P/L", "DIS"] : ["B/S"];
 
 const displayedTree = useMemo(() => {
     if (!data.length) return [];
+    const targetAccountType = statementType === "pl" ? ["P/L", "DIS"] : ["B/S"];
 
     // Build the FULL chart-of-accounts hierarchy from groupAccounts (filtered
     // to this statement type). Previously this only included accounts that had
@@ -1481,12 +1508,12 @@ if (isCustomMapping) {
         .map(([code]) => treeIndex.get(code))
         .filter(Boolean);
     }
-    return displayedTree;
-  }, [activeMapping, isCustomMapping, summaryMode, treeIndex, displayedTree]);
+return displayedTree;
+  }, [activeMapping, isCustomMapping, summaryMode, treeIndex, displayedTree, displayedTreeIndex, groupAccounts]);
 
-  const palette = [colors.primary, colors.secondary, colors.tertiary];
-  const dividerMap = useMemo(() => {
+const dividerMap = useMemo(() => {
     if (!activeMapping?.rows || !activeMapping?.sections) return {};
+    const palette = [colors.primary, colors.secondary, colors.tertiary];
     const seen = new Set();
     const out = {};
     let i = 0;
@@ -1540,7 +1567,7 @@ return out;
     return result;
   }, [debouncedQuery, plLiteral, bsLiteral, statementType, orderedRows]);
 
-const { childrenByParent, parentOf } = useMemo(() => {
+const { parentOf } = useMemo(() => {
   const childrenByParent = new Map();
   const parentOf = new Map();
   // Build from both groupAccounts AND rawData rows so posting codes are included
@@ -1620,34 +1647,18 @@ useEffect(() => {
   console.log("[debug] pivot keys with dims:", [...pivot.entries()].filter(([, m]) => m.size > 1).slice(0,5).map(([k,m]) => [k, [...m.keys()]]));
 }, [activeMapping, parentOf, pivot]);
 
-
-
-// ── Export helpers ──────────────────────────────────────────────────────
-  const C = {
-    primary:   "FF1A2F8A",
-    highlight: "FFEEF1FB",
-    white:     "FFFFFFFF",
-    band1:     "FFFFFFFF",
-    band2:     "FFF8F9FF",
-    gray400:   "FF9CA3AF",
-    red:       "FFDC2626",
-  };
-  const toArgb = (hex) => "FF" + String(hex ?? "#1a2f8a").replace("#", "").toUpperCase().padStart(6, "0");
-  const filterStr = [masterSource, masterStructure, masterYear && masterMonth
-    ? `${MONTHS[parseInt(masterMonth) - 1]?.label ?? masterMonth} ${masterYear}` : ""].filter(Boolean).join(" · ");
-
 const handleExportXlsx = useCallback(async (opts = {}) => {
     const includePL = opts.statements?.pl ?? (statementType === "pl");
     const includeBS = opts.statements?.bs ?? (statementType === "bs");
-    if (!includePL && !includeBS) { alert("Select at least one statement (P&L or B/S)."); return; }
+if (!includePL && !includeBS) { alert(T("export_select_statement_alert")); return; }
     const drilldown = opts.drilldown !== false;
 
     const wb = new ExcelJS.Workbook();
     wb.creator = "Konsolidator";
 
-    const periodLabel = (y, m) => {
-      const mm = parseInt(m); const lbl = MONTHS[mm - 1]?.label ?? m;
-      return `${lbl} ${y}`;
+const periodLabel = (y, m) => {
+      const mm = parseInt(m);
+      return `${T(`month_${mm}`)} ${y}`;
     };
     const toArgbHex = (hex) => "FF" + String(hex ?? "#1a2f8a").replace("#", "").toUpperCase().padStart(6, "0");
 
@@ -1748,22 +1759,22 @@ const sumTreeForDim = (n, dk, depth = 0) => {
       const subColsPerDim = sheetCompare ? 4 : 1;
       const totalCols = 1 + visibleDims.length * subColsPerDim + (showTotals ? 1 : 0);
 
-      const subLines = [];
+const subLines = [];
       if (masterYear && masterMonth) {
         const seg = [`📅 ${periodLabel(masterYear, masterMonth)}`];
-        if (masterSource)    seg.push(`Source: ${masterSource}`);
-        if (masterStructure) seg.push(`Structure: ${masterStructure}`);
-        if (masterCompany)   seg.push(`Company: ${masterCompany}`);
+        if (masterSource)    seg.push(`${T("file_field_source")}: ${masterSource}`);
+        if (masterStructure) seg.push(`${T("file_field_structure")}: ${masterStructure}`);
+        if (masterCompany)   seg.push(`${T("file_field_company")}: ${masterCompany}`);
         subLines.push(seg.join("    ·    "));
       }
-      const viewLevelLabel = viewLevel === "summary" ? "Summary" : viewLevel === "detailed" ? "Detailed" : "Mapped";
-      subLines.push(`Statement: ${stType.toUpperCase()}    ·    Level: ${viewLevelLabel}    ·    View: ${sheetView === "ytd" ? "YTD" : "Monthly"}${sheetCompare ? "    ·    Compare ON" : ""}${!isActive ? "    ·    (YTD only — switch tab for monthly/compare)" : ""}`);
-      subLines.push(`Dim Groups: ${selGroups.size > 0 ? [...selGroups].join(", ") : "All"}    ·    Dims: ${selDims.size > 0 ? [...selDims].join(", ") : "All"}`);
+      const viewLevelLabel = viewLevel === "summary" ? T("file_level_summary") : viewLevel === "detailed" ? T("file_level_detailed") : T("file_level_mapped");
+      subLines.push(`${T("file_field_statement")}: ${stType.toUpperCase()}    ·    ${T("file_field_level")}: ${viewLevelLabel}    ·    ${T("file_field_view")}: ${sheetView === "ytd" ? T("mode_ytd") : T("mode_monthly")}${sheetCompare ? `    ·    ${T("file_compare_on")}` : ""}${!isActive ? `    ·    ${T("file_compare_off_note")}` : ""}`);
+      subLines.push(`${T("file_field_dim_groups")}: ${selGroups.size > 0 ? [...selGroups].join(", ") : T("all")}    ·    ${T("file_field_dims")}: ${selDims.size > 0 ? [...selDims].join(", ") : T("all")}`);
       if (sheetCompare && cmp2Year && cmp2Month) {
-        const seg = [`🆚 vs ${periodLabel(cmp2Year, cmp2Month)}`];
-        if (cmp2Source)    seg.push(`Source: ${cmp2Source}`);
-        if (cmp2Structure) seg.push(`Structure: ${cmp2Structure}`);
-        if (cmp2Company)   seg.push(`Company: ${cmp2Company}`);
+        const seg = [`🆚 ${T("file_vs_prefix")} ${periodLabel(cmp2Year, cmp2Month)}`];
+        if (cmp2Source)    seg.push(`${T("file_field_source")}: ${cmp2Source}`);
+        if (cmp2Structure) seg.push(`${T("file_field_structure")}: ${cmp2Structure}`);
+        if (cmp2Company)   seg.push(`${T("file_field_company")}: ${cmp2Company}`);
         subLines.push(seg.join("    ·    "));
       }
 
@@ -1773,9 +1784,9 @@ const sumTreeForDim = (n, dk, depth = 0) => {
         properties: { outlineLevelRow: 1, summaryBelow: false },
       });
 
-      ws.mergeCells(1, 1, 1, totalCols);
+ws.mergeCells(1, 1, 1, totalCols);
       const titleCell = ws.getCell(1, 1);
-      titleCell.value = `Dimensions — ${stType === "pl" ? "P&L" : "Balance Sheet"}`;
+      titleCell.value = stType === "pl" ? T("file_dimensions_pl") : T("file_dimensions_bs");
       titleCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
       titleCell.font = { name: "Calibri", size: 16, bold: true, color: { argb: C.white } };
       titleCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
@@ -1800,8 +1811,8 @@ const sumTreeForDim = (n, dk, depth = 0) => {
         const r1 = curRow, r2 = curRow + 1;
         const sup = ws.getRow(r1); sup.height = 22;
         const sub = ws.getRow(r2); sub.height = 18;
-        const acc = sup.getCell(1);
-        acc.value = "Account";
+const acc = sup.getCell(1);
+        acc.value = T("file_col_account");
         acc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
         acc.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
         acc.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
@@ -1814,7 +1825,7 @@ const sumTreeForDim = (n, dk, depth = 0) => {
           sCell.font = { name: "Calibri", size: 11, bold: true, color: { argb: C.white } };
           sCell.alignment = { vertical: "middle", horizontal: "center" };
           ws.mergeCells(r1, startCol, r1, startCol + 3);
-          ["A", "Σ CMP", "Δ AMT", "Δ %"].forEach((lbl, j) => {
+          [T("file_col_a"), T("file_col_sigma_cmp"), T("file_col_delta_amt"), T("file_col_delta_pct")].forEach((lbl, j) => {
             const cc = sub.getCell(startCol + j);
             cc.value = lbl;
             cc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: j === 1 ? "FFCF305D" : (j >= 2 ? "FF13225C" : C.primary) } };
@@ -1825,8 +1836,8 @@ const sumTreeForDim = (n, dk, depth = 0) => {
         curRow = r2 + 1;
       } else {
         const hRow = ws.getRow(curRow); hRow.height = 24;
-        const headers = ["Account", ...visibleDims.map(d => d.name ?? d.code ?? "—")];
-        if (showTotals) headers.push("TOTAL");
+const headers = [T("file_col_account"), ...visibleDims.map(d => d.name ?? d.code ?? "—")];
+        if (showTotals) headers.push(T("file_col_total"));
         headers.forEach((h, i) => {
           const c = hRow.getCell(i + 1);
           c.value = h;
@@ -2109,9 +2120,9 @@ const safeWriteSheet = (st, viewLevel = null) => {
         console.log(`[export] ▶ writing sheet "${label}"…`);
         writeSheetForStatement(st, viewLevel);
         console.log(`[export] ✓ sheet "${label}" written. Workbook now has ${wb.worksheets.length} sheets:`, wb.worksheets.map(w => w.name));
-      } catch (e) {
+} catch (e) {
         console.error(`[export] ✗ FAILED writing sheet "${label}":`, e);
-        alert(`Failed to generate ${label.toUpperCase()} sheet:\n\n${e?.message ?? e}\n\nCheck the console for the full stack trace.`);
+        alert(`${T("export_sheet_failed_alert")} (${label.toUpperCase()}):\n\n${e?.message ?? e}`);
       }
     };
 
@@ -2131,8 +2142,8 @@ const safeWriteSheet = (st, viewLevel = null) => {
     if (includeBS) dispatchStatement("bs");
 
     console.log(`[export] final workbook has ${wb.worksheets.length} sheets:`, wb.worksheets.map(w => w.name));
-    if (wb.worksheets.length === 0) {
-      alert("No sheets were generated. Check the console for errors.");
+if (wb.worksheets.length === 0) {
+      alert(T("export_no_sheets_alert"));
       return;
     }
 
@@ -2157,15 +2168,14 @@ console.log("[export] all sheets built. Calling writeBuffer…", wb.worksheets.m
       repaired = buffer;
     }
 
-    saveAs(new Blob([repaired], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+saveAs(new Blob([repaired], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
       `Konsolidator_Dimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.xlsx`);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, orderedRows, displayedTree, dividerMap, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, selGroups, selDims, cmp2Source, cmp2Structure, cmp2Month, cmp2Year, cmp2Company, plMapping, bsMapping, groupAccounts]);
+  }, [T, data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, selGroups, selDims, cmp2Source, cmp2Structure, cmp2Month, cmp2Year, cmp2Company, plMapping, bsMapping, groupAccounts]);
 
 const handleExportPdf = useCallback((opts = {}) => {
     const includePL = opts.statements?.pl ?? (statementType === "pl");
     const includeBS = opts.statements?.bs ?? (statementType === "bs");
-    if (!includePL && !includeBS) { alert("Select at least one statement (P&L or B/S)."); return; }
+if (!includePL && !includeBS) { alert(T("export_select_statement_alert")); return; }
     const includeCompareOpt = (opts.includeCompare !== false) && cmpVisible;
 
     // Palette
@@ -2218,7 +2228,7 @@ const handleExportPdf = useCallback((opts = {}) => {
     // increments pageNum to match the physical jsPDF page.
     let pageNum = 1;
     const pageManifest = []; // { displayedPage, title }
-    const monthLabel = MONTHS[parseInt(masterMonth) - 1]?.label ?? masterMonth;
+    const monthLabel = masterMonth ? T(`month_${parseInt(masterMonth)}`) : masterMonth;
 
     const buildSimplePivot = (rows, stType) => {
       const p = new Map();
@@ -2248,11 +2258,11 @@ const drawPageHeader = (isFirst, stType, level, chunkInfo) => {
       // Always add a page — first content page lands at page 2 (page 1 is TOC).
       doc.addPage();
       pageNum++;
-      // Record this page in the manifest so the index can list it.
-      const lvlTxt  = level === "summary" ? "Summary" : level === "detailed" ? "Detailed" : "Mapped";
-      const stTxt   = stType === "pl" ? "P&L" : "Balance Sheet";
+// Record this page in the manifest so the index can list it.
+      const lvlTxt  = level === "summary" ? T("file_level_summary") : level === "detailed" ? T("file_level_detailed") : T("file_level_mapped");
+      const stTxt   = stType === "pl" ? T("badge_pl_short") : T("page_bs_full");
       const partTxt = chunkInfo && chunkInfo.totalChunks > 1
-        ? ` — Part ${chunkInfo.idx + 1}/${chunkInfo.totalChunks}`
+        ? ` — ${T("badge_part")} ${chunkInfo.idx + 1}/${chunkInfo.totalChunks}`
         : "";
       pageManifest.push({
         displayedPage: pageNum,
@@ -2264,7 +2274,7 @@ const drawPageHeader = (isFirst, stType, level, chunkInfo) => {
       doc.setFont("helvetica", "bold");
       doc.setFontSize(17);
       doc.setTextColor(...WHITE);
-      doc.text(`DIMENSIONS — ${stType === "pl" ? "P&L" : "BALANCE SHEET"}`, 12, 14);
+      doc.text(stType === "pl" ? T("file_dimensions_pl_upper") : T("file_dimensions_bs_upper"), 12, 14);
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(8.5);
@@ -2274,15 +2284,15 @@ const drawPageHeader = (isFirst, stType, level, chunkInfo) => {
 
       doc.setFontSize(7);
       doc.setTextColor(160, 180, 235);
-      const filterBits = [
-        `Groups: ${selGroups.size > 0 ? [...selGroups].join(", ") : "All"}`,
-        `Dims: ${selDims.size > 0 ? [...selDims].join(", ") : "All"}`,
+const filterBits = [
+        `${T("file_field_groups")}: ${selGroups.size > 0 ? [...selGroups].join(", ") : T("all")}`,
+        `${T("file_field_dims")}: ${selDims.size > 0 ? [...selDims].join(", ") : T("all")}`,
       ];
       doc.text(filterBits.join("    ·    "), 12, 29);
 
-      if (includeCompareOpt && cmp2Year && cmp2Month) {
-        const cmpMo = MONTHS[parseInt(cmp2Month) - 1]?.label ?? cmp2Month;
-        const cmpSub = [`B: ${cmpMo} ${cmp2Year}`, cmp2Source, cmp2Structure, cmp2Company].filter(Boolean).join("  ·  ");
+if (includeCompareOpt && cmp2Year && cmp2Month) {
+        const cmpMo = T(`month_${parseInt(cmp2Month)}`);
+        const cmpSub = [`${T("file_b_prefix")}: ${cmpMo} ${cmp2Year}`, cmp2Source, cmp2Structure, cmp2Company].filter(Boolean).join("  ·  ");
         doc.setFillColor(...REDDK);
         doc.roundedRect(12, 32, Math.min(W - 24, 220), 5.5, 1, 1, "F");
         doc.setFontSize(7);
@@ -2303,21 +2313,21 @@ const drawPageHeader = (isFirst, stType, level, chunkInfo) => {
         curX -= (w + 3);
       };
 
-      const lvlLabel = level === "summary" ? "SUMMARY" : level === "detailed" ? "DETAILED" : "MAPPED";
+const lvlLabel = level === "summary" ? T("badge_summary") : level === "detailed" ? T("badge_detailed") : T("badge_mapped");
       placeBadge(lvlLabel, RED, WHITE);
-      placeBadge(stType === "pl" ? "P&L" : "B/S", NAVYDK, [160, 185, 255]);
+      placeBadge(stType === "pl" ? T("badge_pl_short") : T("badge_bs_short"), NAVYDK, [160, 185, 255]);
       if (includeCompareOpt) {
         if (chunkInfo && chunkInfo.totalChunks > 1) {
-          placeBadge(`PART ${chunkInfo.idx + 1}/${chunkInfo.totalChunks}`, REDDK, WHITE);
+          placeBadge(`${T("badge_part")} ${chunkInfo.idx + 1}/${chunkInfo.totalChunks}`, REDDK, WHITE);
         } else {
-          placeBadge("COMPARE", REDDK, WHITE);
+          placeBadge(T("badge_compare"), REDDK, WHITE);
         }
       }
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(6);
       doc.setTextColor(...GRAY);
-      doc.text(`Generated ${new Date().toLocaleDateString()}`, W - 8, 22, { align: "right" });
+      doc.text(`${T("file_generated")} ${new Date().toLocaleDateString()}`, W - 8, 22, { align: "right" });
 
       doc.setDrawColor(...NAVYMID);
       doc.setLineWidth(0.4);
@@ -2336,12 +2346,12 @@ const drawPageHeader = (isFirst, stType, level, chunkInfo) => {
       doc.setFont("helvetica", "bold");
       doc.setFontSize(6.5);
       doc.setTextColor(...NAVY);
-      doc.text(`DIMENSIONS — ${stType === "pl" ? "P&L" : "B/S"}`, 10, H - 4.5);
+doc.text(stType === "pl" ? T("file_dimensions_pl_upper") : T("file_dimensions_bs_upper"), 10, H - 4.5);
 
       doc.setFont("helvetica", "normal");
       doc.setTextColor(...GRAY);
-      const lvl = level === "summary" ? "Summary" : level === "detailed" ? "Detailed" : "Mapped";
-      const chunkPart = chunkInfo && chunkInfo.totalChunks > 1 ? ` · Part ${chunkInfo.idx + 1}/${chunkInfo.totalChunks}` : "";
+      const lvl = level === "summary" ? T("file_level_summary") : level === "detailed" ? T("file_level_detailed") : T("file_level_mapped");
+      const chunkPart = chunkInfo && chunkInfo.totalChunks > 1 ? ` · ${T("badge_part")} ${chunkInfo.idx + 1}/${chunkInfo.totalChunks}` : "";
       doc.text(`${lvl}  ·  ${monthLabel} ${masterYear}  ·  ${masterSource}${chunkPart}`, 56, H - 4.5);
 
       doc.setFont("helvetica", "bold");
@@ -2564,8 +2574,8 @@ const drawPageHeader = (isFirst, stType, level, chunkInfo) => {
 
       // Header
       let head;
-      if (isCompare) {
-        const top = [{ content: "Account", rowSpan: 2, styles: { halign: "left", fillColor: NAVYDK, valign: "middle" } }];
+if (isCompare) {
+        const top = [{ content: T("file_col_account"), rowSpan: 2, styles: { halign: "left", fillColor: NAVYDK, valign: "middle" } }];
         const bot = [];
         dimSlice.forEach(d => {
           top.push({ content: d.name ?? d.code ?? "—", colSpan: 4, styles: { halign: "center", fillColor: NAVY } });
@@ -2573,15 +2583,15 @@ const drawPageHeader = (isFirst, stType, level, chunkInfo) => {
 dimSlice.forEach(() => {
           // A = actual (navy). B / Diff / Diff% are all comparison-side, so
           // share the red palette for visual grouping.
-          bot.push({ content: "A",     styles: { halign: "right", fillColor: NAVYMID } });
-          bot.push({ content: "B",     styles: { halign: "right", fillColor: REDDK } });
-          bot.push({ content: "Diff",  styles: { halign: "right", fillColor: REDDK } });
-          bot.push({ content: "Diff%", styles: { halign: "right", fillColor: REDDK } });
+          bot.push({ content: T("file_col_a"),        styles: { halign: "right", fillColor: NAVYMID } });
+          bot.push({ content: T("file_col_b"),        styles: { halign: "right", fillColor: REDDK } });
+          bot.push({ content: T("file_col_diff"),     styles: { halign: "right", fillColor: REDDK } });
+          bot.push({ content: T("file_col_diff_pct"), styles: { halign: "right", fillColor: REDDK } });
         });
         head = [top, bot];
       } else {
-        const top = ["Account", ...dimSlice.map(d => d.name ?? d.code ?? "—")];
-        if (showTotals) top.push("TOTAL");
+        const top = [T("file_col_account"), ...dimSlice.map(d => d.name ?? d.code ?? "—")];
+        if (showTotals) top.push(T("file_col_total"));
         head = [top];
       }
 
@@ -2704,7 +2714,7 @@ dimSlice.forEach(() => {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(22);
     doc.setTextColor(...WHITE);
-    doc.text("DIMENSIONS REPORT", 12, 22);
+    doc.text(T("file_dimensions_report"), 12, 22);
 
     doc.setFont("helvetica", "normal");
     doc.setFontSize(10);
@@ -2714,8 +2724,8 @@ dimSlice.forEach(() => {
 
     doc.setFontSize(8);
     doc.setTextColor(160, 180, 235);
-    doc.text(
-      `${includeCompareOpt ? "Compare ON" : "Single period"}  ·  Generated ${new Date().toLocaleDateString()}  ·  ${pageManifest.length} content page${pageManifest.length === 1 ? "" : "s"}`,
+doc.text(
+      `${includeCompareOpt ? T("file_compare_on") : T("file_single_period")}  ·  ${T("file_generated")} ${new Date().toLocaleDateString()}  ·  ${pageManifest.length} ${pageManifest.length === 1 ? T("file_content_page_one") : T("file_content_page_many")}`,
       12, 42,
     );
 
@@ -2723,7 +2733,7 @@ dimSlice.forEach(() => {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(13);
     doc.setTextColor(...NAVY);
-    doc.text("CONTENTS", 12, 70);
+    doc.text(T("file_contents"), 12, 70);
     doc.setDrawColor(...NAVY);
     doc.setLineWidth(0.5);
     doc.line(12, 73, W - 12, 73);
@@ -2781,19 +2791,18 @@ dimSlice.forEach(() => {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(6.5);
     doc.setTextColor(...NAVY);
-    doc.text("DIMENSIONS REPORT", 10, H - 4.5);
+doc.text(T("file_dimensions_report"), 10, H - 4.5);
     doc.setFont("helvetica", "normal");
     doc.setTextColor(...GRAY);
-    doc.text(`Index  ·  ${monthLabel} ${masterYear}  ·  ${masterSource}`, 56, H - 4.5);
+    doc.text(`${T("file_index")}  ·  ${monthLabel} ${masterYear}  ·  ${masterSource}`, 56, H - 4.5);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(7);
     doc.setTextColor(...NAVY);
     doc.text("1", W - 10, H - 4.5, { align: "right" });
 
     console.log("[pdf] === EXPORT END === total pages:", pageNum);
-    doc.save(`Konsolidator_Dimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.pdf`);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, plMapping, bsMapping, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, selGroups, selDims, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, groupAccounts]);
+doc.save(`Konsolidator_Dimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.pdf`);
+}, [T, data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, plMapping, bsMapping, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, selGroups, selDims, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, groupAccounts]);
 
 
   // Wire export functions to the ref so DimensionesPage FAB can call them
@@ -2813,24 +2822,21 @@ const getCmpVal = useCallback((ac, dk) => {
   // Count-up fires on anything that changes a displayed number. getVal/getCmpVal
   // are useCallbacks whose deps already cover pivot, prevPivot, sign, viewMode;
   // cmpVisible covers the compare-toggle case.
-  useEffect(() => {
+// Trigger animation flag at render when any of the data-shaping deps change.
+  const [prevAnimDeps, setPrevAnimDeps] = useState({ getVal, getCmpVal, cmpVisible });
+  if (
+    prevAnimDeps.getVal !== getVal ||
+    prevAnimDeps.getCmpVal !== getCmpVal ||
+    prevAnimDeps.cmpVisible !== cmpVisible
+  ) {
+    setPrevAnimDeps({ getVal, getCmpVal, cmpVisible });
     setIsAnimatingData(true);
+  }
+  useEffect(() => {
+    if (!isAnimatingData) return;
     const t = setTimeout(() => setIsAnimatingData(false), 1100);
     return () => clearTimeout(t);
-  }, [getVal, getCmpVal, cmpVisible]);
-
-  const allDimsForGroups = useMemo(() => {
-    if (selGroups.size === 0) return [];
-    const seen = new Set();
-    data.forEach(r => {
-      parseDimensions(r.Dimensions).forEach(([grp, code]) => {
-        if (selGroups.has(grp)) seen.add(code);
-      });
-    });
-    return [...seen].sort();
-  }, [data, selGroups]);
-
-
+  }, [isAnimatingData]);
 
 return (
     <div className="flex flex-col gap-3 flex-1 min-h-0">
@@ -2886,17 +2892,17 @@ table td, table th { vertical-align: middle; }
           <div className="flex items-center gap-2.5 pr-4">
             <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
               style={{ background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)", boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)" }}>
-              <span className="text-white text-[11px] font-black">B</span>
+             <span className="text-white text-[11px] font-black">{T("compare_period_b_label")}</span>
             </div>
           </div>
           <div className="flex items-center gap-1 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
-            {cmpSources.length > 0    && <HeaderFilterPill label="Source"    value={cmp2Source}    onChange={setCmp2Source}    options={cmpSources} />}
-            {cmpYears.length > 0      && <HeaderFilterPill label="Year"      value={cmp2Year}      onChange={setCmp2Year}      options={cmpYears} />}
-            {cmpMonths.length > 0     && <HeaderFilterPill label="Month"     value={cmp2Month}     onChange={setCmp2Month}     options={cmpMonths} />}
-            {cmpStructures.length > 0 && <HeaderFilterPill label="Structure" value={cmp2Structure} onChange={setCmp2Structure} options={cmpStructures} />}
-            {cmpCompanies.length > 0  && <HeaderFilterPill label="Company"   value={cmp2Company}   onChange={setCmp2Company}   options={cmpCompanies} />}
-            {cmp2DimGroups.length > 0 && <MultiFilterPill label="Dim Group" values={cmp2SelGroups.size === 0 ? null : [...cmp2SelGroups]} onChange={next => { setCmp2SelGroups(next ? new Set(next) : new Set()); setCmp2SelDims(new Set()); }} options={cmp2DimGroups} />}
-{cmp2SelGroups.size > 0 && cmp2AllDims.length > 0 && <MultiFilterPill label="Dimension" values={cmp2SelDims.size === 0 ? null : [...cmp2SelDims]} onChange={next => setCmp2SelDims(next ? new Set(next) : new Set())} options={cmp2AllDims} />}
+{cmpSources.length > 0    && <HeaderFilterPill label={T("filter_source")}    value={cmp2Source}    onChange={setCmp2Source}    options={cmpSources} />}
+            {cmpYears.length > 0      && <HeaderFilterPill label={T("filter_year")}      value={cmp2Year}      onChange={setCmp2Year}      options={cmpYears} />}
+            {cmpMonths.length > 0     && <HeaderFilterPill label={T("filter_month")}     value={cmp2Month}     onChange={setCmp2Month}     options={cmpMonths} />}
+            {cmpStructures.length > 0 && <HeaderFilterPill label={T("filter_structure")} value={cmp2Structure} onChange={setCmp2Structure} options={cmpStructures} />}
+            {cmpCompanies.length > 0  && <HeaderFilterPill label={T("filter_company")}   value={cmp2Company}   onChange={setCmp2Company}   options={cmpCompanies} />}
+            {cmp2DimGroups.length > 0 && <MultiFilterPill label={T("filter_dim_group")} values={cmp2SelGroups.size === 0 ? null : [...cmp2SelGroups]} onChange={next => { setCmp2SelGroups(next ? new Set(next) : new Set()); setCmp2SelDims(new Set()); }} options={cmp2DimGroups} />}
+{cmp2SelGroups.size > 0 && cmp2AllDims.length > 0 && <MultiFilterPill label={T("filter_dimension")} values={cmp2SelDims.size === 0 ? null : [...cmp2SelDims]} onChange={next => setCmp2SelDims(next ? new Set(next) : new Set())} options={cmp2AllDims} />}
           </div>
         </div>
       )}
@@ -2927,8 +2933,8 @@ table td, table th { vertical-align: middle; }
                           className="flex items-center justify-center"
                           style={{ background: "transparent", color: searchActive ? colors.primary : "#94a3b8", padding: 0, transition: "color 240ms" }}
                           onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
-                          onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary : "#94a3b8"; }}
-                          title="Search">
+onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary : "#94a3b8"; }}
+                          title={T("dim_search_tooltip")}>
                           <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
                             <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.6"/>
                             <path d="M9.5 9.5L12.5 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
@@ -2943,7 +2949,7 @@ table td, table th { vertical-align: middle; }
                               value={searchQuery}
                               onChange={e => setSearchQuery(e.target.value)}
                               onKeyDown={e => { if (e.key === "Escape") { setSearchActive(false); setSearchQuery(""); } }}
-                              placeholder="Search code or name"
+                              placeholder={T("pivot_account_search_placeholder")}
                               style={{ fontSize: 16, fontWeight: 700, color: colors.primary, border: "none", outline: "none", background: "transparent", width: 240, padding: 0, letterSpacing: "-0.02em" }}
                             />
                             <button onClick={() => { setSearchActive(false); setSearchQuery(""); }}
@@ -2951,18 +2957,18 @@ table td, table th { vertical-align: middle; }
                               style={{ background: "transparent", color: "#94a3b8", padding: 2, transition: "color 200ms" }}
                               onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
                               onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
-                              title="Close search">
+                              title={T("dim_close_search")}>
                               <X size={14} />
                             </button>
                           </>
                         ) : (
                           <>
-                            <span onClick={() => setSearchActive(true)} className="font-black tracking-tight"
+<span onClick={() => setSearchActive(true)} className="font-black tracking-tight"
                               style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em", cursor: "pointer" }}>
-                              Account
+                              {T("col_account")}
                             </span>
                             <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
-                              {statementType === "pl" ? "P&L" : "B.SH."}
+                              {statementType === "pl" ? T("tab_pl") : T("tab_bs_short")}
                             </span>
                           </>
                         )}
@@ -2973,7 +2979,7 @@ table td, table th { vertical-align: middle; }
                           style={{ background: "transparent", color: "#94a3b8", padding: 4, transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)" }}
                           onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
                           onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
-                          title={expandedSet.size > 0 ? "Collapse all" : "Expand all"}>
+                          title={expandedSet.size > 0 ? T("btn_collapse_all") : T("btn_expand_all")}>
                           <span key={expandedSet.size > 0 ? "collapse" : "expand"} className="inline-flex"
                             style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
                             {expandedSet.size > 0
@@ -3000,7 +3006,7 @@ table td, table th { vertical-align: middle; }
                             transition: "left 320ms cubic-bezier(0.34, 1.56, 0.64, 1), width 320ms cubic-bezier(0.34, 1.56, 0.64, 1)",
                             pointerEvents: "none",
                           }} />
-                          {[["summary","Summary"],["detailed","Detailed"]].map(([v, label]) => {
+                          {[["summary", T("view_summary")], ["detailed", T("view_detailed")]].map(([v, label]) => {
                             const active = (v === "summary" && summaryMode) || (v === "detailed" && !summaryMode);
                             return (
                               <button key={v} data-dim-tab onClick={() => setSummaryMode(v === "summary")}
@@ -3048,23 +3054,23 @@ table td, table th { vertical-align: middle; }
                           transition: "background 150ms ease, outline 150ms ease",
                           opacity: draggingCol === (dim.code ?? "__none__") ? 0.4 : 1,
                         }}>
-                        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{dim.name}</span>
+                        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{String(dim.name ?? "").replace(/^\d+\s*[-:.]?\s*/, "")}</span>
                       </th>
 {cmpVisible && <>
                         <th className="text-center px-3 py-2 whitespace-nowrap" style={{ background: "#fafbff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 0ms forwards` }}>
-                         <span style={{ ...header2Style, color: "#CF305D", opacity: 0.7 }}>Σ CMP</span>
+                         <span style={{ ...header2Style, color: "#CF305D", opacity: 0.7 }}>{T("pivot_col_sigma_cmp")}</span>
                         </th>
                         <th className="text-center px-3 py-2 whitespace-nowrap" style={{ background: "#f5f7ff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 40ms forwards` }}>
-                          <span style={{ ...header2Style, color: "#CF305D", opacity: 0.7 }}>Δ AMT</span>
+                          <span style={{ ...header2Style, color: "#CF305D", opacity: 0.7 }}>{T("pivot_col_delta_amt")}</span>
                         </th>
                         <th className="text-center px-3 py-2 whitespace-nowrap" style={{ background: "#f0f3ff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 80ms forwards` }}>
-                          <span style={{ ...header2Style, color: "#CF305D", opacity: 0.7 }}>Δ %</span>
+                          <span style={{ ...header2Style, color: "#CF305D", opacity: 0.7 }}>{T("pivot_col_delta_pct")}</span>
                         </th>
                       </>}
                     </React.Fragment>
                   ))}
 {!cmpVisible && <th className="sticky right-0 z-10 text-center px-4 py-2" style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}>
-                    <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>TOTAL</span>
+                    <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{T("pivot_col_total")}</span>
                   </th>}
 </tr>
             </thead>
@@ -3216,7 +3222,6 @@ const rowAnim = tableJustLoaded && i < 25
                           const diff = val - cmpVal;
                           const pct = cmpVal !== 0 ? (diff / Math.abs(cmpVal)) * 100 : null;
                           const devColor = diff === 0 ? "#D1D5DB" : diff > 0 ? "#059669" : "#EF4444";
-                          const fmt = (n) => Math.abs(n).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                           const cmpA = cmpRecentlyToggled ? { animation: `cmpCellIn 420ms cubic-bezier(0.4,0,0.2,1) 0ms forwards` } : undefined;
                           return (
                             <React.Fragment key={dk}>
@@ -3289,8 +3294,9 @@ const levelByCode = (hasCustomMapping && activeMapping?.rows)
 
 /* ── Main ─────────────────────────────────────────────────── */
 /* ── Main ─────────────────────────────────────────────────── */
-export default function DimensionesPage({ token, onNavigate, sources = [], structures = [], companies = [], dimensions = [], groupAccounts = [], cachedPeriod = null }) {
-const { colors } = useSettings();
+export default function DimensionesPage({ token, onNavigate, sources = [], structures = [], companies = [], dimensions = [], cachedPeriod = null }) {
+const { colors, locale } = useSettings();
+const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
 const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();
 
   const [year,      setYear]      = useState("");
@@ -3307,14 +3313,10 @@ const [ytdOnly, setYtdOnly] = useState(false);
   const viewMode = ytdOnly ? "ytd" : "monthly";
   // P&L / B/S statement type — lifted from PivotTab to drive PageHeader tabs
   const [statementType, setStatementType] = useState("pl");
-  // Mapping application — Views modal + active custom mapping override
-  const [viewsModalOpen, setViewsModalOpen]     = useState(false);
-  const [activeMapping, setActiveMapping]       = useState(null);
-  const [warningDismissed, setWarningDismissed] = useState(false);
+const [activeMapping, setActiveMapping] = useState(null);
 const [exporting, setExporting] = useState(false);
   const pivotExportRef = useRef({ xlsx: null, pdf: null });
-  const [viewsOpen, setViewsOpen] = useState(false);
-  const [exportModal, setExportModal] = useState(false);
+const [exportModal, setExportModal] = useState(false);
 const [exportOpts, setExportOpts] = useState({
     statements: { pl: true, bs: true },
     includeBreakers: true,
@@ -3323,13 +3325,17 @@ const [exportOpts, setExportOpts] = useState({
     drilldown: true,
     format: "xlsx",
   });
-  // Keep the statement toggle in sync with the active tab so the user's current view defaults to on
-  useEffect(() => {
+// Keep the statement toggle in sync with the active tab so the user's current
+  // view defaults to on. Done during render (React's recommended pattern for
+  // adjusting state on prop change).
+  const [prevStatementType, setPrevStatementType] = useState(statementType);
+  if (prevStatementType !== statementType) {
+    setPrevStatementType(statementType);
     setExportOpts(o => ({
       ...o,
       statements: { ...o.statements, [statementType]: true },
     }));
-  }, [statementType]);
+  }
 
 const runExport = useCallback(async () => {
     console.log("[export] runExport called, opts:", exportOpts);
@@ -3339,20 +3345,20 @@ const runExport = useCallback(async () => {
     try {
       const fn = exportOpts.format === "pdf" ? pivotExportRef.current.pdf : pivotExportRef.current.xlsx;
       console.log("[export] resolved fn:", typeof fn);
-      if (!fn) {
-        alert("Export not ready yet — the table needs to finish loading before exporting. Make sure you're not on the Mappings landing page.");
+if (!fn) {
+        alert(T("export_not_ready_alert"));
         return;
       }
       console.log("[export] calling export fn…");
       await fn(exportOpts);
       console.log("[export] export fn returned");
-    } catch (e) {
+} catch (e) {
       console.error("[export] Export failed:", e);
-      alert(`Export failed: ${e?.message ?? e}\n\nCheck the console for the full stack trace.`);
+      alert(`${T("export_failed_alert")}: ${e?.message ?? e}`);
     } finally {
       setExporting(false);
     }
-}, [exportOpts]);
+}, [exportOpts, T]);
 
   const handleApplyMapping = useCallback((m, kind = "structure") => {
     console.log("[apply mapping]", {
@@ -3375,8 +3381,7 @@ const runExport = useCallback(async () => {
       plLiteral:   buildSavedMappingLiteral(m.pl_tree),
       bsLiteral:   buildSavedMappingLiteral(m.bs_tree),
     });
-    setWarningDismissed(false);
-  }, []);
+}, []);
 
   // Auto-apply the user's saved standard mapping once per page load. Mirrors
   // the same flow used by AccountsDashboard / KpiIndividualesPage so jumping
@@ -3478,16 +3483,20 @@ const runExport = useCallback(async () => {
     finally { setReportMappingsLoading(false); }
   }, []);
 
+// Fetch-on-mode-change: the called fns setState internally for loading/data,
+  // which is the canonical async pattern. No TanStack Query / SWR in this codebase.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (viewsMode === "structure") fetchSavedMappings(); }, [viewsMode, fetchSavedMappings]);
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (viewsMode === "report") fetchReportMappings(); }, [viewsMode, fetchReportMappings]);
 
-const [rawData,   setRawData]   = useState([]);
-const [loading,   setLoading]   = useState(true);
-const [hasCompletedFetch, setHasCompletedFetch] = useState(false);
-const [probeFinished, setProbeFinished] = useState(false);
-const animatedProgress = useAnimatedNumber(loading ? 60 : 100, 700);
-  const [error,     setError]     = useState(null);
-
+const [rawData, setRawData] = useState([]);
+  const [probeFinished, setProbeFinished] = useState(false);
+  // `loading` / `hasCompletedFetch` / `error` are all derived from a fetch-key.
+  // The fetch effect only writes state inside async callbacks (post-await),
+  // which the lint doesn't flag.
+  const [fetchedKey, setFetchedKey] = useState(null);
+  const [errorState, setErrorState] = useState({ key: null, msg: null });
   const authHeaders = useCallback(() => ({
     Authorization: `Bearer ${token}`,
     Accept: "application/json",
@@ -3581,7 +3590,7 @@ const defaultPlMapping = pgcPlMapping ?? danishPlMapping ?? spIfrsEsPlMapping;
   //   - resolveCcTag is wrapped so any code the user has placed in the
   //     mapping (matched OR unmatched) doesn't get auto-resolved via the
   //     standard taxonomy — that would double-count.
-  const { ccTagToCodes, resolveCcTag, mappingMatched, mappingUnmatched } = useMemo(() => {
+const { ccTagToCodes, resolveCcTag } = useMemo(() => {
     if (!activeMapping) {
       return {
         ccTagToCodes:     defaultCcTagToCodes,
@@ -3628,38 +3637,48 @@ const defaultPlMapping = pgcPlMapping ?? danishPlMapping ?? spIfrsEsPlMapping;
     };
   }, [activeMapping, defaultCcTagToCodes, defaultResolveCcTag]);
 
-useEffect(() => {
-    if (!token) return;
-    // Year/month come from the LatestPeriodContext cache (populated on login),
-    // not from /v2/periods. The cache is the source of truth — we just need to
-    // wait until source/structure/company are set so we can look it up.
+// Sync the LatestPeriodContext cache into local state on arrival/change.
+  // Done during render (React's "adjust state on prop change" pattern) — no
+  // effect, no extra render cycle, no lint disable.
+  const cachedKey = `${cachedPeriod?.year ?? ""}|${cachedPeriod?.month ?? ""}`;
+  const [prevSyncKey, setPrevSyncKey] = useState(null);
+  const syncKey = `${token ?? ""}::${cachedKey}`;
+  if (token && prevSyncKey !== syncKey) {
+    setPrevSyncKey(syncKey);
     if (cachedPeriod?.year && cachedPeriod?.month) {
       setYear(String(cachedPeriod.year));
       setMonth(String(cachedPeriod.month));
     }
     setMetaReady(true);
-  }, [token, cachedPeriod]);
+  }
 
-useEffect(() => {
-    if (!source || !structure || !company) return;
-    const key = `${source}|${structure}|${company}`;
-    if (probedRef.current.key === key) return;
-    probedRef.current.key = key;
-
-    // PRIMARY: shared LatestPeriodContext cache — populated on login. This is
-    // the whole point of the cache: we should never have to probe again here.
+// Cache-hit + probe-reset live at render time (React's "adjust state on prop
+  // change" pattern). The async probe itself stays in the effect below — its
+  // setStates run inside async callbacks, which the rule doesn't flag.
+  const probeKey = (source && structure && company) ? `${source}|${structure}|${company}` : null;
+  const [prevProbeKey, setPrevProbeKey] = useState(null);
+if (probeKey && prevProbeKey !== probeKey) {
+    setPrevProbeKey(probeKey);
     const cached = getLatestPeriod(source, structure, company);
     if (cached?.year && cached?.month) {
       setYear(String(cached.year));
       setMonth(String(cached.month));
       setProbeFinished(true);
-      return;
+    } else {
+      setProbeFinished(false); // about to probe asynchronously
     }
+  }
 
-    // FALLBACK: cache miss (user navigated here without visiting another page
-    // that populated it). Probe ourselves, write back to cache, force current
-    // real date as starting point so we never go into the future.
-    setProbeFinished(false);
+  useEffect(() => {
+    if (!source || !structure || !company) return;
+    const key = `${source}|${structure}|${company}`;
+    if (probedRef.current.key === key) return;
+    probedRef.current.key = key;
+
+    // Cache hit was already handled at render time above; this effect only
+    // runs the FALLBACK probe when the cache missed.
+    const cached = getLatestPeriod(source, structure, company);
+    if (cached?.year && cached?.month) return;
     (async () => {
       const now = new Date();
       let y = now.getFullYear();
@@ -3692,60 +3711,58 @@ useEffect(() => {
       setYear(String(now.getFullYear()));
       setMonth(String(now.getMonth() + 1));
       setProbeFinished(true);
-    })();
-// eslint-disable-next-line react-hooks/exhaustive-deps
+})();
   }, [metaReady, source, structure, company, token, getLatestPeriod, setLatestPeriod]);
 
-useEffect(() => {
-    if (sources.length > 0 && !source) {
-      const s = sources[0];
-      setSource(typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sources]);
+// Default each filter to the first available option. Done during render —
+  // the guards (`!source` etc.) self-disable after the first set, so no loop.
+  if (sources.length > 0 && !source) {
+    const s = sources[0];
+    setSource(typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s));
+  }
+  if (structures.length > 0 && !structure) {
+    const s = structures[0];
+    setStructure(typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s));
+  }
+  if (companies.length > 0 && !company) {
+    const c = companies[0];
+    setCompany(typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : String(c));
+  }
+
+// Build a key representing the current request. `loading` is true whenever
+  // this key doesn't match the last completed fetch; `hasCompletedFetch` is
+  // true once any fetch has finished. Both are pure derivations of state.
+  const fetchKey = (metaReady && year && month && source && structure && company)
+    ? `${year}|${month}|${source}|${structure}|${company}`
+    : null;
+  const loading = !!fetchKey && fetchedKey !== fetchKey;
+  const hasCompletedFetch = fetchedKey !== null;
+  const error = errorState.key === fetchKey ? errorState.msg : null;
 
   useEffect(() => {
-    if (structures.length > 0 && !structure) {
-      const s = structures[0];
-      setStructure(typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [structures]);
-
-  useEffect(() => {
-    if (companies.length > 0 && !company) {
-      const c = companies[0];
-      setCompany(typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : String(c));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [companies]);
-
-const fetchData = useCallback(async () => {
-    if (!metaReady || !year || !month || !source || !structure || !company) return;
-    setLoading(true);
-    setError(null);
-    // Don't clear rawData here — keep previous data visible during refetch so the
-    // UI doesn't flash empty → loading → data when filters change.
-    try {
-      const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
-      const res = await fetch(
-        `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
-        { headers: authHeaders() }
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-const json = await res.json();
-      setRawData(json.value ?? (Array.isArray(json) ? json : []));
-      setHasCompletedFetch(true);
-      // Defer setLoading(false) so React commits the new data first
-      requestAnimationFrame(() => setLoading(false));
-    } catch (e) {
-      setError(e.message);
-      setHasCompletedFetch(true);
-      setLoading(false);
-    }
-}, [metaReady, year, month, source, structure, company, authHeaders]);
-
-  useEffect(() => { fetchData(); }, [fetchData]);
+    if (!fetchKey) return;
+    const ctrl = new AbortController();
+    (async () => {
+      try {
+        const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
+        const res = await fetch(
+          `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
+          { headers: authHeaders(), signal: ctrl.signal }
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        if (ctrl.signal.aborted) return;
+        setRawData(json.value ?? (Array.isArray(json) ? json : []));
+        setErrorState({ key: fetchKey, msg: null });
+        setFetchedKey(fetchKey);
+      } catch (e) {
+        if (ctrl.signal.aborted || e.name === "AbortError") return;
+        setErrorState({ key: fetchKey, msg: e.message });
+        setFetchedKey(fetchKey); // mark as complete even on error
+      }
+    })();
+    return () => ctrl.abort();
+  }, [fetchKey, year, month, source, structure, company, authHeaders]);
 
 // Derive dim groups from the journal's `Dimensions` field — more reliable
 // than the /v2/dimensions endpoint because we know the data is there if we
@@ -3803,23 +3820,23 @@ const companyOpts   = companies.length > 0 && typeof companies[0] === "object"
 
 {/* Header */}
 <PageHeader
-        kicker={viewsMode ? "Views · Mappings" : "Dimensions"}
+kicker={viewsMode ? T("dim_kicker_views") : T("dim_kicker")}
         title={
-          viewsMode === "landing"   ? "Mappings"
-          : viewsMode === "structure" ? "Structure Mappings"
-          : viewsMode === "report"    ? "Report Mappings"
-          : (statementType === "pl" ? "P&L" : "B.SH.")
+          viewsMode === "landing"   ? T("mappings")
+          : viewsMode === "structure" ? T("views_structure_mappings")
+          : viewsMode === "report"    ? T("views_report_mappings")
+          : (statementType === "pl" ? T("tab_pl") : T("tab_bs_short"))
         }
         tabs={viewsMode ? [] : [
-          { id: "pl", label: "P&L",           icon: TrendingUp },
-          { id: "bs", label: "B.SH.",          icon: BarChart2 },
+          { id: "pl", label: T("tab_pl"),       icon: TrendingUp },
+          { id: "bs", label: T("tab_bs_short"), icon: BarChart2 },
         ]}
         activeTab={viewsMode ? null : statementType}
         onTabChange={setStatementType}
         onBack={viewsMode ? () => { if (viewsMode === "landing") setViewsMode(null); else setViewsMode("landing"); } : undefined}
         filters={viewsMode ? [] : [
 ...(YEARS.length > 0
-            ? [{ label: "Year", value: year, onChange: setYear,
+            ? [{ label: T("filter_year"), value: year, onChange: setYear,
                 options: (() => {
                   const base = YEARS.map(y => String(y));
                   // Include the currently selected year even if it's outside the
@@ -3829,27 +3846,27 @@ const companyOpts   = companies.length > 0 && typeof companies[0] === "object"
                   return base.map(y => ({ value: y, label: y }));
                 })() }]
             : []),
-          ...(MONTHS.length > 0
-            ? [{ label: "Month", value: month, onChange: setMonth,
-                options: MONTHS.map(m => ({ value: String(m.value), label: m.label })) }]
+...(MONTHS.length > 0
+            ? [{ label: T("filter_month"), value: month, onChange: setMonth,
+                options: MONTHS.map(m => ({ value: String(m.value), label: T(`month_${m.value}`) })) }]
             : []),
           ...(sourceOpts.length > 0
-            ? [{ label: "Source", value: source, onChange: setSource, options: sourceOpts }]
+            ? [{ label: T("filter_source"), value: source, onChange: setSource, options: sourceOpts }]
             : []),
           ...(structureOpts.length > 0
-            ? [{ label: "Structure", value: structure, onChange: setStructure, options: structureOpts }]
+            ? [{ label: T("filter_structure"), value: structure, onChange: setStructure, options: structureOpts }]
             : []),
 ...(companyOpts.length > 0
-            ? [{ label: "Company", value: company, onChange: setCompany, options: companyOpts }]
+            ? [{ label: T("filter_company"), value: company, onChange: setCompany, options: companyOpts }]
             : []),
 ...(dimGroups.length > 0
-            ? [{ label: "Dim Group", multiselect: true, values: selGroups.size === 0 ? null : [...selGroups], onChange: (next) => {
+            ? [{ label: T("filter_dim_group"), multiselect: true, values: selGroups.size === 0 ? null : [...selGroups], onChange: (next) => {
                 setSelGroups(next ? new Set(next) : new Set());
                 setSelDims(new Set());
               }, options: dimGroups.map(g => ({ value: g, label: g })) }]
             : []),
 ...(selGroups.size > 0 && allDimsForGroups.length > 0
-            ? [{ label: "Dimension", multiselect: true, values: selDims.size === 0 ? null : [...selDims], onChange: (next) => {
+            ? [{ label: T("filter_dimension"), multiselect: true, values: selDims.size === 0 ? null : [...selDims], onChange: (next) => {
                 setSelDims(next ? new Set(next) : new Set());
               }, options: allDimsForGroups }]
             : []),
@@ -3888,8 +3905,8 @@ onExportXlsx={() => {
 {activeMapping && (
         <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm flex-shrink-0">
           <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
-          <span className="text-xs text-emerald-700 font-medium">
-            Custom mapping active: <strong className="font-black">{activeMapping.name}</strong>
+<span className="text-xs text-emerald-700 font-medium">
+            {T("mapping_active")}: <strong className="font-black">{activeMapping.name}</strong>
             <span className="text-emerald-500/70 ml-2">· {activeMapping.standard}</span>
           </span>
           <button
@@ -3903,18 +3920,18 @@ onExportXlsx={() => {
               onNavigate?.("mappings");
             }}
             className="ml-auto flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
-            title="Edit mapping"
+title={T("edit_mapping_title")}
           >
             <Pencil size={11} />
-            Edit
+            {T("btn_edit")}
           </button>
           <button
             onClick={() => setActiveMapping(null)}
             className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
-            title="Clear mapping and use default"
+title={T("clear_mapping_title")}
           >
             <X size={11} />
-            Clear
+            {T("btn_clear")}
           </button>
         </div>
       )}
@@ -3945,8 +3962,8 @@ onExportXlsx={() => {
                       style={{ background: "linear-gradient(145deg, #1a2f8a 0%, #3b54b8 100%)" }}>
                       <Layers size={26} className="text-white" strokeWidth={1.8} />
                     </div>
-                    <p className="font-black text-xl text-gray-800 mb-2">Structure Mappings</p>
-                    <p className="text-xs text-gray-500 leading-relaxed max-w-xs">Map your chart of accounts to standard structures.</p>
+<p className="font-black text-xl text-gray-800 mb-2">{T("views_structure_mappings")}</p>
+                    <p className="text-xs text-gray-500 leading-relaxed max-w-xs">{T("mappings_landing_structure_desc")}</p>
                   </div>
                 </div>
               </button>
@@ -3964,8 +3981,8 @@ onExportXlsx={() => {
                       style={{ background: "linear-gradient(145deg, #CF305D 0%, #e05585 100%)" }}>
                       <FileText size={26} className="text-white" strokeWidth={1.8} />
                     </div>
-                    <p className="font-black text-xl text-gray-800 mb-2">Report Mappings</p>
-                    <p className="text-xs text-gray-500 leading-relaxed max-w-xs">Custom report templates and layouts.</p>
+<p className="font-black text-xl text-gray-800 mb-2">{T("views_report_mappings")}</p>
+                    <p className="text-xs text-gray-500 leading-relaxed max-w-xs">{T("mappings_landing_report_desc")}</p>
                   </div>
                 </div>
               </button>
@@ -3976,13 +3993,13 @@ onExportXlsx={() => {
           {viewsMode === "structure" && (
             <div className="flex-1 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col min-h-0">
               <div className="px-5 py-3 border-b border-gray-100 flex-shrink-0">
-                <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Library</p>
-                <p className="font-black text-xs text-gray-700">Saved Structure Mappings</p>
+<p className="text-[9px] font-black uppercase tracking-widest text-gray-400">{T("views_library")}</p>
+                <p className="font-black text-xs text-gray-700">{T("views_saved_mappings")}</p>
               </div>
               <div className="flex-1 overflow-y-auto p-4">
-                {savedMappingsLoading && <div className="py-16 text-center"><Loader2 size={24} className="text-[#1a2f8a] animate-spin mx-auto mb-2" /><p className="text-gray-400 text-xs">Loading…</p></div>}
+                {savedMappingsLoading && <div className="py-16 text-center"><Loader2 size={24} className="text-[#1a2f8a] animate-spin mx-auto mb-2" /><p className="text-gray-400 text-xs">{T("views_loading_mappings")}</p></div>}
                 {savedMappingsError && !savedMappingsLoading && <div className="py-12 text-center"><p className="text-red-500 text-xs font-bold">{savedMappingsError}</p></div>}
-                {!savedMappingsLoading && !savedMappingsError && savedMappings.length === 0 && <div className="py-16 text-center"><Library size={24} className="text-[#1a2f8a] mx-auto mb-2" /><p className="text-gray-700 font-black text-sm">No mappings yet</p></div>}
+                {!savedMappingsLoading && !savedMappingsError && savedMappings.length === 0 && <div className="py-16 text-center"><Library size={24} className="text-[#1a2f8a] mx-auto mb-2" /><p className="text-gray-700 font-black text-sm">{T("views_no_mappings")}</p></div>}
                 {!savedMappingsLoading && !savedMappingsError && savedMappings.length > 0 && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
 {savedMappings.map(m => {
@@ -4006,13 +4023,13 @@ onExportXlsx={() => {
                               <Layers size={14} style={{ color: isActive ? "white" : colors.primary }} />
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="font-black text-xs text-gray-800 truncate">{m.name ?? "Untitled"}</p>
+<p className="font-black text-xs text-gray-800 truncate">{m.name ?? T("untitled")}</p>
                               <p className="text-[9px] font-bold uppercase tracking-widest mt-0.5" style={{ color: colors.primary }}>{m.standard ?? "—"}</p>
                             </div>
                           </div>
                           <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-50 mt-auto">
-                            <span className="text-[9px] text-gray-400">Updated {m.updated_at ? new Date(m.updated_at).toLocaleDateString() : "—"}</span>
-                            <span className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-widest bg-emerald-500 group-hover:bg-emerald-600 text-white"><CheckCircle2 size={9} />Apply</span>
+                            <span className="text-[9px] text-gray-400">{T("updated")} {m.updated_at ? new Date(m.updated_at).toLocaleDateString() : "—"}</span>
+                            <span className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-widest bg-emerald-500 group-hover:bg-emerald-600 text-white"><CheckCircle2 size={9} />{T("btn_apply")}</span>
                           </div>
                         </button>
                       );
@@ -4027,13 +4044,13 @@ onExportXlsx={() => {
           {viewsMode === "report" && (
             <div className="flex-1 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col min-h-0">
               <div className="px-5 py-3 border-b border-gray-100 flex-shrink-0">
-                <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Library</p>
-                <p className="font-black text-xs text-gray-700">Saved Report Mappings</p>
+<p className="text-[9px] font-black uppercase tracking-widest text-gray-400">{T("views_library")}</p>
+                <p className="font-black text-xs text-gray-700">{T("views_saved_report_mappings")}</p>
               </div>
               <div className="flex-1 overflow-y-auto p-4">
-                {reportMappingsLoading && <div className="py-16 text-center"><Loader2 size={24} className="text-[#CF305D] animate-spin mx-auto mb-2" /><p className="text-gray-400 text-xs">Loading…</p></div>}
+{reportMappingsLoading && <div className="py-16 text-center"><Loader2 size={24} className="text-[#CF305D] animate-spin mx-auto mb-2" /><p className="text-gray-400 text-xs">{T("views_loading_report_mappings")}</p></div>}
                 {reportMappingsError && !reportMappingsLoading && <div className="py-12 text-center"><p className="text-red-500 text-xs font-bold">{reportMappingsError}</p></div>}
-                {!reportMappingsLoading && !reportMappingsError && reportMappings.length === 0 && <div className="py-16 text-center"><FileText size={24} className="text-[#CF305D] mx-auto mb-2" /><p className="text-gray-700 font-black text-sm">No mappings yet</p></div>}
+                {!reportMappingsLoading && !reportMappingsError && reportMappings.length === 0 && <div className="py-16 text-center"><FileText size={24} className="text-[#CF305D] mx-auto mb-2" /><p className="text-gray-700 font-black text-sm">{T("views_no_report_mappings")}</p></div>}
                 {!reportMappingsLoading && !reportMappingsError && reportMappings.length > 0 && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
 {reportMappings.map(m => {
@@ -4057,13 +4074,13 @@ onExportXlsx={() => {
                               <FileText size={14} style={{ color: isActive ? "white" : "#CF305D" }} />
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="font-black text-xs text-gray-800 truncate">{m.name ?? "Untitled"}</p>
+<p className="font-black text-xs text-gray-800 truncate">{m.name ?? T("untitled")}</p>
                               <p className="text-[9px] font-bold uppercase tracking-widest mt-0.5" style={{ color: "#CF305D" }}>{m.standard ?? "—"}</p>
                             </div>
                           </div>
                           <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-50 mt-auto">
-                            <span className="text-[9px] text-gray-400">Updated {m.updated_at ? new Date(m.updated_at).toLocaleDateString() : "—"}</span>
-                            <span className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-widest bg-emerald-500 group-hover:bg-emerald-600 text-white"><CheckCircle2 size={9} />Apply</span>
+                            <span className="text-[9px] text-gray-400">{T("updated")} {m.updated_at ? new Date(m.updated_at).toLocaleDateString() : "—"}</span>
+                            <span className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-widest bg-emerald-500 group-hover:bg-emerald-600 text-white"><CheckCircle2 size={9} />{T("btn_apply")}</span>
                           </div>
                         </button>
                       );
@@ -4103,19 +4120,19 @@ onExportXlsx={() => {
                 </span>
               </div>
             </div>
-            <p className="text-sm font-black text-gray-800 mt-6 tracking-wide">
+<p className="text-sm font-black text-gray-800 mt-6 tracking-wide">
               {!metaReady
-                ? "Finding latest period with data…"
+                ? T("dim_loading_finding_period")
                 : sources.length === 0 || structures.length === 0
-                  ? "Loading filter options…"
+                  ? T("dim_loading_filter_options")
                   : groupAccountsLocal.length === 0
-                    ? "Loading group accounts…"
+                    ? T("dim_loading_group_accs")
                     : loading
-                      ? "Loading dimension data…"
-                      : "Finalizing…"}
+                      ? T("dim_loading_data")
+                      : T("dim_loading_finalizing")}
             </p>
             <p className="text-[10px] text-gray-300 mt-1.5 uppercase tracking-widest font-bold">
-              Setting up dimensions
+              {T("dim_loading_setup")}
             </p>
           </div>
         </div>
@@ -4129,8 +4146,8 @@ onExportXlsx={() => {
             <div className="w-14 h-14 bg-[#eef1fb] rounded-2xl flex items-center justify-center mx-auto mb-4">
               <RefreshCw size={20} className="text-[#1a2f8a]" />
             </div>
-            <p className="text-sm font-bold text-gray-400">No data for selected filters</p>
-            <p className="text-xs text-gray-300 mt-1">Try adjusting the filters above</p>
+<p className="text-sm font-bold text-gray-400">{T("no_data")}</p>
+            <p className="text-xs text-gray-300 mt-1">{T("no_data_hint")}</p>
           </div>
         </div>
 ) : (
@@ -4160,19 +4177,19 @@ exportRef={pivotExportRef} hasCustomMapping={!!activeMapping} />
                     <Download size={17} className="text-white" strokeWidth={2.5} />
                   </div>
                   <div>
-                    <p className="font-black text-[20px] tracking-tight" style={{ color: colors.primary, letterSpacing: "-0.02em" }}>Export Dimensions</p>
+                    <p className="font-black text-[20px] tracking-tight" style={{ color: colors.primary, letterSpacing: "-0.02em" }}>{T("export_dimensions_title")}</p>
                     <div className="flex items-center gap-1.5 mt-1">
-                      <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
+<span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
                         style={{ background: `${colors.primary}10`, color: colors.primary }}>
-                        {exportOpts.format === "pdf" ? "PDF" : "EXCEL"}
+                        {exportOpts.format === "pdf" ? T("badge_pdf") : T("badge_excel")}
                       </span>
                       {compareMode && (
                         <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
-                          style={{ background: "#CF305D15", color: "#CF305D" }}>COMPARE</span>
+                          style={{ background: "#CF305D15", color: "#CF305D" }}>{T("badge_compare")}</span>
                       )}
                       {activeMapping && (
                         <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
-                          style={{ background: "#10B98115", color: "#10B981" }}>MAPPED</span>
+                          style={{ background: "#10B98115", color: "#10B981" }}>{T("badge_mapped")}</span>
                       )}
                     </div>
                   </div>
@@ -4191,13 +4208,13 @@ exportRef={pivotExportRef} hasCustomMapping={!!activeMapping} />
               {/* Statements */}
               <div>
                 <div className="flex items-center gap-2 mb-3">
-                  <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">Statements to include</p>
+                  <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">{T("export_statements_to_include")}</p>
                   <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
                 </div>
                 <div className="grid grid-cols-1 gap-2">
                   {[
-                    ["pl", "P&L",            "Income statement — supports compare + monthly when active", colors.primary],
-                    ["bs", "Balance Sheet",  "Assets / Liabilities / Equity — YTD only when not active",   "#dc7533"],
+["pl", T("tab_pl"),         T("export_pl_subtitle"), colors.primary],
+                    ["bs", T("page_bs_full"),   T("export_bs_subtitle"), "#dc7533"],
                   ].map(([k, label, sub, accent]) => {
                     const checked = !!exportOpts.statements[k];
                     return (
@@ -4221,15 +4238,15 @@ exportRef={pivotExportRef} hasCustomMapping={!!activeMapping} />
               {/* Options */}
               <div>
                 <div className="flex items-center gap-2 mb-3">
-                  <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">Layout options</p>
+                 <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">{T("export_layout_options")}</p>
                   <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   {[
-                    ["includeBreakers", "Section headers"],
-                    ["drilldown",       "Drill-down (collapsed)"],
-                    ["includeTotals",   "Row totals"],
-                    ["includeCompare",  "Compare columns"],
+["includeBreakers", T("export_opt_section_headers")],
+                    ["drilldown",       T("export_opt_drilldown")],
+                    ["includeTotals",   T("export_opt_row_totals")],
+                    ["includeCompare",  T("export_opt_compare_columns")],
                   ].map(([k, label]) => {
                     const checked = !!exportOpts[k];
                     const disabled = (k === "includeCompare" && !compareMode) || (k === "includeTotals" && compareMode);
@@ -4252,19 +4269,19 @@ exportRef={pivotExportRef} hasCustomMapping={!!activeMapping} />
               {/* Current filters preview */}
               <div>
                 <div className="flex items-center gap-2 mb-3">
-                  <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">Current filters</p>
+                  <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">{T("export_current_filters")}</p>
                   <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
                 </div>
                 <div className="rounded-xl p-4 text-xs text-gray-600 leading-relaxed space-y-0.5"
                   style={{ background: "#f8f9ff", border: "1px solid #e8eaf0" }}>
-                  <div><span className="font-bold text-gray-500">Period:</span> {month && year ? `${MONTHS[parseInt(month) - 1]?.label ?? month} ${year}` : "—"}</div>
-                  <div><span className="font-bold text-gray-500">Source / Structure:</span> {source} · {structure}</div>
-                  <div><span className="font-bold text-gray-500">Company:</span> {company}</div>
-                  <div><span className="font-bold text-gray-500">View:</span> {viewMode === "ytd" ? "YTD" : "Monthly"}</div>
-                  <div><span className="font-bold text-gray-500">Dim Groups:</span> {selGroups.size > 0 ? [...selGroups].join(", ") : <span className="italic text-gray-400">All</span>}</div>
-                  <div><span className="font-bold text-gray-500">Dims:</span> {selDims.size > 0 ? [...selDims].join(", ") : <span className="italic text-gray-400">All</span>}</div>
-                  <div><span className="font-bold text-gray-500">Compare:</span> {compareMode ? "On" : <span className="italic text-gray-400">Off</span>}</div>
-                  {activeMapping && <div><span className="font-bold text-gray-500">Mapping:</span> {activeMapping.name}</div>}
+<div><span className="font-bold text-gray-500">{T("export_filter_period")}:</span> {month && year ? `${T(`month_${parseInt(month)}`)} ${year}` : "—"}</div>
+                  <div><span className="font-bold text-gray-500">{T("export_filter_source_structure")}:</span> {source} · {structure}</div>
+                  <div><span className="font-bold text-gray-500">{T("export_filter_company")}:</span> {company}</div>
+                  <div><span className="font-bold text-gray-500">{T("export_filter_view")}:</span> {viewMode === "ytd" ? T("mode_ytd") : T("mode_monthly")}</div>
+                  <div><span className="font-bold text-gray-500">{T("export_filter_dim_groups")}:</span> {selGroups.size > 0 ? [...selGroups].join(", ") : <span className="italic text-gray-400">{T("all")}</span>}</div>
+                  <div><span className="font-bold text-gray-500">{T("export_filter_dims")}:</span> {selDims.size > 0 ? [...selDims].join(", ") : <span className="italic text-gray-400">{T("all")}</span>}</div>
+                  <div><span className="font-bold text-gray-500">{T("export_filter_compare")}:</span> {compareMode ? T("export_compare_on") : <span className="italic text-gray-400">{T("export_compare_off")}</span>}</div>
+                  {activeMapping && <div><span className="font-bold text-gray-500">{T("export_filter_mapping")}:</span> {activeMapping.name}</div>}
                 </div>
               </div>
             </div>
@@ -4273,7 +4290,7 @@ exportRef={pivotExportRef} hasCustomMapping={!!activeMapping} />
             <div className="px-7 py-5 flex items-center gap-3 flex-shrink-0"
               style={{ background: "linear-gradient(180deg, transparent 0%, #f9fafb 100%)" }}>
               <div className="relative flex items-center p-1 rounded-xl" style={{ background: "#f3f4f6" }}>
-                {[["xlsx","Excel"], ["pdf","PDF"]].map(([f, l]) => (
+                {[["xlsx", T("export_excel")], ["pdf", T("export_pdf")]].map(([f, l]) => (
                   <button key={f} onClick={() => setExportOpts(o => ({ ...o, format: f }))}
                     className="relative z-10 px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all duration-200"
                     style={{
@@ -4292,8 +4309,8 @@ exportRef={pivotExportRef} hasCustomMapping={!!activeMapping} />
                   color: "white",
                   boxShadow: `0 8px 20px -6px ${colors.primary}80, 0 2px 6px -2px ${colors.primary}40`,
                 }}>
-                {exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} strokeWidth={2.5} />}
-                {exporting ? "Exporting…" : "Download"}
+{exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} strokeWidth={2.5} />}
+                {exporting ? T("export_downloading") : T("btn_download")}
               </button>
             </div>
           </div>
@@ -4306,7 +4323,7 @@ exportRef={pivotExportRef} hasCustomMapping={!!activeMapping} />
           <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" />
           <div className="relative bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-[95vw] h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
             <div className="bg-[#1a2f8a] px-5 py-4 flex items-center justify-between flex-shrink-0">
-              <p className="text-white font-black text-sm">Uploaded Accounts · {rawData.length} records</p>
+              <p className="text-white font-black text-sm">{T("dim_uploaded_accounts")} · {rawData.length} {T("table_records")}</p>
               <button onClick={() => setShowAccounts(false)} className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center">
                 <X size={13} className="text-white/70" />
               </button>
