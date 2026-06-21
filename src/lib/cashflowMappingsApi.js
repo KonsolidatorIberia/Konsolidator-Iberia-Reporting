@@ -1,4 +1,4 @@
-// src/lib/reportMappingsApi.js
+// src/lib/cashflowMappingsApi.js
 const SUPABASE_URL = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
 const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
 
@@ -34,10 +34,10 @@ export async function getActiveCompanyId(userId) {
 
 export async function listMappings({ companyId, standard = null }) {
   if (!companyId) return [];
-  let url = `${SUPABASE_URL}/report_mappings?select=*&company_id=eq.${companyId}&is_archived=eq.false&order=updated_at.desc`;
+  let url = `${SUPABASE_URL}/cashflow_mappings?select=*&company_id=eq.${companyId}&is_archived=eq.false&order=updated_at.desc`;
   if (standard) url += `&standard=eq.${standard}`;
   const res = await fetch(url, { headers: authHeaders() });
-  if (!res.ok) return [];
+  if (!res.ok) { console.error("[cashflowMappingsApi] list failed:", await res.text()); return []; }
   const rows = await res.json();
   if (!Array.isArray(rows) || rows.length === 0) return rows;
   const userIds = new Set();
@@ -60,13 +60,13 @@ export async function listMappings({ companyId, standard = null }) {
         r.updated_by_name = u ? (u.username ?? u.email ?? null) : null;
       });
     }
-  } catch { /* ignore */ }
+  } catch (e) { console.error("[cashflowMappingsApi] user lookup failed:", e); }
   return rows;
 }
 
 export async function getMapping(mappingId) {
   const res = await fetch(
-    `${SUPABASE_URL}/report_mappings?select=*&mapping_id=eq.${mappingId}`,
+    `${SUPABASE_URL}/cashflow_mappings?select=*&mapping_id=eq.${mappingId}`,
     { headers: authHeaders() }
   );
   if (!res.ok) return null;
@@ -76,14 +76,17 @@ export async function getMapping(mappingId) {
 
 export async function createMapping({
   companyId, userId, name, description = null, standard,
-  plTree = [], bsTree = [], highlightedIds = [],
+  cfTree = [], highlightedIds = [], cfViewMode = "consolidated",
 }) {
   const payload = {
-    company_id: companyId, name, description, standard,
-    pl_tree: plTree, bs_tree: bsTree, highlighted_ids: highlightedIds,
+    company_id: companyId,
+    name, description, standard,
+    cf_tree: cfTree,
+    highlighted_ids: highlightedIds,
+    cf_view_mode: cfViewMode,
     created_by: userId, updated_by: userId,
   };
-  const res = await fetch(`${SUPABASE_URL}/report_mappings`, {
+  const res = await fetch(`${SUPABASE_URL}/cashflow_mappings`, {
     method: "POST",
     headers: authHeaders({ Prefer: "return=representation" }),
     body: JSON.stringify(payload),
@@ -94,16 +97,16 @@ export async function createMapping({
 }
 
 export async function updateMapping({
-  mappingId, userId, name, description, plTree, bsTree, highlightedIds,
+  mappingId, userId, name, description, cfTree, highlightedIds, cfViewMode,
 }) {
   const payload = { updated_by: userId };
   if (name !== undefined) payload.name = name;
   if (description !== undefined) payload.description = description;
-  if (plTree !== undefined) payload.pl_tree = plTree;
-  if (bsTree !== undefined) payload.bs_tree = bsTree;
+  if (cfTree !== undefined) payload.cf_tree = cfTree;
   if (highlightedIds !== undefined) payload.highlighted_ids = highlightedIds;
+  if (cfViewMode !== undefined) payload.cf_view_mode = cfViewMode;
   const res = await fetch(
-    `${SUPABASE_URL}/report_mappings?mapping_id=eq.${mappingId}`,
+    `${SUPABASE_URL}/cashflow_mappings?mapping_id=eq.${mappingId}`,
     { method: "PATCH", headers: authHeaders({ Prefer: "return=representation" }), body: JSON.stringify(payload) }
   );
   if (!res.ok) { const err = await res.text(); throw new Error(err || "Update failed"); }
@@ -113,7 +116,7 @@ export async function updateMapping({
 
 export async function archiveMapping({ mappingId, userId }) {
   const res = await fetch(
-    `${SUPABASE_URL}/report_mappings?mapping_id=eq.${mappingId}`,
+    `${SUPABASE_URL}/cashflow_mappings?mapping_id=eq.${mappingId}`,
     { method: "PATCH", headers: authHeaders(), body: JSON.stringify({ is_archived: true, updated_by: userId }) }
   );
   if (!res.ok) { const err = await res.text(); throw new Error(err || "Archive failed"); }

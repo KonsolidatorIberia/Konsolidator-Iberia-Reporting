@@ -3252,7 +3252,7 @@ return (
           to   { opacity: 1; transform: translateY(0); }
         }
       `}</style>
-<div className="relative z-10 flex flex-col flex-1 min-h-0 pl-2 pr-5 gap-3">
+<div className="relative z-10 flex flex-col flex-1 min-h-0 pl-1 pr-1 gap-3">
   {/* HEADER — same height/style as PageHeader so it aligns with sidebar logo card */}
 <div
           className="relative flex-shrink-0 bg-white rounded-2xl border border-gray-100 flex items-center justify-between px-5"

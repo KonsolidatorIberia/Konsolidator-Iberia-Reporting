@@ -16,6 +16,7 @@ import {
   updateMapping as updateReportMapping,
   archiveMapping as archiveReportMapping,
 } from "../../lib/reportMappingsApi";
+import CashFlowMappingsView from "../views/CashFlowMappingsView.jsx";
 import { supabase } from "../../lib/supabaseClient";
 
 // ─── Constants ───────────────────────────────────────────────
@@ -210,18 +211,113 @@ mappingKind="report"
     );
   }
 
-  // ── Cash flow placeholder ───────────────────────────────────
+// ── Cash flow Structure view ────────────────────────────────
+  if (category === "cashflow" && selected === "structure") {
+    return (
+      <CashFlowMappingsView
+        groupAccounts={groupAccounts}
+        dimensions={preloadedDimensions}
+        search={search}
+        setSearch={setSearch}
+        colors={colors}
+        token={token}
+        onBack={() => { setSelected(null); setSearch(""); }}
+        mappingKind="structure"
+        pendingEdit={pendingEdit}
+        onPendingEditConsumed={() => setPendingEdit(null)}
+      />
+    );
+  }
+
+  // ── Cash flow Report view ───────────────────────────────────
+  if (category === "cashflow" && selected === "report") {
+    return (
+      <CashFlowMappingsView
+        groupAccounts={groupAccounts}
+        dimensions={preloadedDimensions}
+        search={search}
+        setSearch={setSearch}
+        colors={colors}
+        token={token}
+        onBack={() => { setSelected(null); setSearch(""); }}
+        mappingKind="report"
+        pendingEdit={pendingEdit}
+        onPendingEditConsumed={() => setPendingEdit(null)}
+      />
+    );
+  }
+
+  // ── Cash flow category (Structure / Report selection) ───────
   if (category === "cashflow") {
     return (
       <div className="flex flex-col h-full min-h-0">
         <PageHeader kicker="Views · Mappings" title="Cash Flow Mappings" tabs={[]} activeTab={null} onTabChange={() => {}} filters={[]} onBack={() => setCategory(null)} />
-        <div className="flex-1 flex items-center justify-center mt-3 rounded-2xl bg-white shadow-xl border border-gray-100">
-          <div className="text-center max-w-md p-10">
-            <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-5" style={{ background: "linear-gradient(135deg, #0891b2 0%, #06b6d4 100%)" }}>
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        <style>{`
+          @keyframes floatOrb1 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(20px,-30px) scale(1.1); } }
+          @keyframes floatOrb2 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-15px,20px) scale(0.95); } }
+          @keyframes floatOrb3 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(25px,15px) scale(1.05); } }
+        `}</style>
+        <div className="flex-1 flex px-0 pt-3 pb-0 min-h-0">
+          <div className="w-full h-full">
+            <div className="grid grid-cols-2 gap-5 h-full">
+              {/* Structure card */}
+              <button onClick={() => setSelected("structure")}
+                className="relative text-left rounded-2xl border-2 border-gray-100 overflow-hidden transition-all group hover:border-[#0891b2] flex flex-col h-full"
+                style={{ background: "linear-gradient(135deg, #ffffff 0%, #f0fbfd 40%, #e0f7fa 100%)", boxShadow: "0 8px 32px -8px rgba(8,145,178,0.18), 0 2px 8px -2px rgba(0,0,0,0.06)" }}>
+                <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                  <div className="absolute" style={{ top: "15%", right: "10%", width: 180, height: 180, borderRadius: "50%", background: "radial-gradient(circle, #0891b218 0%, transparent 70%)", animation: "floatOrb1 8s ease-in-out infinite" }} />
+                  <div className="absolute" style={{ bottom: "10%", right: "25%", width: 120, height: 120, borderRadius: "50%", background: "radial-gradient(circle, #06b6d420 0%, transparent 70%)", animation: "floatOrb2 11s ease-in-out 2s infinite" }} />
+                  <div className="absolute inset-0" style={{ backgroundImage: "radial-gradient(#0891b20d 1px, transparent 1px)", backgroundSize: "28px 28px" }} />
+                </div>
+                <div className="relative z-10 flex flex-col h-full p-10">
+                  <div className="mb-auto">
+                    <div className="mb-8 relative w-20 h-20">
+                      <div className="absolute inset-0 rounded-2xl opacity-20 group-hover:opacity-40 transition-opacity" style={{ background: "#0891b2", filter: "blur(12px)", transform: "translateY(4px)" }} />
+                      <div className="relative w-20 h-20 rounded-2xl flex items-center justify-center transition-transform duration-300 group-hover:scale-105" style={{ background: "linear-gradient(145deg, #0891b2 0%, #06b6d4 100%)", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.2)" }}>
+                        <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+                          <path d="M18 4v28M24 8H12.5a4.5 4.5 0 0 0 0 9h8a4.5 4.5 0 0 1 0 9H9" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.9"/>
+                        </svg>
+                      </div>
+                    </div>
+                    <p className="font-black text-2xl text-gray-800 mb-3">Structure Mappings</p>
+                    <p className="text-sm text-gray-500 leading-relaxed max-w-xs">Map your cash flow accounts to standard structures like PGC, Spanish IFRS-ES, or Danish IFRS. Choose a Consolidated or Individual view to inspect what feeds each row.</p>
+                  </div>
+                  <div className="mt-10 flex items-center justify-between">
+                    <div className="flex gap-2">{["PGC", "Spanish IFRS-ES", "Danish IFRS"].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#0891b215", color: "#0891b2" }}>{tag}</span>)}</div>
+                    <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#0891b2" }}>Open →</span>
+                  </div>
+                </div>
+              </button>
+
+              {/* Report card */}
+              <button onClick={() => setSelected("report")}
+                className="relative text-left rounded-2xl border-2 border-gray-100 overflow-hidden transition-all group hover:border-[#CF305D] flex flex-col h-full"
+                style={{ background: "linear-gradient(135deg, #ffffff 0%, #fff4f7 40%, #fef1f5 100%)", boxShadow: "0 8px 32px -8px rgba(207,48,93,0.18), 0 2px 8px -2px rgba(0,0,0,0.06)" }}>
+                <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                  <div className="absolute" style={{ top: "15%", right: "10%", width: 180, height: 180, borderRadius: "50%", background: "radial-gradient(circle, #CF305D18 0%, transparent 70%)", animation: "floatOrb2 9s ease-in-out infinite" }} />
+                  <div className="absolute" style={{ bottom: "10%", right: "25%", width: 120, height: 120, borderRadius: "50%", background: "radial-gradient(circle, #e0558520 0%, transparent 70%)", animation: "floatOrb1 12s ease-in-out 1s infinite" }} />
+                  <div className="absolute inset-0" style={{ backgroundImage: "radial-gradient(#CF305D0d 1px, transparent 1px)", backgroundSize: "28px 28px" }} />
+                </div>
+                <div className="relative z-10 flex flex-col h-full p-10">
+                  <div className="mb-auto">
+                    <div className="mb-8 relative w-20 h-20">
+                      <div className="absolute inset-0 rounded-2xl opacity-20 group-hover:opacity-40 transition-opacity" style={{ background: "#CF305D", filter: "blur(12px)", transform: "translateY(4px)" }} />
+                      <div className="relative w-20 h-20 rounded-2xl flex items-center justify-center transition-transform duration-300 group-hover:scale-105" style={{ background: "linear-gradient(145deg, #CF305D 0%, #e05585 100%)", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.2)" }}>
+                        <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+                          <rect x="4" y="5" width="28" height="5" rx="2" fill="white" opacity="0.9"/><rect x="4" y="13" width="28" height="3.5" rx="1.5" fill="white" opacity="0.6"/><rect x="4" y="19.5" width="20" height="3.5" rx="1.5" fill="white" opacity="0.5"/><rect x="4" y="26" width="14" height="3.5" rx="1.5" fill="white" opacity="0.4"/>
+                        </svg>
+                      </div>
+                    </div>
+                    <p className="font-black text-2xl text-gray-800 mb-3">Report Mappings</p>
+                    <p className="text-sm text-gray-500 leading-relaxed max-w-xs">Define custom cash flow report layouts. Reorder, add sections, mark KPIs, and choose what surfaces on the cash flow page.</p>
+                  </div>
+                  <div className="mt-10 flex items-center justify-between">
+                    <div className="flex gap-2">{["Operating", "Investing", "Financing"].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#CF305D15", color: "#CF305D" }}>{tag}</span>)}</div>
+                    <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#CF305D" }}>Open →</span>
+                  </div>
+                </div>
+              </button>
             </div>
-            <p className="font-black text-2xl text-gray-800 mb-2">Cash Flow Mappings</p>
-            <p className="text-sm text-gray-500 leading-relaxed">Define how accounts flow into operating, investing, and financing activities. Coming soon.</p>
           </div>
         </div>
       </div>
@@ -645,8 +741,8 @@ title={cfg.title}
         tabs={[]}
         activeTab={null}
         onTabChange={() => {}}
-showAllFilters={view === "list" || (view === "mapper" && mappingKind === "report")}
-        filters={view === "mapper" && mappingKind === "report" ? [
+showAllFilters={view === "list" || view === "mapper"}
+        filters={view === "mapper" ? [
           { label: "Year", value: String(filterYear ?? ""), onChange: v => setFilterYear(Number(v)),
             options: Array.from({ length: 6 }, (_, i) => new Date().getFullYear() - i).map(y => ({ value: String(y), label: String(y) })) },
           { label: "Month", value: String(filterMonth ?? ""), onChange: v => setFilterMonth(Number(v)),
@@ -679,7 +775,7 @@ showAllFilters={view === "list" || (view === "mapper" && mappingKind === "report
           ]},
         ] : []}
 onBack={cfg.back}
-        periodToggle={view === "mapper" && mappingKind === "report" && mapperStatement === "PL" ? { value: mapperPeriod, onChange: setMapperPeriod } : undefined}
+        periodToggle={view === "mapper" && mapperStatement === "PL" ? { value: mapperPeriod, onChange: setMapperPeriod } : undefined}
         headerSearch={view === "list" ? { value: search, onChange: setSearch, placeholder: "Search mappings…" } : undefined}
       headerActions={view === "list" ? [{ icon: Plus, label: "Create mapping", onClick: () => { setEditingMapping(null); setView("create"); } }] : undefined}
         headerExtra={view === "mapper" && selectedStandard ? (
@@ -1137,6 +1233,45 @@ function MapperView({ standard, groupAccounts, uploadedAccounts = [], previousUp
   // Balance Sheet is a point-in-time snapshot — always YTD regardless of toggle
   const effectivePeriodMode = statement === "BS" ? "ytd" : periodMode;
 
+  // ── Undo stack ──────────────────────────────────────────────
+  const historyRef = useRef([]);
+  const snapshotState = () => ({
+    clientTreeBy: { ...clientTreeBy },
+    templateTreeBy: { ...templateTreeBy },
+    movedClientCodes: new Set(movedClientCodes),
+    movedDimsByCode: new Map([...movedDimsByCode].map(([k, v]) => [k, new Set(v)])),
+    movedTemplateIds: new Set(movedTemplateIds),
+    highlightedIds: new Set(highlightedIds),
+  });
+  const pushHistory = () => { historyRef.current = [snapshotState(), ...historyRef.current].slice(0, 50); };
+  const undo = () => {
+    const last = historyRef.current[0];
+    if (!last) return;
+    setClientTreeBy(last.clientTreeBy);
+    setTemplateTreeBy(last.templateTreeBy);
+    setMovedClientCodes(last.movedClientCodes);
+    setMovedDimsByCode(last.movedDimsByCode);
+    setMovedTemplateIds(last.movedTemplateIds);
+    setHighlightedIds(last.highlightedIds);
+    historyRef.current = historyRef.current.slice(1);
+  };
+  const undoRef = useRef(undo);
+  undoRef.current = undo;
+  useEffect(() => {
+    const handler = (e) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z") && !e.shiftKey) {
+        const tag = e.target?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || e.target?.isContentEditable) return;
+        e.preventDefault();
+        undoRef.current();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+  // Clear history when switching standard or loading a different mapping
+  useEffect(() => { historyRef.current = []; }, [standard, editingMapping?.mapping_id]);
+
   const dimsByGroupCode = useMemo(() => {
     // Build code → name lookup from dimensions prop
     const dimNameLookup = new Map();
@@ -1446,21 +1581,24 @@ useEffect(() => {
     if (resetRef) resetRef.current = () => setShowResetConfirm(true);
   });
 
-  const handleReset = () => { setClientTreeBy({ ...clientTreeBy, [statement]: baseClientTree }); setTemplateTreeBy({ ...templateTreeBy, [statement]: baseTemplateTree }); setMovedClientCodes(new Set()); setMovedTemplateIds(new Set()); setHighlightedIds(new Set()); };
-  const handleAddBreaker = ({ name, color }) => { const nb = { id: `brk-${Date.now()}`, kind: "breaker", code: `__breaker__custom_${Date.now()}`, sectionCode: `custom_${Date.now()}`, name, color, children: [] }; setTemplateTreeBy(prev => ({ ...prev, [statement]: [...(prev[statement] ?? templateTree), nb] })); };
+  const handleReset = () => { pushHistory(); setClientTreeBy({ ...clientTreeBy, [statement]: baseClientTree }); setTemplateTreeBy({ ...templateTreeBy, [statement]: baseTemplateTree }); setMovedClientCodes(new Set()); setMovedTemplateIds(new Set()); setHighlightedIds(new Set()); };
+  const handleAddBreaker = ({ name, color }) => { pushHistory(); const nb = { id: `brk-${Date.now()}`, kind: "breaker", code: `__breaker__custom_${Date.now()}`, sectionCode: `custom_${Date.now()}`, name, color, children: [] }; setTemplateTreeBy(prev => ({ ...prev, [statement]: [...(prev[statement] ?? templateTree), nb] })); };
 const handleAddRow = ({ code, name, isSum, parentId = null }) => {
+    pushHistory();
     const nn = { id: `new-${Date.now()}`, code, name, isSum, isSumAccount: isSum, sectionCode: null, showInSummary: false, sourceSide: "template", children: [] };
     setTemplateTreeBy(prev => { const ct = prev[statement] ?? templateTree; if (!parentId) return { ...prev, [statement]: [...ct, nn] }; return { ...prev, [statement]: walkTransform(ct, n => (n.id === parentId || n.code === parentId) ? { ...n, children: [...(n.children || []), nn] } : n) }; });
   };
-  const handleCopy = (sourceSide, nodeId) => {
+const handleCopy = (sourceSide, nodeId) => {
     const sourceTree = sourceSide === "client" ? clientTree : templateTree;
     const sourceNode = findNodeById(sourceTree, nodeId);
     if (!sourceNode) return;
+    pushHistory();
     const cloned = cloneSubtree(sourceNode, sourceSide);
     setTemplateTreeBy(prev => ({ ...prev, [statement]: [...(prev[statement] ?? templateTree), cloned] }));
   };
-  const handleRename = (side, targetId, newName) => { if (side === "client") setClientTreeBy(prev => ({ ...prev, [statement]: renameNode(prev[statement] ?? clientTree, targetId, newName) })); else setTemplateTreeBy(prev => ({ ...prev, [statement]: renameNode(prev[statement] ?? templateTree, targetId, newName) })); };
+  const handleRename = (side, targetId, newName) => { pushHistory(); if (side === "client") setClientTreeBy(prev => ({ ...prev, [statement]: renameNode(prev[statement] ?? clientTree, targetId, newName) })); else setTemplateTreeBy(prev => ({ ...prev, [statement]: renameNode(prev[statement] ?? templateTree, targetId, newName) })); };
 const handleDelete = (side, targetId) => {
+    pushHistory();
     if (side === "client") {
       setClientTreeBy(prev => ({ ...prev, [statement]: deleteNode(prev[statement] ?? clientTree, targetId) }));
     } else if (targetId.startsWith("__dim__")) {
@@ -1527,6 +1665,7 @@ const handleDelete = (side, targetId) => {
 const handleDrop = ({ sourceNode, sourceSide, targetId, position, destSide }) => {
   
 if (sourceSide === "template" && destSide === "client" && mappingKind !== "report") return;
+    pushHistory();
     console.log("[handleDrop]", { code: sourceNode.code, sourceSide, destSide, targetId, position, children: sourceNode.children?.length, dims: sourceNode.dims });
 
     // ── Failsafe (structure mode, client → template) ──────────────
@@ -1744,7 +1883,7 @@ if (sourceSide === "client") {
   });
   return effective;
 })()} movedDimsByCode={movedDimsByCode} onDrop={p => handleDrop({ ...p, destSide: "client" })} onRename={(id, name) => handleRename("client", id, name)} onDelete={id => handleDelete("client", id)} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} dimsByGroupCode={dimsByGroupCode} />
-      <TemplatePanel mappingKind={mappingKind} templateAmountsById={templateAmountsById} onCopy={id => handleCopy("template", id)} tree={templateTree} sectionByCode={sectionByCode} loading={tplLoading} accent={meta.accent} standardLabel={meta.label} movedIds={movedTemplateIds} onDrop={p => handleDrop({ ...p, destSide: "template" })} onRename={(id, name) => handleRename("template", id, name)} onDelete={id => handleDelete("template", id)} onAddRow={handleAddRow} onAddBreaker={handleAddBreaker} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} highlightedIds={highlightedIds} onToggleHighlight={id => setHighlightedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; })} />
+      <TemplatePanel mappingKind={mappingKind} templateAmountsById={templateAmountsById} onCopy={id => handleCopy("template", id)} tree={templateTree} sectionByCode={sectionByCode} loading={tplLoading} accent={meta.accent} standardLabel={meta.label} movedIds={movedTemplateIds} onDrop={p => handleDrop({ ...p, destSide: "template" })} onRename={(id, name) => handleRename("template", id, name)} onDelete={id => handleDelete("template", id)} onAddRow={handleAddRow} onAddBreaker={handleAddBreaker} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} highlightedIds={highlightedIds} onToggleHighlight={id => { pushHistory(); setHighlightedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; }); }}/>
       </div>
       {conflict && <ConflictModal duplicates={conflict.duplicates} onResolve={conflict.onResolve} />}
       {showSaveForm && <SaveMappingForm name={currentName} setName={setCurrentName} description={currentDescription} setDescription={setCurrentDescription} error={saveError} saving={saving} asNew={!!editingMapping} accent={meta.accent} onCancel={() => { setShowSaveForm(false); setSaveError(null); }} onSave={() => handleSave({ asNew: !!editingMapping })} />}

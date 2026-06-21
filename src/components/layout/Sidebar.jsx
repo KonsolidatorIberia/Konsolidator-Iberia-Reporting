@@ -172,9 +172,9 @@ const handleNavigate = (key) => {
                   onMouseLeave={(e) => { if (!isActiveParent) { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = body1Style?.color ?? "#2f3138"; } }}
 className="w-full flex items-center py-2.5 transition-all duration-200"
                   style={{
-                    justifyContent: isOpen ? "flex-start" : "center",
-                    paddingLeft: isOpen ? "1.25rem" : 0,
-                    paddingRight: isOpen ? "1rem" : 0,
+justifyContent: "flex-start",
+                    paddingLeft: "1.25rem",
+                    paddingRight: "1rem",
                     color: isActiveParent ? colors.primary : (body1Style?.color ?? "#2f3138"),
                     backgroundColor: "transparent",
                   }}
@@ -246,9 +246,9 @@ maxWidth:   isOpen ? 140 : 0,
                   onMouseLeave={(e) => { if (!isActive) { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = body1Style?.color ?? "#2f3138"; } }}
 className="w-full flex items-center py-2.5 transition-all duration-200"
                   style={{
-                    justifyContent: isOpen ? "flex-start" : "center",
-                    paddingLeft: isOpen ? "1.25rem" : 0,
-                    paddingRight: isOpen ? "1rem" : 0,
+justifyContent: "flex-start",
+                    paddingLeft: "1.25rem",
+                    paddingRight: "1rem",
                     color: isActive ? colors.primary : (body1Style?.color ?? "#2f3138"),
                     backgroundColor: "transparent",
                   }}
@@ -261,7 +261,7 @@ className="w-full flex items-center py-2.5 transition-all duration-200"
                       color: isActive ? colors.primary : body1Style?.color,
                       maxWidth:   isOpen ? 140 : 0,
                       opacity:    isOpen ? 1 : 0,
-                      marginLeft: "0.75rem",
+marginLeft: isOpen ? "0.75rem" : 0,
                       transition: `max-width ${TRANSITION}, opacity ${TRANSITION}`,
                     }}
                   >
