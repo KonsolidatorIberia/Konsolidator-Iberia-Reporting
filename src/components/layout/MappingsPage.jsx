@@ -7,6 +7,7 @@ import {
 import { useSettings } from "./SettingsContext.jsx";
 import PageHeader from "./PageHeader.jsx";
 import { GitMerge, LayoutTemplate } from "lucide-react";
+import { useT } from "./SettingsContext.jsx";
 import {
   listMappings, createMapping, updateMapping, archiveMapping, getActiveCompanyId,
 } from "../../lib/mappingsApi";
@@ -18,6 +19,7 @@ import {
 } from "../../lib/reportMappingsApi";
 import CashFlowMappingsView from "../views/CashFlowMappingsView.jsx";
 import { supabase } from "../../lib/supabaseClient";
+import { useCurrentUserResourceAccess } from "../../lib/userPermissionsApi";
 
 // ─── Constants ───────────────────────────────────────────────
 const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
@@ -28,26 +30,32 @@ const sbHeaders = {
 };
 
 const STANDARD_META = {
-  PGC: {
-    label: "PGC", full: "Plan General Contable",
-    description: "Estándar contable español oficial. Códigos alfanuméricos como A.01.S, A.04.D.",
-    accent: "#1a2f8a", accentBg: "#eef1fb",
-  },
-  SpanishIFRS: {
-    label: "Spanish IFRS", full: "IFRS Españolizado",
-    description: "Adaptación española del estándar internacional IFRS. Códigos terminados en .PL.",
-    accent: "#dc7533", accentBg: "#fef3c7",
-  },
-  DanishIFRS: {
-    label: "Danish IFRS", full: "Danish IFRS",
-    description: "Adaptación danesa del estándar internacional IFRS. Códigos numéricos de 5-6 dígitos.",
-    accent: "#57aa78", accentBg: "#dcfce7",
-  },
-Scratch: {
-    label: "Custom", full: "From scratch",
-    description: "Build your own structure row by row with full control.",
-    accent: "#1a2f8a", accentBg: "#eef1fb",
-  },
+  PGC:         { accent: "#1a2f8a", accentBg: "#eef1fb" },
+  SpanishIFRS: { accent: "#dc7533", accentBg: "#fef3c7" },
+  DanishIFRS:  { accent: "#57aa78", accentBg: "#dcfce7" },
+  Scratch:     { accent: "#1a2f8a", accentBg: "#eef1fb" },
+};
+
+const stdLabel = (t, std) => {
+  if (std === "PGC")         return "PGC";
+  if (std === "SpanishIFRS") return t("am_std_spanish_ifrs_label");
+  if (std === "DanishIFRS")  return "Danish IFRS";
+  if (std === "Scratch")     return t("am_std_scratch_label");
+  return std;
+};
+const stdFull = (t, std) => {
+  if (std === "PGC")         return t("am_std_pgc_full");
+  if (std === "SpanishIFRS") return t("am_std_spanish_ifrs_full");
+  if (std === "DanishIFRS")  return t("am_std_danish_ifrs_full");
+  if (std === "Scratch")     return t("am_std_scratch_full");
+  return std;
+};
+const stdDesc = (t, std) => {
+  if (std === "PGC")         return t("am_std_pgc_desc");
+  if (std === "SpanishIFRS") return t("am_std_spanish_ifrs_desc");
+  if (std === "DanishIFRS")  return t("am_std_danish_ifrs_desc");
+  if (std === "Scratch")     return t("am_std_scratch_desc");
+  return "";
 };
 
 // ─── Icon toggle button sizing (panel header toggles) ─────────
@@ -153,7 +161,8 @@ function filterTreeTpl(tree, q) { function walk(nodes) { return nodes.map(n => {
 
 // ─── Main export ─────────────────────────────────────────────
 export default function MappingsPage({ token, preloadedData = {} }) {
-  const { colors } = useSettings();
+const { colors } = useSettings();
+  const t = useT();
 const groupAccounts = preloadedData.groupAccounts ?? [];
   const preloadedDimensions = preloadedData.dimensions ?? [];
 
@@ -251,7 +260,7 @@ mappingKind="report"
   if (category === "cashflow") {
     return (
       <div className="flex flex-col h-full min-h-0">
-        <PageHeader kicker="Views · Mappings" title="Cash Flow Mappings" tabs={[]} activeTab={null} onTabChange={() => {}} filters={[]} onBack={() => setCategory(null)} />
+        <PageHeader kicker={t("am_kicker_views_mappings")} title={t("am_title_cashflow_mappings")} tabs={[]} activeTab={null} onTabChange={() => {}} filters={[]} onBack={() => setCategory(null)} />
         <style>{`
           @keyframes floatOrb1 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(20px,-30px) scale(1.1); } }
           @keyframes floatOrb2 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-15px,20px) scale(0.95); } }
@@ -279,12 +288,12 @@ mappingKind="report"
                         </svg>
                       </div>
                     </div>
-                    <p className="font-black text-2xl text-gray-800 mb-3">Structure Mappings</p>
-                    <p className="text-sm text-gray-500 leading-relaxed max-w-xs">Map your cash flow accounts to standard structures like PGC, Spanish IFRS-ES, or Danish IFRS. Choose a Consolidated or Individual view to inspect what feeds each row.</p>
+<p className="font-black text-2xl text-gray-800 mb-3">{t("am_card_structure_title")}</p>
+                    <p className="text-sm text-gray-500 leading-relaxed max-w-xs">{t("am_card_structure_desc_cashflow")}</p>
                   </div>
                   <div className="mt-10 flex items-center justify-between">
                     <div className="flex gap-2">{["PGC", "Spanish IFRS-ES", "Danish IFRS"].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#0891b215", color: "#0891b2" }}>{tag}</span>)}</div>
-                    <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#0891b2" }}>Open →</span>
+                    <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#0891b2" }}>{t("am_cta_open")}</span>
                   </div>
                 </div>
               </button>
@@ -308,12 +317,12 @@ mappingKind="report"
                         </svg>
                       </div>
                     </div>
-                    <p className="font-black text-2xl text-gray-800 mb-3">Report Mappings</p>
-                    <p className="text-sm text-gray-500 leading-relaxed max-w-xs">Define custom cash flow report layouts. Reorder, add sections, mark KPIs, and choose what surfaces on the cash flow page.</p>
+<p className="font-black text-2xl text-gray-800 mb-3">{t("am_card_report_title")}</p>
+                    <p className="text-sm text-gray-500 leading-relaxed max-w-xs">{t("am_card_report_desc_cashflow")}</p>
                   </div>
                   <div className="mt-10 flex items-center justify-between">
-                    <div className="flex gap-2">{["Operating", "Investing", "Financing"].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#CF305D15", color: "#CF305D" }}>{tag}</span>)}</div>
-                    <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#CF305D" }}>Open →</span>
+                    <div className="flex gap-2">{[t("am_tag_operating"), t("am_tag_investing"), t("am_tag_financing")].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#CF305D15", color: "#CF305D" }}>{tag}</span>)}</div>
+                    <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#CF305D" }}>{t("am_cta_open")}</span>
                   </div>
                 </div>
               </button>
@@ -328,7 +337,7 @@ mappingKind="report"
   if (category === "account") {
     return (
       <div className="flex flex-col h-full min-h-0">
-        <PageHeader kicker="Views · Mappings" title="Account Mappings" tabs={[]} activeTab={null} onTabChange={() => {}} filters={[]} onBack={() => setCategory(null)} />
+        <PageHeader kicker={t("am_kicker_views_mappings")} title={t("am_title_account_mappings")} tabs={[]} activeTab={null} onTabChange={() => {}} filters={[]} onBack={() => setCategory(null)} />
         <style>{`
           @keyframes floatOrb1 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(20px,-30px) scale(1.1); } }
           @keyframes floatOrb2 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-15px,20px) scale(0.95); } }
@@ -362,12 +371,12 @@ mappingKind="report"
                         </svg>
                       </div>
                     </div>
-                    <p className="font-black text-2xl text-gray-800 mb-3">Structure Mappings</p>
-                    <p className="text-sm text-gray-500 leading-relaxed max-w-xs">Map your chart of accounts to standard structures like PGC, Spanish IFRS, or Danish IFRS. Control how accounts are grouped and labeled across all reports.</p>
+<p className="font-black text-2xl text-gray-800 mb-3">{t("am_card_structure_title")}</p>
+                    <p className="text-sm text-gray-500 leading-relaxed max-w-xs">{t("am_card_structure_desc_account")}</p>
                   </div>
                   <div className="mt-10 flex items-center justify-between">
                     <div className="flex gap-2">{["PGC", "Spanish IFRS", "Danish IFRS"].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#1a2f8a15", color: "#1a2f8a" }}>{tag}</span>)}</div>
-                    <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#1a2f8a" }}>Open →</span>
+                    <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#1a2f8a" }}>{t("am_cta_open")}</span>
                   </div>
                 </div>
               </button>
@@ -393,12 +402,12 @@ mappingKind="report"
                         </svg>
                       </div>
                     </div>
-                    <p className="font-black text-2xl text-gray-800 mb-3">Report Mappings</p>
-                    <p className="text-sm text-gray-500 leading-relaxed max-w-xs">Define custom report templates and layouts. Control which sections, KPIs, and account groups appear in your financial reports.</p>
+<p className="font-black text-2xl text-gray-800 mb-3">{t("am_card_report_title")}</p>
+                    <p className="text-sm text-gray-500 leading-relaxed max-w-xs">{t("am_card_report_desc_account")}</p>
                   </div>
                   <div className="mt-10 flex items-center justify-between">
                     <div className="flex gap-2">{["PGC", "Spanish IFRS", "Danish IFRS"].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#CF305D15", color: "#CF305D" }}>{tag}</span>)}</div>
-                    <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#CF305D" }}>Open →</span>
+                    <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#CF305D" }}>{t("am_cta_open")}</span>
                   </div>
                 </div>
               </button>
@@ -412,7 +421,7 @@ mappingKind="report"
   // ── Top landing (Account / Cash Flow) ───────────────────────
   return (
     <div className="flex flex-col h-full min-h-0">
-      <PageHeader kicker="Views" title="Mappings" tabs={[]} activeTab={null} onTabChange={() => {}} filters={[]} />
+      <PageHeader kicker={t("am_kicker_views")} title={t("am_title_mappings")} tabs={[]} activeTab={null} onTabChange={() => {}} filters={[]} />
       <style>{`
         @keyframes floatOrb1 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(20px,-30px) scale(1.1); } }
         @keyframes floatOrb2 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-15px,20px) scale(0.95); } }
@@ -457,12 +466,12 @@ mappingKind="report"
                       </svg>
                     </div>
                   </div>
-<p className="font-black text-2xl text-gray-800 mb-3">Account Mappings</p>
-                  <p className="text-sm text-gray-500 leading-relaxed max-w-xs">Organize how your chart of accounts maps into standard structures and how it appears across your financial reports. Includes Structure and Report mappings.</p>
+<p className="font-black text-2xl text-gray-800 mb-3">{t("am_title_account_mappings")}</p>
+                  <p className="text-sm text-gray-500 leading-relaxed max-w-xs">{t("am_card_account_desc")}</p>
                 </div>
                 <div className="mt-10 flex items-center justify-between">
-                  <div className="flex gap-2">{["Structure", "Report"].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#1a2f8a15", color: "#1a2f8a" }}>{tag}</span>)}</div>
-                  <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#1a2f8a" }}>Open →</span>
+                  <div className="flex gap-2">{[t("am_tag_structure"), t("am_tag_report")].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#1a2f8a15", color: "#1a2f8a" }}>{tag}</span>)}</div>
+                  <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#1a2f8a" }}>{t("am_cta_open")}</span>
                 </div>
               </div>
             </button>
@@ -499,12 +508,12 @@ mappingKind="report"
                       </svg>
                     </div>
                   </div>
-<p className="font-black text-2xl text-gray-800 mb-3">Cash Flow Mappings</p>
-                  <p className="text-sm text-gray-500 leading-relaxed max-w-xs">Define how accounts flow into operating, investing, and financing activities to build your cash flow statement.</p>
+<p className="font-black text-2xl text-gray-800 mb-3">{t("am_title_cashflow_mappings")}</p>
+                  <p className="text-sm text-gray-500 leading-relaxed max-w-xs">{t("am_card_cashflow_desc")}</p>
                 </div>
                 <div className="mt-10 flex items-center justify-between">
-<div className="flex gap-2">{["Operating", "Investing", "Financing"].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#0891b215", color: "#0891b2" }}>{tag}</span>)}</div>
-                  <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#0891b2" }}>Open →</span>
+<div className="flex gap-2">{[t("am_tag_operating"), t("am_tag_investing"), t("am_tag_financing")].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#0891b215", color: "#0891b2" }}>{tag}</span>)}</div>
+                  <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center gap-2" style={{ color: "#0891b2" }}>{t("am_cta_open")}</span>
                 </div>
               </div>
             </button>
@@ -517,6 +526,7 @@ mappingKind="report"
 
 // ─── Structure Mappings View ──────────────────────────────────
 function StructureMappingsView({ groupAccounts, dimensions = [], search, setSearch, colors, onBack, token, mappingKind = "structure", initialView = "list", initialStandard = null, pendingEdit = null, onPendingEditConsumed }) {
+const t = useT();
   const api = useMemo(() => (
     mappingKind === "report"
       ? { list: listReportMappings, create: createReportMapping, update: updateReportMapping, archive: archiveReportMapping }
@@ -531,7 +541,10 @@ const [mappingsLoading, setMappingsLoading] = useState(true);
 const [editingMapping, setEditingMapping] = useState(null);
 const [standardMappingId, setStandardMappingId] = useState(null);
 const [pendingStandardMapping, setPendingStandardMapping] = useState(null);
-  const [showBackConfirm, setShowBackConfirm] = useState(false);
+const [showBackConfirm, setShowBackConfirm] = useState(false);
+  const [mapperDirty, setMapperDirty] = useState(false);
+  const [pendingNav, setPendingNav] = useState(null);
+  const resourceAccess = useCurrentUserResourceAccess();
 const [mapperStatement, setMapperStatement] = useState("PL");
   const [mapperPeriod, setMapperPeriod] = useState("ytd");
   const [filterYear, setFilterYear] = useState(null);
@@ -541,7 +554,19 @@ const [mapperStatement, setMapperStatement] = useState("PL");
   const [filterCompany, setFilterCompany] = useState("");
   const [sourcesList, setSourcesList] = useState([]);
   const [structuresList, setStructuresList] = useState([]);
-  const [companiesList, setCompaniesList] = useState([]);
+const [companiesList, setCompaniesList] = useState([]);
+  const effectiveSources = useMemo(() => {
+    if (!resourceAccess?.source) return sourcesList;
+    return sourcesList.filter(s => resourceAccess.source.has(s.source ?? s.Source ?? s));
+  }, [sourcesList, resourceAccess]);
+  const effectiveStructures = useMemo(() => {
+    if (!resourceAccess?.structure) return structuresList;
+    return structuresList.filter(s => resourceAccess.structure.has(s.groupStructure ?? s.GroupStructure ?? s));
+  }, [structuresList, resourceAccess]);
+  const effectiveCompanies = useMemo(() => {
+    if (!resourceAccess?.company) return companiesList;
+    return companiesList.filter(c => resourceAccess.company.has(c.companyShortName ?? c.CompanyShortName ?? c));
+  }, [companiesList, resourceAccess]);
   const [favorites, setFavorites] = useState(new Set());
   const [filterStandard, setFilterStandard] = useState("");
   const [filterUser, setFilterUser] = useState("");
@@ -654,10 +679,10 @@ const [uploadedAccounts, setUploadedAccounts] = useState([]);
   useEffect(() => {
     if (!token || !groupAccounts.length) return;
     if (filterYear && filterMonth && filterSource && filterStructure && filterCompany) return;
-    if (!sourcesList.length || !structuresList.length || !companiesList.length) return;
-    const src = sourcesList[0];
-    const str = structuresList[0];
-    const co = companiesList[0];
+if (!effectiveSources.length || !effectiveStructures.length || !effectiveCompanies.length) return;
+    const src = effectiveSources[0];
+    const str = effectiveStructures[0];
+    const co = effectiveCompanies[0];
     const source = src.source ?? src.Source ?? src;
     const structure = str.groupStructure ?? str.GroupStructure ?? str;
     const company = co.companyShortName ?? co.CompanyShortName ?? co;
@@ -682,7 +707,7 @@ const [uploadedAccounts, setUploadedAccounts] = useState([]);
         m--; if (m < 1) { m = 12; y--; }
       }
     })();
-  }, [token, groupAccounts.length, sourcesList, structuresList, companiesList, filterYear, filterMonth, filterSource, filterStructure, filterCompany]);
+  }, [token, groupAccounts.length, effectiveSources, effectiveStructures, effectiveCompanies, filterYear, filterMonth, filterSource, filterStructure, filterCompany]);
 
 // Refetch uploadedAccounts whenever filters change
   useEffect(() => {
@@ -722,62 +747,83 @@ const rows = json.value ?? (Array.isArray(json) ? json : []);
     })();
   }, [token, filterYear, filterMonth, filterSource, filterStructure, filterCompany]);
 
-const kindLabel = mappingKind === "report" ? "Report Mappings" : "Structure Mappings";
+const handleMapperBack = () => {
+    if (mapperDirty) { setShowBackConfirm(true); return; }
+    setEditingMapping(null); setSelectedStandard(null); setView("list");
+  };
+
+useEffect(() => {
+    window.__navGuard = (go) => {
+      if (view !== "mapper" || !mapperDirty) { go(); return; }
+      setPendingNav(() => go);
+      setShowBackConfirm(true);
+    };
+    return () => { window.__navGuard = null; };
+  }, [view, mapperDirty]);
+
+  useEffect(() => {
+    if (!mapperDirty) return;
+    const h = (e) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", h);
+    return () => window.removeEventListener("beforeunload", h);
+  }, [mapperDirty]);
+
+const kindLabel = mappingKind === "report" ? t("am_list_title_report") : t("am_list_title_structure");
 const activeAccent = (selectedStandard && STANDARD_META[selectedStandard]?.accent) || colors?.primary || "#1a2f8a";
   const headerConfig = {
     list: { title: kindLabel, back: onBack },
-    create: { title: "Create mapping", back: () => setView("list") },
-    selectStandard: { title: "Select standard", back: () => setView("create") },
-mapper: { title: selectedStandard ? `Mapping · ${STANDARD_META[selectedStandard]?.label}` : "Mapper", back: initialView === "mapper" ? null : () => setShowBackConfirm(true) },
+    create: { title: t("am_create_title"), back: () => setView("list") },
+    selectStandard: { title: t("am_select_standard_title"), back: () => setView("create") },
+mapper: { title: selectedStandard ? `${t("am_mapper_title_prefix")} · ${stdLabel(t, selectedStandard)}` : t("am_mapper_title_default"), back: initialView === "mapper" ? null : handleMapperBack },
   };
   const cfg = headerConfig[view] ?? headerConfig.list;
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <PageHeader
-        kicker="Views · Mappings"
+<PageHeader
+        kicker={t("am_kicker_views_mappings")}
 title={cfg.title}
         titleSuffix={view === "mapper" && editingMapping?.name ? editingMapping.name : undefined}
         tabs={[]}
         activeTab={null}
         onTabChange={() => {}}
 showAllFilters={view === "list" || view === "mapper"}
-        filters={view === "mapper" ? [
-          { label: "Year", value: String(filterYear ?? ""), onChange: v => setFilterYear(Number(v)),
+filters={view === "mapper" ? [
+          { label: t("filter_year"), value: String(filterYear ?? ""), onChange: v => setFilterYear(Number(v)),
             options: Array.from({ length: 6 }, (_, i) => new Date().getFullYear() - i).map(y => ({ value: String(y), label: String(y) })) },
-          { label: "Month", value: String(filterMonth ?? ""), onChange: v => setFilterMonth(Number(v)),
-            options: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"].map((m, i) => ({ value: String(i+1), label: m })) },
-          { label: "Source", value: filterSource, onChange: setFilterSource,
-            options: sourcesList.map(s => { const v = s.source ?? s.Source ?? s; return { value: v, label: v }; }) },
-          { label: "Structure", value: filterStructure, onChange: setFilterStructure,
-            options: structuresList.map(s => { const v = s.groupStructure ?? s.GroupStructure ?? s; return { value: v, label: v }; }) },
-          { label: "Company", value: filterCompany, onChange: setFilterCompany,
-            options: companiesList.map(c => { const v = c.companyShortName ?? c.CompanyShortName ?? c; const label = c.companyLegalName ?? c.CompanyLegalName ?? v; return { value: v, label }; }) },
+          { label: t("filter_month"), value: String(filterMonth ?? ""), onChange: v => setFilterMonth(Number(v)),
+            options: Array.from({ length: 12 }, (_, i) => ({ value: String(i+1), label: t(`month_${i+1}`) })) },
+{ label: t("filter_source"), value: filterSource, onChange: setFilterSource,
+            options: effectiveSources.map(s => { const v = s.source ?? s.Source ?? s; return { value: v, label: v }; }) },
+          { label: t("filter_structure"), value: filterStructure, onChange: setFilterStructure,
+            options: effectiveStructures.map(s => { const v = s.groupStructure ?? s.GroupStructure ?? s; return { value: v, label: v }; }) },
+          { label: t("filter_company"), value: filterCompany, onChange: setFilterCompany,
+            options: effectiveCompanies.map(c => { const v = c.companyShortName ?? c.CompanyShortName ?? c; const label = c.companyLegalName ?? c.CompanyLegalName ?? v; return { value: v, label }; }) },
         ] : view === "list" ? [
-          { label: "Standard", value: filterStandard, onChange: setFilterStandard, options: [
-            { value: "", label: "All standards", displayLabel: "Standard" },
+{ label: t("am_filter_standard"), value: filterStandard, onChange: setFilterStandard, options: [
+            { value: "", label: t("am_filter_all_standards"), displayLabel: t("am_filter_standard") },
             { value: "PGC", label: "PGC", displayLabel: "PGC" },
-            { value: "SpanishIFRS", label: "Spanish IFRS", displayLabel: "Spanish IFRS" },
+            { value: "SpanishIFRS", label: t("am_std_spanish_ifrs_label"), displayLabel: t("am_std_spanish_ifrs_label") },
             { value: "DanishIFRS", label: "Danish IFRS", displayLabel: "Danish IFRS" },
-            { value: "Scratch", label: "Custom", displayLabel: "Custom" },
+            { value: "Scratch", label: t("am_filter_custom"), displayLabel: t("am_filter_custom") },
           ]},
-          { label: "User", value: filterUser, onChange: setFilterUser, options: [
-            { value: "", label: "All users", displayLabel: "User" },
+          { label: t("am_filter_user"), value: filterUser, onChange: setFilterUser, options: [
+            { value: "", label: t("am_filter_all_users"), displayLabel: t("am_filter_user") },
             ...uniqueUsers.map(u => ({ value: u, label: u, displayLabel: u })),
           ]},
-{ label: "Sort", value: sortBy, onChange: setSortBy, options: [
-            { value: "desc", label: "Most recent first", displayLabel: "Most recent" },
-            { value: "asc", label: "Oldest first", displayLabel: "Oldest" },
+{ label: t("am_filter_sort"), value: sortBy, onChange: setSortBy, options: [
+            { value: "desc", label: t("am_filter_most_recent"), displayLabel: t("am_filter_most_recent_short") },
+            { value: "asc", label: t("am_filter_oldest"), displayLabel: t("am_filter_oldest_short") },
           ]},
-{ label: "Favorites", value: filterFavorite ? "yes" : "", onChange: v => setFilterFavorite(v === "yes"), options: [
-            { value: "", label: "All", displayLabel: "Favorites" },
-            { value: "yes", label: "Favorites only", displayLabel: "★ Favorites" },
+{ label: t("am_filter_favorites"), value: filterFavorite ? "yes" : "", onChange: v => setFilterFavorite(v === "yes"), options: [
+            { value: "", label: t("am_filter_all"), displayLabel: t("am_filter_favorites") },
+            { value: "yes", label: t("am_filter_favorites_only"), displayLabel: t("am_filter_favorites_only_short") },
           ]},
         ] : []}
 onBack={cfg.back}
         periodToggle={view === "mapper" && mapperStatement === "PL" ? { value: mapperPeriod, onChange: setMapperPeriod } : undefined}
-        headerSearch={view === "list" ? { value: search, onChange: setSearch, placeholder: "Search mappings…" } : undefined}
-      headerActions={view === "list" ? [{ icon: Plus, label: "Create mapping", onClick: () => { setEditingMapping(null); setView("create"); } }] : undefined}
+headerSearch={view === "list" ? { value: search, onChange: setSearch, placeholder: t("am_search_placeholder") } : undefined}
+      headerActions={view === "list" ? [{ icon: Plus, label: t("am_create_mapping_btn"), onClick: () => { setEditingMapping(null); setView("create"); } }] : undefined}
         headerExtra={view === "mapper" && selectedStandard ? (
           <div className="flex items-center gap-2">
 <div className="relative flex items-center gap-0.5 p-1 bg-gray-50 border border-gray-100 rounded-xl"
@@ -796,7 +842,7 @@ onBack={cfg.back}
                   pill.style.width = active.offsetWidth + 'px';
                 }
               }}>
-              {[["PL","P&L"],["BS","Balance Sheet"]].map(([key, label]) => (
+              {[["PL", t("am_mapper_pl")],["BS", t("am_mapper_bs")]].map(([key, label]) => (
                 <button key={key} data-active={mapperStatement === key} onClick={() => setMapperStatement(key)}
                   className="relative z-10 px-4 py-1.5 rounded-lg text-xs font-black transition-colors duration-200"
                   style={{ color: mapperStatement === key ? "white" : "#9ca3af" }}>
@@ -805,19 +851,19 @@ onBack={cfg.back}
               ))}
             </div>
 <button onClick={() => mapperResetRef.current?.()}
-              title="Reset"
+              title={t("am_mapper_reset_tooltip")}
               className="flex items-center justify-center w-8 h-8 rounded-xl transition-all hover:scale-105"
               style={{ background: "rgba(26,47,138,0.06)", color: activeAccent, border: "1px solid rgba(26,47,138,0.1)" }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
             </button>
 <button onClick={() => mapperSaveRef.current?.()}
-              title={editingMapping ? "Save" : "Save mapping"}
+              title={editingMapping ? t("am_mapper_save_tooltip") : t("am_mapper_save_mapping_tooltip")}
               className="flex items-center justify-center w-8 h-8 rounded-xl transition-all hover:scale-105"
               style={{ background: activeAccent, color: "white", boxShadow: `0 4px 12px -4px ${activeAccent}60` }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
             </button>
             {initialView === "mapper" && onBack && (
-              <button onClick={onBack} title="Close"
+              <button onClick={onBack} title={t("am_mapper_close_tooltip")}
                 className="flex items-center justify-center w-8 h-8 rounded-xl transition-all hover:scale-105 ml-1"
                 style={{ background: "rgba(0,0,0,0.06)", color: "#6b7280", border: "1px solid rgba(0,0,0,0.08)" }}>
                 ✕
@@ -843,7 +889,7 @@ onBack={cfg.back}
             onCreate={() => { setEditingMapping(null); setView("create"); }}
             onOpen={m => { setEditingMapping(m); setSelectedStandard(m.standard); setView("mapper"); }}
             onArchive={async m => {
-              if (!window.confirm(`Delete "${m.name}"? This cannot be undone.`)) return;
+              if (!window.confirm(t("am_card_delete_confirm").replace("{name}", m.name))) return;
               await api.archive({ mappingId: m.mapping_id, userId: authUserId });
               const rows = await api.list({ companyId });
               setMappings(rows);
@@ -880,7 +926,8 @@ statement={mapperStatement}
             setStatement={setMapperStatement}
             periodMode={mapperPeriod}
             saveRef={mapperSaveRef}
-            resetRef={mapperResetRef}
+resetRef={mapperResetRef}
+            onDirtyChange={setMapperDirty}
 api={api}
             mappingKind={mappingKind}
           />
@@ -894,20 +941,25 @@ api={api}
             <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-3" style={{ background: "rgba(255,255,255,0.2)" }}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
             </div>
-            <p className="text-white font-black text-lg leading-tight">Discard changes?</p>
-            <p className="text-white/70 text-[11px] mt-0.5">Any unsaved changes will be lost</p>
+<p className="text-white font-black text-lg leading-tight">{t("am_discard_changes_title")}</p>
+            <p className="text-white/70 text-[11px] mt-0.5">{t("am_discard_changes_subtitle")}</p>
           </div>
           <div className="p-5 space-y-2">
-            <p className="text-xs text-gray-500 leading-relaxed pb-2">Going back will discard any unsaved changes to this mapping. This can't be undone.</p>
+            <p className="text-xs text-gray-500 leading-relaxed pb-2">{t("am_discard_changes_desc")}</p>
             <div className="flex items-center gap-2">
-              <button onClick={() => setShowBackConfirm(false)}
+<button onClick={() => { setShowBackConfirm(false); setPendingNav(null); }}
                 className="flex-1 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all">
-                Stay
+                {t("am_btn_stay")}
               </button>
-              <button onClick={() => { setShowBackConfirm(false); setEditingMapping(null); setSelectedStandard(null); setView("list"); }}
+              <button onClick={() => {
+                  setShowBackConfirm(false);
+                  setMapperDirty(false);
+                  if (pendingNav) { const go = pendingNav; setPendingNav(null); go(); return; }
+                  setEditingMapping(null); setSelectedStandard(null); setView("list");
+                }}
                 className="flex-1 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-white transition-all hover:opacity-90 active:scale-[0.98]"
                 style={{ background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)", boxShadow: "0 4px 14px -4px rgba(245,158,11,0.5)" }}>
-                Discard & go back
+                {t("am_btn_discard_go_back")}
               </button>
             </div>
           </div>
@@ -922,9 +974,9 @@ api={api}
             <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-3" style={{ background: "rgba(255,255,255,0.2)" }}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
             </div>
-            <p className="text-white font-black text-lg leading-tight">Set as standard mapping?</p>
+<p className="text-white font-black text-lg leading-tight">{t("am_set_standard_modal_title")}</p>
             <p className="text-white/70 text-xs mt-1 leading-relaxed">
-              "{pendingStandardMapping.name}" will be used as the default account grouping on the home page.
+              {t("am_set_standard_modal_subtitle").replace("{name}", pendingStandardMapping.name)}
             </p>
           </div>
           <div className="p-5 space-y-2">
@@ -932,12 +984,12 @@ api={api}
               onClick={async () => { await handleSetStandard(pendingStandardMapping.mapping_id); setPendingStandardMapping(null); }}
               className="w-full py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-white transition-all hover:opacity-90"
               style={{ background: "linear-gradient(135deg, #57aa78 0%, #3d8c5c 100%)" }}>
-              Yes, set as standard
+              {t("am_btn_yes_set_standard")}
             </button>
             <button
               onClick={() => setPendingStandardMapping(null)}
               className="w-full py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all">
-              Not now
+              {t("am_btn_not_now")}
             </button>
           </div>
         </div>
@@ -949,6 +1001,7 @@ api={api}
 
 // ─── ListView ────────────────────────────────────────────────
 function ListView({ mappings, loading, search, standardMappingId, onSetStandard, favorites = new Set(), onToggleFavorite, filterStandard = "", filterUser = "", filterFavorite = false, sortBy = "desc", onCreate, onOpen, onArchive }) {
+  const t = useT();
   const filtered = useMemo(() => {
     let list = mappings;
     if (search.trim()) list = list.filter(m => String(m.name ?? m.mapping_name ?? "").toLowerCase().includes(search.toLowerCase()));
@@ -968,11 +1021,11 @@ return [...list].sort((a, b) => {
     <div className="overflow-y-auto flex-1 flex flex-col">
 {search && filtered.length !== mappings.length && (
         <div className="flex items-center gap-3 p-4 pb-0">
-          <div className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-amber-50 text-amber-600">{filtered.length} of {mappings.length} matching</div>
+<div className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-amber-50 text-amber-600">{filtered.length} {t("am_matching_count_of")} {mappings.length} {t("am_matching_count_matching")}</div>
         </div>
       )}
       {loading ? (
-        <div className="text-center py-20 text-xs text-gray-400">Loading mappings…</div>
+        <div className="text-center py-20 text-xs text-gray-400">{t("am_loading_mappings")}</div>
       ) : filtered.length === 0 ? (
         <EmptyLibrary onCreate={onCreate} hasSearch={!!search.trim()} />
 ) : (
@@ -985,17 +1038,19 @@ return [...list].sort((a, b) => {
 }
 
 function EmptyLibrary({ onCreate, hasSearch }) {
+  const t = useT();
   return (
     <div className="flex-1 bg-gradient-to-br from-[#f8f9ff] to-white rounded-2xl border border-gray-100 text-center flex flex-col items-center justify-center">
       <div className="w-16 h-16 bg-[#eef1fb] rounded-2xl flex items-center justify-center mx-auto mb-5"><Library size={28} className="text-[#1a2f8a]" /></div>
-      <p className="text-gray-700 font-black text-base mb-2">{hasSearch ? "No mappings match your search" : "No mappings yet"}</p>
-      <p className="text-gray-400 text-xs mb-6 max-w-sm mx-auto leading-relaxed">{hasSearch ? "Try a different search term or clear the search to see all mappings." : "Create your first mapping to start customizing how your accounts are organized and displayed."}</p>
-      {!hasSearch && <button onClick={onCreate} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#1a2f8a] hover:bg-[#1a2f8a]/90 text-white text-xs font-black transition-all shadow-md shadow-[#1a2f8a]/20"><Plus size={14} />Create your first mapping</button>}
+      <p className="text-gray-700 font-black text-base mb-2">{hasSearch ? t("am_empty_search") : t("am_empty_no_mappings")}</p>
+      <p className="text-gray-400 text-xs mb-6 max-w-sm mx-auto leading-relaxed">{hasSearch ? t("am_empty_search_desc") : t("am_empty_desc")}</p>
+      {!hasSearch && <button onClick={onCreate} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#1a2f8a] hover:bg-[#1a2f8a]/90 text-white text-xs font-black transition-all shadow-md shadow-[#1a2f8a]/20"><Plus size={14} />{t("am_create_first")}</button>}
     </div>
   );
 }
 
 function MappingCard({ mapping, isStandard, isFavorite, onSetStandard, onToggleFavorite, onOpen, onArchive }) {
+  const t = useT();
   const standardMeta = STANDARD_META[mapping.standard];
   return (
     <div className="bg-white rounded-2xl border border-gray-100 p-5 hover:border-[#1a2f8a]/30 hover:shadow-lg transition-all group flex flex-col">
@@ -1005,16 +1060,16 @@ function MappingCard({ mapping, isStandard, isFavorite, onSetStandard, onToggleF
             <FileText size={16} style={{ color: standardMeta?.accent ?? "#1a2f8a" }} />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="font-black text-sm text-gray-800 truncate">{mapping.name ?? "Untitled"}</p>
-            <p className="text-[10px] font-bold uppercase tracking-widest mt-0.5" style={{ color: standardMeta?.accent ?? "#1a2f8a" }}>{standardMeta?.label ?? mapping.standard}</p>
+<p className="font-black text-sm text-gray-800 truncate">{mapping.name ?? t("am_untitled")}</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest mt-0.5" style={{ color: standardMeta?.accent ?? "#1a2f8a" }}>{stdLabel(t, mapping.standard)}</p>
           </div>
           <button onClick={e => { e.stopPropagation(); onToggleFavorite?.(mapping.mapping_id); }}
             className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${isFavorite ? "" : "opacity-0 group-hover:opacity-100"}`}
             style={{ color: isFavorite ? "#f59e0b" : "#9ca3af" }}
-            title={isFavorite ? "Remove from favorites" : "Add to favorites"}>
+            title={isFavorite ? t("am_card_remove_favorites") : t("am_card_add_favorites")}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill={isFavorite ? "#f59e0b" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
           </button>
-          <button onClick={e => { e.stopPropagation(); onArchive?.(mapping); }} className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-red-50 hover:text-red-500 transition-all" title="Archive"><Trash2 size={11} /></button>
+          <button onClick={e => { e.stopPropagation(); onArchive?.(mapping); }} className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-red-50 hover:text-red-500 transition-all" title={t("am_card_archive")}><Trash2 size={11} /></button>
         </div>
         {mapping.description && <p className="text-[11px] text-gray-500 mb-3 line-clamp-2">{mapping.description}</p>}
 </div>
@@ -1023,7 +1078,7 @@ function MappingCard({ mapping, isStandard, isFavorite, onSetStandard, onToggleF
       <div className="flex items-center gap-3 py-2.5" onClick={e => e.stopPropagation()}>
         <span className="text-[10px] font-black uppercase tracking-wider flex-1"
           style={{ color: isStandard ? "#57aa78" : "#9ca3af" }}>
-          {isStandard ? "✓ Standard mapping" : "Set as standard"}
+          {isStandard ? t("am_card_standard_active") : t("am_card_set_as_standard")}
         </span>
         <div onClick={() => onSetStandard?.(mapping.mapping_id)}
           className="relative cursor-pointer select-none flex-shrink-0"
@@ -1035,12 +1090,12 @@ function MappingCard({ mapping, isStandard, isFavorite, onSetStandard, onToggleF
       <div className="flex flex-col gap-1 pt-3 border-t border-gray-50 text-[11px] text-gray-500 min-w-0">
         <div className="flex items-center gap-2">
           <Clock size={11} className="text-gray-300 flex-shrink-0" />
-          <span className="truncate">Updated {new Date(mapping.updated_at).toLocaleDateString()}{mapping.updated_by_name ? ` · ${mapping.updated_by_name}` : ""}</span>
+          <span className="truncate">{t("am_card_updated")} {new Date(mapping.updated_at).toLocaleDateString()}{mapping.updated_by_name ? ` · ${mapping.updated_by_name}` : ""}</span>
         </div>
         {mapping.created_by_name && mapping.created_by_name !== mapping.updated_by_name && (
           <div className="flex items-center gap-2 text-[10px] text-gray-400">
             <span className="w-2.5 flex-shrink-0" />
-            <span className="truncate">Created by {mapping.created_by_name}</span>
+            <span className="truncate">{t("am_card_created_by")} {mapping.created_by_name}</span>
           </div>
         )}
       </div>
@@ -1050,6 +1105,7 @@ function MappingCard({ mapping, isStandard, isFavorite, onSetStandard, onToggleF
 
 // ─── CreateView ───────────────────────────────────────────────
 function CreateView({ onScratch, onExisting }) {
+  const t = useT();
   return (
     <div className="flex-1 flex flex-col min-h-0 p-0">
       <style>{`
@@ -1093,10 +1149,10 @@ function CreateView({ onScratch, onExisting }) {
                   <FilePlus size={32} className="text-white" strokeWidth={1.8} />
                 </div>
               </div>
-              <p className="font-black text-2xl text-gray-800 mb-3">Create from scratch</p>
-              <p className="text-sm text-gray-500 leading-relaxed max-w-xs">Start with a blank mapping and build your structure row by row. Full control over hierarchy, sections, and KPIs.</p>
+<p className="font-black text-2xl text-gray-800 mb-3">{t("am_create_scratch_title")}</p>
+              <p className="text-sm text-gray-500 leading-relaxed max-w-xs">{t("am_create_scratch_desc")}</p>
               <div className="mt-6 space-y-2">
-                {["Define your own row hierarchy","Add custom section breakers","Mark KPI rows manually"].map((f, i) => (
+                {[t("am_create_scratch_f1"), t("am_create_scratch_f2"), t("am_create_scratch_f3")].map((f, i) => (
                   <div key={i} className="flex items-center gap-2">
                     <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: "#1a2f8a" }} />
                     <span className="text-xs text-gray-500 font-medium">{f}</span>
@@ -1105,7 +1161,7 @@ function CreateView({ onScratch, onExisting }) {
               </div>
             </div>
             <div className="mt-10 flex items-center justify-end">
-              <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300" style={{ color: "#1a2f8a" }}>Start →</span>
+              <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300" style={{ color: "#1a2f8a" }}>{t("am_cta_start")}</span>
             </div>
           </div>
         </button>
@@ -1140,10 +1196,10 @@ function CreateView({ onScratch, onExisting }) {
                   <Library size={32} className="text-white" strokeWidth={1.8} />
                 </div>
               </div>
-              <p className="font-black text-2xl text-gray-800 mb-3">From existing structure</p>
-              <p className="text-sm text-gray-500 leading-relaxed max-w-xs">Use one of the standard structures (PGC, Spanish IFRS, Danish IFRS) as your base and customize it to fit your needs.</p>
+<p className="font-black text-2xl text-gray-800 mb-3">{t("am_create_existing_title")}</p>
+              <p className="text-sm text-gray-500 leading-relaxed max-w-xs">{t("am_create_existing_desc")}</p>
               <div className="mt-6 space-y-2">
-                {["Reorder and hide rows","Customize section breakers","Keep underlying mapping intact"].map((f, i) => (
+                {[t("am_create_existing_f1"), t("am_create_existing_f2"), t("am_create_existing_f3")].map((f, i) => (
                   <div key={i} className="flex items-center gap-2">
                     <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: "#dc7533" }} />
                     <span className="text-xs text-gray-500 font-medium">{f}</span>
@@ -1153,7 +1209,7 @@ function CreateView({ onScratch, onExisting }) {
             </div>
             <div className="mt-10 flex items-center justify-between">
               <div className="flex gap-2">{["PGC", "Spanish IFRS", "Danish IFRS"].map(tag => <span key={tag} className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: "#dc753315", color: "#dc7533" }}>{tag}</span>)}</div>
-              <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300" style={{ color: "#dc7533" }}>Choose →</span>
+             <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300" style={{ color: "#dc7533" }}>{t("am_cta_choose")}</span>
             </div>
           </div>
         </button>
@@ -1165,35 +1221,35 @@ function CreateView({ onScratch, onExisting }) {
 
 // ─── SelectStandardView ───────────────────────────────────────
 function SelectStandardView({ detectedStandard, onPick }) {
+  const t = useT();
   const [catalog, setCatalog] = useState([]);
-  const [loading, setLoading] = useState(true);
-useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLoading(true);
+const [loading, setLoading] = useState(true);
+  useEffect(() => {
     fetch(`${SUPABASE_URL}/template_catalog?select=*&active=eq.true`, { headers: sbHeaders })
       .then(r => r.json()).then(rows => { if (Array.isArray(rows)) setCatalog(rows); }).catch(() => setCatalog([])).finally(() => setLoading(false));
   }, []);
   const standardsAvailable = useMemo(() => { const set = new Set(catalog.map(c => c.standard)); return ["PGC","SpanishIFRS","DanishIFRS"].filter(s => set.has(s)); }, [catalog]);
 
-  if (loading) return <div className="flex-1 flex items-center justify-center text-xs text-gray-400">Loading templates…</div>;
+if (loading) return <div className="flex-1 flex items-center justify-center text-xs text-gray-400">{t("am_loading_templates")}</div>;
 
   return (
     <div className="flex-1 flex flex-col min-h-0 p-5">
       <div className="grid grid-cols-3 gap-5 flex-1 min-h-0">
-        {standardsAvailable.map(std => <StandardCard key={std} meta={STANDARD_META[std]} isRecommended={detectedStandard === std} onClick={() => onPick(std)} />)}
+        {standardsAvailable.map(std => <StandardCard key={std} stdKey={std} meta={STANDARD_META[std]} isRecommended={detectedStandard === std} onClick={() => onPick(std)} />)}
       </div>
     </div>
   );
 }
 
-function StandardCard({ meta, isRecommended, onClick }) {
+function StandardCard({ stdKey, meta, isRecommended, onClick }) {
+  const t = useT();
   return (
     <button onClick={onClick}
       className="relative text-left rounded-2xl border-2 overflow-hidden transition-all group flex flex-col h-full"
       style={{ borderColor: isRecommended ? meta.accent : "#f3f4f6", background: `linear-gradient(135deg, #ffffff 0%, ${meta.accentBg} 100%)`, boxShadow: `0 8px 32px -8px ${meta.accent}30, 0 2px 8px -2px rgba(0,0,0,0.06)` }}>
       {isRecommended && (
         <div className="absolute top-4 right-4 flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest text-white shadow-md z-10" style={{ backgroundColor: meta.accent }}>
-          <Sparkles size={10} />Recommended
+          <Sparkles size={10} />{t("am_recommended")}
         </div>
       )}
       <div className="absolute inset-0 pointer-events-none overflow-hidden">
@@ -1214,13 +1270,13 @@ function StandardCard({ meta, isRecommended, onClick }) {
               <Library size={32} className="text-white" strokeWidth={1.8} />
             </div>
           </div>
-          <p className="font-black text-2xl text-gray-800 mb-1">{meta.label}</p>
-          <p className="text-[10px] font-bold uppercase tracking-widest mb-3" style={{ color: meta.accent }}>{meta.full}</p>
-          <p className="text-sm text-gray-500 leading-relaxed max-w-xs">{meta.description}</p>
+<p className="font-black text-2xl text-gray-800 mb-1">{stdLabel(t, stdKey)}</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest mb-3" style={{ color: meta.accent }}>{stdFull(t, stdKey)}</p>
+          <p className="text-sm text-gray-500 leading-relaxed max-w-xs">{stdDesc(t, stdKey)}</p>
         </div>
         <div className="mt-10 flex items-center justify-between">
-          <span className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: `${meta.accent}15`, color: meta.accent }}>P&L + Balance Sheet</span>
-          <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300" style={{ color: meta.accent }}>Select →</span>
+          <span className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: `${meta.accent}15`, color: meta.accent }}>{t("am_pl_plus_bs")}</span>
+          <span className="text-sm font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all duration-300" style={{ color: meta.accent }}>{t("am_cta_select")}</span>
         </div>
       </div>
     </button>
@@ -1228,7 +1284,8 @@ function StandardCard({ meta, isRecommended, onClick }) {
 }
 
 // ─── MapperView ───────────────────────────────────────────────
-function MapperView({ standard, groupAccounts, uploadedAccounts = [], previousUploadedAccounts = [], dimensions = [], authUserId, companyId, editingMapping, existingMappings = [], onSaved, statement, periodMode = "ytd", saveRef, resetRef, api = { create: createMapping, update: updateMapping }, mappingKind = "structure" }) {
+function MapperView({ standard, groupAccounts, uploadedAccounts = [], previousUploadedAccounts = [], dimensions = [], authUserId, companyId, editingMapping, existingMappings = [], onSaved, statement, periodMode = "ytd", saveRef, resetRef, onDirtyChange, api = { create: createMapping, update: updateMapping }, mappingKind = "structure" }) {
+  const t = useT();
   const meta = STANDARD_META[standard];
   // Balance Sheet is a point-in-time snapshot — always YTD regardless of toggle
   const effectivePeriodMode = statement === "BS" ? "ytd" : periodMode;
@@ -1243,7 +1300,7 @@ function MapperView({ standard, groupAccounts, uploadedAccounts = [], previousUp
     movedTemplateIds: new Set(movedTemplateIds),
     highlightedIds: new Set(highlightedIds),
   });
-  const pushHistory = () => { historyRef.current = [snapshotState(), ...historyRef.current].slice(0, 50); };
+  const pushHistory = () => { historyRef.current = [snapshotState(), ...historyRef.current].slice(0, 50); onDirtyChange?.(true); };
   const undo = () => {
     const last = historyRef.current[0];
     if (!last) return;
@@ -1410,7 +1467,6 @@ return addIds(tree.filter(filterFn));
   }, [tplRows, tplSections, tplStatement, statement]);
 
 useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setClientTreeBy({ PL: null, BS: null });
     setTemplateTreeBy({ PL: null, BS: null });
     setMovedClientCodes(new Set());
@@ -1420,8 +1476,7 @@ useEffect(() => {
   if (!editingMapping) return;
   const plTree = Array.isArray(editingMapping.pl_tree) ? editingMapping.pl_tree : [];
   const bsTree = Array.isArray(editingMapping.bs_tree) ? editingMapping.bs_tree : [];
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  setTemplateTreeBy({ PL: plTree, BS: bsTree });
+setTemplateTreeBy({ PL: plTree, BS: bsTree });
   if (Array.isArray(editingMapping.highlighted_ids)) setHighlightedIds(new Set(editingMapping.highlighted_ids));
   // Walk both trees and reconstruct movedClientCodes + movedDimsByCode
   const movedCodes = new Set();
@@ -1448,12 +1503,14 @@ useEffect(() => {
   setMovedClientCodes(movedCodes);
   setMovedDimsByCode(movedDims);
 }, [editingMapping]);
-// eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (baseClientTree.length > 0) setClientTreeBy(prev => prev[statement] ? prev : { ...prev, [statement]: baseClientTree }); }, [baseClientTree, statement]);
-  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (baseTemplateTree.length > 0) setTemplateTreeBy(prev => prev[statement] ? prev : { ...prev, [statement]: baseTemplateTree }); }, [baseTemplateTree, statement]);
-// eslint-disable-next-line react-hooks/set-state-in-effect
-useEffect(() => { setCurrentName(editingMapping?.name ?? ""); setCurrentDescription(editingMapping?.description ?? ""); }, [editingMapping]);
+  const [prevEditingMappingId, setPrevEditingMappingId] = useState(editingMapping?.mapping_id);
+  if (prevEditingMappingId !== editingMapping?.mapping_id) {
+    setPrevEditingMappingId(editingMapping?.mapping_id);
+    setCurrentName(editingMapping?.name ?? "");
+    setCurrentDescription(editingMapping?.description ?? "");
+  }
 
 // When opening a fresh standard template (no saved mapping), pre-mark
   // client accounts that already exist in the template tree as "moved".
@@ -1472,7 +1529,6 @@ useEffect(() => { setCurrentName(editingMapping?.name ?? ""); setCurrentDescript
     };
 walkTemplate(baseTemplateTree);
     if (!templateCodes.size) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMovedClientCodes(prev => {
       const next = new Set(prev);
       groupAccounts.forEach(ga => {
@@ -1507,8 +1563,8 @@ const clientTree = clientTreeBy[statement] ?? baseClientTree;
   const sectionByCode = useMemo(() => { const m = new Map(); tplSections.forEach(s => m.set(s.section_code, { label: s.label, color: s.color })); return m; }, [tplSections]);
 
 const handleSave = async ({ asNew = false } = {}) => {
-    if (!companyId || !authUserId) { setSaveError("Not authenticated"); return; }
-    if (!currentName.trim()) { setSaveError("Name is required"); setShowSaveForm(true); return; }
+if (!companyId || !authUserId) { setSaveError(t("am_err_not_auth")); return; }
+    if (!currentName.trim()) { setSaveError(t("am_err_name_required")); setShowSaveForm(true); return; }
 // Re-derive moved state from BOTH template trees (safeguard against stale state)
     const effectiveMoved = new Set();
     const dimsSeenByCode = new Map();
@@ -1552,9 +1608,9 @@ const plClientTree = clientTreeBy.PL ?? baseClientTree;
     const totalUnmapped = unmappedPL + unmappedBS;
 if (totalUnmapped > 0 && (!editingMapping || asNew) && mappingKind !== "report") {
       const parts = [];
-      if (unmappedPL > 0) parts.push(`${unmappedPL} P&L`);
-      if (unmappedBS > 0) parts.push(`${unmappedBS} Balance Sheet`);
-      setSaveError(`You still have unmapped accounts: ${parts.join(" and ")}. Map all accounts before saving.`);
+      if (unmappedPL > 0) parts.push(`${unmappedPL} ${t("am_err_unmapped_pl_suffix")}`);
+      if (unmappedBS > 0) parts.push(`${unmappedBS} ${t("am_err_unmapped_bs_suffix")}`);
+      setSaveError(`${t("am_err_unmapped_pre")}${parts.join(t("am_err_unmapped_join"))}${t("am_err_unmapped_post")}`);
       setShowSaveForm(true);
       return;
     }
@@ -1563,13 +1619,14 @@ const trimmedName = currentName.trim().toLowerCase();
       String(m.name ?? "").trim().toLowerCase() === trimmedName &&
       (asNew || !editingMapping || m.mapping_id !== editingMapping.mapping_id)
     );
-    if (nameConflict) { setSaveError(`A mapping named "${currentName.trim()}" already exists`); setShowSaveForm(true); return; }
+    if (nameConflict) { setSaveError(t("am_err_name_exists").replace("{name}", currentName.trim())); setShowSaveForm(true); return; }
     setSaving(true); setSaveError(null);
     try {
 const plTree = templateTreeBy.PL ?? templateTree ?? [], bsTree = templateTreeBy.BS ?? [];
       const highlightedArr = [...highlightedIds];
 if (editingMapping && !asNew) { const updated = await api.update({ mappingId: editingMapping.mapping_id, userId: authUserId, name: currentName.trim(), description: currentDescription.trim() || null, plTree, bsTree, highlightedIds: highlightedArr }); onSaved?.(updated); }
       else { const created = await api.create({ companyId, userId: authUserId, name: currentName.trim(), description: currentDescription.trim() || null, standard, plTree, bsTree, highlightedIds: highlightedArr }); onSaved?.(created); }
+      onDirtyChange?.(false);
       setShowSaveForm(false);
     } catch (e) { setSaveError(e.message); } finally { setSaving(false); }
   };
@@ -1581,7 +1638,7 @@ useEffect(() => {
     if (resetRef) resetRef.current = () => setShowResetConfirm(true);
   });
 
-  const handleReset = () => { pushHistory(); setClientTreeBy({ ...clientTreeBy, [statement]: baseClientTree }); setTemplateTreeBy({ ...templateTreeBy, [statement]: baseTemplateTree }); setMovedClientCodes(new Set()); setMovedTemplateIds(new Set()); setHighlightedIds(new Set()); };
+const handleReset = () => { pushHistory(); setClientTreeBy({ ...clientTreeBy, [statement]: baseClientTree }); setTemplateTreeBy({ ...templateTreeBy, [statement]: baseTemplateTree }); setMovedClientCodes(new Set()); setMovedTemplateIds(new Set()); setHighlightedIds(new Set()); onDirtyChange?.(false); };
   const handleAddBreaker = ({ name, color }) => { pushHistory(); const nb = { id: `brk-${Date.now()}`, kind: "breaker", code: `__breaker__custom_${Date.now()}`, sectionCode: `custom_${Date.now()}`, name, color, children: [] }; setTemplateTreeBy(prev => ({ ...prev, [statement]: [...(prev[statement] ?? templateTree), nb] })); };
 const handleAddRow = ({ code, name, isSum, parentId = null }) => {
     pushHistory();
@@ -1597,38 +1654,59 @@ const handleCopy = (sourceSide, nodeId) => {
     setTemplateTreeBy(prev => ({ ...prev, [statement]: [...(prev[statement] ?? templateTree), cloned] }));
   };
   const handleRename = (side, targetId, newName) => { pushHistory(); if (side === "client") setClientTreeBy(prev => ({ ...prev, [statement]: renameNode(prev[statement] ?? clientTree, targetId, newName) })); else setTemplateTreeBy(prev => ({ ...prev, [statement]: renameNode(prev[statement] ?? templateTree, targetId, newName) })); };
-const handleDelete = (side, targetId) => {
+const handleDelete = (side, target) => {
     pushHistory();
+    const targets = Array.isArray(target) ? target : [target];
     if (side === "client") {
-      setClientTreeBy(prev => ({ ...prev, [statement]: deleteNode(prev[statement] ?? clientTree, targetId) }));
-    } else if (targetId.startsWith("__dim__")) {
-      // Delete a single dim from a template node
-      const parts = targetId.slice(7).split("__");
-      const nodeId = parts[0];
-      const dimToRemove = parts.slice(1).join("__");
-      const currentTree = templateTreeBy[statement] ?? templateTree;
-      const newTree = walkTransform(currentTree, n => {
-        if ((n.id ?? n.code) !== nodeId) return n;
-        const newDims = (n.dims ?? []).filter(d => d !== dimToRemove);
-        return { ...n, dims: newDims.length > 0 ? newDims : null };
+      setClientTreeBy(prev => {
+        let t = prev[statement] ?? clientTree;
+        targets.forEach(id => { t = deleteNode(t, id); });
+        return { ...prev, [statement]: t };
       });
-      setTemplateTreeBy(prev => ({ ...prev, [statement]: newTree }));
-      // Reflect on left side — remove this dim from movedDimsByCode
-      const nodeCode = findNodeById(currentTree, nodeId)?.code ?? nodeId;
+      return;
+    }
+    // template side
+    const dimTargets = targets.filter(t => typeof t === "string" && t.startsWith("__dim__"));
+    const normalTargets = targets.filter(t => !(typeof t === "string" && t.startsWith("__dim__")));
+    const treeBefore = templateTreeBy[statement] ?? templateTree;
+
+    setTemplateTreeBy(prev => {
+      let t = prev[statement] ?? templateTree;
+      dimTargets.forEach(targetId => {
+        const parts = targetId.slice(7).split("__");
+        const nodeId = parts[0];
+        const dimToRemove = parts.slice(1).join("__");
+        t = walkTransform(t, n => {
+          if ((n.id ?? n.code) !== nodeId) return n;
+          const newDims = (n.dims ?? []).filter(d => d !== dimToRemove);
+          return { ...n, dims: newDims.length > 0 ? newDims : null };
+        });
+      });
+      normalTargets.forEach(id => { t = deleteNode(t, id); });
+      return { ...prev, [statement]: t };
+    });
+
+    if (dimTargets.length > 0) {
       setMovedDimsByCode(prev => {
         const next = new Map(prev);
-        const existing = next.get(nodeCode) ?? new Set();
-        existing.delete(dimToRemove);
-        if (existing.size === 0) next.delete(nodeCode);
-        else next.set(nodeCode, existing);
+        dimTargets.forEach(targetId => {
+          const parts = targetId.slice(7).split("__");
+          const nodeId = parts[0];
+          const dimToRemove = parts.slice(1).join("__");
+          const nodeCode = findNodeById(treeBefore, nodeId)?.code ?? nodeId;
+          const existing = next.get(nodeCode) ?? new Set();
+          existing.delete(dimToRemove);
+          if (existing.size === 0) next.delete(nodeCode);
+          else next.set(nodeCode, existing);
+        });
         return next;
       });
-} else {
-      const currentTree = templateTreeBy[statement] ?? templateTree;
-      const newTree = deleteNode(currentTree, targetId);
-      setTemplateTreeBy(prev => ({ ...prev, [statement]: newTree }));
-      // Recompute moved state from the resulting trees (both statements)
+    }
+
+    if (normalTargets.length > 0) {
       const otherTree = statement === "PL" ? (templateTreeBy.BS ?? []) : (templateTreeBy.PL ?? []);
+      let finalTree = treeBefore;
+      normalTargets.forEach(id => { finalTree = deleteNode(finalTree, id); });
       const remainingFullCodes = new Set();
       const remainingDimsByCode = new Map();
       const walkCollect = (nodes) => {
@@ -1647,7 +1725,7 @@ const handleDelete = (side, targetId) => {
           walkCollect(n.children);
         });
       };
-      walkCollect(newTree);
+      walkCollect(finalTree);
       walkCollect(otherTree);
       setMovedClientCodes(prev => {
         const next = new Set();
@@ -1883,7 +1961,7 @@ if (sourceSide === "client") {
   });
   return effective;
 })()} movedDimsByCode={movedDimsByCode} onDrop={p => handleDrop({ ...p, destSide: "client" })} onRename={(id, name) => handleRename("client", id, name)} onDelete={id => handleDelete("client", id)} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} dimsByGroupCode={dimsByGroupCode} />
-      <TemplatePanel mappingKind={mappingKind} templateAmountsById={templateAmountsById} onCopy={id => handleCopy("template", id)} tree={templateTree} sectionByCode={sectionByCode} loading={tplLoading} accent={meta.accent} standardLabel={meta.label} movedIds={movedTemplateIds} onDrop={p => handleDrop({ ...p, destSide: "template" })} onRename={(id, name) => handleRename("template", id, name)} onDelete={id => handleDelete("template", id)} onAddRow={handleAddRow} onAddBreaker={handleAddBreaker} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} highlightedIds={highlightedIds} onToggleHighlight={id => { pushHistory(); setHighlightedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; }); }}/>
+      <TemplatePanel mappingKind={mappingKind} templateAmountsById={templateAmountsById} onCopy={id => handleCopy("template", id)} tree={templateTree} sectionByCode={sectionByCode} loading={tplLoading} accent={meta.accent} standardLabel={stdLabel(t, standard)} movedIds={movedTemplateIds} onDrop={p => handleDrop({ ...p, destSide: "template" })} onRename={(id, name) => handleRename("template", id, name)} onDelete={id => handleDelete("template", id)} onAddRow={handleAddRow} onAddBreaker={handleAddBreaker} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} highlightedIds={highlightedIds} onToggleHighlight={id => { pushHistory(); setHighlightedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; }); }}/>
       </div>
       {conflict && <ConflictModal duplicates={conflict.duplicates} onResolve={conflict.onResolve} />}
       {showSaveForm && <SaveMappingForm name={currentName} setName={setCurrentName} description={currentDescription} setDescription={setCurrentDescription} error={saveError} saving={saving} asNew={!!editingMapping} accent={meta.accent} onCancel={() => { setShowSaveForm(false); setSaveError(null); }} onSave={() => handleSave({ asNew: !!editingMapping })} />}
@@ -1895,20 +1973,20 @@ if (sourceSide === "client") {
               <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-3" style={{ background: "rgba(255,255,255,0.2)" }}>
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
               </div>
-              <p className="text-white font-black text-lg leading-tight">Reset mapping?</p>
-              <p className="text-white/70 text-[11px] mt-0.5">This will undo all your unsaved changes</p>
+<p className="text-white font-black text-lg leading-tight">{t("am_reset_title")}</p>
+              <p className="text-white/70 text-[11px] mt-0.5">{t("am_reset_subtitle")}</p>
             </div>
             <div className="p-5 space-y-2">
-              <p className="text-xs text-gray-500 leading-relaxed pb-2">All accounts you've moved, rows you've added, breakers, and highlights will be cleared and the mapper will return to its initial state. This can't be undone.</p>
+              <p className="text-xs text-gray-500 leading-relaxed pb-2">{t("am_reset_desc")}</p>
               <div className="flex items-center gap-2">
                 <button onClick={() => setShowResetConfirm(false)}
                   className="flex-1 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all">
-                  Cancel
+                  {t("am_btn_cancel")}
                 </button>
                 <button onClick={() => { handleReset(); setShowResetConfirm(false); }}
                   className="flex-1 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-white transition-all hover:opacity-90 active:scale-[0.98]"
                   style={{ background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)", boxShadow: "0 4px 14px -4px rgba(245,158,11,0.5)" }}>
-                  Reset
+                  {t("am_btn_reset")}
                 </button>
               </div>
             </div>
@@ -1920,23 +1998,23 @@ if (sourceSide === "client") {
           <div className="absolute inset-0 bg-black/50 backdrop-blur-md" />
           <div className="relative bg-white rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
             <div className="px-6 pt-6 pb-5" style={{ background: `linear-gradient(135deg, ${meta.accent} 0%, ${meta.accent}cc 100%)` }}>
-              <p className="text-white font-black text-lg leading-tight">Save mapping</p>
-              <p className="text-white/70 text-[11px] mt-0.5">How would you like to save your changes?</p>
+<p className="text-white font-black text-lg leading-tight">{t("am_save_choice_title")}</p>
+              <p className="text-white/70 text-[11px] mt-0.5">{t("am_save_choice_subtitle")}</p>
             </div>
             <div className="p-5 space-y-2">
               <button onClick={() => { setShowSaveChoice(false); handleSave(); }}
                 className="w-full text-left px-4 py-3 rounded-xl border-2 border-gray-100 hover:border-[#1a2f8a] hover:bg-[#eef1fb]/40 transition-all group">
-                <p className="text-xs font-black text-gray-800 group-hover:text-[#1a2f8a]">Overwrite "{editingMapping?.name}"</p>
-                <p className="text-[10px] text-gray-400 mt-0.5">Update the existing mapping with your changes</p>
+                <p className="text-xs font-black text-gray-800 group-hover:text-[#1a2f8a]">{t("am_save_overwrite").replace("{name}", editingMapping?.name ?? "")}</p>
+                <p className="text-[10px] text-gray-400 mt-0.5">{t("am_save_overwrite_desc")}</p>
               </button>
               <button onClick={() => { setShowSaveChoice(false); setShowSaveForm(true); }}
                 className="w-full text-left px-4 py-3 rounded-xl border-2 border-gray-100 hover:border-[#1a2f8a] hover:bg-[#eef1fb]/40 transition-all group">
-                <p className="text-xs font-black text-gray-800 group-hover:text-[#1a2f8a]">Save as new mapping</p>
-                <p className="text-[10px] text-gray-400 mt-0.5">Keep the original and create a new one with a different name</p>
+                <p className="text-xs font-black text-gray-800 group-hover:text-[#1a2f8a]">{t("am_save_as_new")}</p>
+                <p className="text-[10px] text-gray-400 mt-0.5">{t("am_save_as_new_desc")}</p>
               </button>
               <button onClick={() => setShowSaveChoice(false)}
                 className="w-full py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all mt-2">
-                Cancel
+                {t("am_btn_cancel")}
               </button>
             </div>
           </div>
@@ -1948,16 +2026,17 @@ if (sourceSide === "client") {
 
 // ─── ConflictModal ────────────────────────────────────────────
 function ConflictModal({ duplicates, onResolve }) {
+  const t = useT();
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-6" onClick={() => onResolve("cancel")}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
       <div className="relative bg-white rounded-2xl w-full max-w-md overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="bg-amber-500 px-6 py-4"><p className="text-white font-black text-base">Duplicate accounts detected</p><p className="text-white/70 text-[10px] uppercase tracking-widest mt-0.5">{duplicates.length} {duplicates.length === 1 ? "match" : "matches"} found</p></div>
+        <div className="bg-amber-500 px-6 py-4"><p className="text-white font-black text-base">{t("am_conflict_title")}</p><p className="text-white/70 text-[10px] uppercase tracking-widest mt-0.5">{duplicates.length} {duplicates.length === 1 ? t("am_conflict_match") : t("am_conflict_matches")} {t("am_conflict_found")}</p></div>
         <div className="p-6 space-y-4">
-          <p className="text-xs text-gray-600 leading-relaxed">The following account {duplicates.length === 1 ? "name already exists" : "names already exist"} in the destination:</p>
+          <p className="text-xs text-gray-600 leading-relaxed">{duplicates.length === 1 ? t("am_conflict_desc_one") : t("am_conflict_desc_many")}</p>
           <div className="bg-gray-50 rounded-xl p-3 max-h-40 overflow-y-auto">{duplicates.map((d, i) => <div key={i} className="text-xs text-gray-700 font-mono py-0.5 truncate">· {d}</div>)}</div>
           <div className="space-y-2 pt-2">
-            {[["replace-existing","Replace existing","Remove the existing rows and use the imported ones"],["discard-imported","Discard imported","Cancel the drop and keep destination as-is"]].map(([choice, title, desc]) => (
+            {[["replace-existing", t("am_conflict_replace"), t("am_conflict_replace_desc")],["discard-imported", t("am_conflict_discard"), t("am_conflict_discard_desc")]].map(([choice, title, desc]) => (
               <button key={choice} onClick={() => onResolve(choice)} className="w-full text-left px-4 py-3 rounded-xl border-2 border-gray-100 hover:border-[#1a2f8a] hover:bg-[#eef1fb]/40 transition-all group">
                 <p className="text-xs font-black text-gray-800 group-hover:text-[#1a2f8a]">{title}</p>
                 <p className="text-[10px] text-gray-400 mt-0.5">{desc}</p>
@@ -1971,6 +2050,7 @@ function ConflictModal({ duplicates, onResolve }) {
 }
 
 function DimFilterDropdown({ value, onChange, options, placeholder, accent }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -1999,7 +2079,7 @@ function DimFilterDropdown({ value, onChange, options, placeholder, accent }) {
         <div style={{ padding: "4px 4px 0", background: `${accent}06`, borderBottom: `1px solid ${accent}10` }}>
           <div style={{ padding: "6px 10px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span style={{ fontSize: 9, fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase", color: accent, opacity: 0.7 }}>{placeholder}</span>
-            {value && <button onClick={() => { onChange(""); setOpen(false); }} style={{ fontSize: 9, fontWeight: 700, color: accent, background: `${accent}15`, border: "none", borderRadius: 6, padding: "2px 6px", cursor: "pointer", letterSpacing: "0.05em", textTransform: "uppercase" }}>Clear</button>}
+            {value && <button onClick={() => { onChange(""); setOpen(false); }} style={{ fontSize: 9, fontWeight: 700, color: accent, background: `${accent}15`, border: "none", borderRadius: 6, padding: "2px 6px", cursor: "pointer", letterSpacing: "0.05em", textTransform: "uppercase" }}>{t("am_filter_clear")}</button>}
           </div>
         </div>
         <div style={{ padding: "4px", maxHeight: 200, overflowY: "auto" }}>
@@ -2033,18 +2113,24 @@ function DimFilterDropdown({ value, onChange, options, placeholder, accent }) {
 
 // ─── ClientPanel ──────────────────────────────────────────────
 function ClientPanel({ mappingKind = "structure", amountsByCode = new Map(), onCopy, tree, statement, movedIds, movedDimsByCode = new Map(), onDrop, onRename, onDelete, activeMultiSide, onSetMultiSide, dimsByGroupCode = new Map() }) {
+  const t = useT();
   const [search, setSearch] = useState("");
 const [expanded, setExpanded] = useState({});
 const [flatMode, setFlatMode] = useState(false);
   const [multiMode, setMultiMode] = useState(false);
 const [selectedIds, setSelectedIds] = useState(new Set());
 const lastSelectedRef = useRef(null);
-// eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
-  useEffect(() => { if (activeMultiSide !== "client" && multiMode) { setMultiMode(false); setSelectedIds(new Set()); } }, [activeMultiSide]);
+ const [prevActiveMultiSide, setPrevActiveMultiSide] = useState(activeMultiSide);
+  if (prevActiveMultiSide !== activeMultiSide) {
+    setPrevActiveMultiSide(activeMultiSide);
+    if (activeMultiSide !== "client" && multiMode) {
+      setMultiMode(false);
+      setSelectedIds(new Set());
+    }
+  }
 
 // Auto-deselect accounts that have just been marked as moved
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelectedIds(prev => {
       if (prev.size === 0) return prev;
       const next = new Set();
@@ -2122,14 +2208,26 @@ const combinedPredicate = n => (!hasDimFilter || dimPredicate(n)) && amountPredi
       : filterTree(searchFiltered, combinedPredicate);
   }, [tree, flatTree, unmappedFlatTree, flatMode, unmappedOnly, hideZero, search, filterDimGroup, filterDimValue, dimsByGroupCode, amountsByCode]);
 const visibleCount = useMemo(() => countNodes(filteredTree), [filteredTree]);
+  const [prevFilteredTreeRef, setPrevFilteredTreeRef] = useState(filteredTree);
+  if (prevFilteredTreeRef !== filteredTree) {
+    setPrevFilteredTreeRef(filteredTree);
+    const visibleIds = new Set();
+    (function walk(nodes) { nodes.forEach(n => { visibleIds.add(n.id ?? n.code); walk(n.children || []); }); })(filteredTree);
+    setSelectedIds(prev => {
+      if (prev.size === 0) return prev;
+      const next = new Set();
+      prev.forEach(id => { if (visibleIds.has(id)) next.add(id); });
+      return next.size === prev.size ? prev : next;
+    });
+  }
 const allKeys = useMemo(() => collectAllCodes(tree, "client"), [tree]);
 
 const flatSelectableIds = useMemo(() => {
     const out = [];
     function walk(nodes) { nodes.forEach(n => { if (mappingKind === "report" || (!n.isSum && !n.isSumAccount)) out.push(n.id ?? n.code); walk(n.children || []); }); }
-    walk(tree);
+    walk(filteredTree);
     return out;
-  }, [tree, mappingKind]);
+  }, [filteredTree, mappingKind]);
 const dimGroups = useMemo(() => {
     const groups = new Set();
     dimsByGroupCode.forEach(dims => dims.forEach(d => { const idx = d.indexOf(":"); if (idx !== -1) groups.add(d.slice(0, idx).trim()); }));
@@ -2149,46 +2247,46 @@ const dimGroups = useMemo(() => {
   const toggle = key => setExpanded(prev => ({ ...prev, [key]: !prev[key] }));
   const isExpanded = allKeys.length > 0 && allKeys.every(k => expanded[k]);
 const multiToggleBtn = (
-    <button onClick={() => { const next = !multiMode; setMultiMode(next); setSelectedIds(new Set()); onSetMultiSide(next ? "client" : null); }} title={multiMode ? "Exit multi-select" : "Multi-select accounts"}
+    <button onClick={() => { const next = !multiMode; setMultiMode(next); setSelectedIds(new Set()); onSetMultiSide(next ? "client" : null); }} title={multiMode ? t("am_exit_multi") : t("am_multi_select")}
       className="group rounded-md flex items-center justify-center overflow-hidden transition-all flex-shrink-0"
       style={{ height: TOGGLE_HEIGHT, paddingLeft: TOGGLE_PADDING_X, paddingRight: TOGGLE_PADDING_X, background: multiMode ? "#1a2f8a" : "rgba(26,47,138,0.06)", color: multiMode ? "white" : "#1a2f8a" }}>
       <svg width={TOGGLE_ICON_SIZE} height={TOGGLE_ICON_SIZE} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
         <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>
         <path d="M17 14v6M14 17h6"/>
       </svg>
-      <span className="overflow-hidden whitespace-nowrap font-black uppercase tracking-widest max-w-0 opacity-0 ml-0 group-hover:max-w-[110px] group-hover:opacity-100 group-hover:ml-1.5 transition-all duration-300 ease-out" style={{ fontSize: TOGGLE_LABEL_FONT_SIZE }}>Select</span>
+<span className="overflow-hidden whitespace-nowrap font-black uppercase tracking-widest max-w-0 opacity-0 ml-0 group-hover:max-w-[110px] group-hover:opacity-100 group-hover:ml-1.5 transition-all duration-300 ease-out" style={{ fontSize: TOGGLE_LABEL_FONT_SIZE }}>{t("am_select_label")}</span>
     </button>
   );
 const flatToggleBtn = (
-    <button onClick={() => setFlatMode(f => !f)} title={flatMode ? "Show hierarchy" : "Show flat (leaf accounts only)"}
+    <button onClick={() => setFlatMode(f => !f)} title={flatMode ? t("am_tree_title") : t("am_flat_title")}
       className="group rounded-md flex items-center justify-center overflow-hidden transition-all flex-shrink-0"
       style={{ height: TOGGLE_HEIGHT, paddingLeft: TOGGLE_PADDING_X, paddingRight: TOGGLE_PADDING_X, background: flatMode ? "#1a2f8a" : "rgba(26,47,138,0.06)", color: flatMode ? "white" : "#1a2f8a" }}>
       <svg width={TOGGLE_ICON_SIZE} height={TOGGLE_ICON_SIZE} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
         {flatMode ? <><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></> : <><line x1="3" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="13" y1="18" x2="21" y2="18"/></>}
       </svg>
-      <span className="overflow-hidden whitespace-nowrap font-black uppercase tracking-widest max-w-0 opacity-0 ml-0 group-hover:max-w-[110px] group-hover:opacity-100 group-hover:ml-1.5 transition-all duration-300 ease-out" style={{ fontSize: TOGGLE_LABEL_FONT_SIZE }}>{flatMode ? "Flat" : "Tree"}</span>
+<span className="overflow-hidden whitespace-nowrap font-black uppercase tracking-widest max-w-0 opacity-0 ml-0 group-hover:max-w-[110px] group-hover:opacity-100 group-hover:ml-1.5 transition-all duration-300 ease-out" style={{ fontSize: TOGGLE_LABEL_FONT_SIZE }}>{flatMode ? t("am_flat_label") : t("am_tree_label")}</span>
     </button>
   );
 const unmappedToggleBtn = (
-    <button onClick={() => setUnmappedOnly(u => !u)} title={unmappedOnly ? "Show all accounts" : "Show unmapped only"}
+    <button onClick={() => setUnmappedOnly(u => !u)} title={unmappedOnly ? t("am_show_all_accounts") : t("am_show_unmapped")}
       className="group rounded-md flex items-center justify-center overflow-hidden transition-all flex-shrink-0"
       style={{ height: TOGGLE_HEIGHT, paddingLeft: TOGGLE_PADDING_X, paddingRight: TOGGLE_PADDING_X, background: unmappedOnly ? "#1a2f8a" : "rgba(26,47,138,0.06)", color: unmappedOnly ? "white" : "#1a2f8a" }}>
       <svg width={TOGGLE_ICON_SIZE} height={TOGGLE_ICON_SIZE} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
         <circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
       </svg>
-      <span className="overflow-hidden whitespace-nowrap font-black uppercase tracking-widest max-w-0 opacity-0 ml-0 group-hover:max-w-[120px] group-hover:opacity-100 group-hover:ml-1.5 transition-all duration-300 ease-out" style={{ fontSize: TOGGLE_LABEL_FONT_SIZE }}>Unmapped</span>
+      <span className="overflow-hidden whitespace-nowrap font-black uppercase tracking-widest max-w-0 opacity-0 ml-0 group-hover:max-w-[120px] group-hover:opacity-100 group-hover:ml-1.5 transition-all duration-300 ease-out" style={{ fontSize: TOGGLE_LABEL_FONT_SIZE }}>{t("am_unmapped_label")}</span>
     </button>
   );
   return (
-<Panel title="Your accounts" subtitle={unmappedOnly ? `${unmappedFlatTree.length} unmapped` : `${flatMode ? flatTree.length : totalCount} ${statement === "PL" ? "P&L" : "Balance Sheet"} accounts`} accent="#1a2f8a" onExpandAll={() => setExpanded(Object.fromEntries(allKeys.map(k => [k, true])))} onCollapseAll={() => setExpanded({})} isExpanded={isExpanded} extra={
+<Panel title={t("am_panel_client_title")} subtitle={unmappedOnly ? `${unmappedFlatTree.length} ${t("am_panel_unmapped_suffix")}` : `${flatMode ? flatTree.length : totalCount} ${statement === "PL" ? t("am_panel_pl_suffix") : t("am_panel_bs_suffix")}`} accent="#1a2f8a" onExpandAll={() => setExpanded(Object.fromEntries(allKeys.map(k => [k, true])))} onCollapseAll={() => setExpanded({})} isExpanded={isExpanded} extra={
   <div className="flex items-center gap-1">
     {dimGroups.length > 0 && (
       <div className="flex items-center gap-1 mr-1">
-        <DimFilterDropdown
+<DimFilterDropdown
           value={filterDimGroup}
           onChange={v => { setFilterDimGroup(v); setFilterDimValue(""); }}
           options={dimGroups}
-          placeholder="Group"
+          placeholder={t("am_filter_group_placeholder")}
           accent="#1a2f8a"
         />
         {filterDimGroup && (
@@ -2196,7 +2294,7 @@ const unmappedToggleBtn = (
             value={filterDimValue}
             onChange={setFilterDimValue}
             options={dimValues}
-            placeholder="Value"
+            placeholder={t("am_filter_value_placeholder")}
             accent="#1a2f8a"
           />
         )}
@@ -2210,30 +2308,30 @@ const unmappedToggleBtn = (
     )}
    {multiToggleBtn}{flatToggleBtn}{unmappedToggleBtn}
 <div ref={viewMenuRef} className="relative flex-shrink-0">
-<button onClick={() => setViewMenuOpen(o => !o)} title="View options"
+<button onClick={() => setViewMenuOpen(o => !o)} title={t("am_view_options")}
         className="group rounded-md flex items-center justify-center overflow-hidden transition-all flex-shrink-0"
         style={{ height: TOGGLE_HEIGHT, paddingLeft: TOGGLE_PADDING_X, paddingRight: TOGGLE_PADDING_X, background: (hideZero || hideAmounts) ? "#1a2f8a" : "rgba(26,47,138,0.06)", color: (hideZero || hideAmounts) ? "white" : "#1a2f8a" }}>
         <svg width={TOGGLE_ICON_SIZE} height={TOGGLE_ICON_SIZE} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
           <line x1="12" y1="2" x2="12" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
         </svg>
-        <span className="overflow-hidden whitespace-nowrap font-black uppercase tracking-widest max-w-0 opacity-0 ml-0 group-hover:max-w-[110px] group-hover:opacity-100 group-hover:ml-1.5 transition-all duration-300 ease-out" style={{ fontSize: TOGGLE_LABEL_FONT_SIZE }}>Values</span>
+        <span className="overflow-hidden whitespace-nowrap font-black uppercase tracking-widest max-w-0 opacity-0 ml-0 group-hover:max-w-[110px] group-hover:opacity-100 group-hover:ml-1.5 transition-all duration-300 ease-out" style={{ fontSize: TOGGLE_LABEL_FONT_SIZE }}>{t("am_values_label")}</span>
       </button>
       {viewMenuOpen && (
         <div className="absolute right-0 top-full mt-1.5 z-[60] min-w-[210px] rounded-xl bg-white overflow-hidden"
           style={{ border: "1px solid rgba(26,47,138,0.08)", boxShadow: "0 20px 50px -12px rgba(26,47,138,0.18)", animation: "viewMenuIn 220ms cubic-bezier(0.34,1.56,0.64,1)" }}>
           <div className="px-3 pt-2 pb-1.5 border-b border-gray-50">
-            <p className="text-[9px] font-black uppercase tracking-[0.18em]" style={{ color: "#1a2f8a", opacity: 0.55 }}>View options</p>
+            <p className="text-[9px] font-black uppercase tracking-[0.18em]" style={{ color: "#1a2f8a", opacity: 0.55 }}>{t("am_view_options")}</p>
           </div>
           <button onClick={() => setHideZero(z => !z)}
             className="w-full flex items-center justify-between gap-3 px-3 py-2.5 hover:bg-[#1a2f8a]/[0.04] transition-colors">
-            <span className="text-[11px] font-bold text-gray-700">Hide zero-value</span>
+            <span className="text-[11px] font-bold text-gray-700">{t("am_hide_zero")}</span>
             <span className="relative w-7 h-4 rounded-full transition-colors flex-shrink-0" style={{ background: hideZero ? "#1a2f8a" : "#d1d5db" }}>
               <span className="absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm" style={{ left: hideZero ? 14 : 2, transition: "left 220ms cubic-bezier(0.34,1.56,0.64,1)" }} />
             </span>
           </button>
           <button onClick={() => setHideAmounts(a => !a)}
             className="w-full flex items-center justify-between gap-3 px-3 py-2.5 hover:bg-[#1a2f8a]/[0.04] transition-colors border-t border-gray-50">
-            <span className="text-[11px] font-bold text-gray-700">Hide amounts</span>
+<span className="text-[11px] font-bold text-gray-700">{t("am_hide_amounts")}</span>
             <span className="relative w-7 h-4 rounded-full transition-colors flex-shrink-0" style={{ background: hideAmounts ? "#1a2f8a" : "#d1d5db" }}>
               <span className="absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm" style={{ left: hideAmounts ? 14 : 2, transition: "left 220ms cubic-bezier(0.34,1.56,0.64,1)" }} />
             </span>
@@ -2244,10 +2342,10 @@ const unmappedToggleBtn = (
     </div>
   </div>
 }>
-<PanelToolbar search={search} setSearch={setSearch} placeholder="Search your accounts…" count={visibleCount} total={totalCount} />
+<PanelToolbar search={search} setSearch={setSearch} placeholder={t("am_search_accounts")} count={visibleCount} total={totalCount} />
 
       <div className="flex-1 overflow-y-auto px-1"onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); if (data.sourceSide === "template") onDrop({ sourceNode: data.node, sourceSide: "template", targetId: null, position: "after" }); } catch { /* ignore parse */ } }}>
-     {filteredTree.length === 0 ? <EmptyPanelState icon={FileText} message={search ? "No matches" : "No accounts"} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="client" mappingKind={mappingKind} hideAmounts={hideAmounts} amountsByCode={amountsByCode}onCopy={onCopy} movedIds={movedIds} movedDimsByCode={movedDimsByCode}onDrop={onDrop} onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { selectedIds.forEach(sid => onDelete(sid)); setSelectedIds(new Set()); } else { onDelete(id); } }}multiMode={multiMode} selectedIds={selectedIds} clientTree={tree}
+     {filteredTree.length === 0 ? <EmptyPanelState icon={FileText} message={search ? t("am_no_matches") : t("am_no_accounts")} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="client" mappingKind={mappingKind} hideAmounts={hideAmounts} amountsByCode={amountsByCode}onCopy={onCopy} movedIds={movedIds} movedDimsByCode={movedDimsByCode}onDrop={onDrop} onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { onDelete([...selectedIds]); setSelectedIds(new Set()); } else { onDelete(id); } }}multiMode={multiMode} selectedIds={selectedIds} clientTree={tree}
       onToggleSelect={(id, shiftKey) => {
   if (shiftKey && lastSelectedRef.current && lastSelectedRef.current !== id) {
     const from = flatSelectableIds.indexOf(lastSelectedRef.current);
@@ -2269,6 +2367,7 @@ setSelectedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(
 
 // ─── TemplatePanel ────────────────────────────────────────────
 function TemplatePanel({ mappingKind = "structure", templateAmountsById = new Map(), onCopy, tree, sectionByCode, loading, accent, standardLabel, movedIds, onDrop, onRename, onDelete, onAddRow, onAddBreaker, activeMultiSide, onSetMultiSide, highlightedIds, onToggleHighlight }) {
+  const t = useT();
   const [pendingParentId, setPendingParentId] = useState(null);
 const [showBreakerForm, setShowBreakerForm] = useState(false);
   const [search, setSearch] = useState("");
@@ -2285,50 +2384,68 @@ const [expanded, setExpanded] = useState({});
     return () => document.removeEventListener("mousedown", handler);
   }, [viewMenuOpen]);
 const lastSelectedRef = useRef(null);
-  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
-  useEffect(() => { if (activeMultiSide !== "template" && multiMode) { setMultiMode(false); setSelectedIds(new Set()); } }, [activeMultiSide]);
+const [prevActiveMultiSide, setPrevActiveMultiSide] = useState(activeMultiSide);
+  if (prevActiveMultiSide !== activeMultiSide) {
+    setPrevActiveMultiSide(activeMultiSide);
+    if (activeMultiSide !== "template" && multiMode) {
+      setMultiMode(false);
+      setSelectedIds(new Set());
+    }
+  }
 const totalCount = useMemo(() => countNodes(tree), [tree]);
   const filteredTree = useMemo(() => { if (!search.trim()) return tree; return filterTreeTpl(tree, search.toLowerCase()); }, [tree, search]);
   const visibleCount = useMemo(() => countNodes(filteredTree), [filteredTree]);
+  const [prevFilteredTreeRef, setPrevFilteredTreeRef] = useState(filteredTree);
+  if (prevFilteredTreeRef !== filteredTree) {
+    setPrevFilteredTreeRef(filteredTree);
+    const visibleIds = new Set();
+    (function walk(nodes) { nodes.forEach(n => { visibleIds.add(n.id ?? n.code); walk(n.children || []); }); })(filteredTree);
+    setSelectedIds(prev => {
+      if (prev.size === 0) return prev;
+      const next = new Set();
+      prev.forEach(id => { if (visibleIds.has(id)) next.add(id); });
+      return next.size === prev.size ? prev : next;
+    });
+  }
 const allKeys = useMemo(() => collectAllCodes(tree, "tpl"), [tree]);
-  const flatSelectableIds = useMemo(() => {
+const flatSelectableIds = useMemo(() => {
     const out = [];
     function walk(nodes) { nodes.forEach(n => { if (n.kind !== "breaker" && !n.isSum) { out.push(n.id ?? n.code); } walk(n.children || []); }); }
-    walk(tree);
+    walk(filteredTree);
     return out;
-  }, [tree]);
+  }, [filteredTree]);
   const toggle = key => setExpanded(prev => ({ ...prev, [key]: !prev[key] }));
   const isExpanded = allKeys.length > 0 && allKeys.every(k => expanded[k]);
 const multiToggleBtn = (
-    <button onClick={() => { const next = !multiMode; setMultiMode(next); setSelectedIds(new Set()); onSetMultiSide(next ? "template" : null); }} title={multiMode ? "Exit multi-select" : "Multi-select rows"}
+    <button onClick={() => { const next = !multiMode; setMultiMode(next); setSelectedIds(new Set()); onSetMultiSide(next ? "template" : null); }} title={multiMode ? t("am_exit_multi") : t("am_multi_select_rows")}
       className="group rounded-md flex items-center justify-center overflow-hidden transition-all flex-shrink-0"
       style={{ height: TOGGLE_HEIGHT, paddingLeft: TOGGLE_PADDING_X, paddingRight: TOGGLE_PADDING_X, background: multiMode ? accent : `${accent}10`, color: multiMode ? "white" : accent }}>
       <svg width={TOGGLE_ICON_SIZE} height={TOGGLE_ICON_SIZE} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
         <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>
         <path d="M17 14v6M14 17h6"/>
       </svg>
-      <span className="overflow-hidden whitespace-nowrap font-black uppercase tracking-widest max-w-0 opacity-0 ml-0 group-hover:max-w-[110px] group-hover:opacity-100 group-hover:ml-1.5 transition-all duration-300 ease-out" style={{ fontSize: TOGGLE_LABEL_FONT_SIZE }}>Select</span>
+<span className="overflow-hidden whitespace-nowrap font-black uppercase tracking-widest max-w-0 opacity-0 ml-0 group-hover:max-w-[110px] group-hover:opacity-100 group-hover:ml-1.5 transition-all duration-300 ease-out" style={{ fontSize: TOGGLE_LABEL_FONT_SIZE }}>{t("am_select_label")}</span>
     </button>
   );
   const viewMenuBtn = (
     <div ref={viewMenuRef} className="relative flex-shrink-0">
-      <button onClick={() => setViewMenuOpen(o => !o)} title="View options"
+      <button onClick={() => setViewMenuOpen(o => !o)} title={t("am_view_options")}
         className="group rounded-md flex items-center justify-center overflow-hidden transition-all flex-shrink-0"
         style={{ height: TOGGLE_HEIGHT, paddingLeft: TOGGLE_PADDING_X, paddingRight: TOGGLE_PADDING_X, background: hideAmounts ? accent : `${accent}10`, color: hideAmounts ? "white" : accent }}>
         <svg width={TOGGLE_ICON_SIZE} height={TOGGLE_ICON_SIZE} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
           <line x1="12" y1="2" x2="12" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
         </svg>
-        <span className="overflow-hidden whitespace-nowrap font-black uppercase tracking-widest max-w-0 opacity-0 ml-0 group-hover:max-w-[110px] group-hover:opacity-100 group-hover:ml-1.5 transition-all duration-300 ease-out" style={{ fontSize: TOGGLE_LABEL_FONT_SIZE }}>Values</span>
+<span className="overflow-hidden whitespace-nowrap font-black uppercase tracking-widest max-w-0 opacity-0 ml-0 group-hover:max-w-[110px] group-hover:opacity-100 group-hover:ml-1.5 transition-all duration-300 ease-out" style={{ fontSize: TOGGLE_LABEL_FONT_SIZE }}>{t("am_values_label")}</span>
       </button>
       {viewMenuOpen && (
         <div className="absolute right-0 top-full mt-1.5 z-[60] min-w-[210px] rounded-xl bg-white overflow-hidden"
           style={{ border: `1px solid ${accent}15`, boxShadow: `0 20px 50px -12px ${accent}30`, animation: "viewMenuIn 220ms cubic-bezier(0.34,1.56,0.64,1)" }}>
           <div className="px-3 pt-2 pb-1.5 border-b border-gray-50">
-            <p className="text-[9px] font-black uppercase tracking-[0.18em]" style={{ color: accent, opacity: 0.55 }}>View options</p>
+            <p className="text-[9px] font-black uppercase tracking-[0.18em]" style={{ color: accent, opacity: 0.55 }}>{t("am_view_options")}</p>
           </div>
           <button onClick={() => setHideAmounts(a => !a)}
             className="w-full flex items-center justify-between gap-3 px-3 py-2.5 hover:bg-gray-50 transition-colors">
-            <span className="text-[11px] font-bold text-gray-700">Hide amounts</span>
+            <span className="text-[11px] font-bold text-gray-700">{t("am_hide_amounts")}</span>
             <span className="relative w-7 h-4 rounded-full transition-colors flex-shrink-0" style={{ background: hideAmounts ? accent : "#d1d5db" }}>
               <span className="absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm" style={{ left: hideAmounts ? 14 : 2, transition: "left 220ms cubic-bezier(0.34,1.56,0.64,1)" }} />
             </span>
@@ -2338,13 +2455,13 @@ const multiToggleBtn = (
     </div>
   );
   return (
-   <Panel title={`${standardLabel} template`} subtitle={loading ? "Loading…" : `${totalCount} rows`} accent={accent} onExpandAll={() => setExpanded(Object.fromEntries(allKeys.map(k => [k, true])))} onCollapseAll={() => setExpanded({})} isExpanded={isExpanded} extra={<div className="flex items-center gap-1">{multiToggleBtn}{viewMenuBtn}</div>}>
-      <PanelToolbar search={search} setSearch={setSearch} placeholder="Search template…" count={visibleCount} total={totalCount} />
+<Panel title={`${standardLabel} ${t("am_panel_template_suffix")}`} subtitle={loading ? t("am_loading_ellipsis") : `${totalCount} ${t("am_rows_suffix")}`} accent={accent} onExpandAll={() => setExpanded(Object.fromEntries(allKeys.map(k => [k, true])))} onCollapseAll={() => setExpanded({})} isExpanded={isExpanded} extra={<div className="flex items-center gap-1">{multiToggleBtn}{viewMenuBtn}</div>}>
+      <PanelToolbar search={search} setSearch={setSearch} placeholder={t("am_search_template")} count={visibleCount} total={totalCount} />
       <AddRowForm accent={accent} onAdd={p => onAddRow({ ...p, parentId: pendingParentId })} existingTree={tree} pendingParentId={pendingParentId} onClearParent={() => setPendingParentId(null)} tree={tree} />
       <AddBreakerForm accent={accent} open={showBreakerForm} onOpen={() => setShowBreakerForm(true)} onClose={() => setShowBreakerForm(false)} onAdd={onAddBreaker} />
 
 <div className="flex-1 overflow-y-auto px-1" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); if (data.sourceSide === "client") onDrop({ sourceNode: data.node, sourceSide: "client", targetId: null, position: "after" }); else if (data.sourceSide === "template") onDrop({ sourceNode: data.node, sourceSide: "template", targetId: null, position: "after" }); } catch { /* ignore parse */ } }}>
-        {loading ? <div className="text-center py-16 text-xs text-gray-400">Loading template…</div> : filteredTree.length === 0 ? <EmptyPanelState icon={Library} message={search ? "No matches" : "No rows"} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="template" mappingKind={mappingKind} hideAmounts={hideAmounts} templateAmountsById={templateAmountsById} onCopy={onCopy}movedIds={movedIds} onDrop={onDrop}onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { selectedIds.forEach(sid => onDelete(sid)); setSelectedIds(new Set()); } else { onDelete(id); } }} onAddChild={parentId => { setPendingParentId(parentId); setExpanded(prev => ({ ...prev, [`tpl-${parentId}`]: true })); }} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} templateTree={tree} onToggleSelect={(id, shiftKey) => {
+        {loading ? <div className="text-center py-16 text-xs text-gray-400">{t("am_loading_template")}</div> : filteredTree.length === 0 ? <EmptyPanelState icon={Library} message={search ? t("am_no_matches") : t("am_no_rows")} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="template" mappingKind={mappingKind} hideAmounts={hideAmounts} templateAmountsById={templateAmountsById} onCopy={onCopy}movedIds={movedIds} onDrop={onDrop}onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { onDelete([...selectedIds]); setSelectedIds(new Set()); } else { onDelete(id); } }} onAddChild={parentId => { setPendingParentId(parentId); setExpanded(prev => ({ ...prev, [`tpl-${parentId}`]: true })); }} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} templateTree={tree} onToggleSelect={(id, shiftKey) => {
   if (shiftKey && lastSelectedRef.current && lastSelectedRef.current !== id) {
     const from = flatSelectableIds.indexOf(lastSelectedRef.current);
     const to = flatSelectableIds.indexOf(id);
@@ -2372,18 +2489,15 @@ function AnimatedAmount({ value, hidden }) {
     if (isFirstRef.current) {
       isFirstRef.current = false;
       prevRef.current = value;
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setDisplay(value);
       return;
     }
     const from = prevRef.current;
     const to = value;
     if (to === undefined || from === undefined) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setDisplay(to); prevRef.current = to; return;
     }
     if (Math.abs(from - to) < 0.5) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setDisplay(to); prevRef.current = to; return;
     }
     const start = performance.now();
@@ -2419,6 +2533,7 @@ function AnimatedAmount({ value, hidden }) {
 
 // ─── DraggableTreeRow ─────────────────────────────────────────
 function DraggableTreeRow({ node, depth, expanded, onToggle, side, mappingKind = "structure", hideAmounts = false, amountsByCode = new Map(), templateAmountsById = new Map(), onCopy, movedIds, movedDimsByCode = new Map(), onDrop, onRename, onDelete, onAddChild, sectionByCode, multiMode, selectedIds, onToggleSelect, clientTree, templateTree, highlightedIds, onToggleHighlight, dimsByGroupCode }) {
+  const t = useT();
   const key = `${side === "client" ? "client" : "tpl"}-${node.code}`;
   const isOpen = !!expanded[key];
   const hasChildren = (node.children?.length ?? 0) > 0;
@@ -2476,9 +2591,30 @@ if (selected.length > 0) {
     }
     e.dataTransfer.setData("application/json", JSON.stringify({ sourceSide: side, node: { ...stripSubtreeForTransfer(node), id: node.id } }));
   };
-  const handleDragOver = e => { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = "copy"; const rect = e.currentTarget.getBoundingClientRect(), y = e.clientY - rect.top, h = rect.height; if (y < h * 0.35) setDropZone("before"); else if (y > h * 0.65) setDropZone("after"); else setDropZone("inside"); };
+const handleDragOver = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "copy";
+    const rect = e.currentTarget.getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    const h = rect.height;
+    const canHaveInside = isSum || node.kind === "breaker";
+    if (canHaveInside) {
+      if (y < h * 0.2) setDropZone("before");
+      else if (y > h * 0.8) setDropZone("after");
+      else setDropZone("inside");
+    } else {
+      setDropZone(y < h * 0.5 ? "before" : "after");
+    }
+  };
   const handleDrop = e => { e.preventDefault(); e.stopPropagation(); const zone = dropZone; setDropZone(null); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); onDrop({ sourceNode: data.node, sourceSide: data.sourceSide, targetId: node.id ?? node.code, position: zone ?? "after" }); } catch { /* ignore parse */ } };
-  const accent = side === "client" ? "#1a2f8a" : "#374151";
+const accent = side === "client" ? "#1a2f8a" : "#374151";
+  const dropLine = (
+    <div className="relative my-0.5 pointer-events-none" style={{ marginLeft: 8 + depth * 14, marginRight: 8 }}>
+      <div style={{ height: 3, background: accent, borderRadius: 2, boxShadow: `0 0 14px ${accent}, 0 0 4px ${accent}` }} />
+      <div className="absolute top-1/2 -translate-y-1/2" style={{ left: -3, width: 9, height: 9, borderRadius: "50%", background: accent, boxShadow: `0 0 8px ${accent}, 0 0 2px ${accent}` }} />
+    </div>
+  );
 
   const editControls = editing ? (
     <div className="flex items-center gap-0.5 flex-shrink-0">
@@ -2490,7 +2626,7 @@ if (selected.length > 0) {
   if (node.kind === "breaker") {
     return (
       <>
-        {dropZone === "before" && <div className="h-0.5 mx-2 rounded-full" style={{ background: accent, boxShadow: `0 0 6px ${accent}80` }} />}
+        {dropZone === "before" && dropLine}
         <div draggable={!editing} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragLeave={() => setDropZone(null)} onDrop={handleDrop} onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)} onClick={!editing && hasChildren ? e => { if (e.detail === 1) onToggle(key); } : undefined} className={`flex items-center min-w-0 gap-2 px-3 py-2 my-1 rounded-lg transition-all ${editing ? "cursor-text" : "cursor-grab active:cursor-grabbing"} ${dropZone === "inside" ? "ring-2 ring-offset-1 ring-white" : ""}`} style={{ backgroundColor: node.color || "#374151", ...(dropZone === "inside" ? { boxShadow: `0 0 0 2px white, 0 0 0 4px ${node.color || "#374151"}` } : {}) }}>
           {hasChildren && <span className="text-white/70 flex-shrink-0">{isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>}
           {editing ? <input ref={editInputRef} type="text" value={editValue} onChange={e => setEditValue(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} onKeyDown={e => { e.stopPropagation(); if (e.key === "Enter") commitEdit(); if (e.key === "Escape") cancelEdit(); }} onBlur={commitEdit} className="text-xs flex-1 min-w-0 px-2 py-0.5 rounded border border-white/40 outline-none focus:border-white bg-white/15 text-white placeholder:text-white/50 uppercase tracking-widest font-black" />
@@ -2498,7 +2634,7 @@ if (selected.length > 0) {
          {!editing && hovering && <div className="flex items-center gap-0.5 flex-shrink-0"><button onClick={startEdit} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white transition-colors"><Pencil size={13} /></button><button onClick={e => { e.stopPropagation(); onDelete?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white transition-colors"><Trash2 size={13} /></button></div>}
           {editControls}
         </div>
-        {dropZone === "after" && <div className="h-0.5 mx-2 rounded-full" style={{ background: accent, boxShadow: `0 0 6px ${accent}80` }} />}
+        {dropZone === "after" && dropLine}
      {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child}depth={1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} hideAmounts={hideAmounts} amountsByCode={amountsByCode} templateAmountsById={templateAmountsById} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onAddChild={onAddChild} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} />)}
       </>
     );
@@ -2509,9 +2645,9 @@ const cursorClass = editing ? "cursor-text" : (side === "client" && isSum && map
 
   return (
     <>
-      {dropZone === "before" && <div className="h-0.5 mx-2 rounded-full" style={{ background: accent, boxShadow: `0 0 6px ${accent}80` }} />}
+      {dropZone === "before" && dropLine}
       <div className="flex items-stretch gap-2">
-      <div draggable={!editing} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragLeave={() => setDropZone(null)} onDrop={handleDrop} onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)} onClick={hasChildren && !editing ? e => { if (e.detail === 1) onToggle(key); } : undefined} className={`flex-1 min-w-0 flex items-center gap-2 px-2 py-2.5 rounded-lg transition-all ${cursorClass} ${dropZone === "inside" ? "ring-2 ring-offset-1" : "hover:bg-gray-50"} ${bgClass} ${isMoved ? "bg-emerald-50/30" : ""}`}>
+     <div draggable={!editing} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragLeave={() => setDropZone(null)} onDrop={handleDrop} onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)} onClick={hasChildren && !editing ? e => { if (e.detail === 1) onToggle(key); } : undefined} className={`flex-1 min-w-0 flex items-center gap-2 px-2 py-2.5 rounded-lg transition-all ${cursorClass} ${dropZone === "inside" ? "" : "hover:bg-gray-50"} ${bgClass} ${isMoved && dropZone !== "inside" ? "bg-emerald-50/30" : ""}`} style={dropZone === "inside" ? { background: `${accent}1f`, boxShadow: `inset 0 0 0 2px ${accent}, 0 0 0 4px ${accent}20, 0 6px 20px -6px ${accent}80`, transform: "scale(1.01)" } : undefined}>
 {multiMode && (side === "client" ? (!isSum || mappingKind === "report") : (!isSum && node.kind !== "breaker")) && (
             <span onClick={e => { e.stopPropagation(); onToggleSelect?.(node.id ?? node.code, e.shiftKey); }}
               className="w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 cursor-pointer transition-all"
@@ -2533,18 +2669,18 @@ const cursorClass = editing ? "cursor-text" : (side === "client" && isSum && map
             <div className="relative flex-shrink-0">
               <button onClick={e => { e.stopPropagation(); const next = !showDims; if (next) window.dispatchEvent(new CustomEvent("dim-popover-open", { detail: dimIdRef.current })); setShowDims(next); }} onMouseDown={e => e.stopPropagation()}
                 className="w-5 h-5 rounded-md flex items-center justify-center transition-colors flex-shrink-0"
-                style={{ background: showDims ? "#f59e0b" : "#fef3c7", color: "#d97706" }}
-                title="Has dimensions">
+style={{ background: showDims ? "#f59e0b" : "#fef3c7", color: "#d97706" }}
+                title={t("am_has_dimensions")}>
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
               </button>
             </div>
           )}
           {!editing && hovering && <div className="flex items-center gap-0.5 flex-shrink-0">
-{onAddChild && isSum && <button onClick={e => { e.stopPropagation(); onAddChild?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} title="Add child row" className="w-6 h-6 rounded flex items-center justify-center hover:bg-emerald-50 text-gray-400 hover:text-emerald-600 transition-colors"><Plus size={14} /></button>}
+{onAddChild && isSum && <button onClick={e => { e.stopPropagation(); onAddChild?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} title={t("am_add_child_row")} className="w-6 h-6 rounded flex items-center justify-center hover:bg-emerald-50 text-gray-400 hover:text-emerald-600 transition-colors"><Plus size={14} /></button>}
 <button onClick={startEdit} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-[#1a2f8a]/10 text-gray-400 hover:text-[#1a2f8a] transition-colors"><Pencil size={13} /></button>
-            {mappingKind === "report" && node.kind !== "breaker" && <button onClick={e => { e.stopPropagation(); onCopy?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} title="Duplicate to template" className="w-6 h-6 rounded flex items-center justify-center hover:bg-indigo-50 text-gray-400 hover:text-indigo-600 transition-colors"><Copy size={12} /></button>}
+            {mappingKind === "report" && node.kind !== "breaker" && <button onClick={e => { e.stopPropagation(); onCopy?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} title={t("am_duplicate_to_template")} className="w-6 h-6 rounded flex items-center justify-center hover:bg-indigo-50 text-gray-400 hover:text-indigo-600 transition-colors"><Copy size={12} /></button>}
 {side !== "client" && <>
-              <button onClick={e => { e.stopPropagation(); onToggleHighlight?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center transition-colors" style={{ color: highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : undefined }} title={highlightedIds?.has(node.id ?? node.code) ? "Remove highlight" : "Highlight row"}>
+              <button onClick={e => { e.stopPropagation(); onToggleHighlight?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center transition-colors" style={{ color: highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : undefined }} title={highlightedIds?.has(node.id ?? node.code) ? t("am_remove_highlight") : t("am_highlight_row")}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill={highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : "none"} stroke={highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
               </button>
               <button onClick={e => { e.stopPropagation(); onDelete?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors"><Trash2 size={13} /></button>
@@ -2561,14 +2697,14 @@ const cursorClass = editing ? "cursor-text" : (side === "client" && isSum && map
             {isMoved && (
               <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-emerald-50 border border-emerald-200">
                 <CheckCircle2 size={11} className="text-emerald-600" strokeWidth={2.5} />
-                <span className="text-[9px] font-black uppercase tracking-wider text-emerald-600">Mapped</span>
+               <span className="text-[9px] font-black uppercase tracking-wider text-emerald-600">{t("am_mapped_badge")}</span>
               </span>
             )}
             {side !== "client" && highlightedIds?.has(node.id ?? node.code) && <svg width="10" height="10" viewBox="0 0 24 24" fill="#f59e0b" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>}
           </div>}
         </div>
       </div>
-{dropZone === "after" && <div className="h-0.5 mx-2 rounded-full" style={{ background: accent, boxShadow: `0 0 6px ${accent}80` }} />}
+{dropZone === "after" && dropLine}
 {showDims && hasDims && [...dims].map((d, i) => {
         const idx = d.indexOf(":");
         const group = idx !== -1 ? d.slice(0, idx).trim() : "";
@@ -2607,6 +2743,7 @@ className={`group/dim flex items-center gap-1 py-1.5 rounded-lg transition-color
 
 // ─── AddRowForm ───────────────────────────────────────────────
 function AddRowForm({ accent, onAdd, existingTree, pendingParentId, onClearParent, tree }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [code, setCode] = useState(""), [name, setName] = useState(""), [isSum, setIsSum] = useState(false), [error, setError] = useState(null);
   const codeInputRef = useRef(null);
@@ -2615,24 +2752,24 @@ function AddRowForm({ accent, onAdd, existingTree, pendingParentId, onClearParen
   const parentName = useMemo(() => { if (!pendingParentId || !tree) return null; function find(nodes) { for (const n of nodes) { if (n.id === pendingParentId || n.code === pendingParentId) return n; const f = find(n.children || []); if (f) return f; } return null; } const p = find(tree); return p ? `${p.code} · ${p.name}` : null; }, [pendingParentId, tree]);
   const reset = () => { setCode(""); setName(""); setIsSum(false); setError(null); };
   const fullReset = () => { reset(); onClearParent?.(); };
-  const handleSubmit = () => {
+const handleSubmit = () => {
     const tc = code.trim(), tn = name.trim();
-    if (!tc) { setError("Code is required"); return; }
-    if (!tn) { setError("Name is required"); return; }
+    if (!tc) { setError(t("am_err_code_required")); return; }
+    if (!tn) { setError(t("am_err_name_required")); return; }
     const exists = (function check(nodes) { for (const n of nodes) { if (String(n.code) === tc) return true; if (check(n.children || [])) return true; } return false; })(existingTree);
-    if (exists) { setError(`Code "${tc}" already exists`); return; }
+    if (exists) { setError(t("am_err_code_exists").replace("{code}", tc)); return; }
     onAdd({ code: tc, name: tn, isSum }); fullReset(); setOpen(false);
   };
 if (!open) return (
     <button onClick={() => setOpen(true)} className="group flex items-center gap-2 mb-3 px-3 py-2.5 rounded-xl border border-dashed border-gray-200 hover:border-gray-300 hover:bg-gray-50/50 text-gray-400 hover:text-gray-500 text-xs font-semibold transition-all w-full justify-center">
-      <Plus size={11} /><span>Add row</span>
+      <Plus size={11} /><span>{t("am_add_row")}</span>
     </button>
   );
   return (
     <div className="mb-3 rounded-xl overflow-hidden shadow-sm" style={{ border: `1.5px solid ${accent}30` }}>
       <div className="flex items-center justify-between px-3.5 py-2.5" style={{ background: `${accent}08` }}>
         <div className="flex items-center gap-2">
-          <span className="text-[9px] font-black uppercase tracking-widest" style={{ color: accent }}>{pendingParentId ? "Child row" : "New row"}</span>
+          <span className="text-[9px] font-black uppercase tracking-widest" style={{ color: accent }}>{pendingParentId ? t("am_child_row") : t("am_new_row")}</span>
           {parentName && <span className="flex items-center gap-1 text-[10px] text-gray-400"><span>↳</span><span className="font-mono font-semibold text-gray-600 truncate max-w-[120px]">{parentName}</span><button onClick={onClearParent} className="text-gray-300 hover:text-gray-500 ml-0.5"><X size={9} /></button></span>}
         </div>
         <button onClick={() => { fullReset(); setOpen(false); }} className="w-5 h-5 rounded-lg flex items-center justify-center hover:bg-black/5 text-gray-400 hover:text-gray-600 transition-colors"><X size={11} /></button>
@@ -2640,16 +2777,16 @@ if (!open) return (
       <div className="p-3 space-y-2.5 bg-white">
         <div className="flex items-center gap-2">
           <div className="relative">
-            <input ref={codeInputRef} type="text" value={code} onChange={e => { setCode(e.target.value); setError(null); }} onKeyDown={e => { if (e.key === "Enter") handleSubmit(); if (e.key === "Escape") { fullReset(); setOpen(false); } }} placeholder="Code" className="w-24 px-3 py-2 rounded-lg text-[11px] font-mono bg-gray-50 border border-gray-200 outline-none transition-all placeholder:text-gray-300" style={{ focusBorderColor: accent }} onFocus={e => e.target.style.borderColor = accent} onBlur={e => e.target.style.borderColor = '#e5e7eb'} />
+<input ref={codeInputRef} type="text" value={code} onChange={e => { setCode(e.target.value); setError(null); }} onKeyDown={e => { if (e.key === "Enter") handleSubmit(); if (e.key === "Escape") { fullReset(); setOpen(false); } }} placeholder={t("am_code")} className="w-24 px-3 py-2 rounded-lg text-[11px] font-mono bg-gray-50 border border-gray-200 outline-none transition-all placeholder:text-gray-300" style={{ focusBorderColor: accent }} onFocus={e => e.target.style.borderColor = accent} onBlur={e => e.target.style.borderColor = '#e5e7eb'} />
           </div>
-          <input type="text" value={name} onChange={e => { setName(e.target.value); setError(null); }} onKeyDown={e => { if (e.key === "Enter") handleSubmit(); if (e.key === "Escape") { fullReset(); setOpen(false); } }} placeholder="Account name" className="flex-1 min-w-0 px-3 py-2 rounded-lg text-xs bg-gray-50 border border-gray-200 outline-none transition-all placeholder:text-gray-300" onFocus={e => e.target.style.borderColor = accent} onBlur={e => e.target.style.borderColor = '#e5e7eb'} />
+          <input type="text" value={name} onChange={e => { setName(e.target.value); setError(null); }} onKeyDown={e => { if (e.key === "Enter") handleSubmit(); if (e.key === "Escape") { fullReset(); setOpen(false); } }} placeholder={t("am_account_name")} className="flex-1 min-w-0 px-3 py-2 rounded-lg text-xs bg-gray-50 border border-gray-200 outline-none transition-all placeholder:text-gray-300" onFocus={e => e.target.style.borderColor = accent} onBlur={e => e.target.style.borderColor = '#e5e7eb'} />
         </div>
         <div className="flex items-center justify-between">
           <label className="flex items-center gap-2 cursor-pointer select-none group">
             <div onClick={() => setIsSum(s => !s)} className="w-4 h-4 rounded-md flex items-center justify-center transition-all flex-shrink-0 shadow-sm" style={{ border: `2px solid ${isSum ? accent : '#e5e7eb'}`, backgroundColor: isSum ? accent : 'white' }}>{isSum && <Check size={9} className="text-white" strokeWidth={3} />}</div>
-            <span className="text-[11px] text-gray-500 font-medium group-hover:text-gray-700 transition-colors">Sum / total row</span>
+<span className="text-[11px] text-gray-500 font-medium group-hover:text-gray-700 transition-colors">{t("am_sum_total_row")}</span>
           </label>
-          <button onClick={handleSubmit} className="px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider text-white transition-all hover:opacity-90 active:scale-95 shadow-sm" style={{ backgroundColor: accent }}>Add</button>
+          <button onClick={handleSubmit} className="px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider text-white transition-all hover:opacity-90 active:scale-95 shadow-sm" style={{ backgroundColor: accent }}>{t("am_btn_add")}</button>
         </div>
         {error && <p className="text-[10px] text-red-400 font-medium flex items-center gap-1"><span>⚠</span>{error}</p>}
       </div>
@@ -2659,37 +2796,38 @@ if (!open) return (
 
 // ─── AddBreakerForm ───────────────────────────────────────────
 function AddBreakerForm({ accent, open, onOpen, onClose, onAdd }) {
+  const t = useT();
   const [name, setName] = useState(""), [color, setColor] = useState("#1a2f8a"), [error, setError] = useState(null);
   const inputRef = useRef(null);
   useEffect(() => { if (open && inputRef.current) inputRef.current.focus(); }, [open]);
   const PRESET_COLORS = ["#1a2f8a","#CF305D","#374151","#57aa78","#dc7533","#7c3aed","#0891b2","#ca8a04"];
   const reset = () => { setName(""); setColor("#1a2f8a"); setError(null); };
-  const handleSubmit = () => { const t = name.trim(); if (!t) { setError("Name is required"); return; } onAdd({ name: t.toUpperCase(), color }); reset(); onClose(); };
+const handleSubmit = () => { const trimmed = name.trim(); if (!trimmed) { setError(t("am_err_name_required")); return; } onAdd({ name: trimmed.toUpperCase(), color }); reset(); onClose(); };
 if (!open) return (
     <button onClick={onOpen} className="group flex items-center gap-2 mb-3 px-3 py-2.5 rounded-xl border border-dashed border-gray-200 hover:border-gray-300 hover:bg-gray-50/50 text-gray-400 hover:text-gray-500 text-xs font-semibold transition-all w-full justify-center">
-      <Plus size={11} /><span>Add breaker</span>
+      <Plus size={11} /><span>{t("am_add_breaker")}</span>
     </button>
   );
   return (
     <div className="mb-3 rounded-xl overflow-hidden shadow-sm" style={{ border: `1.5px solid ${accent}30` }}>
       <div className="flex items-center justify-between px-3.5 py-2.5" style={{ background: `${accent}08` }}>
-        <span className="text-[9px] font-black uppercase tracking-widest" style={{ color: accent }}>New breaker</span>
+        <span className="text-[9px] font-black uppercase tracking-widest" style={{ color: accent }}>{t("am_new_breaker")}</span>
         <button onClick={() => { reset(); onClose(); }} className="w-5 h-5 rounded-lg flex items-center justify-center hover:bg-black/5 text-gray-400 hover:text-gray-600 transition-colors"><X size={11} /></button>
       </div>
       <div className="p-3 space-y-2.5 bg-white">
-        <input ref={inputRef} type="text" value={name} onChange={e => { setName(e.target.value); setError(null); }} onKeyDown={e => { if (e.key === "Enter") handleSubmit(); if (e.key === "Escape") { reset(); onClose(); } }} placeholder="Breaker label (e.g., INGRESOS)" className="w-full px-3 py-2 rounded-lg text-[11px] font-black uppercase tracking-widest bg-gray-50 border border-gray-200 outline-none transition-all placeholder:text-gray-300 placeholder:normal-case placeholder:tracking-normal placeholder:font-normal" onFocus={e => e.target.style.borderColor = accent} onBlur={e => e.target.style.borderColor = '#e5e7eb'} />
+        <input ref={inputRef} type="text" value={name} onChange={e => { setName(e.target.value); setError(null); }} onKeyDown={e => { if (e.key === "Enter") handleSubmit(); if (e.key === "Escape") { reset(); onClose(); } }} placeholder={t("am_breaker_placeholder")} className="w-full px-3 py-2 rounded-lg text-[11px] font-black uppercase tracking-widest bg-gray-50 border border-gray-200 outline-none transition-all placeholder:text-gray-300 placeholder:normal-case placeholder:tracking-normal placeholder:font-normal" onFocus={e => e.target.style.borderColor = accent} onBlur={e => e.target.style.borderColor = '#e5e7eb'} />
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-gray-400 font-medium flex-shrink-0">Color</span>
+          <span className="text-[10px] text-gray-400 font-medium flex-shrink-0">{t("am_color")}</span>
           <div className="flex items-center gap-1.5 flex-wrap">
             {PRESET_COLORS.map(c => (
               <button key={c} onClick={() => setColor(c)} className="w-5 h-5 rounded-md transition-all hover:scale-110" style={{ backgroundColor: c, boxShadow: color === c ? `0 0 0 2px white, 0 0 0 3.5px ${c}` : 'none', transform: color === c ? 'scale(1.15)' : 'scale(1)' }} />
             ))}
-            <input type="color" value={color} onChange={e => setColor(e.target.value)} className="w-5 h-5 rounded-md cursor-pointer border-0 p-0 bg-transparent" style={{ appearance: 'none' }} title="Custom color" />
+            <input type="color" value={color} onChange={e => setColor(e.target.value)} className="w-5 h-5 rounded-md cursor-pointer border-0 p-0 bg-transparent" style={{ appearance: 'none' }} title={t("am_custom_color")} />
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex-1 px-3 py-2 rounded-lg text-[11px] font-black uppercase tracking-widest text-white truncate transition-colors" style={{ backgroundColor: color }}>{name.trim() || "PREVIEW"}</div>
-          <button onClick={handleSubmit} className="px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider text-white transition-all hover:opacity-90 active:scale-95 shadow-sm flex-shrink-0" style={{ backgroundColor: accent }}>Add</button>
+<div className="flex-1 px-3 py-2 rounded-lg text-[11px] font-black uppercase tracking-widest text-white truncate transition-colors" style={{ backgroundColor: color }}>{name.trim() || t("am_preview")}</div>
+          <button onClick={handleSubmit} className="px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider text-white transition-all hover:opacity-90 active:scale-95 shadow-sm flex-shrink-0" style={{ backgroundColor: accent }}>{t("am_btn_add")}</button>
         </div>
         {error && <p className="text-[10px] text-red-400 font-medium flex items-center gap-1"><span>⚠</span>{error}</p>}
       </div>
@@ -2699,6 +2837,7 @@ if (!open) return (
 
 // ─── SaveMappingForm ──────────────────────────────────────────
 function SaveMappingForm({ name, setName, description, setDescription, error, onSave, onCancel, saving, asNew, accent }) {
+  const t = useT();
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-6" onClick={onCancel}>
       <div className="absolute inset-0 bg-black/50 backdrop-blur-md" />
@@ -2713,16 +2852,16 @@ function SaveMappingForm({ name, setName, description, setDescription, error, on
             <div className="w-8 h-8 rounded-xl flex items-center justify-center mb-3" style={{ background: "rgba(255,255,255,0.2)" }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
             </div>
-            <p className="text-white font-black text-lg leading-tight">{asNew ? "Save as new" : "Save mapping"}</p>
-            <p className="text-white/60 text-[11px] mt-0.5">Give it a name your team will recognize</p>
+<p className="text-white font-black text-lg leading-tight">{asNew ? t("am_save_form_save_new") : t("am_save_form_save")}</p>
+            <p className="text-white/60 text-[11px] mt-0.5">{t("am_save_form_subtitle")}</p>
           </div>
         </div>
 
         {/* Body */}
         <div className="px-6 py-5 space-y-4">
           <div className="space-y-1.5">
-            <label className="block text-[10px] font-black uppercase tracking-widest text-gray-400">Name</label>
-            <input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="e.g., Vista financiera mensual" autoFocus
+            <label className="block text-[10px] font-black uppercase tracking-widest text-gray-400">{t("am_save_form_name_label")}</label>
+            <input type="text" value={name} onChange={e => setName(e.target.value)} placeholder={t("am_save_form_name_placeholder")} autoFocus
               className="w-full px-3.5 py-2.5 rounded-xl text-sm text-gray-800 outline-none transition-all placeholder:text-gray-300"
               style={{ background: "#f8f9ff", border: "1.5px solid #eef1fb" }}
               onFocus={e => { e.target.style.borderColor = accent; e.target.style.background = "white"; e.target.style.boxShadow = `0 0 0 3px ${accent}15`; }}
@@ -2730,8 +2869,8 @@ function SaveMappingForm({ name, setName, description, setDescription, error, on
               onKeyDown={e => { if (e.key === "Enter") onSave(); if (e.key === "Escape") onCancel(); }} />
           </div>
           <div className="space-y-1.5">
-            <label className="block text-[10px] font-black uppercase tracking-widest text-gray-400">Description <span className="text-gray-300 font-normal normal-case tracking-normal">· optional</span></label>
-            <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="What's this mapping used for?" rows={3}
+<label className="block text-[10px] font-black uppercase tracking-widest text-gray-400">{t("am_save_form_desc_label")} <span className="text-gray-300 font-normal normal-case tracking-normal">· {t("am_save_form_optional")}</span></label>
+            <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder={t("am_save_form_desc_placeholder")} rows={3}
               className="w-full px-3.5 py-2.5 rounded-xl text-sm text-gray-800 outline-none transition-all resize-none placeholder:text-gray-300"
               style={{ background: "#f8f9ff", border: "1.5px solid #eef1fb" }}
               onFocus={e => { e.target.style.borderColor = accent; e.target.style.background = "white"; e.target.style.boxShadow = `0 0 0 3px ${accent}15`; }}
@@ -2746,14 +2885,14 @@ function SaveMappingForm({ name, setName, description, setDescription, error, on
           )}
 
           <div className="flex items-center gap-2 pt-1">
-            <button onClick={onCancel} disabled={saving}
+<button onClick={onCancel} disabled={saving}
               className="flex-1 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all">
-              Cancel
+              {t("am_btn_cancel")}
             </button>
             <button onClick={onSave} disabled={saving}
               className="flex-1 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-white transition-all disabled:opacity-40 hover:opacity-90 active:scale-[0.98]"
               style={{ background: `linear-gradient(135deg, ${accent} 0%, ${accent}dd 100%)`, boxShadow: `0 4px 14px -4px ${accent}60` }}>
-              {saving ? "Saving…" : "Save"}
+              {saving ? t("am_saving") : t("am_btn_save")}
             </button>
           </div>
         </div>
@@ -2764,6 +2903,7 @@ function SaveMappingForm({ name, setName, description, setDescription, error, on
 
 // ─── Panel / PanelToolbar / EmptyPanelState ───────────────────
 function Panel({ title, subtitle, accent, onExpandAll, onCollapseAll, isExpanded, extra, children }) {
+  const t = useT();
   return (
     <div className="bg-white rounded-2xl border border-gray-100 flex flex-col overflow-hidden shadow-sm">
       <div className="px-5 py-3 border-b border-gray-100 flex items-center gap-4 flex-shrink-0" style={{ backgroundColor: `${accent}06` }}>
@@ -2776,7 +2916,7 @@ function Panel({ title, subtitle, accent, onExpandAll, onCollapseAll, isExpanded
         <button onClick={isExpanded ? onCollapseAll : onExpandAll}
           className="w-7 h-7 rounded-lg flex items-center justify-center transition-all hover:scale-110 flex-shrink-0"
           style={{ background: `${accent}10`, color: accent }}
-          title={isExpanded ? "Collapse all" : "Expand all"}>
+          title={isExpanded ? t("am_collapse_all") : t("am_expand_all")}>
           {isExpanded
             ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
             : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}

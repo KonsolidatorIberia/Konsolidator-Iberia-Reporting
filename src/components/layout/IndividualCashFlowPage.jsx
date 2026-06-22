@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { ChevronDown, Loader2, Download, Library } from "lucide-react";
 import { useTypo, useSettings } from "./SettingsContext";
 import PageHeader, { MultiFilterPill, FilterPill as HeaderFilterPill } from "./PageHeader.jsx";
+import { useCurrentUserResourceAccess } from "../../lib/userPermissionsApi";
 
 import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
@@ -462,8 +463,9 @@ export default function IndividualCashFlowPage({ token }) {
   const subbody1Style = useTypo("subbody1");
   const underscore1Style = useTypo("underscore1");
   const underscore2Style = useTypo("underscore2");
-  const filterStyle = useTypo("filter");
+const filterStyle = useTypo("filter");
   const { colors } = useSettings();
+const { access: resourceAccess } = useCurrentUserResourceAccess();
 
   const [periods,        setPeriods]        = useState([]);
   const [sources,        setSources]        = useState([]);
@@ -614,7 +616,7 @@ fetch(`${BASE}/mapped-accounts`,          { headers: h }).then(r => r.json()).th
   }, [token, metaReady, source, structure, year, month]);
 
   /* ─── Companies under selected structure ─────────────────────── */
-  const contributionCompanies = useMemo(() => {
+const contributionCompanies = useMemo(() => {
     const gsRows = groupStructure.map(g => ({
       company:   g.companyShortName ?? g.CompanyShortName ?? "",
       structure: g.groupStructure   ?? g.GroupStructure   ?? "",
@@ -631,10 +633,27 @@ fetch(`${BASE}/mapped-accounts`,          { headers: h }).then(r => r.json()).th
       });
   }, [groupStructure, structure, companies]);
 
+  // ── Resource-access gating ───────────────────────────────────
+  const effectiveSources = useMemo(() => {
+    const set = resourceAccess?.source;
+    if (!set) return sources;
+    return sources.filter(s => set.has(String(s.Source ?? s.source ?? s)));
+  }, [sources, resourceAccess]);
+  const effectiveStructures = useMemo(() => {
+    const set = resourceAccess?.structure;
+    if (!set) return structures;
+    return structures.filter(s => set.has(String(s.GroupStructure ?? s.groupStructure ?? s)));
+  }, [structures, resourceAccess]);
+  const effectiveContributionCompanies = useMemo(() => {
+    const set = resourceAccess?.company;
+    if (!set) return contributionCompanies;
+    return contributionCompanies.filter(c => set.has(String(c)));
+  }, [contributionCompanies, resourceAccess]);
+
 const visibleCompanies = useMemo(() => {
-    if (!selectedCompanies) return contributionCompanies;
-    return contributionCompanies.filter(c => selectedCompanies.includes(c));
-  }, [contributionCompanies, selectedCompanies]);
+    if (!selectedCompanies) return effectiveContributionCompanies;
+    return effectiveContributionCompanies.filter(c => selectedCompanies.includes(c));
+  }, [effectiveContributionCompanies, selectedCompanies]);
 
   const [colOrder, setColOrder] = useState(null);
   const [draggingCol, setDraggingCol] = useState(null);
@@ -1082,9 +1101,9 @@ const [compareMode, setCompareMode] = useState(false);
         kicker="Reports"
         title="Cash Flow"
         filters={[
-          ...(sources.length > 0
+...(effectiveSources.length > 0
             ? [{ label: "Source", value: source, onChange: setSource,
-                options: sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s })) }]
+                options: effectiveSources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s })) }]
             : []),
           ...(availableYears.length > 0
             ? [{ label: "Year", value: year, onChange: setYear, options: availableYears }]
@@ -1092,17 +1111,17 @@ const [compareMode, setCompareMode] = useState(false);
           ...(availableMonths.length > 0
             ? [{ label: "Month", value: month, onChange: setMonth, options: availableMonths }]
             : []),
-          ...(structures.length > 0
+          ...(effectiveStructures.length > 0
             ? [{ label: "Structure", value: structure, onChange: setStructure,
-                options: structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s })) }]
+                options: effectiveStructures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s })) }]
             : []),
-...(contributionCompanies.length > 1
+...(effectiveContributionCompanies.length > 1
             ? [{
                 label: "Companies",
                 multiselect: true,
                 values: selectedCompanies,
                 onChange: setSelectedCompanies,
-                options: contributionCompanies.map(c => ({
+                options: effectiveContributionCompanies.map(c => ({
                   value: c,
                   label: companies.find(x => x.CompanyShortName === c)?.CompanyLegalName || c,
                 })),

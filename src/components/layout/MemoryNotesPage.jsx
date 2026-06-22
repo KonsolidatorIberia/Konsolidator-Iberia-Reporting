@@ -56,12 +56,115 @@ const parseAmt = (val) => {
 // `prefixes`. We do prefix matching because account_codes in templates are
 // short (e.g. "210") and actual posting accounts can be deeper (e.g. "21000",
 // "210000"). Treating template codes as prefixes catches sub-accounts.
-function codeMatchesPrefix(accountCode, prefixes) {
-  const ac = String(accountCode);
-  return prefixes.some(p => {
-    const pp = String(p);
-    return ac === pp || ac.startsWith(pp);
+// ─── Hierarchy + rollup helpers ───────────────────────────────────
+// Mismo patrón que DimensionesPage e IndividualCashFlowPage.
+
+// AccountCode → SumAccountCode. Se construye desde group-accounts
+// y también desde los postings (por si hay códigos huérfanos).
+function buildParentOf(groupAccounts, ...uploadedBuckets) {
+  const parentOf = new Map();
+  const add = (ac, sum) => {
+    const a = String(ac ?? ""), s = String(sum ?? "");
+    if (a && s && a !== s) parentOf.set(a, s);
+  };
+  (groupAccounts ?? []).forEach(g =>
+    add(g.AccountCode ?? g.accountCode, g.SumAccountCode ?? g.sumAccountCode));
+  uploadedBuckets.forEach(bucket => (bucket ?? []).forEach(r =>
+    add(r.AccountCode ?? r.accountCode, r.SumAccountCode ?? r.sumAccountCode)));
+  return parentOf;
+}
+
+// Resuelve AccountType de un código caminando padre arriba por parentOf
+// hasta que algún ancestro tenga tipo declarado en typeByCode.
+function resolveAccountType(code, typeByCode, parentOf) {
+  let cur = String(code ?? "");
+  let hops = 0;
+  while (cur && hops < 30) {
+    if (typeByCode.has(cur)) return typeByCode.get(cur);
+    cur = parentOf.get(cur);
+    hops++;
+  }
+  return null;
+}
+
+// Pivot crudo Map<accountCode, totalAmt>.
+// Si se pasa accountTypes, filtra usando AccountType de la fila o, si está
+// vacío (lo más habitual en uploaded-accounts), resolviendo vía el chart.
+// Si no se puede resolver el tipo y hay filtro, mantiene la fila — preferimos
+// over-include a perder datos silenciosamente.
+function buildPostingsPivot(uploadedRows, accountTypes, typeByCode, parentOf) {
+  const p = new Map();
+  (uploadedRows ?? []).forEach(r => {
+    const code = String(r.AccountCode ?? r.accountCode ?? "");
+    if (!code) return;
+    if (accountTypes && accountTypes.length > 0) {
+      const rowType = r.AccountType ?? r.accountType ?? "";
+      const t = rowType || resolveAccountType(code, typeByCode, parentOf);
+      if (t && !accountTypes.includes(t)) return; // tipo conocido y no encaja → fuera
+      // si t es null (desconocido), dejamos pasar para no perder data
+    }
+    const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+    p.set(code, (p.get(code) ?? 0) + amt);
   });
+  return p;
+}
+
+// Rolled-up pivot: cada posting suma a sí mismo + a cada ancestro.
+// Tras esto pivot.get(code) === total del subárbol bajo ese código.
+function rollUpPivot(postings, parentOf) {
+  const out = new Map();
+  if (!postings || postings.size === 0) return out;
+  postings.forEach((amt, code) => {
+    out.set(code, (out.get(code) ?? 0) + amt);
+    let cur = parentOf.get(code);
+    let hops = 0;
+    while (cur && hops < 30) {
+      out.set(cur, (out.get(cur) ?? 0) + amt);
+      cur = parentOf.get(cur);
+      hops++;
+    }
+  });
+  return out;
+}
+
+// Suma directa de una lista de códigos en un pivot rolled-up. Es lo que
+// reemplaza al prefix-matching. Si quieres todo el subárbol de "21", pon
+// "21" en account_codes; el rollup ya lo ha agregado.
+function sumCodes(rolledPivot, codes) {
+  if (!codes || codes.length === 0 || !rolledPivot) return 0;
+  let total = 0;
+  for (const c of codes) total += rolledPivot.get(String(c)) ?? 0;
+  return total;
+}
+
+// ─── Cash-flow mapping indexes ─────────────────────────────────────
+function buildCfIndexes(cfMapping) {
+  const cfCodeByGroupCode = new Map();
+  const cfParentOf = new Map();
+  (cfMapping ?? []).forEach(m => {
+    const enabled = m.enabled ?? m.Enabled;
+    if (enabled === false) return;
+    const ga = String(m.groupAccountCode ?? m.GroupAccountCode ?? "");
+    const cf = String(m.cashFlowAccountCode ?? m.CashFlowAccountCode ?? "");
+    const cfp = String(m.cashFlowAccountSumAccountCode ?? m.CashFlowAccountSumAccountCode ?? "");
+    if (ga && cf) cfCodeByGroupCode.set(ga, cf);
+    if (cf && cfp && cf !== cfp) cfParentOf.set(cf, cfp);
+  });
+  return { cfCodeByGroupCode, cfParentOf };
+}
+
+// Proyecta postings a códigos CF vía el mapping. Devuelve pivot crudo CF
+// que después rolas con cfParentOf.
+function buildCashflowPostingsPivot(uploadedRows, cfCodeByGroupCode) {
+  const p = new Map();
+  (uploadedRows ?? []).forEach(r => {
+    const ga = String(r.AccountCode ?? r.accountCode ?? "");
+    const cf = cfCodeByGroupCode.get(ga);
+    if (!cf) return;
+    const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+    p.set(cf, (p.get(cf) ?? 0) + amt);
+  });
+  return p;
 }
 
 // ─── Export icon components ───────────────────────────────────────
@@ -312,134 +415,115 @@ function MovementsTable({ note, rows, columns, pivot }) {
 //   AUTO-GENERATION ENGINE
 //   Builds a pivot keyed by `${rowId}|${colId}` from uploaded-accounts.
 // ═══════════════════════════════════════════════════════════════════════
-function buildPivot({ note, rows, columns, currentRows, prevRows }) {
-  // currentRows  = uploaded-accounts for current period (e.g. 2025-12)
-  // prevRows     = uploaded-accounts for previous period (e.g. 2024-12) → opening balances
+function buildPivot({ note, rows, columns, sources }) {
+  // sources = { curBalance, prevBalance, curPyg, prevPyg, curCashflow, prevCashflow }
+  // todos son Maps rolled-up (no arrays).
+  const { curBalance, prevBalance, curPyg, prevPyg, curCashflow, prevCashflow } = sources;
+  const noteSource = note?.source_type ?? "balance";
   const pivot = new Map();
 
+  const pickPair = (colSource) => {
+    const s = colSource ?? noteSource;
+    if (s === "pyg")      return { cur: curPyg,      prev: prevPyg };
+    if (s === "cashflow") return { cur: curCashflow, prev: prevCashflow };
+    return { cur: curBalance, prev: prevBalance };
+  };
+
   rows.forEach(row => {
-    if (row.is_total) return; // totals computed at the end
-    const prefixes = row.account_codes ?? [];
-    if (prefixes.length === 0) return;
+    if (row.is_total) return;
+    const codes = row.account_codes ?? [];
+    if (codes.length === 0) return;
 
     columns.forEach(col => {
       const key = `${row.id}|${col.id}`;
+      const { cur, prev } = pickPair(col.source_type);
       let value = 0;
 
       switch (col.col_type) {
-        case "opening": {
-          // Sum prev period closing balances for matching codes
-          prevRows.forEach(r => {
-            const code = r.AccountCode ?? r.accountCode ?? "";
-            const lac  = r.LocalAccountCode ?? r.localAccountCode ?? "";
-            if (lac && lac !== "—") return; // only group rows
-            if (codeMatchesPrefix(code, prefixes)) {
-              value += parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
-            }
-          });
+        case "opening":
+          value = sumCodes(prev, codes);
           break;
-        }
-        case "closing": {
-          // If the column has a formula like "opening + additions - disposals + transfers",
-          // we'll resolve it at the row-total step below. Here we just pre-fill from
-          // current period totals so columns without formulas still work.
-          if (col.formula) {
-            value = NaN; // sentinel — formula resolved below
-          } else {
-            currentRows.forEach(r => {
-              const code = r.AccountCode ?? r.accountCode ?? "";
-              const lac  = r.LocalAccountCode ?? r.localAccountCode ?? "";
-              if (lac && lac !== "—") return;
-              if (codeMatchesPrefix(code, prefixes)) {
-                value += parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
-              }
-            });
-          }
+        case "closing":
+          if (col.formula) { value = NaN; break; }
+          value = sumCodes(cur, codes);
           break;
-        }
+        case "pyg_current":
+          value = sumCodes(curPyg, codes);
+          break;
+        case "pyg_prev":
+          value = sumCodes(prevPyg, codes);
+          break;
         case "addition":
         case "disposal":
         case "transfer":
         case "movement": {
-          // Movement = current YTD - prev YTD. With no detailed journal entries
-          // available, we approximate "additions" as the positive delta and
-          // "disposals" as the negative delta. This is a heuristic — user can
-          // override manually later.
-          let curTotal = 0, prevTotal = 0;
-          currentRows.forEach(r => {
-            const code = r.AccountCode ?? r.accountCode ?? "";
-            const lac  = r.LocalAccountCode ?? r.localAccountCode ?? "";
-            if (lac && lac !== "—") return;
-            if (codeMatchesPrefix(code, prefixes)) curTotal += parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
-          });
-          prevRows.forEach(r => {
-            const code = r.AccountCode ?? r.accountCode ?? "";
-            const lac  = r.LocalAccountCode ?? r.localAccountCode ?? "";
-            if (lac && lac !== "—") return;
-            if (codeMatchesPrefix(code, prefixes)) prevTotal += parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
-          });
-          const delta = curTotal - prevTotal;
-          if (col.col_type === "addition")    value = delta > 0 ? delta : 0;
+          const curT  = sumCodes(cur,  codes);
+          const prevT = sumCodes(prev, codes);
+          const delta = curT - prevT;
+          if (col.col_type === "addition")      value = delta > 0 ? delta : 0;
           else if (col.col_type === "disposal") value = delta < 0 ? Math.abs(delta) : 0;
-          else value = 0; // transfers / generic movements: no auto-source available
+          else value = 0;
           break;
         }
+        case "balance_delta":
+          value = sumCodes(curBalance, codes) - sumCodes(prevBalance, codes);
+          break;
+        case "treasury_opening":
+          value = sumCodes(prevBalance, codes.length ? codes : ["57"]);
+          break;
+        case "treasury_closing":
+          value = sumCodes(curBalance, codes.length ? codes : ["57"]);
+          break;
         case "depreciation": {
-          // Sum amortization-related accounts. Heuristic: prefix '28' for PGC Spain
-          // (amortización acumulada del inmovilizado material/intangible).
-          // We sum codes 28X + 29X (deterioros) only if the row's account_codes
-          // are inmovilizado-class (2X), not for unrelated rows.
-          const isInmov = prefixes.some(p => /^2/.test(String(p)));
-          if (!isInmov) break;
-          currentRows.forEach(r => {
-            const code = r.AccountCode ?? r.accountCode ?? "";
-            const lac  = r.LocalAccountCode ?? r.localAccountCode ?? "";
-            if (lac && lac !== "—") return;
-            // Match amortization codes that "shadow" this row
-            const acStr = String(code);
-            const matchesAmort = prefixes.some(p => {
-              const pStr = String(p);
-              const amortPrefix = "28" + pStr.slice(1); // 210 → 2810
-              const deterPrefix = "29" + pStr.slice(1); // 210 → 2910
-              return acStr.startsWith(amortPrefix) || acStr.startsWith(deterPrefix);
-            });
-            if (matchesAmort) value += parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
-          });
+          // Si la fila trae depreciation_codes (mejor práctica), úsalos.
+          // Si no, construye candidatos 28X/29X que "shadow" los codes de la fila
+          // (compat con templates PGC sembrados con sólo el inmovilizado).
+          const depCodes = (row.depreciation_codes && row.depreciation_codes.length)
+            ? row.depreciation_codes
+            : codes.flatMap(c => {
+                const s = String(c);
+                return s.length >= 2 ? ["28" + s.slice(1), "29" + s.slice(1)] : [];
+              });
+          value = sumCodes(curBalance, depCodes);
           break;
         }
+        case "manual":
+          value = 0;
+          break;
         default:
           value = 0;
       }
-
       pivot.set(key, value);
     });
   });
 
-  // Resolve formulas for closing-with-formula columns (e.g.
-  // "opening + additions - disposals + transfers")
+  // Resolver fórmulas (igual que antes; nuevos tokens disponibles)
   rows.forEach(row => {
     if (row.is_total) return;
     columns.forEach(col => {
       if (!col.formula) return;
       const key = `${row.id}|${col.id}`;
-      if (!Number.isNaN(pivot.get(key))) return; // already populated
+      if (!Number.isNaN(pivot.get(key))) return;
 
-      // Tokenize formula → operate on column types
       const colByType = new Map();
       columns.forEach(c => colByType.set(c.col_type, `${row.id}|${c.id}`));
 
+      const env = {
+        opening:          pivot.get(colByType.get("opening")) ?? 0,
+        additions:        pivot.get(colByType.get("addition")) ?? 0,
+        disposals:        pivot.get(colByType.get("disposal")) ?? 0,
+        transfers:        pivot.get(colByType.get("transfer")) ?? 0,
+        closing:          pivot.get(colByType.get("closing")) ?? 0,
+        depreciation:     pivot.get(colByType.get("depreciation")) ?? 0,
+        pyg_current:      pivot.get(colByType.get("pyg_current")) ?? 0,
+        pyg_prev:         pivot.get(colByType.get("pyg_prev")) ?? 0,
+        balance_delta:    pivot.get(colByType.get("balance_delta")) ?? 0,
+        treasury_opening: pivot.get(colByType.get("treasury_opening")) ?? 0,
+        treasury_closing: pivot.get(colByType.get("treasury_closing")) ?? 0,
+      };
+
       let result = 0;
       try {
-        // Map keywords to actual values
-        const env = {
-          opening:     pivot.get(colByType.get("opening")) ?? 0,
-          additions:   pivot.get(colByType.get("addition")) ?? 0,
-          disposals:   pivot.get(colByType.get("disposal")) ?? 0,
-          transfers:   pivot.get(colByType.get("transfer")) ?? 0,
-          closing:     pivot.get(colByType.get("closing"))  ?? 0,
-          depreciation: pivot.get(colByType.get("depreciation")) ?? 0,
-        };
-        // Replace tokens with values — safe because formulas are seeded by us
         let expr = col.formula;
         Object.entries(env).forEach(([k, v]) => {
           expr = expr.replaceAll(k, `(${Number.isFinite(v) ? v : 0})`);
@@ -447,14 +531,12 @@ function buildPivot({ note, rows, columns, currentRows, prevRows }) {
         // eslint-disable-next-line no-new-func
         result = Function(`"use strict"; return (${expr})`)();
         if (!Number.isFinite(result)) result = 0;
-      } catch {
-        result = 0;
-      }
+      } catch { result = 0; }
       pivot.set(key, result);
     });
   });
 
-  // Compute totals row (sum of all non-total non-subtotal rows)
+  // Totales
   const totalRow = rows.find(r => r.is_total);
   if (totalRow) {
     columns.forEach(col => {
@@ -497,8 +579,10 @@ const [templateId, setTemplateId] = useState("pgc_normal");
   const [cols, setCols]           = useState([]); // ALL cols for current template
   const [loadingTemplate, setLoadingTemplate] = useState(true);
 
-  const [currentRows, setCurrentRows] = useState([]); // uploaded-accounts current period
+const [currentRows, setCurrentRows] = useState([]); // uploaded-accounts current period
   const [prevRows, setPrevRows]       = useState([]); // uploaded-accounts prev period
+const [groupAccounts, setGroupAccounts] = useState([]); // chart of accounts del grupo
+  const [cfMapping, setCfMapping] = useState([]); // mapped-cashflow-accounts
   const [loadingData, setLoadingData] = useState(false);
 
   // Defaults from props
@@ -521,12 +605,40 @@ const [templateId, setTemplateId] = useState("pgc_normal");
     }
   }, [companies]); // eslint-disable-line
 
-  // Load templates list
+// Load templates list
   useEffect(() => {
     sbGet("memory", "templates?select=*&order=sort_order.asc&scope=eq.individual").then(d => {
       if (Array.isArray(d)) setTemplates(d);
     });
   }, []);
+
+// Load chart of accounts (group-accounts) — para clasificar por AccountType real
+  useEffect(() => {
+    if (!token) return;
+    fetch(`${BASE_URL}/v2/group-accounts`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
+    })
+      .then(r => r.ok ? r.json() : { value: [] })
+      .then(j => {
+        const arr = j.value ?? (Array.isArray(j) ? j : []);
+        setGroupAccounts(arr);
+      })
+      .catch(() => setGroupAccounts([]));
+  }, [token]);
+
+  // Load cash-flow mapping (group account → CF account)
+  useEffect(() => {
+    if (!token) return;
+    fetch(`${BASE_URL}/v2/mapped-cashflow-accounts`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
+    })
+      .then(r => r.ok ? r.json() : { value: [] })
+      .then(j => {
+        const arr = j.value ?? (Array.isArray(j) ? j : []);
+        setCfMapping(arr);
+      })
+      .catch(() => setCfMapping([]));
+  }, [token]);
 
   // Load notes + rows + cols for current template
   useEffect(() => {
@@ -536,12 +648,51 @@ const [templateId, setTemplateId] = useState("pgc_normal");
       sbGet("memory", `template_notes?select=*&template_id=eq.${templateId}&order=sort_order.asc`),
 sbGet("memory", `template_rows?select=*&note_id=like.${templateId}%3A*&order=sort_order.asc`),
 sbGet("memory", `template_columns?select=*&note_id=like.${templateId}%3A*&order=sort_order.asc`),
-    ]).then(([n, r, c]) => {
-      setNotes(Array.isArray(n) ? n : []);
-      setRows(Array.isArray(r) ? r : []);
-      setCols(Array.isArray(c) ? c : []);
-      if (Array.isArray(n) && n.length > 0) {
-        setActiveNoteId(prev => (prev && n.find(x => x.id === prev)) ? prev : n[0].id);
+]).then(([n, r, c]) => {
+const dedupeBy = (arr, keyFn) => {
+        if (!Array.isArray(arr)) return [];
+        const seen = new Set();
+        return arr.filter(x => {
+          const k = keyFn(x);
+          if (k == null || seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
+      };
+
+      // 1) Dedupe notes by note_number — keep the first occurrence
+      const uniqNotes = dedupeBy(n, x => x?.note_number);
+
+      // 2) Build a map: note_number -> kept note id
+      const keptIdByNumber = new Map(uniqNotes.map(x => [x.note_number, x.id]));
+      // And a map from ANY duplicate note id -> kept note id, so we can
+      // remap orphaned rows/cols whose note_id points to a dropped duplicate.
+      const remapNoteId = new Map();
+      (Array.isArray(n) ? n : []).forEach(note => {
+        const keptId = keptIdByNumber.get(note?.note_number);
+        if (keptId) remapNoteId.set(note.id, keptId);
+      });
+
+      // 3) Remap rows/cols' note_id to the kept note id, then dedupe by
+      //    (note_id, sort_order, label) so true duplicates collapse but
+      //    legitimately distinct rows survive.
+      const remap = (arr) => (Array.isArray(arr) ? arr : []).map(x => ({
+        ...x,
+        note_id: remapNoteId.get(x.note_id) ?? x.note_id,
+      }));
+      const uniqRows = dedupeBy(
+        remap(r),
+        x => `${x.note_id}|${x.sort_order ?? ""}|${x.label ?? ""}`
+      );
+      const uniqCols = dedupeBy(
+        remap(c),
+        x => `${x.note_id}|${x.sort_order ?? ""}|${x.label ?? ""}`
+      );
+      setNotes(uniqNotes);
+      setRows(uniqRows);
+      setCols(uniqCols);
+      if (uniqNotes.length > 0) {
+        setActiveNoteId(prev => (prev && uniqNotes.find(x => x.id === prev)) ? prev : uniqNotes[0].id);
       }
       setLoadingTemplate(false);
     });
@@ -600,6 +751,54 @@ sbGet("memory", `template_columns?select=*&note_id=like.${templateId}%3A*&order=
   const activeRows = activeNote ? (rowsByNote.get(activeNote.id) ?? []) : [];
   const activeCols = activeNote ? (colsByNote.get(activeNote.id) ?? []) : [];
 
+// Hierarchy index del chart de cuentas grupo (incluye fallback a códigos
+  // huérfanos que sólo aparecen en los postings).
+  const parentOf = useMemo(
+    () => buildParentOf(groupAccounts, currentRows, prevRows),
+    [groupAccounts, currentRows, prevRows]
+  );
+
+// Cash flow mapping: groupCode → cfCode  y  cfChild → cfParent.
+  const { cfCodeByGroupCode, cfParentOf } = useMemo(
+    () => buildCfIndexes(cfMapping),
+    [cfMapping]
+  );
+
+  // AccountCode → AccountType, desde el chart. Usado para clasificar los
+  // postings cuando uploaded-accounts no trae el campo AccountType.
+  const typeByCode = useMemo(() => {
+    const m = new Map();
+    (groupAccounts ?? []).forEach(a => {
+      const code = a.AccountCode ?? a.accountCode;
+      const type = a.AccountType ?? a.accountType;
+      if (code != null && type) m.set(String(code), String(type));
+    });
+    return m;
+  }, [groupAccounts]);
+
+  // Pivots rolled-up por bucket. Cada Map<accountCode, total> ya incluye
+  // todos los descendientes; sumar una nota es ahora sumCodes(map, codes).
+  const accountSources = useMemo(() => {
+    const PYG_TYPES = ["P/L", "DIS"];
+    const BS_TYPES  = ["B/S"];
+
+    const curBalRaw  = buildPostingsPivot(currentRows, BS_TYPES,  typeByCode, parentOf);
+    const prevBalRaw = buildPostingsPivot(prevRows,    BS_TYPES,  typeByCode, parentOf);
+    const curPygRaw  = buildPostingsPivot(currentRows, PYG_TYPES, typeByCode, parentOf);
+    const prevPygRaw = buildPostingsPivot(prevRows,    PYG_TYPES, typeByCode, parentOf);
+    const curCfRaw   = buildCashflowPostingsPivot(currentRows, cfCodeByGroupCode);
+    const prevCfRaw  = buildCashflowPostingsPivot(prevRows,    cfCodeByGroupCode);
+
+    return {
+      curBalance:   rollUpPivot(curBalRaw,  parentOf),
+      prevBalance:  rollUpPivot(prevBalRaw, parentOf),
+      curPyg:       rollUpPivot(curPygRaw,  parentOf),
+      prevPyg:      rollUpPivot(prevPygRaw, parentOf),
+      curCashflow:  rollUpPivot(curCfRaw,   cfParentOf),
+      prevCashflow: rollUpPivot(prevCfRaw,  cfParentOf),
+    };
+  }, [currentRows, prevRows, parentOf, typeByCode, cfCodeByGroupCode, cfParentOf]);
+
   // Build pivot for active note
   const pivot = useMemo(() => {
     if (!activeNote || !activeNote.has_table) return new Map();
@@ -608,9 +807,9 @@ sbGet("memory", `template_columns?select=*&note_id=like.${templateId}%3A*&order=
       note: activeNote,
       rows: activeRows,
       columns: activeCols,
-      currentRows, prevRows,
+      sources: accountSources,
     });
-  }, [activeNote, activeRows, activeCols, currentRows, prevRows]);
+  }, [activeNote, activeRows, activeCols, accountSources]);
 
   // Filter options
   const sourceOpts    = [...new Set(sources.map(s  => typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
@@ -628,10 +827,10 @@ sbGet("memory", `template_columns?select=*&note_id=like.${templateId}%3A*&order=
       const nRows = rowsByNote.get(n.id) ?? [];
       const nCols = colsByNote.get(n.id) ?? [];
       if (!nRows.length || !nCols.length) return null;
-      const nPivot = buildPivot({ note: n, rows: nRows, columns: nCols, currentRows, prevRows });
+const nPivot = buildPivot({ note: n, rows: nRows, columns: nCols, sources: accountSources });
       return { note: n, rows: nRows, columns: nCols, pivot: nPivot };
     }).filter(Boolean);
-  }, [notes, rowsByNote, colsByNote, currentRows, prevRows]);
+  }, [notes, rowsByNote, colsByNote, accountSources]);
 
   const handleExportExcel = useCallback(async () => {
     try {
@@ -847,6 +1046,28 @@ sbGet("memory", `template_columns?select=*&note_id=like.${templateId}%3A*&order=
     a.click();
     URL.revokeObjectURL(url);
   }, [buildExportData, templates, templateId, company, year, month, source, structure]);
+if (currentRows.length > 0 && groupAccounts.length > 0) {
+    console.log("📊 sizes", {
+      uploadedCurrent: currentRows.length,
+      groupAccounts: groupAccounts.length,
+      typeByCode: typeByCode.size,
+      parentOf: parentOf.size,
+      curBalance: accountSources.curBalance.size,
+      curPyg: accountSources.curPyg.size,
+      curCashflow: accountSources.curCashflow.size,
+    });
+    console.log("📊 sample uploaded row:", currentRows[0]);
+    console.log("📊 sample groupAccount:", groupAccounts[0]);
+    console.log("📊 first 10 codes in curBalance:", [...accountSources.curBalance.entries()].slice(0, 10));
+    console.log("📊 first 10 codes in curPyg:", [...accountSources.curPyg.entries()].slice(0, 10));
+    console.log("📊 active note + rows:", activeNote?.title, activeRows.map(r => ({ label: r.label, codes: r.account_codes })));
+    console.log("📊 active cols:", activeCols.map(c => ({ label: c.label, col_type: c.col_type, source: c.source_type })));
+console.log("📊 template row 0 account_codes:", activeRows[0]?.account_codes);
+    console.log("📊 template col 0:", activeCols[0]);
+    console.log("📊 pivot first 5 values:", [...pivot.entries()].slice(0, 5));
+    console.log("📊 curBalance sample 20 codes:", [...accountSources.curBalance.keys()].slice(0, 20));
+    console.log("📊 curPyg sample 20 codes:", [...accountSources.curPyg.keys()].slice(0, 20));
+  }
 
   return (
     <div className="flex flex-col gap-4 h-full min-h-0">
