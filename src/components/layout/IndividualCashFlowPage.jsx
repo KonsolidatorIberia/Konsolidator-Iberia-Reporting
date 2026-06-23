@@ -359,7 +359,7 @@ function SheetRow({
   node, depth, pivot, visibleCompanies,
   body1Style, body2Style, subbody1Style,
   isSubtotal, compareMode = false, cmpPivot = new Map(), colors, rowIndex = 0,
-  uploadedData = [], groupToCf,
+  uploadedData = [], journalEntries = [], groupToCf,
 }) {
   const [expanded, setExpanded] = useState(false);
   const byCompany = pivot.get(node.AccountCode) || {};
@@ -367,24 +367,79 @@ function SheetRow({
     (byCompany[company] ?? []).reduce((s, r) => s + (Number(r._cfAmount ?? 0)), 0);
 
   // Level 1: group codes that map to this CF code, with their local rows
-  const drillGroups = useMemo(() => {
+const drillGroups = useMemo(() => {
     if (!expanded) return [];
     const byGroup = new Map();
+
+    const ensureBucket = (groupCode, groupName) => {
+      if (!byGroup.has(groupCode)) {
+        byGroup.set(groupCode, { groupCode, groupName: groupName ?? "", rowMap: new Map() });
+      }
+      return byGroup.get(groupCode);
+    };
+
+    // ── ERP rows from uploaded-accounts (excluding journals) ──
     uploadedData.forEach(r => {
       const groupCode = String(r.AccountCode ?? r.accountCode ?? "");
       const co = r.CompanyShortName ?? r.companyShortName ?? "";
       const cfs = groupToCf?.get(groupCode) ?? [];
       if (!cfs.includes(node.AccountCode)) return;
-      if (!byGroup.has(groupCode)) byGroup.set(groupCode, { groupCode, groupName: r.AccountName ?? r.accountName ?? "", localRows: [] });
-      byGroup.get(groupCode).localRows.push({
-        localCode: r.LocalAccountCode ?? r.localAccountCode ?? "",
-        localName: r.LocalAccountName ?? r.localAccountName ?? "",
-        co,
-        amt: Number(r.AmountYTD ?? r.amountYTD ?? 0),
-      });
+
+      const origin = r.Origin ?? r.origin ?? "";
+      const rawLocalCode = r.LocalAccountCode ?? r.localAccountCode ?? "";
+      if (origin === "Journal" || !rawLocalCode) return; // journals go through journalEntries below
+
+      const bucket = ensureBucket(groupCode, r.AccountName ?? r.accountName);
+      const key = `ERP::${rawLocalCode}::${co}`;
+      const amt = Number(r.AmountYTD ?? r.amountYTD ?? 0);
+      if (!bucket.rowMap.has(key)) {
+        bucket.rowMap.set(key, {
+          localCode: rawLocalCode,
+          localName: r.LocalAccountName ?? r.localAccountName ?? "",
+          isJournal: false,
+          co,
+          amt: 0,
+        });
+      }
+      bucket.rowMap.get(key).amt += amt;
     });
-    return [...byGroup.values()].sort((a, b) => a.groupCode.localeCompare(b.groupCode));
-  }, [expanded, uploadedData, groupToCf, node.AccountCode]);
+
+    // ── Journal rows from journal-entries, grouped per JournalNumber ──
+    journalEntries.forEach(j => {
+      const groupCode = String(j.AccountCode ?? j.accountCode ?? "");
+      const co = j.CompanyShortName ?? j.companyShortName ?? "";
+      const cfs = groupToCf?.get(groupCode) ?? [];
+      if (!cfs.includes(node.AccountCode)) return;
+
+      const journalNumber = String(j.JournalNumber ?? j.journalNumber ?? "");
+      const journalHeader = j.JournalHeader ?? j.journalHeader ?? "";
+      const journalType   = j.JournalType   ?? j.journalType   ?? "";
+
+      const bucket = ensureBucket(groupCode, j.AccountName ?? j.accountName);
+      const key = `JRN::${journalNumber}::${co}`;
+      const amt = Number(j.AmountYTD ?? j.amountYTD ?? 0);
+      if (!bucket.rowMap.has(key)) {
+        bucket.rowMap.set(key, {
+          localCode: journalNumber || "JRN",
+          localName: journalHeader || journalType || "Journal",
+          isJournal: true,
+          co,
+          amt: 0,
+        });
+      }
+      bucket.rowMap.get(key).amt += amt;
+    });
+
+    return [...byGroup.values()]
+      .map(g => ({
+        ...g,
+        localRows: [...g.rowMap.values()].sort((a, b) => {
+          if (a.isJournal !== b.isJournal) return a.isJournal ? 1 : -1;
+          return (a.localCode || a.localName).localeCompare(b.localCode || b.localName);
+        }),
+      }))
+      .sort((a, b) => a.groupCode.localeCompare(b.groupCode));
+  }, [expanded, uploadedData, journalEntries, groupToCf, node.AccountCode]);
 
   const totalCols = 1 + visibleCompanies.length * (compareMode ? 4 : 1);
 
@@ -489,9 +544,10 @@ const [upDimGroups, setUpDimGroups] = useState(null);
   const [upDimensions, setUpDimensions] = useState(null);
   const [dimensionsMeta, setDimensionsMeta] = useState([]);
 
-  const [uploadedData, setUploadedData] = useState([]);
-  const [loading,      setLoading]      = useState(false);
-  const [metaReady,    setMetaReady]    = useState(false);
+const [uploadedData,   setUploadedData]   = useState([]);
+  const [journalEntries, setJournalEntries] = useState([]);
+  const [loading,        setLoading]        = useState(false);
+  const [metaReady,      setMetaReady]      = useState(false);
 
   const autoPeriodDone = useRef(false);
 
@@ -672,8 +728,9 @@ const visibleCompanies = useMemo(() => {
   useEffect(() => {
     if (!metaReady || !year || !month || !source || !structure) return;
     let cancelled = false;
-    setLoading(true);
+setLoading(true);
     setUploadedData([]);
+    setJournalEntries([]);
 
     const baseFilter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}'`;
     const auth = { headers: { Authorization: `Bearer ${token}` } };
@@ -683,7 +740,9 @@ const visibleCompanies = useMemo(() => {
         .then(r => r.json()).then(d => d.value || []),
       fetch(`${BASE}/reports/consolidated-accounts?$filter=${encodeURIComponent(baseFilter)}`, auth)
         .then(r => r.json()).then(d => d.value || []).catch(() => []),
-    ]).then(([uploaded, cons]) => {
+      fetch(`${BASE}/journal-entries?$filter=${encodeURIComponent(baseFilter)}`, auth)
+        .then(r => r.json()).then(d => d.value || []).catch(() => []),
+    ]).then(([uploaded, cons, journals]) => {
       if (cancelled) return;
       const cfRowsForNames = cons.filter(r => {
         const t = r.AccountType ?? r.accountType ?? "";
@@ -699,6 +758,7 @@ const visibleCompanies = useMemo(() => {
         return next;
       });
       setUploadedData(uploaded);
+      setJournalEntries(Array.isArray(journals) ? journals : []);
       setLoading(false);
     }).catch(() => { if (!cancelled) setLoading(false); });
 
@@ -754,11 +814,10 @@ const filteredUploadedData = useMemo(() => {
     if (!filteredUploadedData.length || !cfMetadata.size) return new Map();
     const piv = new Map();
 
-    filteredUploadedData.forEach(r => {
-      const localCode = r.LocalAccountCode ?? r.localAccountCode ?? null;
+filteredUploadedData.forEach(r => {
       const groupCode = String(r.AccountCode ?? r.accountCode ?? "");
       const co = r.CompanyShortName ?? r.companyShortName ?? "";
-      if (!localCode || !groupCode || !co) return;
+      if (!groupCode || !co) return;
       const cfs = groupToCf.get(groupCode);
       if (!cfs) return;
       const amt = parseAmt(r.AmountYTD ?? r.amountYTD);
@@ -914,11 +973,10 @@ const [compareMode, setCompareMode] = useState(false);
         if (cancelled) return;
         const rows = d.value || [];
         const piv = new Map();
-        rows.forEach(r => {
-          const localCode = r.LocalAccountCode ?? r.localAccountCode ?? null;
+rows.forEach(r => {
           const groupCode = String(r.AccountCode ?? r.accountCode ?? "");
           const co = r.CompanyShortName ?? r.companyShortName ?? "";
-          if (!localCode || !groupCode || !co) return;
+          if (!groupCode || !co) return;
           const cfs = groupToCf.get(groupCode);
           if (!cfs) return;
           const amt = parseAmt(r.AmountYTD ?? r.amountYTD);
@@ -1303,13 +1361,13 @@ fabActions={[
                               AccountCode: code,
                               AccountName: nameFor(code),
                             };
-                            return (
+return (
 <SheetRow key={code} node={node} depth={0}
                                 pivot={pivot} visibleCompanies={orderedVisibleCompanies}
                                 body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style}
                                 isSubtotal={isSubtotal} rowIndex={idx}
                                 compareMode={compareMode} cmpPivot={cmpPivot} colors={colors}
-                                uploadedData={filteredUploadedData} groupToCf={groupToCf} />
+                                uploadedData={filteredUploadedData} journalEntries={journalEntries} groupToCf={groupToCf} />
                             );
                           })}
                         </Fragment>

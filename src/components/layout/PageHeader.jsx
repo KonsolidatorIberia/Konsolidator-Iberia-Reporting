@@ -805,8 +805,9 @@ aiToggle,
   headerSearch,
   headerActions,
   headerExtra,
-  onExportPdf,
+onExportPdf,
   onExportXlsx,
+  onExportWord,
 onMappingsClick,
   mappingsQuickAccess = [],   // [{ id, name, kind: "structure" | "report", updated_at }]
   onQuickApplyMapping,        // (mapping) => void
@@ -1270,8 +1271,32 @@ onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareTog
                       </div>
                     </div>,
                     document.body
-                  )}
+)}
                   </div>
+                  )}
+
+                  {exportMode && onExportWord && (
+                    <button
+                      onClick={() => { onExportWord?.(); setExportMode(false); }}
+                      title={t("download_word") ?? "Download Word"}
+                      className="flex items-center gap-1.5 px-3 h-9 rounded-full flex-shrink-0"
+                      style={{
+                        background: "white",
+                        color: "#2B579A",
+                        border: "1px solid rgba(43,87,154,0.25)",
+                        boxShadow: "0 4px 12px -2px rgba(43,87,154,0.18)",
+                        transition: `all 240ms ${SMOOTH}`,
+                        animation: `excelSpawn 360ms ${SPRING} 80ms`,
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.03)"; }}
+                      onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; }}
+                    >
+<img src="https://img.icons8.com/color/240/microsoft-word-2019.png"
+                        alt="Word" style={{ width: 22, height: 22, objectFit: "contain", display: "block" }} />
+                      <span className="hidden 2xl:inline text-[10px] font-black uppercase tracking-wider">
+                        Word
+                      </span>
+                    </button>
                   )}
                 </div>
               )}

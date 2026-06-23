@@ -127,13 +127,28 @@ function rollUpPivot(postings, parentOf) {
   return out;
 }
 
-// Suma directa de una lista de códigos en un pivot rolled-up. Es lo que
-// reemplaza al prefix-matching. Si quieres todo el subárbol de "21", pon
-// "21" en account_codes; el rollup ya lo ha agregado.
-function sumCodes(rolledPivot, codes) {
+// Suma de códigos con doble estrategia:
+//  1) exact lookup contra el rolled-up pivot (códigos que existen tal cual)
+//  2) si falla, prefix-match contra los leaves (rawPivot) — captura casos
+//     como '210' en charts que sólo tienen '210000', '210100', etc.
+// El rawPivot tiene SOLO leaves (postings), así que no hay doble conteo
+// con ancestros agregados.
+function sumCodes(rolledPivot, codes, rawPivot = null) {
   if (!codes || codes.length === 0 || !rolledPivot) return 0;
   let total = 0;
-  for (const c of codes) total += rolledPivot.get(String(c)) ?? 0;
+  for (const c of codes) {
+    const code = String(c);
+    const exact = rolledPivot.get(code);
+    if (exact !== undefined && exact !== 0) {
+      total += exact;
+      continue;
+    }
+    if (rawPivot) {
+      rawPivot.forEach((amt, leafCode) => {
+        if (String(leafCode).startsWith(code)) total += amt;
+      });
+    }
+  }
   return total;
 }
 
@@ -346,10 +361,80 @@ function ExportMenu({ onExportExcel, onExportPdf, onExportWord, disabled }) {
     </div>
   );
 }
+// ─── EditableCell ────────────────────────────────────────────────
+// Celda click-to-edit. Read-only para totales. Enter/blur commitea, Escape
+// cancela. Acepta formatos ES/DE (1.234,56) e inglés (1234.56). Devolver
+// null al padre limpia el override y la celda vuelve al valor calculado.
+function parseUserNumber(s) {
+  if (s == null) return null;
+  const t = String(s).trim();
+  if (t === "") return null;
+  const hasDot = t.includes("."), hasComma = t.includes(",");
+  let norm;
+  if (hasDot && hasComma) norm = t.replace(/\./g, "").replace(",", ".");
+  else if (hasComma)      norm = t.replace(",", ".");
+  else                    norm = t;
+  const n = parseFloat(norm);
+  return Number.isFinite(n) ? n : null;
+}
+
+function EditableCell({ rowId, colId, value, readOnly, onCellEdit, baseStyle, color }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft]     = useState("");
+
+  if (readOnly) {
+    return (
+      <td className="px-4 py-2.5 text-right whitespace-nowrap tabular-nums"
+        style={{ ...baseStyle, color }}>
+        {fmt(value)}
+      </td>
+    );
+  }
+
+  const startEdit = () => {
+    const isZero = value == null || value === 0 || Number.isNaN(value);
+    setDraft(isZero ? "" : String(value).replace(".", ","));
+    setEditing(true);
+  };
+  const commit = () => {
+    onCellEdit?.(rowId, colId, parseUserNumber(draft));
+    setEditing(false);
+  };
+  const cancel = () => { setEditing(false); setDraft(""); };
+
+  if (editing) {
+    return (
+      <td className="px-4 py-2.5 text-right whitespace-nowrap tabular-nums"
+        style={{ ...baseStyle, color }}>
+        <input
+          autoFocus
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={e => {
+            if (e.key === "Enter")       { e.preventDefault(); commit(); }
+            else if (e.key === "Escape") { e.preventDefault(); cancel(); }
+          }}
+          className="w-full text-right bg-transparent outline-none tabular-nums"
+          style={{ ...baseStyle, color: "#000", border: "none", padding: 0, margin: 0 }}
+        />
+      </td>
+    );
+  }
+
+  return (
+    <td onClick={startEdit}
+      className="px-4 py-2.5 text-right whitespace-nowrap tabular-nums cursor-text transition-colors hover:bg-blue-50/40"
+      style={{ ...baseStyle, color }}>
+      {fmt(value)}
+    </td>
+  );
+}
+
 // ─── MovementsTable ──────────────────────────────────────────────
 // Renders a table for one note. Rows + columns come from template definitions;
 // values come from the auto-built pivot keyed by (rowId, colId).
-function MovementsTable({ note, rows, columns, pivot }) {
+function MovementsTable({ note, rows, columns, pivot, onCellEdit }) {
   const { colors } = useSettings();
   const header2Style = useTypo("header2");
   const body1Style = useTypo("body1");
@@ -391,14 +476,18 @@ function MovementsTable({ note, rows, columns, pivot }) {
                   <td className="px-5 py-2.5" style={{ paddingLeft: `${20 + (row.level || 0) * 16}px`, ...rowStyle }}>
                     {row.label}
                   </td>
-                  {columns.map(col => {
+{columns.map(col => {
                     const v = pivot.get(`${row.id}|${col.id}`) ?? 0;
                     const color = v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : (isTotal ? colors.primary : "#000000");
                     return (
-                      <td key={col.id} className="px-4 py-2.5 text-right whitespace-nowrap tabular-nums"
-                        style={{ ...rowStyle, color }}>
-                        {fmt(v)}
-                      </td>
+                      <EditableCell key={col.id}
+                        rowId={row.id}
+                        colId={col.id}
+                        value={v}
+                        readOnly={isTotal}
+                        onCellEdit={onCellEdit}
+                        baseStyle={rowStyle}
+                        color={color} />
                     );
                   })}
                 </tr>
@@ -415,18 +504,25 @@ function MovementsTable({ note, rows, columns, pivot }) {
 //   AUTO-GENERATION ENGINE
 //   Builds a pivot keyed by `${rowId}|${colId}` from uploaded-accounts.
 // ═══════════════════════════════════════════════════════════════════════
-function buildPivot({ note, rows, columns, sources }) {
-  // sources = { curBalance, prevBalance, curPyg, prevPyg, curCashflow, prevCashflow }
-  // todos son Maps rolled-up (no arrays).
-  const { curBalance, prevBalance, curPyg, prevPyg, curCashflow, prevCashflow } = sources;
+function buildPivot({ note, rows, columns, sources, overrides }) {
+  // sources lleva rolled + raw por bucket; raw es el fallback de prefix-match.
+  const {
+    curBalance, curBalanceRaw, prevBalance, prevBalanceRaw,
+    curPyg,     curPygRaw,     prevPyg,     prevPygRaw,
+    curCashflow, curCashflowRaw, prevCashflow, prevCashflowRaw,
+  } = sources;
   const noteSource = note?.source_type ?? "balance";
   const pivot = new Map();
 
   const pickPair = (colSource) => {
     const s = colSource ?? noteSource;
-    if (s === "pyg")      return { cur: curPyg,      prev: prevPyg };
-    if (s === "cashflow") return { cur: curCashflow, prev: prevCashflow };
-    return { cur: curBalance, prev: prevBalance };
+    if (s === "pyg") {
+      return { cur: curPyg, curRaw: curPygRaw, prev: prevPyg, prevRaw: prevPygRaw };
+    }
+    if (s === "cashflow") {
+      return { cur: curCashflow, curRaw: curCashflowRaw, prev: prevCashflow, prevRaw: prevCashflowRaw };
+    }
+    return { cur: curBalance, curRaw: curBalanceRaw, prev: prevBalance, prevRaw: prevBalanceRaw };
   };
 
   rows.forEach(row => {
@@ -434,31 +530,42 @@ function buildPivot({ note, rows, columns, sources }) {
     const codes = row.account_codes ?? [];
     if (codes.length === 0) return;
 
-    columns.forEach(col => {
+columns.forEach(col => {
       const key = `${row.id}|${col.id}`;
-      const { cur, prev } = pickPair(col.source_type);
+      // Edición manual del usuario gana sobre el valor calculado.
+      // Como pivot.get(key) es un número finito (no NaN), la pasada de
+      // fórmulas lo respeta y los totales lo recogen automáticamente.
+      if (overrides?.has(key)) {
+        pivot.set(key, overrides.get(key));
+        return;
+      }
+      const { cur, curRaw, prev, prevRaw } = pickPair(col.source_type);
       let value = 0;
 
       switch (col.col_type) {
         case "opening":
-          value = sumCodes(prev, codes);
+          value = sumCodes(prev, codes, prevRaw);
           break;
-        case "closing":
-          if (col.formula) { value = NaN; break; }
-          value = sumCodes(cur, codes);
+case "closing":
+          // Diferido. Closing = opening + additions − disposals + transfers
+          // se calcula en una segunda pasada (más abajo). Si no hay columnas
+          // de movimiento, fallback a la suma directa del periodo actual.
+          // Si col.formula está definida, la pasada de fórmulas también lo
+          // procesa porque el sentinel es NaN.
+          value = NaN;
           break;
         case "pyg_current":
-          value = sumCodes(curPyg, codes);
+          value = sumCodes(curPyg, codes, curPygRaw);
           break;
         case "pyg_prev":
-          value = sumCodes(prevPyg, codes);
+          value = sumCodes(prevPyg, codes, prevPygRaw);
           break;
         case "addition":
         case "disposal":
         case "transfer":
         case "movement": {
-          const curT  = sumCodes(cur,  codes);
-          const prevT = sumCodes(prev, codes);
+          const curT  = sumCodes(cur,  codes, curRaw);
+          const prevT = sumCodes(prev, codes, prevRaw);
           const delta = curT - prevT;
           if (col.col_type === "addition")      value = delta > 0 ? delta : 0;
           else if (col.col_type === "disposal") value = delta < 0 ? Math.abs(delta) : 0;
@@ -466,25 +573,22 @@ function buildPivot({ note, rows, columns, sources }) {
           break;
         }
         case "balance_delta":
-          value = sumCodes(curBalance, codes) - sumCodes(prevBalance, codes);
+          value = sumCodes(curBalance, codes, curBalanceRaw) - sumCodes(prevBalance, codes, prevBalanceRaw);
           break;
         case "treasury_opening":
-          value = sumCodes(prevBalance, codes.length ? codes : ["57"]);
+          value = sumCodes(prevBalance, codes.length ? codes : ["57"], prevBalanceRaw);
           break;
         case "treasury_closing":
-          value = sumCodes(curBalance, codes.length ? codes : ["57"]);
+          value = sumCodes(curBalance, codes.length ? codes : ["57"], curBalanceRaw);
           break;
         case "depreciation": {
-          // Si la fila trae depreciation_codes (mejor práctica), úsalos.
-          // Si no, construye candidatos 28X/29X que "shadow" los codes de la fila
-          // (compat con templates PGC sembrados con sólo el inmovilizado).
           const depCodes = (row.depreciation_codes && row.depreciation_codes.length)
             ? row.depreciation_codes
             : codes.flatMap(c => {
                 const s = String(c);
                 return s.length >= 2 ? ["28" + s.slice(1), "29" + s.slice(1)] : [];
               });
-          value = sumCodes(curBalance, depCodes);
+          value = sumCodes(curBalance, depCodes, curBalanceRaw);
           break;
         }
         case "manual":
@@ -493,7 +597,34 @@ function buildPivot({ note, rows, columns, sources }) {
         default:
           value = 0;
       }
-      pivot.set(key, value);
+pivot.set(key, value);
+    });
+
+    // Roll-forward de "closing" sin fórmula:
+    //   closing = opening + additions − disposals + transfers
+    // usando los valores ya escritos en pivot para esta fila. Esto hace que
+    // las ediciones manuales en Altas/Bajas/Saldo inicial se propaguen
+    // automáticamente al Saldo final, y desde ahí a Valor neto vía su fórmula.
+    // Si el override del propio closing está set, gana sobre todo el resto.
+    columns.forEach(col => {
+      if (col.col_type !== "closing" || col.formula) return;
+      const key = `${row.id}|${col.id}`;
+      if (overrides?.has(key)) return;
+      let opening = 0, additions = 0, disposals = 0, transfers = 0;
+      let hasMov = false;
+      columns.forEach(c2 => {
+        const v = pivot.get(`${row.id}|${c2.id}`) ?? 0;
+        if (c2.col_type === "opening")  { opening   = v; hasMov = true; }
+        if (c2.col_type === "addition") { additions = v; hasMov = true; }
+        if (c2.col_type === "disposal") { disposals = v; hasMov = true; }
+        if (c2.col_type === "transfer") { transfers = v; hasMov = true; }
+      });
+      if (hasMov) {
+        pivot.set(key, opening + additions - disposals + transfers);
+      } else {
+        const { cur, curRaw } = pickPair(col.source_type);
+        pivot.set(key, sumCodes(cur, codes, curRaw));
+      }
     });
   });
 
@@ -569,8 +700,25 @@ export default function MemoryNotesPage({
   const [structure, setStructure] = useState("");
   const [company, setCompany]     = useState("");
 const [templateId, setTemplateId] = useState("pgc_normal");
-  const [activeNoteId, setActiveNoteId] = useState(null);
+const [activeNoteId, setActiveNoteId] = useState(null);
   const [viewsModalOpen, setViewsModalOpen] = useState(false);
+  // Overrides manuales por nota. Map<noteId, Map<"rowId|colId", number>>.
+  // null como valor elimina el override (la celda vuelve a su valor calculado).
+  const [overridesByNote, setOverridesByNote] = useState(() => new Map());
+
+  const handleCellEdit = useCallback((rowId, colId, value) => {
+    if (!activeNoteId) return;
+    setOverridesByNote(prev => {
+      const next = new Map(prev);
+      const noteOv = new Map(next.get(activeNoteId) ?? new Map());
+      const key = `${rowId}|${colId}`;
+      if (value === null) noteOv.delete(key);
+      else noteOv.set(key, value);
+      if (noteOv.size === 0) next.delete(activeNoteId);
+      else next.set(activeNoteId, noteOv);
+      return next;
+    });
+  }, [activeNoteId]);
 
   // Data
   const [templates, setTemplates] = useState([]);
@@ -776,8 +924,8 @@ const dedupeBy = (arr, keyFn) => {
     return m;
   }, [groupAccounts]);
 
-  // Pivots rolled-up por bucket. Cada Map<accountCode, total> ya incluye
-  // todos los descendientes; sumar una nota es ahora sumCodes(map, codes).
+// Pivots por bucket. Guardamos rolled (con ancestros agregados) Y raw
+  // (sólo postings) para que sumCodes pueda hacer prefix-fallback.
   const accountSources = useMemo(() => {
     const PYG_TYPES = ["P/L", "DIS"];
     const BS_TYPES  = ["B/S"];
@@ -790,12 +938,18 @@ const dedupeBy = (arr, keyFn) => {
     const prevCfRaw  = buildCashflowPostingsPivot(prevRows,    cfCodeByGroupCode);
 
     return {
-      curBalance:   rollUpPivot(curBalRaw,  parentOf),
-      prevBalance:  rollUpPivot(prevBalRaw, parentOf),
-      curPyg:       rollUpPivot(curPygRaw,  parentOf),
-      prevPyg:      rollUpPivot(prevPygRaw, parentOf),
-      curCashflow:  rollUpPivot(curCfRaw,   cfParentOf),
-      prevCashflow: rollUpPivot(prevCfRaw,  cfParentOf),
+      curBalance:      rollUpPivot(curBalRaw,  parentOf),
+      curBalanceRaw:   curBalRaw,
+      prevBalance:     rollUpPivot(prevBalRaw, parentOf),
+      prevBalanceRaw:  prevBalRaw,
+      curPyg:          rollUpPivot(curPygRaw,  parentOf),
+      curPygRaw:       curPygRaw,
+      prevPyg:         rollUpPivot(prevPygRaw, parentOf),
+      prevPygRaw:      prevPygRaw,
+      curCashflow:     rollUpPivot(curCfRaw,   cfParentOf),
+      curCashflowRaw:  curCfRaw,
+      prevCashflow:    rollUpPivot(prevCfRaw,  cfParentOf),
+      prevCashflowRaw: prevCfRaw,
     };
   }, [currentRows, prevRows, parentOf, typeByCode, cfCodeByGroupCode, cfParentOf]);
 
@@ -803,13 +957,14 @@ const dedupeBy = (arr, keyFn) => {
   const pivot = useMemo(() => {
     if (!activeNote || !activeNote.has_table) return new Map();
     if (currentRows.length === 0 && prevRows.length === 0) return new Map();
-    return buildPivot({
+return buildPivot({
       note: activeNote,
       rows: activeRows,
       columns: activeCols,
       sources: accountSources,
+      overrides: overridesByNote.get(activeNote.id) ?? null,
     });
-  }, [activeNote, activeRows, activeCols, accountSources]);
+  }, [activeNote, activeRows, activeCols, accountSources, overridesByNote]);
 
   // Filter options
   const sourceOpts    = [...new Set(sources.map(s  => typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
@@ -827,10 +982,10 @@ const dedupeBy = (arr, keyFn) => {
       const nRows = rowsByNote.get(n.id) ?? [];
       const nCols = colsByNote.get(n.id) ?? [];
       if (!nRows.length || !nCols.length) return null;
-const nPivot = buildPivot({ note: n, rows: nRows, columns: nCols, sources: accountSources });
+const nPivot = buildPivot({ note: n, rows: nRows, columns: nCols, sources: accountSources, overrides: overridesByNote.get(n.id) ?? null });
       return { note: n, rows: nRows, columns: nCols, pivot: nPivot };
     }).filter(Boolean);
-  }, [notes, rowsByNote, colsByNote, accountSources]);
+  }, [notes, rowsByNote, colsByNote, accountSources, overridesByNote]);
 
   const handleExportExcel = useCallback(async () => {
     try {
@@ -1097,32 +1252,13 @@ console.log("📊 template row 0 account_codes:", activeRows[0]?.account_codes);
             ? [{ label: "Company", value: company, onChange: setCompany, options: companyOpts }]
             : []),
         ]}
-        fabActions={[
-          {
-            id: "views",
-            icon: Library,
-            label: "Views",
-            onClick: () => setViewsModalOpen(true),
-          },
-          {
-            id: "save",
-            icon: Save,
-            label: "Save",
-            onClick: () => {},
-          },
-          {
-            id: "export",
-            icon: Download,
-            label: "Export",
-            subActions: [
-{ id: "excel", label: "Excel", src: "https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png", alt: "Excel", onClick: handleExportExcel },
-              { id: "pdf",   label: "PDF",   src: "https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png", alt: "PDF", onClick: handleExportPdf },
-              { id: "word",  label: "Word",  icon: WordIcon, onClick: handleExportWord },
-            ],
-          },
+onExportPdf={handleExportPdf}
+        onExportXlsx={handleExportExcel}
+        onExportWord={handleExportWord}
+        headerActions={[
+          { icon: Save, label: "Save", onClick: () => {} },
         ]}
       />
-
 
 
       <div className="flex-1 min-h-0 flex gap-4">
@@ -1220,7 +1356,7 @@ console.log("📊 template row 0 account_codes:", activeRows[0]?.account_codes);
                       <p className="text-[11px] text-gray-400 mt-1">No se encontraron datos contables en {month}/{year} para {company}</p>
                     </div>
                   ) : (
-                    <MovementsTable note={activeNote} rows={activeRows} columns={activeCols} pivot={pivot} />
+                   <MovementsTable note={activeNote} rows={activeRows} columns={activeCols} pivot={pivot} onCellEdit={handleCellEdit} />
                   )}
                 </div>
               )}
