@@ -253,8 +253,7 @@ async function loadStandardMapping(standard, groupAccounts) {
     }
   }
 
-  console.log(`[DimResolver] ${standard} mapping loaded: ${ccTagToCodes.size} cc_tags`);
-  return { ccTagToCodes, resolveCcTag };
+return { ccTagToCodes, resolveCcTag };
 }
 
 async function loadKpiLibrary() {
@@ -674,7 +673,7 @@ function FilterPill({ label, value, onChange, options }) {
 }
 
 const INDENT = 14;
-const DimensionRow = React.memo(function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null, valCache = null, cmpCache = null, isAnimatingData = false, tableJustLoaded = false, cmpRecentlyToggled = false, onDrillAccount = null }) {
+const DimensionRow = React.memo(function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null, valCache = null, cmpCache = null, isAnimatingData = false, tableJustLoaded = false, cmpRecentlyToggled = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), onToggleDrillAccount = null, statementType = "pl", selGroups = new Set(), selDims = new Set(), sign = -1, groupAccounts = [], masterCompany = "", computeDrillCompanyRows = null }) {
   const subbody2Style = useTypo("subbody2");
   const code = node.AccountCode;
   const visibleChildren = excludeCodes
@@ -733,8 +732,14 @@ const getNodeVal = (dimKey) => {
     return sumNode(node);
   };
 
-  const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 0);
+const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 0);
   const rowStyle = depth === 0 ? body1Style : body2Style;
+  // DEBUG: log B.PL parent render to confirm how the parent gets 18.227
+  if (String(code) === "B.PL" || String(code) === "A.PL") {
+    const dimDump = {};
+    dimCols.forEach(d => { dimDump[d.code ?? "__none__"] = getNodeVal(d.code ?? "__none__"); });
+    console.log("[PARENT render]", code, "depth:", depth, "rowTotal:", rowTotal, "perDim:", JSON.stringify(dimDump), "hasChildren:", hasChildren, "childCount:", (node.children || []).length);
+  }
 
   return (
     <>
@@ -755,16 +760,24 @@ const getNodeVal = (dimKey) => {
               : <span className="inline-block mr-2" style={{ width: 12 }} />}
             <span className="flex-shrink-0 mr-2" style={subbody2Style}>{code}</span>
             <span className="truncate max-w-[280px]" style={rowStyle}>{node.AccountName ?? node.accountName ?? ""}</span>
-            {onDrillAccount && !compareMode && (
-              <button
-                onClick={(e) => { e.stopPropagation(); onDrillAccount({ code, name: node.AccountName ?? node.accountName ?? "" }); }}
-                className="ml-auto opacity-0 group-hover/row:opacity-100 transition-opacity flex items-center justify-center flex-shrink-0"
-                style={{ width: 22, height: 22, borderRadius: 6, background: `${colors.primary}12`, color: colors.primary, marginRight: 8 }}
-                title="Ver desglose por empresa"
-              >
-                <Building2 size={12} strokeWidth={2.2} />
-              </button>
-            )}
+{onToggleDrillAccount && !compareMode && (() => {
+              const isDrilled = drillExpanded.has(code);
+              return (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onToggleDrillAccount({ code, name: node.AccountName ?? node.accountName ?? "" }); }}
+                  className={`ml-auto ${isDrilled ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"} transition-all flex items-center justify-center flex-shrink-0`}
+                  style={{
+                    width: 22, height: 22, borderRadius: 6,
+                    background: isDrilled ? colors.primary : `${colors.primary}12`,
+                    color: isDrilled ? "white" : colors.primary,
+                    marginRight: 8,
+                  }}
+                  title={isDrilled ? "Cerrar desglose por empresa" : "Ver desglose por empresa"}
+                >
+                  <Building2 size={12} strokeWidth={2.2} />
+                </button>
+              );
+            })()}
           </div>
         </td>
 {dimCols.map(dim => {
@@ -790,6 +803,94 @@ const getNodeVal = (dimKey) => {
         })}
 {!cmpVisible && <DimAmountCell value={rowTotal} typoStyle={rowStyle} animate={isAnimatingData} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
       </tr>
+{drillExpanded.has(code) && (() => {
+        console.log("[drill FLAT path]", code, "this means no literal mapping is active");
+        const rows = drillCache.get(code);
+        const loading = drillLoadingSet.has(code);
+        if (loading || !rows) {
+          return (
+            <tr key={`${code}__drill_loading`} className="bg-[#f8f9ff]">
+              <td colSpan={(dimCols?.length ?? 0) * (cmpVisible ? 4 : 1) + 2} className="py-3 text-center">
+                <Loader2 size={14} className="animate-spin inline-block mr-2" style={{ color: colors.primary }} />
+                <span className="text-[11px] text-gray-400 font-bold">Cargando empresas…</span>
+              </td>
+            </tr>
+          );
+        }
+        // Build descendant set so a drilled sum-account aggregates its leaves.
+        const descSet = new Set([String(code)]);
+        const collect = (parentCode) => {
+          (groupAccounts || []).forEach(ga => {
+            const ac = String(ga.AccountCode ?? ga.accountCode ?? "");
+            const sm = String(ga.SumAccountCode ?? ga.sumAccountCode ?? "");
+            if (sm === parentCode && !descSet.has(ac)) { descSet.add(ac); collect(ac); }
+          });
+        };
+        collect(String(code));
+        const targetType = statementType === "bs" ? "B/S" : "P/L";
+// Delegate the per-company breakdown to PivotTab, which has access to
+        // `pivot`, `prevPivotMain`, `parentOf`, `viewMode`, and the drill rows.
+        // PivotTab returns rows shaped [coCode, { name, dims: Map<dimKey, number> }].
+        // This single source of truth guarantees:
+        //   - Master company sub-row matches the parent exactly (uses the master pivot).
+        //   - Monthly view subtracts the prev-month YTD per company (uses drillPrevRows).
+        //   - YTD view returns YTD directly.
+        const companyRows = computeDrillCompanyRows
+          ? computeDrillCompanyRows({ accountCode: code, descSet, targetType, sign, dimCols })
+          : [];
+if (!window.__drillFlatDebugged?.has(code)) {
+          window.__drillFlatDebugged = window.__drillFlatDebugged ?? new Set();
+          window.__drillFlatDebugged.add(code);
+          const masterRow = companyRows.find(([co]) => String(co).trim().toLowerCase() === String(masterCompany ?? "").trim().toLowerCase());
+          console.log("[drill FLAT]", code, {
+            companies: companyRows.map(([co]) => co),
+            masterCompany,
+            masterDimsRaw: masterRow ? [...masterRow[1].dims.entries()] : null,
+            allDimCols: dimCols.map(d => d.code ?? "__none__"),
+          });
+        }
+        if (companyRows.length === 0) {
+          return (
+            <tr key={`${code}__drill_empty`} className="bg-[#f8f9ff]">
+              <td colSpan={(dimCols?.length ?? 0) * (cmpVisible ? 4 : 1) + 2} className="py-3 text-center">
+                <span className="text-[11px] text-gray-400 font-bold italic">Ninguna empresa con movimiento</span>
+              </td>
+            </tr>
+          );
+        }
+        return companyRows.map(([co, info], i) => {
+          const rowTotal = dimCols.reduce((s, d) => s + (info.dims.get(d.code ?? "__none__") ?? 0), 0);
+          return (
+            <tr key={`${code}__drill_${co}`} className="border-b border-gray-100"
+                style={{ background: "#fafbff", animation: `plRowSlideIn 320ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(i, 12) * 28}ms both` }}>
+              <td className="py-2 sticky left-0 z-10 border-r border-gray-100" style={{ paddingLeft: `${16 + (depth + 1) * INDENT + 22}px`, minWidth: 300, background: "#fafbff" }}>
+                <div className="flex items-center">
+                  <span className="flex-shrink-0 mr-2 inline-flex items-center justify-center" style={{ width: 18, height: 18, borderRadius: 5, background: `${colors.primary}18`, color: colors.primary }}>
+                    <Building2 size={10} strokeWidth={2.2} />
+                  </span>
+                  <span className="flex-shrink-0 mr-2" style={subbody2Style}>{co}</span>
+                  <span className="truncate max-w-[220px]" style={body2Style}>{info.name}</span>
+                </div>
+              </td>
+              {dimCols.map(d => {
+                const dk = d.code ?? "__none__";
+                const v = info.dims.get(dk) ?? 0;
+                if (!cmpVisible) return <DimAmountCell key={dk} value={v} typoStyle={body2Style} animate={isAnimatingData} />;
+                // Compare mode in drilled rows: only show A column, leave others blank
+                return (
+                  <React.Fragment key={dk}>
+                    <DimAmountCell value={v} typoStyle={body2Style} animate={isAnimatingData} />
+                    <td style={{ background: "#fafbff" }} />
+                    <td style={{ background: "#fafbff" }} />
+                    <td style={{ background: "#fafbff" }} />
+                  </React.Fragment>
+                );
+              })}
+              {!cmpVisible && <DimAmountCell value={rowTotal} typoStyle={body2Style} animate={isAnimatingData} bgColor="#f5f7ff" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
+            </tr>
+          );
+        });
+      })()}
 {isExpanded && hasChildren && visibleChildren.map((child, ci) => (
 <DimensionRow key={child.AccountCode} node={child} depth={depth + 1}
           expandedSet={expandedSet} onToggle={onToggle}
@@ -800,7 +901,10 @@ const getNodeVal = (dimKey) => {
           searchQuery={searchQuery} searchExpansionSet={searchExpansionSet}
           valCache={valCache} cmpCache={cmpCache}
           isAnimatingData={isAnimatingData} tableJustLoaded={tableJustLoaded} cmpRecentlyToggled={cmpRecentlyToggled}
-          onDrillAccount={onDrillAccount} />
+drillExpanded={drillExpanded} drillCache={drillCache} drillLoadingSet={drillLoadingSet}
+          onToggleDrillAccount={onToggleDrillAccount} statementType={statementType}
+          selGroups={selGroups} selDims={selDims} sign={sign} subbody2Style={subbody2Style} groupAccounts={groupAccounts}
+          masterCompany={masterCompany} computeDrillCompanyRows={computeDrillCompanyRows} />
       ))}
     </>
   );
@@ -820,8 +924,22 @@ const getNodeVal = (dimKey) => {
   if (prev.isAnimatingData !== next.isAnimatingData) return false;
   if (prev.tableJustLoaded !== next.tableJustLoaded) return false;
 if (prev.cmpRecentlyToggled !== next.cmpRecentlyToggled) return false;
-  if (prev.onDrillAccount !== next.onDrillAccount) return false;
-  // Re-render if THIS row's expansion flipped (own state changed).
+  if (prev.onToggleDrillAccount !== next.onToggleDrillAccount) return false;
+  if (prev.statementType !== next.statementType) return false;
+  if (prev.selGroups !== next.selGroups) return false;
+  if (prev.selDims !== next.selDims) return false;
+  if (prev.sign !== next.sign) return false;
+if (prev.groupAccounts !== next.groupAccounts) return false;
+  if (prev.masterCompany !== next.masterCompany) return false;
+  if (prev.computeDrillCompanyRows !== next.computeDrillCompanyRows) return false;
+// Re-render if drill state changed anywhere — sets are immutable so a
+  // reference change means *something* toggled, and we need to propagate it
+  // so child rows can react if their own drill state changed too. Skipping
+  // this caused drills at deeper levels to get "stuck" because the memo
+  // bailed out before noticing their state had flipped.
+  if (prev.drillExpanded !== next.drillExpanded) return false;
+  if (prev.drillCache !== next.drillCache) return false;
+  if (prev.drillLoadingSet !== next.drillLoadingSet) return false;
   const code = prev.node.AccountCode;
   const prevExpanded = prev.expandedSet.has(code) || (prev.searchExpansionSet?.has(String(code)) ?? false);
   const nextExpanded = next.expandedSet.has(code) || (next.searchExpansionSet?.has(String(code)) ?? false);
@@ -899,7 +1017,7 @@ function AccountsTab({ data }) {
 
 
 /* ── Pivot Tab ────────────────────────────────────────────── */
-function PivotTab({ data, dimensions, groupAccounts = [], selGroups = new Set(), selDims = new Set(), compareMode, statementType = "pl", externalViewMode = null, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false, drillAccount = null, onDrillAccount = () => {}, drillData = [], drillLoading = false }) {
+function PivotTab({ data, dimensions, groupAccounts = [], selGroups = new Set(), selDims = new Set(), compareMode, statementType = "pl", externalViewMode = null, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), drillPrevRows = [], onToggleDrillAccount = () => {} }) {
 
 const header2Style = useTypo("header2");
   const body1Style = useTypo("body1");
@@ -939,13 +1057,7 @@ const cmpVisible = compareMode || cmpExiting;
     return () => clearTimeout(t);
   }, [cmpExiting]);
 
-  // Drill-by-account and compare are mutually exclusive. If user flips compare on
-  // while drilling, exit the drill — simpler than maintaining both axes at once.
-  const [prevCompareForDrill, setPrevCompareForDrill] = useState(compareMode);
-  if (prevCompareForDrill !== compareMode) {
-    setPrevCompareForDrill(compareMode);
-    if (compareMode && drillAccount) onDrillAccount(null);
-  }
+
   const headerRef = useRef(null);
   const bodyRef   = useRef(null);
   const onBodyScroll   = useCallback(() => { if (headerRef.current) headerRef.current.scrollLeft = bodyRef.current.scrollLeft; }, []);
@@ -1664,13 +1776,158 @@ const getCmpValWithDescendants = useCallback((code, dk) => {
   return ytd - prevYtd;
 }, [rolledPivot2, rolledPrevPivot2, viewMode, sign]);
 
-useEffect(() => {
-  if (!activeMapping) return;
-  console.log("[debug] parentOf size:", parentOf.size);
-  console.log("[debug] parentOf for 60100000:", parentOf.get("60100000"));
-  console.log("[debug] pivot size:", pivot.size);
-  console.log("[debug] pivot keys with dims:", [...pivot.entries()].filter(([, m]) => m.size > 1).slice(0,5).map(([k,m]) => [k, [...m.keys()]]));
-}, [activeMapping, parentOf, pivot]);
+// Builds the per-company breakdown for one drilled account by REPLICATING THE
+// EXACT SAME ALGORITHM the parent row uses (DimensionRow.sumNode), one company
+// at a time. The parent walks `node.children` recursively, falling back to its
+// own pivot value when children sum to zero. We do the same per company.
+//
+// Why we can't use rolledPivot directly: rolledPivot aggregates through
+// parentOf, which double-counts nodes that appear as both a direct child AND
+// elsewhere in the chart. sumNode walks ONLY the visible tree, so it matches
+// what the user sees on screen.
+const computeDrillCompanyRows = useCallback(({ accountCode, descSet, targetType, sign: rowSign, dimCols: rowDimCols }) => {
+const drillRows = drillCache.get(accountCode);
+  if (!drillRows) return [];
+  const masterCo = String(masterCompany ?? "").trim().toLowerCase();
+
+  // Helper: build a flat per-company pivot { ac → Map<dk, amount> } from a
+  // raw rows array, applying the same filters the master useMemo applies.
+  // Master company is skipped (we use master's `pivot` directly for it).
+  const buildPerCompanyPivots = (rows) => {
+    const out = new Map();
+    (rows || []).forEach(r => {
+      const ac = String(r.AccountCode ?? r.accountCode ?? "");
+      if (!ac) return;
+      const acType = r.AccountType ?? r.accountType ?? "";
+      if (acType && acType !== targetType) return;
+      const co = r.CompanyShortName ?? r.companyShortName ?? "—";
+      if (String(co).trim().toLowerCase() === masterCo) return;
+      const coN = r.CompanyLegalName ?? r.companyLegalName ?? co;
+      const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+      if (!out.has(co)) out.set(co, { name: coN, pivot: new Map() });
+      const p = out.get(co).pivot;
+      const pairs = parseDimensions(r.Dimensions);
+      if (pairs.length === 0) {
+        if (!p.has(ac)) p.set(ac, new Map());
+        p.get(ac).set("__none__", (p.get(ac).get("__none__") ?? 0) + amt);
+        return;
+      }
+      for (const [group, codeP] of pairs) {
+        if (selGroups.size > 0 && !selGroups.has(group)) continue;
+        if (selDims.size > 0 && !selDims.has(codeP)) continue;
+        if (!p.has(ac)) p.set(ac, new Map());
+        p.get(ac).set(codeP, (p.get(ac).get(codeP) ?? 0) + amt);
+      }
+    });
+    return out;
+  };
+
+  const currentPivots = buildPerCompanyPivots(drillRows);
+  const prevPivots = viewMode === "monthly" ? buildPerCompanyPivots(drillPrevRows) : new Map();
+
+  // Build sumNode(node, dk) replicating DimensionRow.sumNode EXACTLY, but
+  // parameterized by the per-company pivot pair. This is the same algorithm
+  // the parent uses, so the numbers MUST match.
+  const buildSumNode = (pCurrent, pPrev) => {
+    const getValFor = (code, dk) => {
+      const ytd = (pCurrent.get(code)?.get(dk) ?? 0) * rowSign;
+      if (viewMode === "ytd") return ytd;
+      const prevYtd = (pPrev.get(code)?.get(dk) ?? 0) * rowSign;
+      return ytd - prevYtd;
+    };
+    const cache = new Map();
+    const sumNode = (n, dk, depth = 0) => {
+      if (depth > 25) return 0;
+      const k = `${n.AccountCode}|${dk}`;
+      const cached = cache.get(k);
+      if (cached !== undefined) return cached;
+      let v;
+      if (n.children && n.children.length > 0) {
+        const childSum = n.children.reduce((s, c) => s + sumNode(c, dk, depth + 1), 0);
+        v = childSum !== 0 ? childSum : getValFor(n.AccountCode, dk);
+      } else {
+        v = getValFor(n.AccountCode, dk);
+      }
+      cache.set(k, v);
+      return v;
+    };
+    return sumNode;
+  };
+
+  // Find the tree node for accountCode. We rebuild the same tree DimensionRow
+  // would walk: from groupAccounts filtered to this statement type. If the
+  // node isn't in the tree (e.g. it's a mapping-taxonomy node like "B.PL"
+  // that doesn't exist in groupAccounts), fall back to a synthetic node whose
+  // children are every descendant from descSet.
+  const findNode = (nodes, code) => {
+    for (const n of nodes) {
+      if (String(n.AccountCode) === String(code)) return n;
+      const found = findNode(n.children || [], code);
+      if (found) return found;
+    }
+    return null;
+  };
+  let drillNode = findNode(displayedTree, accountCode);
+  if (!drillNode) {
+    // Synthetic node: aggregate every descendant code as a flat child list.
+    drillNode = {
+      AccountCode: accountCode,
+      AccountName: accountCode,
+      children: [...descSet]
+        .filter(c => String(c) !== String(accountCode))
+        .map(c => {
+          const ga = groupAccounts.find(g => String(g.AccountCode ?? g.accountCode) === String(c));
+          return {
+            AccountCode: c,
+            AccountName: ga?.AccountName ?? ga?.accountName ?? c,
+            children: [],
+          };
+        }),
+    };
+  }
+
+  const result = [];
+
+  // Master company: use master pivot maps directly so the row matches the
+  // parent value byte-for-byte (and respects monthly/YTD toggle correctly).
+  if (masterCompany) {
+    let legalName = masterCompany;
+    for (const r of drillRows) {
+      const co = r.CompanyShortName ?? r.companyShortName ?? "";
+      if (String(co).trim().toLowerCase() === masterCo) {
+        legalName = r.CompanyLegalName ?? r.companyLegalName ?? co;
+        break;
+      }
+    }
+    const sumNode = buildSumNode(pivot, prevPivotMain);
+    const dims = new Map();
+    rowDimCols.forEach(d => {
+      const dk = d.code ?? "__none__";
+      dims.set(dk, sumNode(drillNode, dk));
+    });
+    const anyNonZero = [...dims.values()].some(v => v !== 0);
+    console.log("[drill master math v2]", accountCode, "viewMode:", viewMode,
+      "computedDims:", JSON.stringify([...dims.entries()]));
+    if (anyNonZero) result.push([masterCompany, { name: legalName, dims }]);
+  }
+
+  // Other companies: each gets its own sumNode walker over its own pivot pair.
+  currentPivots.forEach((info, co) => {
+    const prev = prevPivots.get(co)?.pivot ?? new Map();
+    const sumNode = buildSumNode(info.pivot, prev);
+    const dims = new Map();
+    rowDimCols.forEach(d => {
+      const dk = d.code ?? "__none__";
+      dims.set(dk, sumNode(drillNode, dk));
+    });
+    const anyNonZero = [...dims.values()].some(v => v !== 0);
+    if (anyNonZero) result.push([co, { name: info.name, dims }]);
+  });
+
+  result.sort((a, b) => a[1].name.localeCompare(b[1].name));
+  return result;
+}, [drillCache, drillPrevRows, masterCompany, selGroups, selDims, pivot, prevPivotMain, viewMode, displayedTree, groupAccounts]);
+
 
 const handleExportXlsx = useCallback(async (opts = {}) => {
     const includePL = opts.statements?.pl ?? (statementType === "pl");
@@ -2133,20 +2390,12 @@ if (mappingForSt?.rows && mappingForSt?.sections) {
       }
     };
 
-console.log("[export] opts.statements:", opts.statements, "→ includePL=", includePL, "includeBS=", includeBS);
-    console.log("[export] statementType (active tab):", statementType);
-    console.log("[export] plLiteral:", plLiteral?.length, "sections, bsLiteral:", bsLiteral?.length, "sections");
-    console.log("[export] plMapping rows:", plMapping?.rows?.size, "bsMapping rows:", bsMapping?.rows?.size);
-    console.log("[export] groupAccounts:", groupAccounts?.length);
-
 const safeWriteSheet = (st, viewLevel = null) => {
       const label = viewLevel ? `${st} ${viewLevel}` : st;
       try {
-        console.log(`[export] ▶ writing sheet "${label}"…`);
         writeSheetForStatement(st, viewLevel);
-        console.log(`[export] ✓ sheet "${label}" written. Workbook now has ${wb.worksheets.length} sheets:`, wb.worksheets.map(w => w.name));
 } catch (e) {
-        console.error(`[export] ✗ FAILED writing sheet "${label}":`, e);
+        console.error(`[export] FAILED writing sheet "${label}":`, e);
         alert(`${T("export_sheet_failed_alert")} (${label.toUpperCase()}):\n\n${e?.message ?? e}`);
       }
     };
@@ -2163,33 +2412,27 @@ const safeWriteSheet = (st, viewLevel = null) => {
       }
     };
 
-    if (includePL) dispatchStatement("pl");
+if (includePL) dispatchStatement("pl");
     if (includeBS) dispatchStatement("bs");
 
-    console.log(`[export] final workbook has ${wb.worksheets.length} sheets:`, wb.worksheets.map(w => w.name));
 if (wb.worksheets.length === 0) {
       alert(T("export_no_sheets_alert"));
       return;
     }
 
-console.log("[export] all sheets built. Calling writeBuffer…", wb.worksheets.map(s => `${s.name}: ${s.rowCount} rows, ${s.columnCount} cols`));
     let buffer;
     try {
       buffer = await wb.xlsx.writeBuffer();
-      console.log("[export] writeBuffer OK, bytes:", buffer.byteLength);
     } catch (e) {
       console.error("[export] writeBuffer threw:", e);
       throw new Error(`writeBuffer failed: ${e?.message ?? e}`);
     }
 
-    console.log("[export] running repairDimXlsx…");
     let repaired;
     try {
       repaired = await repairDimXlsx(buffer);
-      console.log("[export] repairDimXlsx OK");
     } catch (e) {
       console.error("[export] repairDimXlsx threw:", e);
-      console.warn("[export] saving UNREPAIRED buffer for inspection");
       repaired = buffer;
     }
 
@@ -2722,10 +2965,7 @@ dimSlice.forEach(() => {
       }
     };
 
-    console.log("[pdf] === EXPORT START ===");
-    console.log("[pdf] compare:", includeCompareOpt, "dims:", allDims.length, "chunks:", dimChunks.length, "useA3:", useA3);
-
-    const isFirstRef = { first: true };
+const isFirstRef = { first: true };
     if (includePL) dispatchStatement("pl", isFirstRef);
     if (includeBS) dispatchStatement("bs", isFirstRef);
 
@@ -2825,7 +3065,6 @@ doc.text(T("file_dimensions_report"), 10, H - 4.5);
     doc.setTextColor(...NAVY);
     doc.text("1", W - 10, H - 4.5, { align: "right" });
 
-    console.log("[pdf] === EXPORT END === total pages:", pageNum);
 doc.save(`Konsolidator_Dimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.pdf`);
 }, [T, data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, plMapping, bsMapping, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, selGroups, selDims, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, groupAccounts]);
 
@@ -3013,22 +3252,7 @@ onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary
                             }
                           </span>
                         </button>
-{drillAccount && (
-                          <button
-                            onClick={() => onDrillAccount(null)}
-                            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md transition-all"
-                            style={{ background: `${colors.primary}10`, color: colors.primary }}
-                            onMouseEnter={e => { e.currentTarget.style.background = `${colors.primary}20`; }}
-                            onMouseLeave={e => { e.currentTarget.style.background = `${colors.primary}10`; }}
-                            title="Volver"
-                          >
-                            <ArrowLeft size={11} strokeWidth={2.5} />
-                            <span className="text-[10px] font-black uppercase tracking-[0.18em] whitespace-nowrap">
-                              {drillAccount.code} · {drillAccount.name}
-                            </span>
-                          </button>
-                        )}
-                        {!drillAccount && !hasCustomMapping && <div className="relative flex items-center"
+{!hasCustomMapping && <div className="relative flex items-center"
                           ref={el => {
                             if (!el) return;
                             const tabs = el.querySelectorAll("[data-dim-tab]");
@@ -3132,93 +3356,6 @@ onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary
             </colgroup>
 <tbody>
               {(() => {
-                // ── DRILL-BY-ACCOUNT MODE: rows = companies for the selected account ──
-                if (drillAccount) {
-                  if (drillLoading) {
-                    return (
-                      <tr><td colSpan={orderedDimCols.length + 2} className="py-16 text-center">
-                        <Loader2 size={20} className="text-[#1a2f8a] animate-spin mx-auto mb-2" />
-                        <p className="text-xs text-gray-400 font-bold">Cargando desglose por empresa…</p>
-                      </td></tr>
-                    );
-                  }
-
-                  // Build company → dim → amount pivot from drillData, filtered to drillAccount.code
-                  // Includes descendant codes too (so a click on a sum-account aggregates its children).
-                  const acTarget = String(drillAccount.code);
-                  const descendantSet = new Set([acTarget]);
-                  const collectDesc = (parentCode) => {
-                    (groupAccounts || []).forEach(ga => {
-                      const ac = String(ga.AccountCode ?? ga.accountCode ?? "");
-                      const sm = String(ga.SumAccountCode ?? ga.sumAccountCode ?? "");
-                      if (sm === parentCode && !descendantSet.has(ac)) {
-                        descendantSet.add(ac);
-                        collectDesc(ac);
-                      }
-                    });
-                  };
-                  collectDesc(acTarget);
-
-                  const companyPivot = new Map(); // companyShortName → { name, dims: Map<dimCode, amount> }
-                  drillData.forEach(r => {
-                    const ac = String(r.AccountCode ?? r.accountCode ?? "");
-                    if (!descendantSet.has(ac)) return;
-                    const acType = r.AccountType ?? r.accountType ?? "";
-                    const targetType = statementType === "bs" ? "B/S" : "P/L";
-                    if (acType && acType !== targetType) return;
-                    const co  = r.CompanyShortName ?? r.companyShortName ?? "—";
-                    const coN = r.CompanyLegalName ?? r.companyLegalName ?? co;
-                    const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0) * sign;
-                    if (!companyPivot.has(co)) companyPivot.set(co, { name: coN, dims: new Map() });
-                    const dims = companyPivot.get(co).dims;
-                    const pairs = parseDimensions(r.Dimensions);
-                    if (pairs.length === 0) {
-                      dims.set("__none__", (dims.get("__none__") ?? 0) + amt);
-                    } else {
-                      for (const [grp, code] of pairs) {
-                        if (selGroups.size > 0 && !selGroups.has(grp)) continue;
-                        if (selDims.size > 0 && !selDims.has(code)) continue;
-                        dims.set(code, (dims.get(code) ?? 0) + amt);
-                      }
-                    }
-                  });
-
-                  const rows = [...companyPivot.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name));
-                  if (rows.length === 0) {
-                    return (
-                      <tr><td colSpan={orderedDimCols.length + 2} className="py-16 text-center">
-                        <p className="text-xs text-gray-400 font-bold">Ninguna empresa tiene movimiento en esta cuenta</p>
-                      </td></tr>
-                    );
-                  }
-
-                  return rows.map(([co, info], i) => {
-                    const rowTotal = orderedDimCols.reduce((s, d) => s + (info.dims.get(d.code ?? "__none__") ?? 0), 0);
-                    const rowAnim = tableJustLoaded && i < 25
-                      ? { animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(i, 25) * 35 + 50}ms both` }
-                      : null;
-                    return (
-                      <tr key={co} className="border-b border-gray-100 bg-white hover:bg-[#eef1fb]/60" style={rowAnim ?? undefined}>
-                        <td className="py-2.5 sticky left-0 z-10 border-r border-gray-100 bg-white" style={{ paddingLeft: 16, minWidth: 300 }}>
-                          <div className="flex items-center">
-                            <span className="flex-shrink-0 mr-2 inline-flex items-center justify-center" style={{ width: 22, height: 22, borderRadius: 6, background: `${colors.primary}12`, color: colors.primary }}>
-                              <Building2 size={12} strokeWidth={2.2} />
-                            </span>
-                            <span className="flex-shrink-0 mr-2" style={subbody2Style}>{co}</span>
-                            <span className="truncate max-w-[280px]" style={body1Style}>{info.name}</span>
-                          </div>
-                        </td>
-                        {orderedDimCols.map(d => {
-                          const dk = d.code ?? "__none__";
-                          const v = info.dims.get(dk) ?? 0;
-                          return <DimAmountCell key={dk} value={v} typoStyle={body1Style} animate={isAnimatingData} />;
-                        })}
-                        <DimAmountCell value={rowTotal} typoStyle={body1Style} animate={isAnimatingData} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />
-                      </tr>
-                    );
-                  });
-                }
-
                 // ── SAVED-MAPPING LITERAL RENDER PATH ────────────────────────
                 // Mirrors AccountsDashboard's PLStatement/BalanceSheet rendering:
                 // walks the literal tree (with breakers, sum nodes, dim filters),
@@ -3228,50 +3365,38 @@ const literal = statementType === "pl" ? plLiteral : bsLiteral;
                   const ROW_H = 44;
                   const BUFFER = 10;
 
-                  const __sumCache = new Map();
-                  const __sumCmpCache = new Map();
-                  const leafVal = (node, dimKey) => {
-                    if (node.dims && node.dims.length > 0) {
-                      const match = node.dims.some(d => {
-                        const i = d.indexOf(":");
-                        const v = i === -1 ? d : d.slice(i + 1);
-                        return String(v) === String(dimKey);
-                      });
-                      if (!match) return 0;
-                    }
-                    return getValWithDescendants(node.code, dimKey);
+// Factory: given a value-getter (code, dimKey) → number, produce the
+                  // exact same memoized literal-walk used by the parent row. Used twice:
+                  // - With getValWithDescendants → produces the parent row's value.
+                  // - With a per-company getter → produces each drill sub-row's value.
+                  // This guarantees the drill math is byte-identical to the parent's.
+                  const makeSumLit = (getValFn) => {
+                    const cache = new Map();
+                    const leaf = (n, dk) => {
+                      if (n.dims && n.dims.length > 0) {
+                        const match = n.dims.some(d => {
+                          const i = d.indexOf(":");
+                          const v = i === -1 ? d : d.slice(i + 1);
+                          return String(v) === String(dk);
+                        });
+                        if (!match) return 0;
+                      }
+                      return getValFn(n.code, dk);
+                    };
+                    const sum = (n, dk) => {
+                      const k = `${n.id}|${dk}`;
+                      const c = cache.get(k);
+                      if (c !== undefined) return c;
+                      const v = (n.isSum && n.children && n.children.length > 0)
+                        ? n.children.reduce((s, c2) => s + sum(c2, dk), 0)
+                        : leaf(n, dk);
+                      cache.set(k, v);
+                      return v;
+                    };
+                    return sum;
                   };
-                  const sumLitForDim = (node, dimKey) => {
-                    const k = `${node.id}|${dimKey}`;
-                    const cached = __sumCache.get(k);
-                    if (cached !== undefined) return cached;
-                    const v = (node.isSum && node.children && node.children.length > 0)
-                      ? node.children.reduce((s, c) => s + sumLitForDim(c, dimKey), 0)
-                      : leafVal(node, dimKey);
-                    __sumCache.set(k, v);
-                    return v;
-                  };
-                  const leafValCmp = (node, dimKey) => {
-                    if (node.dims && node.dims.length > 0) {
-                      const match = node.dims.some(d => {
-                        const i = d.indexOf(":");
-                        const v = i === -1 ? d : d.slice(i + 1);
-                        return String(v) === String(dimKey);
-                      });
-                      if (!match) return 0;
-                    }
-                    return getCmpValWithDescendants(node.code, dimKey);
-                  };
-                  const sumLitCmpForDim = (node, dimKey) => {
-                    const k = `${node.id}|${dimKey}`;
-                    const cached = __sumCmpCache.get(k);
-                    if (cached !== undefined) return cached;
-                    const v = (node.isSum && node.children && node.children.length > 0)
-                      ? node.children.reduce((s, c) => s + sumLitCmpForDim(c, dimKey), 0)
-                      : leafValCmp(node, dimKey);
-                    __sumCmpCache.set(k, v);
-                    return v;
-                  };
+                  const sumLitForDim = makeSumLit(getValWithDescendants);
+                  const sumLitCmpForDim = makeSumLit(getCmpValWithDescendants);
 
                   // PASS 1: build a flat list of descriptors for every visible row.
                   // No JSX yet — just data. Cheap.
@@ -3320,8 +3445,13 @@ const literal = statementType === "pl" ? plLiteral : bsLiteral;
                     }
                     const { node, depth, hasKids, expanded, rowKey } = d;
                     const rowStyle = depth === 0 ? body1Style : body2Style;
-                    const rowTotal = orderedDimCols.reduce((s, dim) => s + sumLitForDim(node, dim.code ?? "__none__"), 0);
+const rowTotal = orderedDimCols.reduce((s, dim) => s + sumLitForDim(node, dim.code ?? "__none__"), 0);
                     const isMatch = !!q && (String(node.code ?? "").toLowerCase().includes(q) || String(node.name ?? "").toLowerCase().includes(q));
+                    if (String(node.code) === "B.PL" || String(node.code) === "A.PL") {
+                      const dimDump = {};
+                      orderedDimCols.forEach(dim => { dimDump[dim.code ?? "__none__"] = sumLitForDim(node, dim.code ?? "__none__"); });
+                      console.log("[LITERAL PARENT render]", node.code, "rowTotal:", rowTotal, "perDim:", JSON.stringify(dimDump), "isSum:", node.isSum, "childCount:", (node.children || []).length);
+                    }
 const rowAnim = tableJustLoaded && i < 25
                       ? { animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(i, 25) * 35 + 50}ms both` }
                       : null;
@@ -3339,16 +3469,24 @@ const rowAnim = tableJustLoaded && i < 25
                               : <span className="inline-block mr-2" style={{ width: 12 }} />}
                             {node.code && <span className="flex-shrink-0 mr-2" style={subbody2Style}>{node.code}</span>}
                             <span className="truncate max-w-[280px]" style={rowStyle}>{node.name || node.code}</span>
-                            {node.code && !compareMode && (
-                              <button
-                                onClick={(e) => { e.stopPropagation(); onDrillAccount({ code: node.code, name: node.name || node.code }); }}
-                                className="ml-auto opacity-0 group-hover/row:opacity-100 transition-opacity flex items-center justify-center flex-shrink-0"
-                                style={{ width: 22, height: 22, borderRadius: 6, background: `${colors.primary}12`, color: colors.primary, marginRight: 8 }}
-                                title="Ver desglose por empresa"
-                              >
-                                <Building2 size={12} strokeWidth={2.2} />
-                              </button>
-                            )}
+{node.code && !compareMode && (() => {
+                              const isDrilled = drillExpanded.has(node.code);
+                              return (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); onToggleDrillAccount({ code: node.code, name: node.name || node.code }); }}
+                                  className={`ml-auto ${isDrilled ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"} transition-all flex items-center justify-center flex-shrink-0`}
+                                  style={{
+                                    width: 22, height: 22, borderRadius: 6,
+                                    background: isDrilled ? colors.primary : `${colors.primary}12`,
+                                    color: isDrilled ? "white" : colors.primary,
+                                    marginRight: 8,
+                                  }}
+                                  title={isDrilled ? "Cerrar desglose por empresa" : "Ver desglose por empresa"}
+                                >
+                                  <Building2 size={12} strokeWidth={2.2} />
+                                </button>
+                              );
+                            })()}
                           </div>
                         </td>
 {orderedDimCols.map(dim => {
@@ -3369,9 +3507,183 @@ const rowAnim = tableJustLoaded && i < 25
                             </React.Fragment>
                           );
                         })}
-                        {!cmpVisible && <DimAmountCell value={rowTotal} typoStyle={rowStyle} animate={isAnimatingData} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
+{!cmpVisible && <DimAmountCell value={rowTotal} typoStyle={rowStyle} animate={isAnimatingData} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
                       </tr>
                     );
+
+// Drill-by-company sub-rows for THIS literal row
+                    if (node.code && drillExpanded.has(node.code)) {
+                      const drillRows = drillCache.get(node.code);
+                      const isLoading = drillLoadingSet.has(node.code);
+                      if (isLoading || !drillRows) {
+                        out.push(
+                          <tr key={`${rowKey}__drill_loading`} className="bg-[#f8f9ff]">
+                            <td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + 2} className="py-3 text-center">
+                              <Loader2 size={14} className="animate-spin inline-block mr-2" style={{ color: colors.primary }} />
+                              <span className="text-[11px] text-gray-400 font-bold">Cargando empresas…</span>
+                            </td>
+                          </tr>
+                        );
+                      } else {
+                        // CRITICAL: in literal-mapping mode, the clicked code (e.g. "A.03")
+                        // same target AccountType, same LocalAccountCode filter, same
+                        // dim group/code filters. We DON'T apply `sign` here — that gets
+                        // multiplied later by getValWithDescendants/sumLitForDim, exactly
+                        // like the parent path. This is the key to making numbers match.
+const targetType = statementType === "bs" ? "B/S" : "P/L";
+
+// Build per-company pivots replicating the MASTER useMemo EXACTLY
+                        // (the one that builds `pivot` from `data`). Same row-level filter,
+                        // same pivot loop, same field-name precedence. Only difference: we
+                        // partition by CompanyShortName. NO LocalAccountCode filter — master
+                        // doesn't apply it in its pivot loop either.
+const perCompanyPivots = new Map();
+                        const perCompanyPrevPivots = new Map();
+
+                        // Helper: accumulate one rowset into the given target map.
+                        const accumIntoPivots = (rows, target) => {
+                          const filtered = selGroups.size === 0
+                            ? rows
+                            : rows.filter(r => {
+                                const pairs = parseDimensions(r.Dimensions);
+                                if (pairs.length === 0) return true;
+                                return pairs.some(([group, code]) => {
+                                  if (!selGroups.has(group)) return false;
+                                  if (selDims.size > 0 && !selDims.has(code)) return false;
+                                  return true;
+                                });
+                              });
+                          filtered.forEach(r => {
+                            const ac  = r.AccountCode ?? r.accountCode ?? "";
+                            const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? r.AmountPeriod ?? r.amountPeriod ?? 0);
+                            const acType = r.AccountType ?? r.accountType ?? "";
+                            if (!ac) return;
+                            if (acType && acType !== targetType) return;
+                            const co  = r.CompanyShortName ?? r.companyShortName ?? "—";
+                            const coN = r.CompanyLegalName ?? r.companyLegalName ?? co;
+                            if (!target.has(co)) target.set(co, { name: coN, pivot: new Map() });
+                            const p = target.get(co).pivot;
+                            const pairs = parseDimensions(r.Dimensions);
+                            if (pairs.length === 0) {
+                              if (!p.has(ac)) p.set(ac, new Map());
+                              p.get(ac).set("__none__", (p.get(ac).get("__none__") ?? 0) + amt);
+                              return;
+                            }
+                            for (const [group, code] of pairs) {
+                              if (selGroups.size > 0 && !selGroups.has(group)) continue;
+                              if (selDims.size > 0 && !selDims.has(code)) continue;
+                              if (!p.has(ac)) p.set(ac, new Map());
+                              p.get(ac).set(code, (p.get(ac).get(code) ?? 0) + amt);
+                            }
+                          });
+                        };
+
+                        accumIntoPivots(drillRows, perCompanyPivots);
+                        // Build prev-month per-company pivots for monthly subtraction.
+                        if (viewMode === "monthly") {
+                          accumIntoPivots(drillPrevRows || [], perCompanyPrevPivots);
+                        }
+
+// Per-company rolled pivots — SAME rollup as the master `rolledPivot`
+                        // (using the SAME parentOf), just one per company instead of global.
+                        const rollUp = (src) => {
+                          const r = new Map();
+                          if (!src || src.size === 0) return r;
+                          src.forEach((dimMap, ac) => {
+                            dimMap.forEach((val, dk) => {
+                              let m = r.get(ac);
+                              if (!m) { m = new Map(); r.set(ac, m); }
+                              m.set(dk, (m.get(dk) ?? 0) + val);
+                              let cur = parentOf.get(ac); let hops = 0;
+                              while (cur && hops < 25) {
+                                let am = r.get(cur);
+                                if (!am) { am = new Map(); r.set(cur, am); }
+                                am.set(dk, (am.get(dk) ?? 0) + val);
+                                cur = parentOf.get(cur); hops++;
+                              }
+                            });
+                          });
+                          return r;
+                        };
+
+                        // For each company: build coRolled, build a getter that is a copy
+                        // BYTE-FOR-BYTE of getValWithDescendants (sign multiplier, viewMode
+                        // ytd vs monthly), and feed it to makeSumLit — the SAME factory the
+                        // parent uses. Result: sumLitCo(node, dk) is computed via the EXACT
+                        // same code path as the parent's sumLitForDim(node, dk), guaranteed.
+                        const companyRows = [];
+                        perCompanyPivots.forEach((info, co) => {
+                          // For the master-filtered company, reuse the master rolled pivots
+                          // directly so the sub-row matches the parent byte-for-byte AND
+                          // respects monthly/YTD toggle. For other companies, roll up their
+                          // own partitioned pivots (current + previous month).
+                          const useMaster = String(co) === String(masterCompany);
+                          const coRolled = useMaster ? rolledPivot : rollUp(info.pivot);
+                          const coRolledPrev = useMaster
+                            ? rolledPrevPivot
+                            : rollUp(perCompanyPrevPivots.get(co)?.pivot ?? new Map());
+                          const getValCo = (code, dk) => {
+                            const ytd = (coRolled.get(code)?.get(dk) ?? 0) * sign;
+                            if (viewMode === "ytd") return ytd;
+                            const prevYtd = (coRolledPrev.get(code)?.get(dk) ?? 0) * sign;
+                            return ytd - prevYtd;
+                          };
+                          const sumLitCo = makeSumLit(getValCo);
+
+                          const dims = new Map();
+                          let anyNonZero = false;
+                          orderedDimCols.forEach(d2 => {
+                            const dk = d2.code ?? "__none__";
+                            const v = sumLitCo(node, dk);
+                            dims.set(dk, v);
+                            if (v !== 0) anyNonZero = true;
+                          });
+                          if (anyNonZero) companyRows.push([co, { name: info.name, dims }]);
+                        });
+                        companyRows.sort((a, b) => a[1].name.localeCompare(b[1].name));
+                        if (companyRows.length === 0) {
+                          out.push(
+                            <tr key={`${rowKey}__drill_empty`} className="bg-[#f8f9ff]">
+                              <td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + 2} className="py-3 text-center">
+                                <span className="text-[11px] text-gray-400 font-bold italic">Ninguna empresa con movimiento</span>
+                              </td>
+                            </tr>
+                          );
+                        } else {
+                          companyRows.forEach(([co, info], j) => {
+                            const rowTotalCo = orderedDimCols.reduce((s, d2) => s + (info.dims.get(d2.code ?? "__none__") ?? 0), 0);
+                            out.push(
+                              <tr key={`${rowKey}__drill_${co}`} className="border-b border-gray-100"
+                                  style={{ background: "#fafbff", animation: `plRowSlideIn 320ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(j, 12) * 28}ms both` }}>
+                                <td className="py-2 sticky left-0 z-10 border-r border-gray-100" style={{ paddingLeft: `${16 + (depth + 1) * INDENT + 22}px`, minWidth: 300, background: "#fafbff" }}>
+                                  <div className="flex items-center">
+                                    <span className="flex-shrink-0 mr-2 inline-flex items-center justify-center" style={{ width: 18, height: 18, borderRadius: 5, background: `${colors.primary}18`, color: colors.primary }}>
+                                      <Building2 size={10} strokeWidth={2.2} />
+                                    </span>
+                                    <span className="flex-shrink-0 mr-2" style={subbody2Style}>{co}</span>
+                                    <span className="truncate max-w-[220px]" style={body2Style}>{info.name}</span>
+                                  </div>
+                                </td>
+                                {orderedDimCols.map(d2 => {
+                                  const dk = d2.code ?? "__none__";
+                                  const v = info.dims.get(dk) ?? 0;
+                                  if (!cmpVisible) return <DimAmountCell key={dk} value={v} typoStyle={body2Style} animate={isAnimatingData} />;
+                                  return (
+                                    <React.Fragment key={dk}>
+                                      <DimAmountCell value={v} typoStyle={body2Style} animate={isAnimatingData} />
+                                      <td style={{ background: "#fafbff" }} />
+                                      <td style={{ background: "#fafbff" }} />
+                                      <td style={{ background: "#fafbff" }} />
+                                    </React.Fragment>
+                                  );
+                                })}
+                                {!cmpVisible && <DimAmountCell value={rowTotalCo} typoStyle={body2Style} animate={isAnimatingData} bgColor="#f5f7ff" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
+                              </tr>
+                            );
+                          });
+                        }
+                      }
+                    }
                   }
 
                   if (bottomPad > 0) {
@@ -3417,7 +3729,10 @@ const levelByCode = (hasCustomMapping && activeMapping?.rows)
                         searchQuery={debouncedQuery} searchExpansionSet={searchExpansionSet}
                         valCache={valCache} cmpCache={cmpCache}
                         isAnimatingData={isAnimatingData} tableJustLoaded={tableJustLoaded} cmpRecentlyToggled={cmpRecentlyToggled}
-                        onDrillAccount={onDrillAccount} />
+drillExpanded={drillExpanded} drillCache={drillCache} drillLoadingSet={drillLoadingSet}
+                        onToggleDrillAccount={onToggleDrillAccount} statementType={statementType}
+                        selGroups={selGroups} selDims={selDims} sign={sign} groupAccounts={groupAccounts}
+                        masterCompany={masterCompany} computeDrillCompanyRows={computeDrillCompanyRows} />
                     </React.Fragment>
                   );
                 });
@@ -3447,12 +3762,20 @@ const [showAccounts, setShowAccounts] = useState(false);
 const [selGroups, setSelGroups] = useState(new Set());
 const [selDims, setSelDims] = useState(new Set());
 const [compareMode, setCompareMode] = useState(false);
-const [drillAccount, setDrillAccountInner] = useState(null); // { code, name } | null
-const [drillData, setDrillData] = useState([]);
-const [drillLoading, setDrillLoading] = useState(false);
-const setDrillAccount = useCallback((next) => {
-  setDrillAccountInner(next);
-  if (!next) setDrillData([]); // clear cached drill data when exiting
+// Drill-by-company: each opened account caches its cross-company breakdown
+// here. Multiple accounts can be drilled simultaneously (independent of the
+// normal hierarchy expansion).
+const [drillExpanded, setDrillExpanded] = useState(() => new Set()); // Set<accountCode>
+const [drillCache, setDrillCache] = useState(() => new Map()); // accountCode -> rows[]
+const [drillLoadingSet, setDrillLoadingSet] = useState(() => new Set()); // accountCode currently fetching
+const toggleDrillAccount = useCallback((acc) => {
+  if (!acc?.code) return;
+  setDrillExpanded(prev => {
+    const next = new Set(prev);
+    if (next.has(acc.code)) next.delete(acc.code);
+    else next.add(acc.code);
+    return next;
+  });
 }, []);
 const [ytdOnly, setYtdOnly] = useState(false);
   const viewMode = ytdOnly ? "ytd" : "monthly";
@@ -3483,20 +3806,15 @@ const [exportOpts, setExportOpts] = useState({
   }
 
 const runExport = useCallback(async () => {
-    console.log("[export] runExport called, opts:", exportOpts);
-    console.log("[export] pivotExportRef.current:", pivotExportRef.current);
     setExportModal(false);
     setExporting(true);
     try {
       const fn = exportOpts.format === "pdf" ? pivotExportRef.current.pdf : pivotExportRef.current.xlsx;
-      console.log("[export] resolved fn:", typeof fn);
 if (!fn) {
         alert(T("export_not_ready_alert"));
         return;
       }
-      console.log("[export] calling export fn…");
       await fn(exportOpts);
-      console.log("[export] export fn returned");
 } catch (e) {
       console.error("[export] Export failed:", e);
       alert(`${T("export_failed_alert")}: ${e?.message ?? e}`);
@@ -3505,15 +3823,7 @@ if (!fn) {
     }
 }, [exportOpts, T]);
 
-  const handleApplyMapping = useCallback((m, kind = "structure") => {
-    console.log("[apply mapping]", {
-      kind,
-      hasPlTree: Array.isArray(m.pl_tree),
-      plTreeLen: m.pl_tree?.length,
-      plTreeSample: m.pl_tree?.[0],
-      bsTreeLen: m.bs_tree?.length,
-      plLiteralBuilt: buildSavedMappingLiteral(m.pl_tree),
-    });
+const handleApplyMapping = useCallback((m, kind = "structure") => {
     setActiveMapping({
       mapping_id:  m.mapping_id,
       kind,
@@ -3659,8 +3969,7 @@ const [groupAccountsLocal, setGroupAccountsLocal] = useState([]);
       .then(r => r.ok ? r.json() : null)
       .then(d => {
         if (!d) return;
-        const rows = d.value ?? (Array.isArray(d) ? d : []);
-        console.log("[GROUP ACCOUNTS LOADED]", rows.length, "first:", rows[0]);
+const rows = d.value ?? (Array.isArray(d) ? d : []);
         setGroupAccountsLocal(rows);
       })
       .catch(e => console.error("group-accounts fetch failed:", e));
@@ -3909,47 +4218,118 @@ if (probeKey && prevProbeKey !== probeKey) {
     return () => ctrl.abort();
   }, [fetchKey, year, month, source, structure, company, authHeaders]);
 
-// Drill-by-account: fetch the same period/source/structure but ACROSS all
-// companies for the selected account. Cleared automatically when drillAccount
-// goes back to null.
-useEffect(() => {
-  if (!drillAccount || !year || !month || !source || !structure || !token) {
-    return;
-  }
-  const ctrl = new AbortController();
-  setDrillLoading(true);
-  (async () => {
-    try {
-      // No CompanyShortName filter — we want every company that touched the period.
-      const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}'`;
-      const res = await fetch(
-        `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
-        { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Cache-Control": "no-cache" }, signal: ctrl.signal }
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      if (ctrl.signal.aborted) return;
-      setDrillData(json.value ?? (Array.isArray(json) ? json : []));
-    } catch (e) {
-      if (ctrl.signal.aborted || e.name === "AbortError") return;
-      console.error("[drill fetch]", e);
-      setDrillData([]);
-    } finally {
-      if (!ctrl.signal.aborted) setDrillLoading(false);
-    }
-  })();
-  return () => ctrl.abort();
-}, [drillAccount, year, month, source, structure, token]);
+// Drill-by-company fetch: ONE shared fetch per period (drops the company
+// filter so the response covers every company). Each drilled account reads
+// from the same cached rowset. The fetch is keyed by period — opening a new
+// account during the same period reuses the in-flight promise; no second
+// network call. We track which accounts are "loading" in a ref (not state)
+// to avoid the loading→effect-rerun→still-loading cascade.
+const drillContextKey = `${year}|${month}|${source}|${structure}`;
+const drillFetchRef = useRef({ key: null, promise: null });
+const drillPrevFetchRef = useRef({ key: null, promise: null });
+const drillLoadingRef = useRef(new Set()); // accountCodes whose load we've already kicked off
+const [drillPrevRows, setDrillPrevRows] = useState([]);
 
-// Salir del drill si el usuario cambia el período/contexto. Hecho en render
-// (patrón "adjust state on prop change") en vez de en effect — el resto del
-// archivo sigue la misma convención y evita el cascading-render warning.
-const drillContextKey = `${year}|${month}|${source}|${structure}|${statementType}`;
-const [prevDrillContextKey, setPrevDrillContextKey] = useState(drillContextKey);
-if (prevDrillContextKey !== drillContextKey) {
-  setPrevDrillContextKey(drillContextKey);
-  if (drillAccount) setDrillAccount(null);
+useEffect(() => {
+  if (drillExpanded.size === 0 || !year || !month || !source || !structure || !token) return;
+  const pending = [...drillExpanded].filter(c => !drillCache.has(c) && !drillLoadingRef.current.has(c));
+  if (pending.length === 0) return;
+
+  // Mark as in flight (ref — doesn't re-trigger this effect).
+  pending.forEach(c => drillLoadingRef.current.add(c));
+  // Mirror into state so the UI shows the spinner.
+  setDrillLoadingSet(prev => {
+    const next = new Set(prev);
+    pending.forEach(c => next.add(c));
+    return next;
+  });
+
+// Reuse the same fetch for the whole period. NO company filter — the drill
+  // exists precisely to show every company's contribution to the clicked
+  // account. Parent row stays filtered by master company; sub-rows are a
+  // comparative cross-company view (they do NOT sum to the parent).
+if (drillFetchRef.current.key !== drillContextKey) {
+    const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+    drillFetchRef.current = {
+      key: drillContextKey,
+      promise: fetch(
+        `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
+        { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Cache-Control": "no-cache" } }
+      )
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+        .then(j => j.value ?? (Array.isArray(j) ? j : [])),
+    };
+
+    // Also fetch the previous month — needed for monthly mode (master subtracts
+    // prev YTD from current YTD; we must do the same per-company in the drill).
+    const moN = Number(month);
+    const yrN = Number(year);
+    const prevMo = moN === 1 ? 12 : moN - 1;
+    const prevYr = moN === 1 ? yrN - 1 : yrN;
+    const prevFilter = `Year eq ${prevYr} and Month eq ${prevMo} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+    drillPrevFetchRef.current = {
+      key: drillContextKey,
+      promise: fetch(
+        `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(prevFilter)}`,
+        { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Cache-Control": "no-cache" } }
+      )
+        .then(r => r.ok ? r.json() : { value: [] })
+        .then(j => j.value ?? (Array.isArray(j) ? j : []))
+        .then(rows => { setDrillPrevRows(rows); return rows; })
+        .catch(() => { setDrillPrevRows([]); return []; }),
+    };
+  }
+
+const myFetch = drillFetchRef.current.promise;
+  myFetch
+    .then(rows => {
+      // Only apply if the context hasn't moved on under us.
+      if (drillFetchRef.current.promise !== myFetch) return;
+      setDrillCache(prev => {
+        const next = new Map(prev);
+        pending.forEach(c => next.set(c, rows));
+        return next;
+      });
+      setDrillLoadingSet(prev => {
+        const next = new Set(prev);
+        pending.forEach(c => next.delete(c));
+        return next;
+      });
+      pending.forEach(c => drillLoadingRef.current.delete(c));
+    })
+    .catch(e => {
+      if (e.name === "AbortError") return;
+      console.error("[drill fetch]", e);
+      setDrillLoadingSet(prev => {
+        const next = new Set(prev);
+        pending.forEach(c => next.delete(c));
+        return next;
+      });
+      pending.forEach(c => drillLoadingRef.current.delete(c));
+    });
+  // No dep on drillCache/drillLoadingSet — refs handle the bookkeeping so we
+  // don't loop. Effect re-runs only when the user opens a new drill or the
+  // period changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [drillExpanded, drillContextKey]);
+
+const drillResetKey = `${year}|${month}|${source}|${structure}|${statementType}`;
+const [prevDrillResetKey, setPrevDrillResetKey] = useState(drillResetKey);
+if (prevDrillResetKey !== drillResetKey) {
+  setPrevDrillResetKey(drillResetKey);
+  setDrillExpanded(new Set());
+  setDrillCache(new Map());
+  setDrillLoadingSet(new Set());
+  setDrillPrevRows([]);
 }
+// Reset the fetch refs in an effect (mutating refs during render is not
+// allowed by the new React lint). Keyed off drillResetKey so it fires exactly
+// when the state above resets.
+useEffect(() => {
+  drillFetchRef.current = { key: null, promise: null };
+  drillPrevFetchRef.current = { key: null, promise: null };
+  drillLoadingRef.current = new Set();
+}, [drillResetKey]);
 
 // Derive dim groups from the journal's `Dimensions` field — more reliable
 // than the /v2/dimensions endpoint because we know the data is there if we
@@ -4000,7 +4380,7 @@ void probeFinished; // referenced by progress effects elsewhere; suppress unused
   const sourceOpts    = [...new Set(sources.map(s  => typeof s === "object" ? (s.source    ?? s.Source    ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
   const structureOpts = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
 const companyOpts   = companies.length > 0 && typeof companies[0] === "object"
-    ? (console.log("[companyOpts] sample:", companies[0]), companies.map(c => ({ value: c.companyShortName ?? c.CompanyShortName ?? String(c), label: c.CompanyLegalName ?? c.companyLegalName ?? c.companyShortName ?? c.CompanyShortName ?? String(c)})).filter(o => o.value))
+    ? companies.map(c => ({ value: c.companyShortName ?? c.CompanyShortName ?? String(c), label: c.CompanyLegalName ?? c.companyLegalName ?? c.companyShortName ?? c.CompanyShortName ?? String(c)})).filter(o => o.value)
     : [...new Set(companies.map(c => String(c)).filter(Boolean))].map(v => ({ value: v, label: v }));
 
   return (
@@ -4063,7 +4443,7 @@ periodToggle={(viewsMode || statementType === "bs") ? null : {
           value: ytdOnly ? "ytd" : "monthly",
           onChange: (next) => setYtdOnly(next === "ytd"),
         }}
-        compareToggle={viewsMode ? null : {
+compareToggle={(viewsMode || drillExpanded.size > 0) ? null : {
           active: compareMode,
           onChange: setCompareMode,
         }}
@@ -4078,13 +4458,11 @@ periodToggle={(viewsMode || statementType === "bs") ? null : {
             console.error("[quick apply mapping]", err);
           }
         }}
-onExportXlsx={() => {
-          console.log("[export] onExportXlsx fired");
+onExportXlsx={(viewsMode || drillExpanded.size > 0) ? undefined : () => {
           setExportOpts(o => ({ ...o, format: "xlsx" }));
           setExportModal(true);
         }}
-        onExportPdf={() => {
-          console.log("[export] onExportPdf fired");
+        onExportPdf={(viewsMode || drillExpanded.size > 0) ? undefined : () => {
           setExportOpts(o => ({ ...o, format: "pdf" }));
           setExportModal(true);
         }}
@@ -4343,7 +4721,8 @@ title={T("clear_mapping_title")}
 plLiteral={activeMapping?.plLiteral ?? null}
 bsLiteral={activeMapping?.bsLiteral ?? null}
 exportRef={pivotExportRef} hasCustomMapping={!!activeMapping}
-drillAccount={drillAccount} onDrillAccount={setDrillAccount} drillData={drillData} drillLoading={drillLoading} />
+drillExpanded={drillExpanded} drillCache={drillCache} drillLoadingSet={drillLoadingSet} drillPrevRows={drillPrevRows}
+onToggleDrillAccount={toggleDrillAccount} />
 
       )}
 
