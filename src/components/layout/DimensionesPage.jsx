@@ -793,6 +793,7 @@ const getNodeVal = (dimKey) => {
       ))}
     </>
   );
+  
 }, (prev, next) => {
   // Skip re-render if this row's own state didn't change.
   if (prev.node !== next.node) return false;
@@ -803,22 +804,26 @@ const getNodeVal = (dimKey) => {
   if (prev.compareMode !== next.compareMode) return false;
   if (prev.cmpVisible !== next.cmpVisible) return false;
   if (prev.searchQuery !== next.searchQuery) return false;
-if (prev.valCache !== next.valCache) return false;
+  if (prev.valCache !== next.valCache) return false;
   if (prev.cmpCache !== next.cmpCache) return false;
   if (prev.isAnimatingData !== next.isAnimatingData) return false;
   if (prev.tableJustLoaded !== next.tableJustLoaded) return false;
   if (prev.cmpRecentlyToggled !== next.cmpRecentlyToggled) return false;
-  // expandedSet changes constantly — only re-render if OUR row's expansion flipped.
+  // Re-render if THIS row's expansion flipped (own state changed).
   const code = prev.node.AccountCode;
-  if (prev.expandedSet.has(code) !== next.expandedSet.has(code)) return false;
-  // Or if search expansion for our row flipped.
-  const prevSE = prev.searchExpansionSet?.has(String(code)) ?? false;
-  const nextSE = next.searchExpansionSet?.has(String(code)) ?? false;
-  if (prevSE !== nextSE) return false;
+  const prevExpanded = prev.expandedSet.has(code) || (prev.searchExpansionSet?.has(String(code)) ?? false);
+  const nextExpanded = next.expandedSet.has(code) || (next.searchExpansionSet?.has(String(code)) ?? false);
+  if (prevExpanded !== nextExpanded) return false;
+  // If this row IS expanded, its descendants are mounted inside it. A change
+  // elsewhere in expandedSet/searchExpansionSet could be a descendant toggling —
+  // we must re-render so the new Set instance flows down the tree. When collapsed,
+  // there are no descendants to update, so we can safely skip.
+  if (nextExpanded) {
+    if (prev.expandedSet !== next.expandedSet) return false;
+    if (prev.searchExpansionSet !== next.searchExpansionSet) return false;
+  }
   return true;
 });
-
-
 
 
 /* ── Accounts Tab ─────────────────────────────────────────── */

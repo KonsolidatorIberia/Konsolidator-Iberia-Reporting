@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
-import { ChevronDown, Loader2, Download, Library } from "lucide-react";
+import { ChevronDown, Loader2, Layers, FileText, Library, CheckCircle2, Pencil, X } from "lucide-react";
 import { useTypo, useSettings } from "./SettingsContext";
 import PageHeader, { MultiFilterPill, FilterPill as HeaderFilterPill } from "./PageHeader.jsx";
 import { useCurrentUserResourceAccess } from "../../lib/userPermissionsApi";
@@ -124,6 +124,90 @@ const parseAmt = (val) => {
   return isNaN(n) ? 0 : n;
 };
 
+/* ─── CF mapping converters (cf_tree → {rows, sections} + literal) ─────── */
+// Flat ordering + section breakers — drives orderedRows / dividerMap
+function convertCfMappingTree(tree) {
+  if (!Array.isArray(tree) || tree.length === 0) return null;
+  const rows = new Map();
+  const sections = new Map();
+  let sortCounter = 0;
+  let defaultSecCounter = 0;
+  function walk(nodes, depth, parentSection) {
+    for (const node of nodes) {
+      if (!node) continue;
+      if (node.kind === "breaker") {
+        const secCode = node.sectionCode || `section_${defaultSecCounter++}`;
+        sections.set(secCode, {
+          label: String(node.name ?? "Section"),
+          color: node.color || "#1a2f8a",
+        });
+        walk(node.children || [], depth, secCode);
+      } else {
+        const code = String(node.code ?? "");
+        if (!code) continue;
+        const sec = parentSection || "_default";
+        if (!sections.has(sec)) sections.set(sec, { label: "", color: "#1a2f8a" });
+        rows.set(code, {
+          section: sec,
+          sortOrder: sortCounter++,
+          isSum: !!node.isSum,
+          showInSummary: !!node.showInSummary,
+          level: depth,
+        });
+        walk(node.children || [], depth + 1, sec);
+      }
+    }
+  }
+  walk(tree, 0, null);
+  if (rows.size === 0) return null;
+  return { rows, sections };
+}
+
+// Literal tree — preserves hierarchy + custom names + sum-grouping for render
+function buildCfMappingLiteral(tree) {
+  if (!Array.isArray(tree) || tree.length === 0) return null;
+  const sections = [];
+  let current = { label: null, color: null, nodes: [] };
+  sections.push(current);
+
+  function literal(node, depth, visited = new WeakSet()) {
+    if (!node || depth > 50 || visited.has(node)) {
+      return {
+        id: String(node?.id ?? `truncated-${Math.random()}`),
+        code: String(node?.code ?? ""),
+        name: String(node?.name ?? ""),
+        isSum: false, depth, children: [],
+      };
+    }
+    visited.add(node);
+    return {
+      id: String(node.id ?? `${node.code}-${Math.random()}`),
+      code: String(node.code ?? ""),
+      name: String(node.name ?? ""),
+      isSum: !!node.isSum || !!node.isSumAccount,
+      depth,
+      children: (node.children || [])
+        .filter(c => c && c.kind !== "breaker")
+        .map(c => literal(c, depth + 1, visited)),
+    };
+  }
+
+  for (const node of tree) {
+    if (!node) continue;
+    if (node.kind === "breaker") {
+      current = { label: String(node.name ?? ""), color: node.color || "#1a2f8a", nodes: [] };
+      sections.push(current);
+      (node.children || [])
+        .filter(c => c && c.kind !== "breaker")
+        .forEach(c => current.nodes.push(literal(c, 0)));
+    } else {
+      current.nodes.push(literal(node, 0));
+    }
+  }
+  const cleaned = sections.filter((s, i) => i > 0 || s.nodes.length > 0);
+  return cleaned.length === 0 ? null : cleaned;
+}
+
 /* ─── FilterPill ────────────────────────────────────────────────────────── */
 function FilterPill({ label, value, onChange, options, filterStyle, colors }) {
   const [open, setOpen] = useState(false);
@@ -242,8 +326,51 @@ function MultiSelectPill({ label, values, onChange, options, filterStyle, colors
   );
 }
 /* ─── CfLoadingSpinner ──────────────────────────────────────────────── */
+// Lives entirely outside React. Survives remounts, StrictMode, re-renders.
+const cfAnim = { startedAt: null, raf: null, subs: new Set(), idleTimer: null };
+
+function cfStart() {
+  if (cfAnim.idleTimer) { clearTimeout(cfAnim.idleTimer); cfAnim.idleTimer = null; }
+  if (cfAnim.startedAt !== null) return;
+  cfAnim.startedAt = performance.now();
+  const tick = () => {
+    cfAnim.subs.forEach(fn => fn());
+    cfAnim.raf = requestAnimationFrame(tick);
+  };
+  cfAnim.raf = requestAnimationFrame(tick);
+}
+function cfMaybeReset() {
+  // Only reset when nobody has subscribed for a while (true unmount, not a remount)
+  cfAnim.idleTimer = setTimeout(() => {
+    if (cfAnim.subs.size === 0) {
+      if (cfAnim.raf) cancelAnimationFrame(cfAnim.raf);
+      cfAnim.raf = null;
+      cfAnim.startedAt = null;
+    }
+    cfAnim.idleTimer = null;
+  }, 500);
+}
+function cfGetProgress() {
+  if (cfAnim.startedAt === null) return 0;
+  const elapsed = performance.now() - cfAnim.startedAt;
+  const t = 1 - Math.exp(-elapsed / 2500);
+  return Math.min(95, t * 100);
+}
+
 function CfLoadingSpinner({ colors, metaReady }) {
-  const progress = useAnimatedNumber(60, 700);
+  const R = 60;
+  const CIRC = 2 * Math.PI * R;
+  const [, force] = useState(0);
+
+  useEffect(() => {
+    cfStart();
+    const sub = () => force(n => n + 1);
+    cfAnim.subs.add(sub);
+    return () => { cfAnim.subs.delete(sub); cfMaybeReset(); };
+  }, []);
+
+  const progress = cfGetProgress();
+
   return (
     <div className="relative flex-1 min-h-0 flex items-center justify-center rounded-2xl"
       style={{ background: "rgba(255,255,255,0.78)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
@@ -251,13 +378,13 @@ function CfLoadingSpinner({ colors, metaReady }) {
         style={{ width: 380, boxShadow: "0 24px 80px -12px rgba(26,47,138,0.25), 0 8px 24px -8px rgba(0,0,0,0.08)" }}>
         <div className="relative" style={{ width: 140, height: 140 }}>
           <svg width="140" height="140" viewBox="0 0 140 140">
-            <circle cx="70" cy="70" r="60" fill="none" stroke="#f3f4f6" strokeWidth="10" />
-            <circle cx="70" cy="70" r="60" fill="none"
+            <circle cx="70" cy="70" r={R} fill="none" stroke="#f3f4f6" strokeWidth="10" />
+            <circle cx="70" cy="70" r={R} fill="none"
               stroke="url(#cfProgGrad)"
               strokeWidth="10"
               strokeLinecap="round"
-              strokeDasharray={2 * Math.PI * 60}
-              strokeDashoffset={2 * Math.PI * 60 * (1 - progress / 100)}
+              strokeDasharray={CIRC}
+              strokeDashoffset={CIRC * (1 - progress / 100)}
               style={{ transform: "rotate(-90deg)", transformOrigin: "70px 70px" }}
             />
             <defs>
@@ -349,6 +476,198 @@ function DrillGroupRow({ groupCode, groupName, localRows, visibleCompanies, colo
             );
           })}
         </tr>
+      ))}
+    </>
+  );
+}
+
+/* ─── MappedSheetRow — renders a node from a custom cf_tree mapping ──── */
+function MappedSheetRow({
+  node, depth, pivot, visibleCompanies,
+  body1Style, body2Style, subbody1Style,
+  compareMode = false, cmpPivot = new Map(), colors, rowIndex = 0,
+  uploadedData = [], journalEntries = [], groupToCf, nameFor,
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const hasMappingChildren = node.children && node.children.length > 0;
+
+  // Collect all leaf codes under this node (recursive) — used for rollup.
+  // If node has children: it's a sum, value = sum of all descendant leaves.
+  // If node has no children: it's a leaf, value = its own pivot row.
+  const allLeafCodes = useMemo(() => {
+    const out = [];
+    const walk = (n) => {
+      if (!n.children || n.children.length === 0) {
+        out.push(n.code);
+      } else {
+        n.children.forEach(walk);
+      }
+    };
+    walk(node);
+    return out;
+  }, [node]);
+
+  const getContrib = (company) => {
+    let total = 0;
+    for (const code of allLeafCodes) {
+      const rows = pivot.get(code)?.[company] ?? [];
+      for (const r of rows) total += Number(r._cfAmount ?? 0);
+    }
+    return total;
+  };
+
+  const getCmpContrib = (company) => {
+    let total = 0;
+    for (const code of allLeafCodes) {
+      const rows = cmpPivot?.get(code)?.[company] ?? [];
+      for (const r of rows) total += Number(r._cfAmount ?? 0);
+    }
+    return total;
+  };
+
+  // Drill-down only for LEAF mapping nodes (real underlying accounts).
+  // Sum nodes expand into their mapping children instead.
+  const drillGroups = useMemo(() => {
+    if (!expanded || hasMappingChildren) return [];
+    const byGroup = new Map();
+    const ensureBucket = (groupCode, groupName) => {
+      if (!byGroup.has(groupCode)) {
+        byGroup.set(groupCode, { groupCode, groupName: groupName ?? "", rowMap: new Map() });
+      }
+      return byGroup.get(groupCode);
+    };
+
+    uploadedData.forEach(r => {
+      const groupCode = String(r.AccountCode ?? r.accountCode ?? "");
+      const co = r.CompanyShortName ?? r.companyShortName ?? "";
+      const cfs = groupToCf?.get(groupCode) ?? [];
+      if (!cfs.includes(node.code)) return;
+      const origin = r.Origin ?? r.origin ?? "";
+      const rawLocalCode = r.LocalAccountCode ?? r.localAccountCode ?? "";
+      if (origin === "Journal" || !rawLocalCode) return;
+      const bucket = ensureBucket(groupCode, r.AccountName ?? r.accountName);
+      const key = `ERP::${rawLocalCode}::${co}`;
+      const amt = Number(r.AmountYTD ?? r.amountYTD ?? 0);
+      if (!bucket.rowMap.has(key)) {
+        bucket.rowMap.set(key, {
+          localCode: rawLocalCode,
+          localName: r.LocalAccountName ?? r.localAccountName ?? "",
+          isJournal: false, co, amt: 0,
+        });
+      }
+      bucket.rowMap.get(key).amt += amt;
+    });
+
+    journalEntries.forEach(j => {
+      const groupCode = String(j.AccountCode ?? j.accountCode ?? "");
+      const co = j.CompanyShortName ?? j.companyShortName ?? "";
+      const cfs = groupToCf?.get(groupCode) ?? [];
+      if (!cfs.includes(node.code)) return;
+      const journalNumber = String(j.JournalNumber ?? j.journalNumber ?? "");
+      const journalHeader = j.JournalHeader ?? j.journalHeader ?? "";
+      const journalType = j.JournalType ?? j.journalType ?? "";
+      const bucket = ensureBucket(groupCode, j.AccountName ?? j.accountName);
+      const key = `JRN::${journalNumber}::${co}`;
+      const amt = Number(j.AmountYTD ?? j.amountYTD ?? 0);
+      if (!bucket.rowMap.has(key)) {
+        bucket.rowMap.set(key, {
+          localCode: journalNumber || "JRN",
+          localName: journalHeader || journalType || "Journal",
+          isJournal: true, co, amt: 0,
+        });
+      }
+      bucket.rowMap.get(key).amt += amt;
+    });
+
+    return [...byGroup.values()]
+      .map(g => ({
+        ...g,
+        localRows: [...g.rowMap.values()].sort((a, b) => {
+          if (a.isJournal !== b.isJournal) return a.isJournal ? 1 : -1;
+          return (a.localCode || a.localName).localeCompare(b.localCode || b.localName);
+        }),
+      }))
+      .sort((a, b) => a.groupCode.localeCompare(b.groupCode));
+  }, [expanded, hasMappingChildren, uploadedData, journalEntries, groupToCf, node.code]);
+
+  const totalCols = 1 + visibleCompanies.length * (compareMode ? 4 : 1);
+  const isExpandable = hasMappingChildren || true; // leaves can drill too
+
+  return (
+    <>
+      <tr className="group border-b border-gray-100 transition-colors hover:bg-[#eef1fb]/40 cursor-pointer"
+        onClick={() => setExpanded(e => !e)}
+        style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 25) * 35 + 50}ms both` }}>
+        <td className="sticky left-0 z-10 py-2.5 pr-6 border-r border-gray-100 bg-white group-hover:bg-[#eef1fb]/40"
+          style={{ paddingLeft: `${24 + depth * 16}px`, minWidth: 260, width: 260 }}>
+          <div className="flex items-center gap-2 select-none">
+            {isExpandable ? (
+              <ChevronDown size={10} className="flex-shrink-0 transition-transform duration-200"
+                style={{ color: `${colors.primary}60`, transform: expanded ? "rotate(0deg)" : "rotate(-90deg)" }} />
+            ) : (
+              <span className="flex-shrink-0" style={{ width: 10 }} />
+            )}
+            <span className="flex-shrink-0 mr-1" style={subbody1Style}>{node.code}</span>
+            <span className="truncate" style={{ ...body1Style, fontWeight: hasMappingChildren ? 800 : body1Style.fontWeight }}>
+              {node.name || nameFor(node.code) || ""}
+            </span>
+          </div>
+        </td>
+        {visibleCompanies.map(c => {
+          const val = getContrib(c);
+          const cmpVal = compareMode ? getCmpContrib(c) : null;
+          const delta = cmpVal !== null ? Math.round(val) - Math.round(cmpVal) : null;
+          const pct = (cmpVal !== null && Math.round(cmpVal) !== 0)
+            ? ((Math.round(val) - Math.round(cmpVal)) / Math.abs(Math.round(cmpVal))) * 100
+            : null;
+          const devColor = !delta ? "#D1D5DB" : delta > 0 ? "#059669" : "#EF4444";
+          return (
+            <Fragment key={c}>
+              <AnimatedAmountCell value={val} style={{ ...body1Style, fontWeight: hasMappingChildren ? 800 : body1Style.fontWeight }} />
+              {compareMode && (
+                <AnimatedAmountCell value={cmpVal ?? 0}
+                  style={{ ...body1Style, background: `${colors.primary}08` }} />
+              )}
+              {compareMode && (
+                <td className="px-4 py-2.5 text-center whitespace-nowrap tabular-nums border-l border-gray-100"
+                  style={{ minWidth: 100, ...body1Style, color: devColor, background: `${colors.primary}12` }}>
+                  {delta ? fmt(delta) : "—"}
+                </td>
+              )}
+              {compareMode && (
+                <td className="px-3 py-2.5 text-center whitespace-nowrap tabular-nums"
+                  style={{ minWidth: 80, ...body1Style, color: !pct ? "#D1D5DB" : pct > 0 ? "#059669" : "#EF4444", background: `${colors.primary}1e` }}>
+                  {pct !== null ? `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%` : "—"}
+                </td>
+              )}
+            </Fragment>
+          );
+        })}
+      </tr>
+
+      {/* Sum node expanded → render mapping children */}
+      {expanded && hasMappingChildren && node.children.map((child, ci) => (
+        <MappedSheetRow key={child.id ?? `${child.code}-${ci}`}
+          node={child} depth={depth + 1}
+          pivot={pivot} visibleCompanies={visibleCompanies}
+          body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style}
+          compareMode={compareMode} cmpPivot={cmpPivot} colors={colors} rowIndex={rowIndex + ci + 1}
+          uploadedData={uploadedData} journalEntries={journalEntries} groupToCf={groupToCf} nameFor={nameFor} />
+      ))}
+
+      {/* Leaf node expanded → drill into ERP / journal entries */}
+      {expanded && !hasMappingChildren && drillGroups.length === 0 && (
+        <tr>
+          <td colSpan={totalCols} className="px-8 py-2 text-[10px] font-black uppercase tracking-widest text-gray-300">
+            No underlying accounts
+          </td>
+        </tr>
+      )}
+      {expanded && !hasMappingChildren && drillGroups.map((g, gi) => (
+        <DrillGroupRow key={g.groupCode} groupIndex={gi}
+          groupCode={g.groupCode} groupName={g.groupName} localRows={g.localRows}
+          visibleCompanies={visibleCompanies} colors={colors}
+          body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style} compareMode={compareMode} />
       ))}
     </>
   );
@@ -510,7 +829,7 @@ const drillGroups = useMemo(() => {
 /* ═══════════════════════════════════════════════════════════════════════
    MAIN
    ═══════════════════════════════════════════════════════════════════════ */
-export default function IndividualCashFlowPage({ token }) {
+export default function IndividualCashFlowPage({ token, onNavigate }) {
   const header1Style = useTypo("header1");
   const header2Style = useTypo("header2");
   const body1Style = useTypo("body1");
@@ -549,7 +868,7 @@ const [uploadedData,   setUploadedData]   = useState([]);
   const [loading,        setLoading]        = useState(false);
   const [metaReady,      setMetaReady]      = useState(false);
 
-  const autoPeriodDone = useRef(false);
+const autoPeriodDone = useRef(false);
 
   /* ─── Metadata ─────────────────────────────────────────────────── */
   useEffect(() => {
@@ -643,33 +962,7 @@ fetch(`${BASE}/mapped-accounts`,          { headers: h }).then(r => r.json()).th
 
   const activeCfMapping = pgcCfMapping ?? danishIfrsCfMapping ?? spanishIfrsEsCfMapping;
 
-  /* ─── Auto period probe ───────────────────────────────────────── */
-  useEffect(() => {
-    if (autoPeriodDone.current) return;
-    if (!token || !source || !structure || !metaReady || !year || !month) return;
-    autoPeriodDone.current = true;
-    let cancelled = false;
-    (async () => {
-      let probeY = parseInt(year), probeM = parseInt(month);
-      for (let i = 0; i < 24; i++) {
-        if (cancelled) break;
-        const filter = `Year eq ${probeY} and Month eq ${probeM} and Source eq '${source}' and GroupStructure eq '${structure}'`;
-        try {
-          const res = await fetch(`${BASE}/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}&$top=1`, {
-            headers: { Authorization: `Bearer ${token}` }
-          });
-          const d = await res.json();
-          if ((d.value ?? []).length > 0) {
-            if (!cancelled) { setYear(String(probeY)); setMonth(String(probeM)); }
-            return;
-          }
-        } catch { break; }
-        probeM -= 1;
-        if (probeM < 1) { probeM = 12; probeY -= 1; }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [token, metaReady, source, structure, year, month]);
+// Probe removed — the data fetch itself walks back if it returns empty.
 
   /* ─── Companies under selected structure ─────────────────────── */
 const contributionCompanies = useMemo(() => {
@@ -724,43 +1017,64 @@ const visibleCompanies = useMemo(() => {
   const visibleCompaniesKey = useMemo(() => visibleCompanies.join(","), [visibleCompanies]);
   useEffect(() => { setColOrder(null); }, [visibleCompaniesKey]);
 
-  /* ─── Fetch uploaded data + CF names ───────────────────────────── */
+/* ─── Fetch uploaded data + CF names (with auto walk-back if empty) ──── */
   useEffect(() => {
     if (!metaReady || !year || !month || !source || !structure) return;
     let cancelled = false;
-setLoading(true);
-    setUploadedData([]);
-    setJournalEntries([]);
+    setLoading(true);
 
-    const baseFilter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}'`;
     const auth = { headers: { Authorization: `Bearer ${token}` } };
 
-    Promise.all([
-      fetch(`${BASE}/reports/uploaded-accounts?$filter=${encodeURIComponent(baseFilter)}`, auth)
-        .then(r => r.json()).then(d => d.value || []),
-      fetch(`${BASE}/reports/consolidated-accounts?$filter=${encodeURIComponent(baseFilter)}`, auth)
-        .then(r => r.json()).then(d => d.value || []).catch(() => []),
-      fetch(`${BASE}/journal-entries?$filter=${encodeURIComponent(baseFilter)}`, auth)
-        .then(r => r.json()).then(d => d.value || []).catch(() => []),
-    ]).then(([uploaded, cons, journals]) => {
-      if (cancelled) return;
-      const cfRowsForNames = cons.filter(r => {
-        const t = r.AccountType ?? r.accountType ?? "";
-        return t === "C/F" || t === "CFS";
-      });
-      setCfNameDict(prev => {
-        const next = { ...prev };
-        cfRowsForNames.forEach(r => {
-          const code = r.AccountCode ?? r.accountCode;
-          const name = r.AccountName ?? r.accountName;
-          if (code && name && !next[code]) next[code] = name;
-        });
-        return next;
-      });
-      setUploadedData(uploaded);
-      setJournalEntries(Array.isArray(journals) ? journals : []);
-      setLoading(false);
-    }).catch(() => { if (!cancelled) setLoading(false); });
+    (async () => {
+      let tryY = parseInt(year), tryM = parseInt(month);
+      const maxAttempts = autoPeriodDone.current ? 1 : 24;
+
+      for (let i = 0; i < maxAttempts; i++) {
+        if (cancelled) return;
+        const baseFilter = `Year eq ${tryY} and Month eq ${tryM} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+        try {
+          const [uploaded, cons, journals] = await Promise.all([
+            fetch(`${BASE}/reports/uploaded-accounts?$filter=${encodeURIComponent(baseFilter)}`, auth)
+              .then(r => r.json()).then(d => d.value || []),
+            fetch(`${BASE}/reports/consolidated-accounts?$filter=${encodeURIComponent(baseFilter)}`, auth)
+              .then(r => r.json()).then(d => d.value || []).catch(() => []),
+            fetch(`${BASE}/journal-entries?$filter=${encodeURIComponent(baseFilter)}`, auth)
+              .then(r => r.json()).then(d => d.value || []).catch(() => []),
+          ]);
+          if (cancelled) return;
+
+          if (uploaded.length > 0 || autoPeriodDone.current) {
+            const cfRowsForNames = cons.filter(r => {
+              const t = r.AccountType ?? r.accountType ?? "";
+              return t === "C/F" || t === "CFS";
+            });
+            setCfNameDict(prev => {
+              const next = { ...prev };
+              cfRowsForNames.forEach(r => {
+                const code = r.AccountCode ?? r.accountCode;
+                const name = r.AccountName ?? r.accountName;
+                if (code && name && !next[code]) next[code] = name;
+              });
+              return next;
+            });
+            setUploadedData(uploaded);
+            setJournalEntries(Array.isArray(journals) ? journals : []);
+            if (String(tryY) !== year || String(tryM) !== month) {
+              setYear(String(tryY)); setMonth(String(tryM));
+            }
+            autoPeriodDone.current = true;
+            setLoading(false);
+            return;
+          }
+        } catch {
+          if (!cancelled) setLoading(false);
+          return;
+        }
+        tryM -= 1;
+        if (tryM < 1) { tryM = 12; tryY -= 1; }
+      }
+      if (!cancelled) setLoading(false);
+    })();
 
     return () => { cancelled = true; };
   }, [token, metaReady, year, month, source, structure]);
@@ -941,8 +1255,96 @@ const dimGroups = useMemo(() => {
     return dims.sort((a, b) => a.code.localeCompare(b.code));
 }, [uploadedData, upDimGroups]);
 
-  const [exporting, setExporting] = useState(false);
+const [exporting, setExporting] = useState(false);
   const [viewsModalOpen, setViewsModalOpen] = useState(false);
+
+  // ── Cash flow mappings ────────────────────────────────────────────────
+  const [activeMapping, setActiveMapping] = useState(null);
+  const [recentMappings, setRecentMappings] = useState([]);
+  const [viewsMode, setViewsMode] = useState(null); // null | "landing" | "structure" | "report"
+  const [savedMappings, setSavedMappings] = useState([]);
+  const [savedMappingsLoading, setSavedMappingsLoading] = useState(false);
+  const [savedMappingsError, setSavedMappingsError] = useState(null);
+  const [reportMappings, setReportMappings] = useState([]);
+  const [reportMappingsLoading, setReportMappingsLoading] = useState(false);
+  const [reportMappingsError, setReportMappingsError] = useState(null);
+
+const handleApplyMapping = (m, kind = "structure") => {
+    const tree = m.cf_tree ?? [];
+    setActiveMapping({
+      mapping_id: m.mapping_id,
+      kind,
+      name: m.name,
+      standard: m.standard,
+      cf_tree: tree,
+      highlighted_ids: m.highlighted_ids ?? [],
+      cf_view_mode: m.cf_view_mode ?? "consolidated",
+      cfConverted: convertCfMappingTree(tree),
+      cfLiteral: buildCfMappingLiteral(tree),
+    });
+  };
+
+  // Load recent mappings for the hover-dropdown
+  useEffect(() => {
+    (async () => {
+      try {
+        const { supabase } = await import("../../lib/supabaseClient");
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) return;
+        const { listMappings: listStruct, getActiveCompanyId } = await import("../../lib/cashflowMappingsApi");
+        const { listMappings: listReport } = await import("../../lib/cashflowReportMappingsApi");
+        const cid = await getActiveCompanyId(uid);
+        if (!cid) return;
+        const [structRows, reportRows] = await Promise.all([
+          listStruct({ companyId: cid }).catch(() => []),
+          listReport({ companyId: cid }).catch(() => []),
+        ]);
+        const combined = [
+          ...(structRows || []).map(r => ({ id: r.mapping_id, name: r.name, kind: "structure", updated_at: r.updated_at, raw: r })),
+          ...(reportRows  || []).map(r => ({ id: r.mapping_id, name: r.name, kind: "report",    updated_at: r.updated_at, raw: r })),
+        ];
+        setRecentMappings(combined);
+      } catch (err) { console.error("[cf recent-mappings]", err); }
+    })();
+  }, []);
+
+  const fetchSavedMappings = async () => {
+    setSavedMappingsLoading(true); setSavedMappingsError(null);
+    try {
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) throw new Error("Not authenticated");
+      const { listMappings, getActiveCompanyId } = await import("../../lib/cashflowMappingsApi");
+      const cid = await getActiveCompanyId(uid);
+      if (!cid) throw new Error("No active company");
+      const rows = await listMappings({ companyId: cid });
+      setSavedMappings(Array.isArray(rows) ? rows : []);
+    } catch (e) { setSavedMappingsError(e.message); setSavedMappings([]); }
+    finally { setSavedMappingsLoading(false); }
+  };
+
+  const fetchReportMappings = async () => {
+    setReportMappingsLoading(true); setReportMappingsError(null);
+    try {
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) throw new Error("Not authenticated");
+      const { listMappings, getActiveCompanyId } = await import("../../lib/cashflowReportMappingsApi");
+      const cid = await getActiveCompanyId(uid);
+      if (!cid) throw new Error("No active company");
+      const rows = await listMappings({ companyId: cid });
+      setReportMappings(Array.isArray(rows) ? rows : []);
+    } catch (e) { setReportMappingsError(e.message); setReportMappings([]); }
+    finally { setReportMappingsLoading(false); }
+  };
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (viewsMode === "structure") fetchSavedMappings(); }, [viewsMode]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (viewsMode === "report") fetchReportMappings(); }, [viewsMode]);
 const [compareMode, setCompareMode] = useState(false);
   const [cmpVisible, setCmpVisible] = useState(false);
   const [cmpExiting, setCmpExiting] = useState(false);
@@ -1152,13 +1554,20 @@ rows.forEach(r => {
 @keyframes cmpColIn    { from { opacity:0; transform:scaleX(0.6); } to { opacity:1; transform:scaleX(1); } }
         @keyframes cmpColOut   { from { opacity:1; transform:scaleX(1); } to { opacity:0; transform:scaleX(0.6); } }
         @keyframes drillSlideIn { 0% { opacity:0; transform:translateY(-6px) scaleY(0.85); } 100% { opacity:1; transform:translateY(0) scaleY(1); } }
-        @keyframes pageIn { 0% { opacity:0; transform:translateY(16px); } 100% { opacity:1; transform:translateY(0); } }
+@keyframes pageIn { 0% { opacity:0; transform:translateY(16px); } 100% { opacity:1; transform:translateY(0); } }
+        @keyframes cfBarSlide { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
       `}</style>
 
- <PageHeader
-        kicker="Reports"
-        title="Cash Flow"
-        filters={[
+<PageHeader
+        kicker={viewsMode ? "Mappings" : "Reports"}
+        title={
+          viewsMode === "landing"   ? "Mappings"
+          : viewsMode === "structure" ? "Structure Mappings"
+          : viewsMode === "report"    ? "Report Mappings"
+          : "Cash Flow"
+        }
+        onBack={viewsMode ? () => { if (viewsMode === "landing") setViewsMode(null); else setViewsMode("landing"); } : undefined}
+        filters={viewsMode ? [] : [
 ...(effectiveSources.length > 0
             ? [{ label: "Source", value: source, onChange: setSource,
                 options: effectiveSources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s })) }]
@@ -1202,40 +1611,68 @@ const meta = dimensionsMeta.find(m =>
                 }) }]
             : []),
         ]}
-        compareToggle={{ active: compareMode, onChange: setCompareMode }}
-fabActions={[
-
-          {
-            id: "export",
-            icon: Download,
-            label: "Export",
-            subActions: [
-              {
-                id: "excel",
-                label: "Excel",
-                src: "https://logodownload.org/wp-content/uploads/2020/04/excel-logo-0.png",
-                alt: "Excel",
-                onClick: async () => {
-                  setExporting(true);
-                  try { await handleExportXlsx(); }
-                  finally { setExporting(false); }
-                },
-              },
-              {
-                id: "pdf",
-                label: "PDF",
-                src: "https://logodownload.org/wp-content/uploads/2021/05/adobe-acrobat-reader-logo-1.png",
-                alt: "PDF",
-                onClick: () => { handleExportPdf(); },
-              },
-            ],
-          },
-        ]}
+compareToggle={viewsMode ? null : { active: compareMode, onChange: setCompareMode }}
+        onExportPdf={viewsMode ? undefined : handleExportPdf}
+        onExportXlsx={viewsMode ? undefined : async () => {
+          setExporting(true);
+          try { await handleExportXlsx(); }
+          finally { setExporting(false); }
+        }}
+        onMappingsClick={viewsMode ? undefined : () => setViewsMode("landing")}
+        mappingsQuickAccess={viewsMode ? [] : recentMappings}
+        onQuickApplyMapping={async (m) => {
+          try {
+            const mod = await import(m.kind === "report" ? "../../lib/cashflowReportMappingsApi" : "../../lib/cashflowMappingsApi");
+            const full = await mod.getMapping(m.id);
+            handleApplyMapping(full ?? m.raw, m.kind);
+          } catch (err) {
+            console.error("[cf quick apply mapping]", err);
+          }
+        }}
       />
 
+{activeMapping && !viewsMode && (
+        <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm flex-shrink-0">
+          <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
+          <span className="text-xs text-emerald-700 font-medium">
+            Mapping active: <strong className="font-black">{activeMapping.name}</strong>
+            <span className="text-emerald-500/70 ml-2">· {activeMapping.standard}</span>
+          </span>
+          <button
+            onClick={() => {
+              try {
+                sessionStorage.setItem("cashflow-mappings:openForEdit", JSON.stringify({
+                  mapping_id: activeMapping.mapping_id,
+                  kind: activeMapping.kind ?? "structure",
+                }));
+              } catch { /* ignore quota errors */ }
+              onNavigate?.("cashflow-mappings");
+            }}
+            className="ml-auto flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
+            title="Edit this mapping"
+          >
+            <Pencil size={11} />
+            Edit
+          </button>
+          <button
+            onClick={() => setActiveMapping(null)}
+            className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
+            title="Clear active mapping"
+          >
+            <X size={11} />
+            Clear
+          </button>
+        </div>
+      )}
 
-{cmpVisible && <div className="flex items-center gap-2 flex-wrap px-5 py-3 bg-white rounded-2xl border border-gray-100 shadow-sm flex-shrink-0"
-        style={{ transformOrigin: "top center", animation: cmpExiting ? "cmpBarOut 350ms cubic-bezier(0.4,0,0.2,1) both" : "cmpBarIn 400ms cubic-bezier(0.34,1.56,0.64,1) both" }}>
+{cmpVisible && !viewsMode && <div className="flex-shrink-0 overflow-hidden" style={{
+        maxHeight: cmpExiting ? 0 : 200,
+        opacity: cmpExiting ? 0 : 1,
+        marginBottom: cmpExiting ? 0 : undefined,
+        transition: "max-height 380ms cubic-bezier(0.4,0,0.2,1), opacity 280ms cubic-bezier(0.4,0,0.2,1), margin-bottom 380ms cubic-bezier(0.4,0,0.2,1)",
+      }}>
+      <div className="flex items-center gap-2 flex-wrap px-5 py-3 bg-white rounded-2xl border border-gray-100 shadow-sm"
+        style={{ transformOrigin: "top center", animation: cmpExiting ? undefined : "cmpBarIn 400ms cubic-bezier(0.34,1.56,0.64,1) both" }}>
           <div className="flex items-center gap-2 mr-2">
             <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
               style={{ background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)", boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)" }}>
@@ -1251,19 +1688,179 @@ fabActions={[
             options={availableMonths} />
           <HeaderFilterPill label="Structure" value={structure} onChange={() => {}}
             options={structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s }))} />
-          {cmpLoading && <Loader2 size={11} className="animate-spin ml-2" style={{ color: colors.primary }} />}
-</div>}
+{cmpLoading && <Loader2 size={11} className="animate-spin ml-2" style={{ color: colors.primary }} />}
+</div></div>}
 
+{viewsMode ? (
+        <div className="flex-1 flex flex-col min-h-0">
+          <style>{`
+            @keyframes floatOrb1 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(20px,-30px) scale(1.1); } }
+            @keyframes floatOrb2 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-15px,20px) scale(0.95); } }
+          `}</style>
+
+          {viewsMode === "landing" && (
+            <div className="flex-1 grid grid-cols-2 gap-4 min-h-0">
+              <button onClick={() => setViewsMode("structure")}
+                className="relative text-left rounded-2xl border-2 border-gray-100 overflow-hidden transition-all group hover:border-[#1a2f8a] flex flex-col"
+                style={{ background: "linear-gradient(135deg, #ffffff 0%, #f4f6ff 40%, #eef1fb 100%)", boxShadow: "0 8px 32px -8px rgba(26,47,138,0.18)" }}>
+                <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                  <div className="absolute" style={{ top: "15%", right: "10%", width: 150, height: 150, borderRadius: "50%", background: "radial-gradient(circle, #1a2f8a18 0%, transparent 70%)", animation: "floatOrb1 8s ease-in-out infinite" }} />
+                  <div className="absolute inset-0" style={{ backgroundImage: "radial-gradient(#1a2f8a0d 1px, transparent 1px)", backgroundSize: "24px 24px" }} />
+                </div>
+                <div className="relative z-10 flex flex-col h-full p-8">
+                  <div className="mb-auto">
+                    <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-6"
+                      style={{ background: "linear-gradient(145deg, #1a2f8a 0%, #3b54b8 100%)" }}>
+                      <Layers size={26} className="text-white" strokeWidth={1.8} />
+                    </div>
+                    <p className="font-black text-xl text-gray-800 mb-2">Structure Mappings</p>
+                    <p className="text-xs text-gray-500 leading-relaxed max-w-xs">Reorganize the cash flow account hierarchy. Group, rename, and define the structural breakdown.</p>
+                  </div>
+                </div>
+              </button>
+
+              <button onClick={() => setViewsMode("report")}
+                className="relative text-left rounded-2xl border-2 border-gray-100 overflow-hidden transition-all group hover:border-[#CF305D] flex flex-col"
+                style={{ background: "linear-gradient(135deg, #ffffff 0%, #fff4f7 40%, #fef1f5 100%)", boxShadow: "0 8px 32px -8px rgba(207,48,93,0.18)" }}>
+                <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                  <div className="absolute" style={{ top: "15%", right: "10%", width: 150, height: 150, borderRadius: "50%", background: "radial-gradient(circle, #CF305D18 0%, transparent 70%)", animation: "floatOrb2 9s ease-in-out infinite" }} />
+                  <div className="absolute inset-0" style={{ backgroundImage: "radial-gradient(#CF305D0d 1px, transparent 1px)", backgroundSize: "24px 24px" }} />
+                </div>
+                <div className="relative z-10 flex flex-col h-full p-8">
+                  <div className="mb-auto">
+                    <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-6"
+                      style={{ background: "linear-gradient(145deg, #CF305D 0%, #e05585 100%)" }}>
+                      <FileText size={26} className="text-white" strokeWidth={1.8} />
+                    </div>
+                    <p className="font-black text-xl text-gray-800 mb-2">Report Mappings</p>
+                    <p className="text-xs text-gray-500 leading-relaxed max-w-xs">Custom presentation layouts for cash flow reports. Tailor the output for specific audiences.</p>
+                  </div>
+                </div>
+              </button>
+            </div>
+          )}
+
+          {viewsMode === "structure" && (
+            <div className="flex-1 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col min-h-0">
+              <div className="px-5 py-3 border-b border-gray-100 flex-shrink-0">
+                <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Library</p>
+                <p className="font-black text-xs text-gray-700">Saved Structure Mappings</p>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {savedMappingsLoading && <div className="py-16 text-center"><Loader2 size={24} className="text-[#1a2f8a] animate-spin mx-auto mb-2" /><p className="text-gray-400 text-xs">Loading mappings…</p></div>}
+                {savedMappingsError && !savedMappingsLoading && <div className="py-12 text-center"><p className="text-red-500 text-xs font-bold">{savedMappingsError}</p></div>}
+                {!savedMappingsLoading && !savedMappingsError && savedMappings.length === 0 && <div className="py-16 text-center"><Library size={24} className="text-[#1a2f8a] mx-auto mb-2" /><p className="text-gray-700 font-black text-sm">No mappings yet</p></div>}
+                {!savedMappingsLoading && !savedMappingsError && savedMappings.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {savedMappings.map(m => {
+                      const isActive = activeMapping?.mapping_id === m.mapping_id;
+                      return (
+                        <button key={m.mapping_id}
+                          onClick={async () => {
+                            try {
+                              const { getMapping } = await import("../../lib/cashflowMappingsApi");
+                              const full = await getMapping(m.mapping_id);
+                              handleApplyMapping(full ?? m, "structure");
+                              setViewsMode(null);
+                            } catch (err) {
+                              console.error("[cf apply structure mapping]", err);
+                            }
+                          }}
+                          className="text-left bg-white rounded-xl border-2 p-4 transition-all hover:shadow-md group flex flex-col"
+                          style={{ borderColor: isActive ? colors.primary : "#f3f4f6", background: isActive ? `${colors.primary}06` : "white" }}>
+                          <div className="flex items-start gap-2.5 mb-3">
+                            <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: isActive ? colors.primary : "#eef1fb" }}>
+                              <Layers size={14} style={{ color: isActive ? "white" : colors.primary }} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="font-black text-xs text-gray-800 truncate">{m.name ?? "Untitled"}</p>
+                              <p className="text-[9px] font-bold uppercase tracking-widest mt-0.5" style={{ color: colors.primary }}>{m.standard ?? "—"}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-50 mt-auto">
+                            <span className="text-[9px] text-gray-400">Updated {m.updated_at ? new Date(m.updated_at).toLocaleDateString() : "—"}</span>
+                            <span className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-widest bg-emerald-500 group-hover:bg-emerald-600 text-white"><CheckCircle2 size={9} />Apply</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {viewsMode === "report" && (
+            <div className="flex-1 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col min-h-0">
+              <div className="px-5 py-3 border-b border-gray-100 flex-shrink-0">
+                <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Library</p>
+                <p className="font-black text-xs text-gray-700">Saved Report Mappings</p>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {reportMappingsLoading && <div className="py-16 text-center"><Loader2 size={24} className="text-[#CF305D] animate-spin mx-auto mb-2" /><p className="text-gray-400 text-xs">Loading report mappings…</p></div>}
+                {reportMappingsError && !reportMappingsLoading && <div className="py-12 text-center"><p className="text-red-500 text-xs font-bold">{reportMappingsError}</p></div>}
+                {!reportMappingsLoading && !reportMappingsError && reportMappings.length === 0 && <div className="py-16 text-center"><FileText size={24} className="text-[#CF305D] mx-auto mb-2" /><p className="text-gray-700 font-black text-sm">No report mappings yet</p></div>}
+                {!reportMappingsLoading && !reportMappingsError && reportMappings.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {reportMappings.map(m => {
+                      const isActive = activeMapping?.mapping_id === m.mapping_id;
+                      return (
+                        <button key={m.mapping_id}
+                          onClick={async () => {
+                            try {
+                              const { getMapping } = await import("../../lib/cashflowReportMappingsApi");
+                              const full = await getMapping(m.mapping_id);
+                              handleApplyMapping(full ?? m, "report");
+                              setViewsMode(null);
+                            } catch (err) {
+                              console.error("[cf apply report mapping]", err);
+                            }
+                          }}
+                          className="text-left bg-white rounded-xl border-2 p-4 transition-all hover:shadow-md group flex flex-col"
+                          style={{ borderColor: isActive ? "#CF305D" : "#f3f4f6", background: isActive ? "#CF305D06" : "white" }}>
+                          <div className="flex items-start gap-2.5 mb-3">
+                            <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: isActive ? "#CF305D" : "#fef1f5" }}>
+                              <FileText size={14} style={{ color: isActive ? "white" : "#CF305D" }} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="font-black text-xs text-gray-800 truncate">{m.name ?? "Untitled"}</p>
+                              <p className="text-[9px] font-bold uppercase tracking-widest mt-0.5" style={{ color: "#CF305D" }}>{m.standard ?? "—"}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-50 mt-auto">
+                            <span className="text-[9px] text-gray-400">Updated {m.updated_at ? new Date(m.updated_at).toLocaleDateString() : "—"}</span>
+                            <span className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-widest bg-emerald-500 group-hover:bg-emerald-600 text-white"><CheckCircle2 size={9} />Apply</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
       <div className="flex-1 min-h-0 flex flex-col">
         <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
-{loading || !metaReady ? (
+{(loading && uploadedData.length === 0) || !metaReady ? (
             <CfLoadingSpinner colors={colors} metaReady={metaReady} />
           ) : !hasData ? (
             <div className="flex items-center justify-center flex-1 text-xs text-gray-300 font-black uppercase tracking-widest">
               No data for selected filters
             </div>
           ) : (
-            <div className="cf-scroll-outer flex-1 min-h-0" style={{ minWidth: 0, animation: "pageIn 400ms cubic-bezier(0.34,1.56,0.64,1) both" }}>
+<div className="cf-scroll-outer flex-1 min-h-0 relative" style={{ minWidth: 0, animation: "pageIn 400ms cubic-bezier(0.34,1.56,0.64,1) both" }}>
+              {loading && (
+                <div className="absolute top-0 left-0 right-0 z-50 overflow-hidden" style={{ height: 2, background: "rgba(26,47,138,0.08)" }}>
+                  <div style={{
+                    height: "100%",
+                    width: "30%",
+                    background: `linear-gradient(90deg, transparent, ${colors.primary}, #CF305D, transparent)`,
+                    animation: "cfBarSlide 1.2s ease-in-out infinite",
+                  }} />
+                </div>
+              )}
               <div className="cf-scroll" style={{ minWidth: 0 }}>
                 <table className="text-xs border-collapse" style={{ borderSpacing: 0, width: "100%", minWidth: "max-content", tableLayout: "auto" }}>
 <thead className="sticky top-0 z-30">
@@ -1332,54 +1929,90 @@ fabActions={[
                     </tr>
                   </thead>
 
-                  <tbody>
-                    {sectionOrder.map(sec => {
-                      const codes = bySection.get(sec);
-                      if (!codes || codes.length === 0) return null;
-
-                      const secInfo = activeCfMapping?.sections?.get(sec);
-                                    const totalCols = 1 + visibleCompanies.length * (compareMode ? 4 : 1);
-
-                      return (
-                        <Fragment key={`section-${sec}`}>
-<tr>
-<td className="sticky left-0 z-10 whitespace-nowrap"
-                              style={{
-                                backgroundColor: secInfo?.color || colors.primary,
-                                color: "#fff", padding: "8px 16px",
-                                fontSize: 11, fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase",
-                                minWidth: 220, width: 220,
-                              }}>
-                              {secInfo?.label || sec}
-                            </td>
-                            <td colSpan={totalCols - 1}
-                              style={{ backgroundColor: secInfo?.color || colors.primary }} />
-                          </tr>
-     {codes.map((code, idx) => {
-                            const isSubtotal = subtotalCodes.has(code);
-                            const node = {
-                              AccountCode: code,
-                              AccountName: nameFor(code),
-                            };
-return (
-<SheetRow key={code} node={node} depth={0}
+<tbody>
+{activeMapping?.cfLiteral ? (
+                      // ── CUSTOM MAPPING RENDER ───────────────────────────
+                      activeMapping.cfLiteral.map((section, secIdx) => {
+                        const totalCols = 1 + visibleCompanies.length * (compareMode ? 4 : 1);
+                        return (
+                          <Fragment key={`cfmap-sec-${secIdx}`}>
+                            {section.label && (
+                              <tr>
+                                <td className="sticky left-0 z-10 whitespace-nowrap"
+                                  style={{
+                                    backgroundColor: section.color || colors.primary,
+                                    color: "#fff", padding: "8px 16px",
+                                    fontSize: 11, fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase",
+                                    minWidth: 220, width: 220,
+                                  }}>
+                                  {section.label}
+                                </td>
+                                <td colSpan={totalCols - 1}
+                                  style={{ backgroundColor: section.color || colors.primary }} />
+                              </tr>
+                            )}
+                            {section.nodes.map((n, idx) => (
+                              <MappedSheetRow key={n.id ?? `${n.code}-${idx}`}
+                                node={n} depth={0}
                                 pivot={pivot} visibleCompanies={orderedVisibleCompanies}
                                 body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style}
-                                isSubtotal={isSubtotal} rowIndex={idx}
-                                compareMode={compareMode} cmpPivot={cmpPivot} colors={colors}
-                                uploadedData={filteredUploadedData} journalEntries={journalEntries} groupToCf={groupToCf} />
-                            );
-                          })}
-                        </Fragment>
-                      );
-                    })}
+                                compareMode={compareMode} cmpPivot={cmpPivot} colors={colors} rowIndex={idx}
+                                uploadedData={filteredUploadedData} journalEntries={journalEntries} groupToCf={groupToCf} nameFor={nameFor} />
+                            ))}
+                          </Fragment>
+                        );
+                      })
+                    ) : (
+                      // ── DEFAULT STANDARD RENDER (PGC / Danish / Spanish IFRS) ──
+                      sectionOrder.map(sec => {
+                        const codes = bySection.get(sec);
+                        if (!codes || codes.length === 0) return null;
+
+                        const secInfo = activeCfMapping?.sections?.get(sec);
+                        const totalCols = 1 + visibleCompanies.length * (compareMode ? 4 : 1);
+
+                        return (
+                          <Fragment key={`section-${sec}`}>
+                            <tr>
+                              <td className="sticky left-0 z-10 whitespace-nowrap"
+                                style={{
+                                  backgroundColor: secInfo?.color || colors.primary,
+                                  color: "#fff", padding: "8px 16px",
+                                  fontSize: 11, fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase",
+                                  minWidth: 220, width: 220,
+                                }}>
+                                {secInfo?.label || sec}
+                              </td>
+                              <td colSpan={totalCols - 1}
+                                style={{ backgroundColor: secInfo?.color || colors.primary }} />
+                            </tr>
+                            {codes.map((code, idx) => {
+                              const isSubtotal = subtotalCodes.has(code);
+                              const node = {
+                                AccountCode: code,
+                                AccountName: nameFor(code),
+                              };
+                              return (
+                                <SheetRow key={code} node={node} depth={0}
+                                  pivot={pivot} visibleCompanies={orderedVisibleCompanies}
+                                  body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style}
+                                  isSubtotal={isSubtotal} rowIndex={idx}
+                                  compareMode={compareMode} cmpPivot={cmpPivot} colors={colors}
+                                  uploadedData={filteredUploadedData} journalEntries={journalEntries} groupToCf={groupToCf} />
+                              );
+                            })}
+                          </Fragment>
+                        );
+                      })
+                    )}
                   </tbody>
                 </table>
               </div>
-            </div>
+</div>
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }
