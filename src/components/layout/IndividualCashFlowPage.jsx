@@ -425,11 +425,11 @@ function DrillGroupRow({ groupCode, groupName, localRows, visibleCompanies, colo
 
   return (
     <>
-<tr className="border-b cursor-pointer hover:bg-[#eef1fb]/60 transition-colors"
-        style={{ background: `${colors.primary}05`, animation: `drillSlideIn 280ms cubic-bezier(0.34,1.56,0.64,1) ${groupIndex * 40}ms both`, transformOrigin: "top center" }}
+<tr className="group/drill border-b cursor-pointer transition-colors"
+        style={{ background: "#f4f6fb", animation: `drillSlideIn 280ms cubic-bezier(0.34,1.56,0.64,1) ${groupIndex * 40}ms both`, transformOrigin: "top center" }}
         onClick={() => setOpen(o => !o)}>
-        <td className="sticky left-0 z-10 py-2 pr-4 border-r border-gray-100"
-          style={{ paddingLeft: 32, minWidth: 260, width: 260, background: `${colors.primary}05` }}>
+        <td className="sticky left-0 z-10 py-2 pr-4 border-r border-gray-100 group-hover/drill:bg-[#e4e9f5]"
+          style={{ paddingLeft: 32, minWidth: 260, width: 260, background: "#f4f6fb" }}>
           <div className="flex items-center gap-2">
             <ChevronDown size={10} className={`transition-transform duration-200 flex-shrink-0`}
               style={{ color: colors.primary, transform: open ? "rotate(180deg)" : "rotate(-90deg)" }} />
@@ -452,10 +452,10 @@ function DrillGroupRow({ groupCode, groupName, localRows, visibleCompanies, colo
           );
         })}
       </tr>
-      {open && localRows.map((r, i) => (
-        <tr key={i} className="border-b" style={{ background: `${colors.primary}03`, animation: `drillSlideIn 220ms cubic-bezier(0.34,1.56,0.64,1) ${i * 25}ms both`, transformOrigin: "top center" }}>
-          <td className="sticky left-0 z-10 py-1.5 pr-4 border-r border-gray-100"
-            style={{ paddingLeft: 52, minWidth: 260, width: 260, background: `${colors.primary}03` }}>
+{open && localRows.map((r, i) => (
+        <tr key={i} className="group/local border-b hover:bg-[#eef1fb]" style={{ background: "#f9fafd", animation: `drillSlideIn 220ms cubic-bezier(0.34,1.56,0.64,1) ${i * 25}ms both`, transformOrigin: "top center" }}>
+          <td className="sticky left-0 z-10 py-1.5 pr-4 border-r border-gray-100 group-hover/local:bg-[#eef1fb]"
+            style={{ paddingLeft: 52, minWidth: 260, width: 260, background: "#f9fafd" }}>
 <div className="flex items-center gap-2">
               <span className="font-mono flex-shrink-0" style={subbody1Style}>{r.localCode}</span>
               <span className="truncate" style={subbody1Style}>{r.localName}</span>
@@ -595,10 +595,10 @@ function MappedSheetRow({
 
   return (
     <>
-      <tr className="group border-b border-gray-100 transition-colors hover:bg-[#eef1fb]/40 cursor-pointer"
+<tr className="group border-b border-gray-100 transition-colors hover:bg-[#eef1fb] cursor-pointer"
         onClick={() => setExpanded(e => !e)}
         style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 25) * 35 + 50}ms both` }}>
-        <td className="sticky left-0 z-10 py-2.5 pr-6 border-r border-gray-100 bg-white group-hover:bg-[#eef1fb]/40"
+        <td className="sticky left-0 z-10 py-2.5 pr-6 border-r border-gray-100 bg-white group-hover:bg-[#eef1fb]"
           style={{ paddingLeft: `${24 + depth * 16}px`, minWidth: 260, width: 260 }}>
           <div className="flex items-center gap-2 select-none">
             {isExpandable ? (
@@ -764,14 +764,18 @@ const drillGroups = useMemo(() => {
 
   return (
     <>
-      <tr className="group border-b border-gray-100 transition-colors hover:bg-[#eef1fb]/40 cursor-pointer"
-        onClick={() => setExpanded(e => !e)}
+<tr className={`group border-b border-gray-100 transition-colors hover:bg-[#eef1fb] ${isSubtotal ? "" : "cursor-pointer"}`}
+        onClick={isSubtotal ? undefined : () => setExpanded(e => !e)}
         style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 25) * 35 + 50}ms both` }}>
-        <td className="sticky left-0 z-10 py-2.5 pr-6 border-r border-gray-100 bg-white group-hover:bg-[#eef1fb]/40"
+        <td className="sticky left-0 z-10 py-2.5 pr-6 border-r border-gray-100 bg-white group-hover:bg-[#eef1fb]"
           style={{ paddingLeft: `${24 + depth * 16}px`, minWidth: 260, width: 260 }}>
           <div className="flex items-center gap-2 select-none">
-            <ChevronDown size={10} className="flex-shrink-0 transition-transform duration-200"
-              style={{ color: `${colors.primary}60`, transform: expanded ? "rotate(0deg)" : "rotate(-90deg)" }} />
+            {isSubtotal ? (
+              <span className="flex-shrink-0" style={{ width: 10 }} />
+            ) : (
+              <ChevronDown size={10} className="flex-shrink-0 transition-transform duration-200"
+                style={{ color: `${colors.primary}60`, transform: expanded ? "rotate(0deg)" : "rotate(-90deg)" }} />
+            )}
             <span className="flex-shrink-0 mr-1" style={subbody1Style}>{node.AccountCode}</span>
             <span className="truncate" style={body1Style}>{node.AccountName}</span>
           </div>
@@ -1639,13 +1643,17 @@ compareToggle={viewsMode ? null : { active: compareMode, onChange: setCompareMod
             <span className="text-emerald-500/70 ml-2">· {activeMapping.standard}</span>
           </span>
           <button
-            onClick={() => {
+onClick={() => {
+              const payload = {
+                mapping_id: activeMapping.mapping_id,
+                kind: activeMapping.kind ?? "structure",
+              };
+              console.log("[CF EDIT] writing sessionStorage:", payload);
               try {
-                sessionStorage.setItem("cashflow-mappings:openForEdit", JSON.stringify({
-                  mapping_id: activeMapping.mapping_id,
-                  kind: activeMapping.kind ?? "structure",
-                }));
-              } catch { /* ignore quota errors */ }
+                sessionStorage.setItem("cashflow-mappings:openForEdit", JSON.stringify(payload));
+                console.log("[CF EDIT] storage after write:", sessionStorage.getItem("cashflow-mappings:openForEdit"));
+              } catch (e) { console.error("[CF EDIT] storage write failed:", e); }
+              console.log("[CF EDIT] navigating to cashflow-mappings");
               onNavigate?.("cashflow-mappings");
             }}
             className="ml-auto flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"

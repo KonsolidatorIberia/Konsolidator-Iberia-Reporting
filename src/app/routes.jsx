@@ -15,6 +15,7 @@ const ConsolidatedDimensionesPage = lazy(() => import("../components/layout/Cons
 const ConsolidatedMemoryNotesPage = lazy(() => import("../components/layout/ConsolidatedMemoryNotesPage.jsx"));
 const ConsolidatedKpiPage         = lazy(() => import("../components/layout/ConsolidatedKpiPage.jsx"));
 const MappingsPage                = lazy(() => import("../components/layout/MappingsPage.jsx"));
+const CashFlowMappingsView        = lazy(() => import("../components/views/CashFlowMappingsView.jsx"));
 import { useMemo } from "react";
 import { useCurrentUserPermissions, useCurrentUserResourceAccess } from "../lib/userPermissionsApi";
 function AccessDenied() {
@@ -137,8 +138,27 @@ if (activePage === "consolidated-cashflow") return (
   );
 
 if (activePage === "individual-cashflow") return (
-    <IndividualCashFlowPage token={token} />
+    <IndividualCashFlowPage token={token} onNavigate={onNavigate} />
   );
+
+if (activePage === "cashflow-mappings") {
+    let pendingEdit = null;
+    try {
+      const raw = sessionStorage.getItem("cashflow-mappings:openForEdit");
+      if (raw) pendingEdit = JSON.parse(raw);
+    } catch { /* ignore */ }
+    return (
+      <CashFlowMappingsView
+        token={token}
+        preloadedData={sharedData}
+        onNavigate={onNavigate}
+        pendingEdit={pendingEdit}
+        onPendingEditConsumed={() => {
+          try { sessionStorage.removeItem("cashflow-mappings:openForEdit"); } catch { /* ignore */ }
+        }}
+      />
+    );
+  }
 
   if (activePage === "individual-memory-notes") return (
     <MemoryNotesPage

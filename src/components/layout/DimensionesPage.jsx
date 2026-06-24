@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef, useDeferredVa
 import { createPortal } from "react-dom";
 import ViewsSelector from "./ViewsSelector.jsx";
 function useAnimatedNumber(target, duration = 800) {
-  const [display, setDisplay] = useState(target);
+  const [display, setDisplay] = useState(0);
   const fromRef = useRef(target);
   const startRef = useRef(null);
   const rafRef = useRef(null);
@@ -26,7 +26,7 @@ function useAnimatedNumber(target, duration = 800) {
   }, [target, duration]); // eslint-disable-line react-hooks/exhaustive-deps
   return display;
 }
-import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Search, Database, GitMerge, Maximize2, Minimize2, Library, CheckCircle2, AlertTriangle, TrendingUp, Scale, BarChart2, Download, Layers, Pencil, FileText } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Search, Database, GitMerge, Maximize2, Minimize2, Library, CheckCircle2, AlertTriangle, TrendingUp, Scale, BarChart2, Download, Layers, Pencil, FileText, Building2, ArrowLeft } from "lucide-react";
 
 let __globalResizing = false;
 const __resizeListeners = new Set();
@@ -674,7 +674,7 @@ function FilterPill({ label, value, onChange, options }) {
 }
 
 const INDENT = 14;
-const DimensionRow = React.memo(function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null, valCache = null, cmpCache = null, isAnimatingData = false, tableJustLoaded = false, cmpRecentlyToggled = false }) {
+const DimensionRow = React.memo(function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null, valCache = null, cmpCache = null, isAnimatingData = false, tableJustLoaded = false, cmpRecentlyToggled = false, onDrillAccount = null }) {
   const subbody2Style = useTypo("subbody2");
   const code = node.AccountCode;
   const visibleChildren = excludeCodes
@@ -747,14 +747,24 @@ const getNodeVal = (dimKey) => {
           style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 300, willChange: "transform" }}
           onClick={() => hasChildren && onToggle(code)}
         >
-          <div className={`flex items-center ${hasChildren ? "cursor-pointer" : ""}`}>
+<div className={`flex items-center group/row ${hasChildren ? "cursor-pointer" : ""}`}>
             {hasChildren
               ? <span className="flex-shrink-0 mr-2" style={{ color: colors.primary }}>
                   {isExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
                 </span>
               : <span className="inline-block mr-2" style={{ width: 12 }} />}
-<span className="flex-shrink-0 mr-2" style={subbody2Style}>{code}</span>
+            <span className="flex-shrink-0 mr-2" style={subbody2Style}>{code}</span>
             <span className="truncate max-w-[280px]" style={rowStyle}>{node.AccountName ?? node.accountName ?? ""}</span>
+            {onDrillAccount && !compareMode && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onDrillAccount({ code, name: node.AccountName ?? node.accountName ?? "" }); }}
+                className="ml-auto opacity-0 group-hover/row:opacity-100 transition-opacity flex items-center justify-center flex-shrink-0"
+                style={{ width: 22, height: 22, borderRadius: 6, background: `${colors.primary}12`, color: colors.primary, marginRight: 8 }}
+                title="Ver desglose por empresa"
+              >
+                <Building2 size={12} strokeWidth={2.2} />
+              </button>
+            )}
           </div>
         </td>
 {dimCols.map(dim => {
@@ -789,7 +799,8 @@ const getNodeVal = (dimKey) => {
           excludeCodes={excludeCodes} rowIndex={rowIndex + ci + 1}
           searchQuery={searchQuery} searchExpansionSet={searchExpansionSet}
           valCache={valCache} cmpCache={cmpCache}
-          isAnimatingData={isAnimatingData} tableJustLoaded={tableJustLoaded} cmpRecentlyToggled={cmpRecentlyToggled} />
+          isAnimatingData={isAnimatingData} tableJustLoaded={tableJustLoaded} cmpRecentlyToggled={cmpRecentlyToggled}
+          onDrillAccount={onDrillAccount} />
       ))}
     </>
   );
@@ -808,7 +819,8 @@ const getNodeVal = (dimKey) => {
   if (prev.cmpCache !== next.cmpCache) return false;
   if (prev.isAnimatingData !== next.isAnimatingData) return false;
   if (prev.tableJustLoaded !== next.tableJustLoaded) return false;
-  if (prev.cmpRecentlyToggled !== next.cmpRecentlyToggled) return false;
+if (prev.cmpRecentlyToggled !== next.cmpRecentlyToggled) return false;
+  if (prev.onDrillAccount !== next.onDrillAccount) return false;
   // Re-render if THIS row's expansion flipped (own state changed).
   const code = prev.node.AccountCode;
   const prevExpanded = prev.expandedSet.has(code) || (prev.searchExpansionSet?.has(String(code)) ?? false);
@@ -887,7 +899,7 @@ function AccountsTab({ data }) {
 
 
 /* ── Pivot Tab ────────────────────────────────────────────── */
-function PivotTab({ data, dimensions, groupAccounts = [], selGroups = new Set(), selDims = new Set(), compareMode, statementType = "pl", externalViewMode = null, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false }) {
+function PivotTab({ data, dimensions, groupAccounts = [], selGroups = new Set(), selDims = new Set(), compareMode, statementType = "pl", externalViewMode = null, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false, drillAccount = null, onDrillAccount = () => {}, drillData = [], drillLoading = false }) {
 
 const header2Style = useTypo("header2");
   const body1Style = useTypo("body1");
@@ -919,13 +931,21 @@ const [summaryMode, setSummaryMode] = useState(true);
       setCmpExiting(true); // start exit animation
     }
   }
-  const cmpVisible = compareMode || cmpExiting;
+const cmpVisible = compareMode || cmpExiting;
 
   useEffect(() => {
     if (!cmpExiting) return;
     const t = setTimeout(() => setCmpExiting(false), 450);
     return () => clearTimeout(t);
   }, [cmpExiting]);
+
+  // Drill-by-account and compare are mutually exclusive. If user flips compare on
+  // while drilling, exit the drill — simpler than maintaining both axes at once.
+  const [prevCompareForDrill, setPrevCompareForDrill] = useState(compareMode);
+  if (prevCompareForDrill !== compareMode) {
+    setPrevCompareForDrill(compareMode);
+    if (compareMode && drillAccount) onDrillAccount(null);
+  }
   const headerRef = useRef(null);
   const bodyRef   = useRef(null);
   const onBodyScroll   = useCallback(() => { if (headerRef.current) headerRef.current.scrollLeft = bodyRef.current.scrollLeft; }, []);
@@ -2993,7 +3013,22 @@ onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary
                             }
                           </span>
                         </button>
-{!hasCustomMapping && <div className="relative flex items-center"
+{drillAccount && (
+                          <button
+                            onClick={() => onDrillAccount(null)}
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md transition-all"
+                            style={{ background: `${colors.primary}10`, color: colors.primary }}
+                            onMouseEnter={e => { e.currentTarget.style.background = `${colors.primary}20`; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = `${colors.primary}10`; }}
+                            title="Volver"
+                          >
+                            <ArrowLeft size={11} strokeWidth={2.5} />
+                            <span className="text-[10px] font-black uppercase tracking-[0.18em] whitespace-nowrap">
+                              {drillAccount.code} · {drillAccount.name}
+                            </span>
+                          </button>
+                        )}
+                        {!drillAccount && !hasCustomMapping && <div className="relative flex items-center"
                           ref={el => {
                             if (!el) return;
                             const tabs = el.querySelectorAll("[data-dim-tab]");
@@ -3097,6 +3132,93 @@ onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary
             </colgroup>
 <tbody>
               {(() => {
+                // ── DRILL-BY-ACCOUNT MODE: rows = companies for the selected account ──
+                if (drillAccount) {
+                  if (drillLoading) {
+                    return (
+                      <tr><td colSpan={orderedDimCols.length + 2} className="py-16 text-center">
+                        <Loader2 size={20} className="text-[#1a2f8a] animate-spin mx-auto mb-2" />
+                        <p className="text-xs text-gray-400 font-bold">Cargando desglose por empresa…</p>
+                      </td></tr>
+                    );
+                  }
+
+                  // Build company → dim → amount pivot from drillData, filtered to drillAccount.code
+                  // Includes descendant codes too (so a click on a sum-account aggregates its children).
+                  const acTarget = String(drillAccount.code);
+                  const descendantSet = new Set([acTarget]);
+                  const collectDesc = (parentCode) => {
+                    (groupAccounts || []).forEach(ga => {
+                      const ac = String(ga.AccountCode ?? ga.accountCode ?? "");
+                      const sm = String(ga.SumAccountCode ?? ga.sumAccountCode ?? "");
+                      if (sm === parentCode && !descendantSet.has(ac)) {
+                        descendantSet.add(ac);
+                        collectDesc(ac);
+                      }
+                    });
+                  };
+                  collectDesc(acTarget);
+
+                  const companyPivot = new Map(); // companyShortName → { name, dims: Map<dimCode, amount> }
+                  drillData.forEach(r => {
+                    const ac = String(r.AccountCode ?? r.accountCode ?? "");
+                    if (!descendantSet.has(ac)) return;
+                    const acType = r.AccountType ?? r.accountType ?? "";
+                    const targetType = statementType === "bs" ? "B/S" : "P/L";
+                    if (acType && acType !== targetType) return;
+                    const co  = r.CompanyShortName ?? r.companyShortName ?? "—";
+                    const coN = r.CompanyLegalName ?? r.companyLegalName ?? co;
+                    const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0) * sign;
+                    if (!companyPivot.has(co)) companyPivot.set(co, { name: coN, dims: new Map() });
+                    const dims = companyPivot.get(co).dims;
+                    const pairs = parseDimensions(r.Dimensions);
+                    if (pairs.length === 0) {
+                      dims.set("__none__", (dims.get("__none__") ?? 0) + amt);
+                    } else {
+                      for (const [grp, code] of pairs) {
+                        if (selGroups.size > 0 && !selGroups.has(grp)) continue;
+                        if (selDims.size > 0 && !selDims.has(code)) continue;
+                        dims.set(code, (dims.get(code) ?? 0) + amt);
+                      }
+                    }
+                  });
+
+                  const rows = [...companyPivot.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name));
+                  if (rows.length === 0) {
+                    return (
+                      <tr><td colSpan={orderedDimCols.length + 2} className="py-16 text-center">
+                        <p className="text-xs text-gray-400 font-bold">Ninguna empresa tiene movimiento en esta cuenta</p>
+                      </td></tr>
+                    );
+                  }
+
+                  return rows.map(([co, info], i) => {
+                    const rowTotal = orderedDimCols.reduce((s, d) => s + (info.dims.get(d.code ?? "__none__") ?? 0), 0);
+                    const rowAnim = tableJustLoaded && i < 25
+                      ? { animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(i, 25) * 35 + 50}ms both` }
+                      : null;
+                    return (
+                      <tr key={co} className="border-b border-gray-100 bg-white hover:bg-[#eef1fb]/60" style={rowAnim ?? undefined}>
+                        <td className="py-2.5 sticky left-0 z-10 border-r border-gray-100 bg-white" style={{ paddingLeft: 16, minWidth: 300 }}>
+                          <div className="flex items-center">
+                            <span className="flex-shrink-0 mr-2 inline-flex items-center justify-center" style={{ width: 22, height: 22, borderRadius: 6, background: `${colors.primary}12`, color: colors.primary }}>
+                              <Building2 size={12} strokeWidth={2.2} />
+                            </span>
+                            <span className="flex-shrink-0 mr-2" style={subbody2Style}>{co}</span>
+                            <span className="truncate max-w-[280px]" style={body1Style}>{info.name}</span>
+                          </div>
+                        </td>
+                        {orderedDimCols.map(d => {
+                          const dk = d.code ?? "__none__";
+                          const v = info.dims.get(dk) ?? 0;
+                          return <DimAmountCell key={dk} value={v} typoStyle={body1Style} animate={isAnimatingData} />;
+                        })}
+                        <DimAmountCell value={rowTotal} typoStyle={body1Style} animate={isAnimatingData} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />
+                      </tr>
+                    );
+                  });
+                }
+
                 // ── SAVED-MAPPING LITERAL RENDER PATH ────────────────────────
                 // Mirrors AccountsDashboard's PLStatement/BalanceSheet rendering:
                 // walks the literal tree (with breakers, sum nodes, dim filters),
@@ -3209,7 +3331,7 @@ const rowAnim = tableJustLoaded && i < 25
                           style={{ cursor: hasKids ? "pointer" : "default", ...(rowAnim ?? {}) }}>
                         <td className={`py-2.5 sticky left-0 z-10 border-r border-gray-100 ${isMatch ? "bg-[#fef3c7]" : "bg-white"}`}
                             style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 300 }}>
-                          <div className="flex items-center">
+<div className="flex items-center group/row">
                             {hasKids
                               ? <span className="flex-shrink-0 mr-2" style={{ color: colors.primary }}>
                                   {expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
@@ -3217,6 +3339,16 @@ const rowAnim = tableJustLoaded && i < 25
                               : <span className="inline-block mr-2" style={{ width: 12 }} />}
                             {node.code && <span className="flex-shrink-0 mr-2" style={subbody2Style}>{node.code}</span>}
                             <span className="truncate max-w-[280px]" style={rowStyle}>{node.name || node.code}</span>
+                            {node.code && !compareMode && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); onDrillAccount({ code: node.code, name: node.name || node.code }); }}
+                                className="ml-auto opacity-0 group-hover/row:opacity-100 transition-opacity flex items-center justify-center flex-shrink-0"
+                                style={{ width: 22, height: 22, borderRadius: 6, background: `${colors.primary}12`, color: colors.primary, marginRight: 8 }}
+                                title="Ver desglose por empresa"
+                              >
+                                <Building2 size={12} strokeWidth={2.2} />
+                              </button>
+                            )}
                           </div>
                         </td>
 {orderedDimCols.map(dim => {
@@ -3284,7 +3416,8 @@ const levelByCode = (hasCustomMapping && activeMapping?.rows)
                         excludeCodes={flatCodes} rowIndex={idx}
                         searchQuery={debouncedQuery} searchExpansionSet={searchExpansionSet}
                         valCache={valCache} cmpCache={cmpCache}
-                        isAnimatingData={isAnimatingData} tableJustLoaded={tableJustLoaded} cmpRecentlyToggled={cmpRecentlyToggled} />
+                        isAnimatingData={isAnimatingData} tableJustLoaded={tableJustLoaded} cmpRecentlyToggled={cmpRecentlyToggled}
+                        onDrillAccount={onDrillAccount} />
                     </React.Fragment>
                   );
                 });
@@ -3314,6 +3447,13 @@ const [showAccounts, setShowAccounts] = useState(false);
 const [selGroups, setSelGroups] = useState(new Set());
 const [selDims, setSelDims] = useState(new Set());
 const [compareMode, setCompareMode] = useState(false);
+const [drillAccount, setDrillAccountInner] = useState(null); // { code, name } | null
+const [drillData, setDrillData] = useState([]);
+const [drillLoading, setDrillLoading] = useState(false);
+const setDrillAccount = useCallback((next) => {
+  setDrillAccountInner(next);
+  if (!next) setDrillData([]); // clear cached drill data when exiting
+}, []);
 const [ytdOnly, setYtdOnly] = useState(false);
   const viewMode = ytdOnly ? "ytd" : "monthly";
   // P&L / B/S statement type — lifted from PivotTab to drive PageHeader tabs
@@ -3769,6 +3909,48 @@ if (probeKey && prevProbeKey !== probeKey) {
     return () => ctrl.abort();
   }, [fetchKey, year, month, source, structure, company, authHeaders]);
 
+// Drill-by-account: fetch the same period/source/structure but ACROSS all
+// companies for the selected account. Cleared automatically when drillAccount
+// goes back to null.
+useEffect(() => {
+  if (!drillAccount || !year || !month || !source || !structure || !token) {
+    return;
+  }
+  const ctrl = new AbortController();
+  setDrillLoading(true);
+  (async () => {
+    try {
+      // No CompanyShortName filter — we want every company that touched the period.
+      const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+      const res = await fetch(
+        `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
+        { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Cache-Control": "no-cache" }, signal: ctrl.signal }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      if (ctrl.signal.aborted) return;
+      setDrillData(json.value ?? (Array.isArray(json) ? json : []));
+    } catch (e) {
+      if (ctrl.signal.aborted || e.name === "AbortError") return;
+      console.error("[drill fetch]", e);
+      setDrillData([]);
+    } finally {
+      if (!ctrl.signal.aborted) setDrillLoading(false);
+    }
+  })();
+  return () => ctrl.abort();
+}, [drillAccount, year, month, source, structure, token]);
+
+// Salir del drill si el usuario cambia el período/contexto. Hecho en render
+// (patrón "adjust state on prop change") en vez de en effect — el resto del
+// archivo sigue la misma convención y evita el cascading-render warning.
+const drillContextKey = `${year}|${month}|${source}|${structure}|${statementType}`;
+const [prevDrillContextKey, setPrevDrillContextKey] = useState(drillContextKey);
+if (prevDrillContextKey !== drillContextKey) {
+  setPrevDrillContextKey(drillContextKey);
+  if (drillAccount) setDrillAccount(null);
+}
+
 // Derive dim groups from the journal's `Dimensions` field — more reliable
 // than the /v2/dimensions endpoint because we know the data is there if we
 // see it here.
@@ -3803,16 +3985,17 @@ const dimDashProgress = useMemo(() => {
     if (year && month)                                           pct += 20;
     if (sources.length > 0 && structures.length > 0)            pct += 15;
     if (groupAccountsLocal.length > 0)                          pct += 25;
-    if (!loading)                                                pct += 40;
+    if (rawData.length > 0)                                      pct += 40;
     return Math.min(100, pct);
-  }, [year, month, sources.length, structures.length, groupAccountsLocal.length, loading]);
+  }, [year, month, sources.length, structures.length, groupAccountsLocal.length, rawData.length]);
 
 const animatedDimProgress = useAnimatedNumber(dimDashProgress, 700);
-// Once we have data, we're ready — never go back to the loading screen on refetches.
-  // Otherwise wait until probe AND fetch both finish AND no fetch is in flight; this
-  // covers the gap where the first (wrong-period) fetch completes empty but the probe
-  // has already kicked off a second fetch — we don't want to flash "No data" in between.
-  const dimDashReady = rawData.length > 0 || (hasCompletedFetch && probeFinished && !loading);
+// Only ready once we actually have data. The previous fallback condition
+  // (hasCompletedFetch && probeFinished && !loading) could briefly flip true
+  // between the probe finishing and the real fetch kicking off, causing the
+  // "no data" panel to flash for one frame.
+void probeFinished; // referenced by progress effects elsewhere; suppress unused warning
+  const dimDashReady = rawData.length > 0;
 
   const sourceOpts    = [...new Set(sources.map(s  => typeof s === "object" ? (s.source    ?? s.Source    ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
   const structureOpts = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
@@ -4145,7 +4328,7 @@ title={T("clear_mapping_title")}
         <div className="flex items-center justify-center flex-1">
           <p className="text-sm text-red-400 font-medium">{error}</p>
         </div>
-      ) : rawData.length === 0 ? (
+) : hasCompletedFetch && rawData.length === 0 ? (
         <div className="flex items-center justify-center flex-1">
           <div className="text-center">
             <div className="w-14 h-14 bg-[#eef1fb] rounded-2xl flex items-center justify-center mx-auto mb-4">
@@ -4159,7 +4342,8 @@ title={T("clear_mapping_title")}
 <PivotTab data={rawData} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroups={selGroups} selDims={selDims} onSelGroupsChange={setSelGroups} onSelDimsChange={setSelDims} dimGroups={dimGroups}compareMode={compareMode} statementType={statementType} externalViewMode={statementType === "bs" ? "ytd" : (ytdOnly ? "ytd" : "monthly")} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} kpiList={kpiList} ccTagToCodes={ccTagToCodes} resolveCcTag={resolveCcTag}plMapping={plMapping} bsMapping={bsMapping}
 plLiteral={activeMapping?.plLiteral ?? null}
 bsLiteral={activeMapping?.bsLiteral ?? null}
-exportRef={pivotExportRef} hasCustomMapping={!!activeMapping} />
+exportRef={pivotExportRef} hasCustomMapping={!!activeMapping}
+drillAccount={drillAccount} onDrillAccount={setDrillAccount} drillData={drillData} drillLoading={drillLoading} />
 
       )}
 
