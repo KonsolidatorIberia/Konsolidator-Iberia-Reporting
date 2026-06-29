@@ -220,22 +220,61 @@ export default function Login({ onLogin }) {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [focused, setFocused] = useState(null);
+const [focused, setFocused] = useState(null);
+  const [syncPrompt, setSyncPrompt] = useState(null); // { acctUser, b2cToken, reporting, userEmail } | null
+  const [syncing, setSyncing] = useState(false);
 
 const navigate = useNavigate();
 
+// ──────────────────────────────────────────────────────────────
+// finalizeSession: session-guard + onLogin tail. Extracted so the
+// resync flow can reuse it after fixing a stale local password.
+// ──────────────────────────────────────────────────────────────
+const finalizeSession = async ({ b2cToken, acctUser, reporting, userEmail }) => {
+  const SESSION_STALE_MS = 2 * 60 * 1000;
+
+  const { data: existingSession } = await supabase
+    .from("user_sessions")
+    .select("last_seen")
+    .eq("email", userEmail)
+    .maybeSingle();
+
+  if (existingSession) {
+    const age = Date.now() - new Date(existingSession.last_seen).getTime();
+    if (age < SESSION_STALE_MS) {
+      setError("Another active session exists for this account. Please wait a moment and try again.");
+      setLoading(false);
+      setSyncing(false);
+      return;
+    }
+  }
+
+  const newSessionId = crypto.randomUUID();
+  await supabase.from("user_sessions").upsert({
+    email:      userEmail,
+    session_id: newSessionId,
+    last_seen:  new Date().toISOString(),
+    created_at: new Date().toISOString(),
+  });
+
+  setLoading(false);
+  setSyncing(false);
+  onLogin(
+    b2cToken,
+    { username, displayName: acctUser?.username ?? null },
+    { username, password },
+    reporting,
+    newSessionId,
+  );
+};
+
 const handleLogin = async () => {
-if (!username || !password) { setError("Invalid credentials. Please try again."); return; }
-setLoading(true);
+  if (!username || !password) { setError("Invalid credentials. Please try again."); return; }
+  setLoading(true);
   setError("");
 
   // ════════════════════════════════════════════════════════
-  // PASO 0: Disparamos en paralelo las llamadas independientes.
-  //   • Token B2C        → no depende de Supabase
-  //   • get_user_by_email → RPC pública, no depende de la sesión
-  // Corren a la vez que el probe de super-admin (PASO 1) en lugar
-  // de en cascada. Cada una atrapa su propio error para no dejar
-  // promesas rechazadas si salimos antes (caso super-admin).
+  // PASO 0: parallel independent calls
   // ════════════════════════════════════════════════════════
   const b2cPromise = (async () => {
     try {
@@ -253,9 +292,7 @@ setLoading(true);
       const data = await res.json();
       if (!res.ok) return null;
       return data.access_token;
-    } catch {
-      return null;
-    }
+    } catch { return null; }
   })();
 
   const rpcPromise = supabase
@@ -264,7 +301,7 @@ setLoading(true);
     .catch(() => null);
 
   // ════════════════════════════════════════════════════════
-  // PASO 1: Probar Supabase Auth para super-admin
+  // PASO 1: Supabase super-admin probe
   // ════════════════════════════════════════════════════════
   try {
     const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
@@ -284,16 +321,12 @@ setLoading(true);
         navigate("/admin");
         return;
       }
-      // No es super-admin: cerramos sesión Supabase y seguimos al flujo B2C.
       await supabase.auth.signOut();
     }
-  } catch {
-    // Ignoramos
-  }
+  } catch { /* ignore */ }
 
-// ════════════════════════════════════════════════════════
-  // PASO 2: Login Konsolidator B2C
-  // (ya está en vuelo desde PASO 0 — aquí solo esperamos)
+  // ════════════════════════════════════════════════════════
+  // PASO 2: B2C
   // ════════════════════════════════════════════════════════
   const b2cToken = await b2cPromise;
   if (!b2cToken) {
@@ -302,24 +335,19 @@ setLoading(true);
     return;
   }
 
-// ════════════════════════════════════════════════════════════════════════════
-  // PASO 3: Always clear any stale session first
-  // ════════════════════════════════════════════════════════════════════════════
+  // PASO 3: clear stale session
   await supabase.auth.signOut();
 
-  // ════════════════════════════════════════════════════════════════════════════
-  // PASO 4: Check if admin-created user via public RPC
-  // ════════════════════════════════════════════════════════════════════════════
-let reporting;
-  // get_user_by_email ya está en vuelo desde PASO 0 — solo esperamos.
-const acctUser = await rpcPromise;
+  // PASO 4: admin-created lookup + reporting status
+  let reporting;
+  const acctUser = await rpcPromise;
+  const userEmail = username.trim().toLowerCase();
 
   if (acctUser?.admin_created) {
     if (!acctUser.is_active) {
       reporting = { status: "inactive", email: username };
     } else {
-      // Get company info
-try {
+      try {
         const { data: links } = await supabase
           .rpc("get_user_company_links", { p_user_id: acctUser.id });
 
@@ -342,15 +370,23 @@ try {
         reporting = { status: "active", user: acctUser, company: null };
       }
     }
-  } else {
-    // Normal user — standard flow
+} else {
     reporting = await getReportingStatus(username, password);
   }
+console.log("REPORTING STATUS:", reporting);
+  // If the company exists but this user doesn't — treat as invalid
+  // credentials (don't surface the trial activation flow to ghost users
+  // of real customer companies).
+  if (reporting?.status === "company_exists_no_user") {
+    setError("Invalid credentials. Please try again.");
+    setLoading(false);
+    return;
+  }
 
-  // ════════════════════════════════════════════════════════════════════════════
-  // PASO 5: If admin_created and no real password, update it via edge function
-  // ════════════════════════════════════════════════════════════════════════════
-if (acctUser?.admin_created && acctUser?.has_password === false) {
+  // ════════════════════════════════════════════════════════
+  // PASO 5: First-time admin_created activation
+  // ════════════════════════════════════════════════════════
+  if (acctUser?.admin_created && acctUser?.has_password === false) {
     try {
       const res = await fetch(
         "https://gmcawsapzkzmgrtiqebv.supabase.co/functions/v1/set-user-password",
@@ -364,64 +400,94 @@ if (acctUser?.admin_created && acctUser?.has_password === false) {
           body: JSON.stringify({ user_id: acctUser.id, password }),
         }
       );
-if (res.ok) {
+      if (res.ok) {
         await supabase.rpc("mark_user_has_password", { p_user_id: acctUser.id });
-        // Establish the Supabase session. THIS is what RLS uses (auth.uid())
-        // to authorize admin actions like deactivating other company users.
-        // If it fails silently the user ends up with a B2C token but no
-        // Supabase identity, so every RLS-gated write is denied.
-await supabase.auth.signInWithPassword({
-          email: username.trim().toLowerCase(),
-          password,
-        });
-}
-    } catch {
-      // sign-in failed silently — session won't be available
-    }
+        await supabase.auth.signInWithPassword({ email: userEmail, password });
+      }
+    } catch { /* silent */ }
+
+    return finalizeSession({ b2cToken, acctUser, reporting, userEmail });
   }
 
-// For admin_created users with an existing password, also ensure the session
-  // exists — same reasoning: without a live Supabase session, RLS-gated admin
-  // actions (manage/deactivate other company users) are denied.
+  // ════════════════════════════════════════════════════════
+  // PASO 6: Returning admin_created user — Supabase RLS session.
+  // If sign-in fails here, the local password is stale (user
+  // most likely changed it upstream in Konsolidator B2C). The
+  // B2C token we hold is proof of identity → offer to resync.
+  // ════════════════════════════════════════════════════════
   if (acctUser?.admin_created && acctUser?.has_password === true) {
-await supabase.auth.signInWithPassword({
-      email: username.trim().toLowerCase(),
+    const { error: signInErr } = await supabase.auth.signInWithPassword({
+      email: userEmail,
       password,
     });
-  }
 
-// ── Session guard: block concurrent logins ──────────────────────
-  const userEmail = username.trim().toLowerCase();
-  const SESSION_STALE_MS = 2 * 60 * 1000;
-
-  const { data: existingSession } = await supabase
-    .from("user_sessions")
-    .select("last_seen")
-    .eq("email", userEmail)
-    .maybeSingle();
-
-  if (existingSession) {
-    const age = Date.now() - new Date(existingSession.last_seen).getTime();
-    if (age < SESSION_STALE_MS) {
-      setError("Another active session exists for this account. Please wait a moment and try again.");
+    if (signInErr) {
+      setSyncPrompt({ acctUser, b2cToken, reporting, userEmail });
       setLoading(false);
       return;
     }
   }
 
-  // Create / refresh session record
-  const newSessionId = crypto.randomUUID();
-  await supabase.from("user_sessions").upsert({
-    email:      userEmail,
-    session_id: newSessionId,
-    last_seen:  new Date().toISOString(),
-    created_at: new Date().toISOString(),
-  });
-
-  setLoading(false);
-  onLogin(b2cToken, { username, displayName: acctUser?.username ?? null }, { username, password }, reporting, newSessionId);
+  return finalizeSession({ b2cToken, acctUser, reporting, userEmail });
 };
 
+const handleConfirmSync = async () => {
+  if (!syncPrompt) return;
+  const { acctUser, b2cToken, reporting, userEmail } = syncPrompt;
+
+  setSyncing(true);
+  setError("");
+
+  try {
+    const res = await fetch(
+      "https://gmcawsapzkzmgrtiqebv.supabase.co/functions/v1/set-user-password",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA",
+          Authorization: `Bearer ${b2cToken}`,
+        },
+        body: JSON.stringify({ user_id: acctUser.id, password }),
+      }
+    );
+
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      setSyncing(false);
+      setSyncPrompt(null);
+      setError(`Could not sync password (${res.status}). ${txt}`);
+      return;
+    }
+
+    const { error: signInErr } = await supabase.auth.signInWithPassword({
+      email: userEmail,
+      password,
+    });
+    if (signInErr) {
+      setSyncing(false);
+      setSyncPrompt(null);
+      setError("Password was updated but sign-in still failed. Please try again or contact support.");
+      return;
+    }
+
+    setSyncPrompt(null);
+    await finalizeSession({ b2cToken, acctUser, reporting, userEmail });
+  } catch (e) {
+    setSyncing(false);
+    setSyncPrompt(null);
+    setError(`Sync failed: ${e.message}`);
+  }
+};
+
+const handleCancelSync = () => {
+  setSyncPrompt(null);
+  setSyncing(false);
+  setError("Sign-in cancelled. Your local password was not changed.");
+};
+
+
+  // ── SIGNIN / SIGNUP layout (existing) ────────────────────────────
   return (
     <div className="min-h-screen flex bg-[#1a2f8a]">
       <style>{`
@@ -561,7 +627,7 @@ await supabase.auth.signInWithPassword({
               </div>
               <span className="text-[#1a2f8a] font-black text-lg tracking-widest">KONSOLIDATOR</span>
             </div>
-            <h2 className="text-3xl font-black text-[#1a2f8a] mb-2">Welcome back</h2>
+<h2 className="text-3xl font-black text-[#1a2f8a] mb-2">Welcome back</h2>
             <p className="text-gray-400 text-sm mb-10">Sign in to your reporting dashboard</p>
 
             <div className="space-y-5">
@@ -576,9 +642,7 @@ await supabase.auth.signInWithPassword({
                   onKeyDown={(e) => e.key === "Enter" && handleLogin()}
                   placeholder="you@konsolidator.com"
                   className="w-full border-2 border-gray-100 rounded-2xl px-4 py-3.5 text-sm text-gray-800 outline-none focus:border-[#1a2f8a] transition-all bg-gray-50"
-                  style={{
-                    boxShadow: focused === "email" ? "0 0 0 4px rgba(26,47,138,0.08)" : "none",
-                  }}
+                  style={{ boxShadow: focused === "email" ? "0 0 0 4px rgba(26,47,138,0.08)" : "none" }}
                 />
               </div>
               <div>
@@ -592,9 +656,7 @@ await supabase.auth.signInWithPassword({
                   onKeyDown={(e) => e.key === "Enter" && handleLogin()}
                   placeholder="••••••••"
                   className="w-full border-2 border-gray-100 rounded-2xl px-4 py-3.5 text-sm text-gray-800 outline-none focus:border-[#1a2f8a] transition-all bg-gray-50"
-                  style={{
-                    boxShadow: focused === "password" ? "0 0 0 4px rgba(26,47,138,0.08)" : "none",
-                  }}
+                  style={{ boxShadow: focused === "password" ? "0 0 0 4px rgba(26,47,138,0.08)" : "none" }}
                 />
               </div>
               {error && (
@@ -606,9 +668,7 @@ await supabase.auth.signInWithPassword({
                 onClick={handleLogin}
                 disabled={loading}
                 className={`relative w-full text-white font-black py-4 rounded-2xl transition-all text-sm tracking-wide disabled:opacity-70 shadow-lg shadow-red-200 overflow-hidden ${loading ? "" : "shimmer-btn hover:shadow-xl"}`}
-                style={{
-                  backgroundColor: loading ? "#e8394a" : undefined,
-                }}
+                style={{ backgroundColor: loading ? "#e8394a" : undefined }}
               >
                 {loading ? (
                   <span className="flex items-center justify-center gap-3">
@@ -619,13 +679,86 @@ await supabase.auth.signInWithPassword({
                   "Sign In →"
                 )}
               </button>
+              <button
+                type="button"
+                onClick={() => navigate("/signup")}
+                disabled={loading}
+                className="w-full text-[#1a2f8a] font-black py-3 rounded-2xl transition-all text-sm tracking-wide border-2 border-gray-100 hover:border-[#1a2f8a] hover:bg-gray-50 disabled:opacity-50"
+              >
+                Sign Up
+              </button>
             </div>
-            <p className="text-center text-xs text-gray-300 mt-10">
+<p className="text-center text-xs text-gray-300 mt-10">
               Powered by Konsolidator® · IFRS Consolidated Reporting
             </p>
           </div>
         </div>
       </div>
+
+      {syncPrompt && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(9,21,72,0.75)", backdropFilter: "blur(12px)" }}
+        >
+          <div
+            className="w-full max-w-md rounded-3xl bg-white overflow-hidden"
+            style={{ boxShadow: "0 40px 80px -20px rgba(0,0,0,0.5)" }}
+          >
+            <div
+              className="px-7 py-5 text-white"
+              style={{ background: "linear-gradient(135deg, #1a2f8a 0%, #0f1f5c 100%)" }}
+            >
+              <p className="text-[10px] font-black uppercase tracking-[0.22em] text-blue-300 mb-1">
+                Password change detected
+              </p>
+              <h3 className="text-2xl font-black leading-tight">Sync your password?</h3>
+            </div>
+
+            <div className="px-7 py-6 space-y-4">
+              <p className="text-sm text-gray-600 leading-relaxed">
+                Your Konsolidator credentials were accepted, but the password stored
+                in our reporting platform is out of date — most likely because you
+                changed it in Konsolidator.
+              </p>
+              <p className="text-sm text-gray-600 leading-relaxed">
+                We can update your reporting-platform password to match the one you
+                just used. This is required to grant the access permissions for
+                your account.
+              </p>
+              <div className="rounded-xl px-3 py-2.5 bg-amber-50 border border-amber-200">
+                <p className="text-[11px] font-bold text-amber-700">
+                  Account: <span className="font-mono">{syncPrompt.userEmail}</span>
+                </p>
+              </div>
+            </div>
+
+            <div className="px-7 py-4 flex items-center justify-end gap-2 bg-gray-50 border-t border-gray-100">
+              <button
+                onClick={handleCancelSync}
+                disabled={syncing}
+                className="px-5 py-2.5 text-xs font-black rounded-xl text-gray-500 hover:bg-gray-100 transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmSync}
+                disabled={syncing}
+                className="px-6 py-2.5 text-xs font-black text-white rounded-xl transition-all disabled:opacity-50 flex items-center gap-2 shadow-lg"
+                style={{
+                  background: "linear-gradient(135deg, #1a2f8a 0%, #0f1f5c 100%)",
+                  boxShadow: "0 8px 20px -4px rgba(26,47,138,0.5)",
+                }}
+              >
+                {syncing && (
+                  <span className="iUncaught TypeError: T is not a function
+    at JournalsPill (ContributivePage.jsx:2787:7)nline-block w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                )}
+                {syncing ? "Syncing…" : "Yes, sync password"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

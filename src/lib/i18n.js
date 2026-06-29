@@ -1172,7 +1172,9 @@ sheet_empty_root_desc:         "Select the main holding in the Perspective filte
 sheet_couldnt_load:            "Couldn't load mappings",
 sheet_pick_one_alert:          "Pick at least one sheet.",
 sheet_opt_elim_breakdown:      "Elim. breakdown",
-
+dim_kicker_consolidated: "Consolidated",
+dim_kicker_views_consolidated: "Consolidated · Views",
+dim_consolidated_accounts: "Consolidated rows",
   },
 
 
@@ -2229,7 +2231,9 @@ sheet_empty_root_desc:         "Vælg hoved-holdinget i Perspektiv-filteret",
 sheet_couldnt_load:            "Kunne ikke indlæse mappings",
 sheet_pick_one_alert:          "Vælg mindst ét ark.",
 sheet_opt_elim_breakdown:      "Elim.-opdeling",
-
+dim_kicker_consolidated: "Konsolideret",
+dim_kicker_views_consolidated: "Konsolideret · Visninger",
+dim_consolidated_accounts: "Konsoliderede rækker",
   },
 
 
@@ -3276,6 +3280,9 @@ sheet_empty_root_desc:         "Selecciona el holding principal en el filtro Per
 sheet_couldnt_load:            "No se pudieron cargar los mapeos",
 sheet_pick_one_alert:          "Selecciona al menos una hoja.",
 sheet_opt_elim_breakdown:      "Desglose de eliminaciones",
+dim_kicker_consolidated: "Consolidado",
+dim_kicker_views_consolidated: "Consolidado · Vistas",
+dim_consolidated_accounts: "Filas consolidadas",
   },
 
 
@@ -4250,6 +4257,9 @@ sheet_empty_root_desc:         "Selecione o holding principal no filtro Perspeti
 sheet_couldnt_load:            "Não foi possível carregar mapeamentos",
 sheet_pick_one_alert:          "Selecione pelo menos uma folha.",
 sheet_opt_elim_breakdown:      "Desagregação de eliminações",
+dim_kicker_consolidated: "Consolidado",
+dim_kicker_views_consolidated: "Consolidado · Vistas",
+dim_consolidated_accounts: "Linhas consolidadas",
   },
 };
 

@@ -28,7 +28,6 @@ export const sbAccounts = supabase.schema("accounts");
 //   { status: "error",            message }            → error técnico
 // ════════════════════════════════════════════════════════════════
 export async function getReportingStatus(email, password) {
-  console.log("[getReportingStatus] START email=", email);
   try {
     // 1. Intentar login en Supabase Auth
     const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
@@ -36,92 +35,81 @@ export async function getReportingStatus(email, password) {
       password,
     });
 
-    console.log("[getReportingStatus] signIn result:", {
-      hasUser: !!authData?.user,
-      userId: authData?.user?.id,
-      error: authErr?.message,
-    });
-
-    if (authErr || !authData?.user) {
-      console.warn("[getReportingStatus] → needs_activation (Auth failed)", authErr);
+if (authErr || !authData?.user) {
+      // Before offering trial activation, check if the company (derived
+      // from the email domain) already exists. If it does, this is a
+      // ghost user of a real customer — block with invalid credentials
+      // instead of letting them spin up a trial.
+const domainPart = email.split("@")[1] ?? "";
+      const slug = domainPart.split(".")[0].toLowerCase().replace(/[^a-z0-9-]/g, "-");
+      if (slug) {
+        const { data: companyExists } = await supabase
+          .rpc("company_exists_by_slug", { p_slug: slug });
+        if (companyExists === true) {
+          return { status: "company_exists_no_user", email };
+        }
+      }
       return { status: "needs_activation", email, password };
     }
 
-    // 2. Comprobar accounts.users
+// 2. Comprobar accounts.users
     const { data: userRow, error: userErr } = await sbAccounts
       .from("users")
       .select("*")
       .eq("id", authData.user.id)
       .single();
-
-    console.log("[getReportingStatus] accounts.users:", {
-      found: !!userRow,
-      is_active: userRow?.is_active,
-      is_super_admin: userRow?.is_super_admin,
-      error: userErr?.message,
-    });
-
-    if (userErr || !userRow) {
-      console.warn("[getReportingStatus] → needs_activation (no row in accounts.users)");
+if (userErr || !userRow) {
       await supabase.auth.signOut();
+      // Same guard: if the company already exists, don't offer activation.
+const domainPart = email.split("@")[1] ?? "";
+      const slug = domainPart.split(".")[0].toLowerCase().replace(/[^a-z0-9-]/g, "-");
+      if (slug) {
+        const { data: companyExists } = await supabase
+          .rpc("company_exists_by_slug", { p_slug: slug });
+        if (companyExists === true) {
+          return { status: "company_exists_no_user", email };
+        }
+      }
       return { status: "needs_activation", email, password };
     }
 
     // 3. ¿Activo?
     if (!userRow.is_active) {
-      console.warn("[getReportingStatus] → inactive");
       await supabase.auth.signOut();
       return { status: "inactive", email };
     }
 
-    // 4. Empresas
-    const { data: links, error: linksErr } = await sbAccounts
+// 4. Empresas
+    const { data: links } = await sbAccounts
       .from("user_companies")
       .select("*, company:companies(*)")
       .eq("user_id", authData.user.id)
       .eq("is_active", true);
 
-    console.log("[getReportingStatus] user_companies:", {
-      count: links?.length ?? 0,
-      links,
-      error: linksErr?.message,
-    });
-
-// If the user has no active company links, block login.
+    // If the user has no active company links, block login.
     if (!links || links.length === 0) {
-      console.warn("[getReportingStatus] → inactive (no active company memberships)");
       await supabase.auth.signOut();
       return { status: "inactive", email };
     }
 
     const defaultLink = links?.find(l => l.is_default) ?? links?.[0];
     if (!defaultLink?.company) {
-      console.log("[getReportingStatus] → active (no company)");
       return { status: "active", user: userRow, company: null };
     }
 
     const company = defaultLink.company;
-    console.log("[getReportingStatus] company:", {
-      name: company.name,
-      slug: company.slug,
-      is_trial: company.is_trial,
-      trial_ends_at: company.trial_ends_at,
-    });
 
     // 5. Trial expirado?
     if (company.is_trial && company.trial_ends_at) {
       const endsAt = new Date(company.trial_ends_at);
       if (endsAt < new Date()) {
-        console.warn("[getReportingStatus] → trial_expired");
         await supabase.auth.signOut();
         return { status: "trial_expired", email, company };
       }
     }
 
-    console.log("[getReportingStatus] → active");
     return { status: "active", user: userRow, company };
   } catch (e) {
-    console.error("[getReportingStatus] EXCEPTION:", e);
     return { status: "error", message: String(e?.message ?? e) };
   }
 }

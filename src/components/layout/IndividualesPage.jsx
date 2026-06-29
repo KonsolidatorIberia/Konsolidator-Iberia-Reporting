@@ -505,11 +505,21 @@ function sumNode(node) {
   if (node.type === "localAccount" || node.type === "dimension" || node.type === "plain")
     return node.amount ?? 0;
 
-  // Any node with children acts as a sum: own postings + all descendants.
-  // Matches the mapper's amountsByCode walk-up behavior.
+  // A group account is one of two things:
+  //  (a) Has children: it's a sum-account whose total is the rolled-up sum
+  //      of its descendants. We IGNORE its own uploadLeaves here, because
+  //      either they are duplicate postings (same amounts already attached
+  //      to descendants), or they will be picked up as we recurse — but in
+  //      this codebase the bug is the former. Trust the children.
+  //  (b) Has no children: it's a leaf group account, and its total IS its
+  //      own uploadLeaves sum.
+  if (node.children && node.children.length > 0) {
+    let s = 0;
+    node.children.forEach(c => { s += sumNode(c); });
+    return s;
+  }
   let s = 0;
   node.uploadLeaves?.forEach(l => { s += sumNode(l); });
-  node.children?.forEach(c => { s += sumNode(c); });
   return s;
 }
 
@@ -7152,19 +7162,19 @@ const getHistYtd = useCallback((h, code) => {
   const n = h.map.get(code);
   if (!n) return 0;
   // Use uploadLeaves when present (matches current period's sumNode behavior for sum accounts)
-  const sumYtdH = (nd) => {
+const sumYtdH = (nd) => {
     if (!nd) return 0;
     if (nd.type === "localAccount" || nd.type === "dimension" || nd.type === "plain") {
       return h.leafIdx?.get(String(nd.code)) ?? 0;
     }
-    if (nd.uploadLeaves?.length > 0) {
+    // Mirror sumNode: if it has children, trust their roll-up.
+    if (nd.children && nd.children.length > 0) {
       let s = 0;
-      nd.uploadLeaves.forEach(l => { s += sumYtdH(l); });
-      (nd.children || []).forEach(c => { s += sumYtdH(c); });
+      nd.children.forEach(c => { s += sumYtdH(c); });
       return s;
     }
     let s = 0;
-    (nd.children || []).forEach(c => { s += sumYtdH(c); });
+    nd.uploadLeaves?.forEach(l => { s += sumYtdH(l); });
     return s;
   };
   return sumYtdH(n);
@@ -7174,18 +7184,19 @@ const getHistPrev = useCallback((h, code) => {
   const curN = h.map.get(code);
   if (!curN) return 0;
   // Mirror sumNode's traversal but read prev amounts from h.aPrevLeafIdxOnce (keyed by localAccountCode)
-  const sumPrevH = (n) => {
+const sumPrevH = (n) => {
     if (!n) return 0;
     if (n.type === "localAccount" || n.type === "dimension" || n.type === "plain") {
       return h.aPrevLeafIdxOnce?.get(String(n.code)) ?? 0;
     }
-    if (n.uploadLeaves?.length > 0) {
+    // Mirror sumNode: if it has children, trust their roll-up.
+    if (n.children && n.children.length > 0) {
       let s = 0;
-      n.uploadLeaves.forEach(l => { s += sumPrevH(l); });
+      n.children.forEach(c => { s += sumPrevH(c); });
       return s;
     }
     let s = 0;
-    n.children?.forEach(c => { s += sumPrevH(c); });
+    n.uploadLeaves?.forEach(l => { s += sumPrevH(l); });
     return s;
   };
   return sumPrevH(curN);
@@ -11536,14 +11547,14 @@ const getBSHistVal = useCallback((h, code) => {
     if (nd.type === "localAccount" || nd.type === "dimension" || nd.type === "plain") {
       return h.leafIdx?.get(String(nd.code)) ?? 0;
     }
-    if (nd.uploadLeaves?.length > 0) {
+    // Mirror sumNode: if it has children, trust their roll-up.
+    if (nd.children && nd.children.length > 0) {
       let s = 0;
-      nd.uploadLeaves.forEach(l => { s += sumYtdH(l); });
-      (nd.children || []).forEach(c => { s += sumYtdH(c); });
+      nd.children.forEach(c => { s += sumYtdH(c); });
       return s;
     }
     let s = 0;
-    (nd.children || []).forEach(c => { s += sumYtdH(c); });
+    nd.uploadLeaves?.forEach(l => { s += sumYtdH(l); });
     return s;
   };
   const raw = sumYtdH(n);

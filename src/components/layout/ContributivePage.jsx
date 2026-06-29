@@ -3016,10 +3016,10 @@ const [search, setSearch] = useState("");
 
           <div className="w-px h-6 mx-1" style={{ background: "rgba(26,47,138,0.1)" }} />
 
-<JournalsPill T={T} colors={colors} label={T("jrn_company")}   values={filterCompany}      onChange={setFilterCompany}      options={opts.companies} />
-          <JournalsPill colors={colors} label={T("jrn_counterparty")} values={filterCounterparty} onChange={setFilterCounterparty} options={opts.counterparties} />
-          <JournalsPill colors={colors} label={T("jrn_journal_type")} values={filterJournalType}  onChange={setFilterJournalType}  options={opts.journalTypes} />
-          <JournalsPill colors={colors} label={T("jrn_account_type")} values={filterAccountType}  onChange={setFilterAccountType}  options={opts.accountTypes} />
+<JournalsPill T={T} colors={colors} label={T("jrn_company")}      values={filterCompany}      onChange={setFilterCompany}      options={opts.companies} />
+<JournalsPill T={T} colors={colors} label={T("jrn_counterparty")} values={filterCounterparty} onChange={setFilterCounterparty} options={opts.counterparties} />
+<JournalsPill T={T} colors={colors} label={T("jrn_journal_type")} values={filterJournalType}  onChange={setFilterJournalType}  options={opts.journalTypes} />
+<JournalsPill T={T} colors={colors} label={T("jrn_account_type")} values={filterAccountType}  onChange={setFilterAccountType}  options={opts.accountTypes} />
 
           {anyFilterActive && (
             <button

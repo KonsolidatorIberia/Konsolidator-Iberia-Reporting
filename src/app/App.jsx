@@ -4,6 +4,7 @@ import InactivityWarning from "../components/InactivityWarning.jsx";
 import { Routes, Route } from "react-router-dom";
 import Login from "../auth/Login.jsx";
 import AdminPortal from "../auth/AdminPortal.jsx";
+import Signup from "../auth/Signup.jsx";
 import ReportingActivationPanel from "../auth/ReportingActivationPanel.jsx";
 import BlockedPanel from "../auth/BlockedPanel.jsx";
 import Shell from "../components/layout/Shell.jsx";
@@ -262,9 +263,10 @@ function AuthenticatedApp({
 // ════════════════════════════════════════════════════════════════
 export default function App() {
   return (
-    <Routes>
-      <Route path="/admin" element={<AdminPortal />} />
-      <Route path="/*"     element={<MainApp />} />
+<Routes>
+      <Route path="/admin"  element={<AdminPortal />} />
+      <Route path="/signup" element={<Signup />} />
+      <Route path="/*"      element={<MainApp />} />
     </Routes>
   );
 }
