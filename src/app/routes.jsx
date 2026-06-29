@@ -96,8 +96,8 @@ if (activePage === "individual-data") return (
     />
   );
 
-  if (activePage === "individual-contributive") return (
-    <ContributivePage token={token} />
+if (activePage === "individual-contributive") return (
+    <ContributivePage token={token} onNavigate={onNavigate} />
   );
 
   if (activePage === "structure") return (
@@ -120,7 +120,7 @@ if (activePage === "individual-dimensiones") return (
   );
 
 if (activePage === "consolidated-sheet") return (
-    <ConsolidationSheetPage token={token} />
+    <ConsolidationSheetPage token={token} onNavigate={onNavigate} />
   );
 
 
@@ -187,9 +187,24 @@ if (activePage === "consolidated-kpis") return (
     />
   );
 if (activePage === "settings") return <SettingsPage token={token} preloadedData={rawData} />;
-if (activePage === "mappings") return (
-    <MappingsPage token={token} preloadedData={sharedData} />
-  );
+if (activePage === "mappings") {
+    let pendingEdit = null;
+    try {
+      const raw = sessionStorage.getItem("mappings:openForEdit");
+      if (raw) pendingEdit = JSON.parse(raw);
+    } catch { /* ignore */ }
+    return (
+      <MappingsPage
+        token={token}
+        preloadedData={sharedData}
+        onNavigate={onNavigate}
+        pendingEdit={pendingEdit}
+        onPendingEditConsumed={() => {
+          try { sessionStorage.removeItem("mappings:openForEdit"); } catch { /* ignore */ }
+        }}
+      />
+    );
+  }
 
 return (
     <div className="flex items-center justify-center h-full">
