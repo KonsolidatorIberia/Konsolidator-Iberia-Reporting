@@ -263,44 +263,101 @@ if (onDataLoadedRef.current) onDataLoadedRef.current(dataRef.current);
 return () => clearTimeout(t);
   }, [allDone, setDetectedLocale, settings?.locale]);
 
-  if (allDone) return null;
+if (allDone) return null;
 
   const isZoomOut = phase >= PHASE.ZOOM_OUT.id;
+  const isMounted = phase >= PHASE.LOGO_IN.id; // becomes true on first paint
 
-  return (
+  // Equations for ambient background — same vibe as Login
+  const EQUATIONS = [
+    "EBITDA = Revenue − COGS − OpEx",
+    "NPV = Σ CFₜ / (1+r)ᵗ",
+    "WACC = (E/V)·Rₑ + (D/V)·R_d·(1−T)",
+    "ROIC = NOPAT / Invested Capital",
+    "FCF = EBIT(1−t) + D&A − ΔWC − CapEx",
+    "Net Margin = NI / Revenue",
+    "DSO = (AR / Revenue) × 365",
+    "DCF: Σ FCFₜ / (1+WACC)ᵗ + TV",
+    "Quick Ratio = (CA − Inv) / CL",
+    "D/E = Total Debt / Equity",
+    "EV = MktCap + Debt − Cash",
+    "P/E = Price / EPS",
+  ];
+
+return (
     <div
       className="fixed inset-0 z-[9999] flex items-center justify-center overflow-hidden"
       style={{
-        backgroundColor: colors.primary,
+        background: "linear-gradient(180deg, #1a2f8a 0%, #3a5cd9 35%, #7a9fef 70%, #d8e4ff 100%)",
         opacity: isZoomOut ? 0 : 1,
         transform: isZoomOut ? "scale(1.4)" : "scale(1)",
+        animation: "loader-mount-fade 500ms cubic-bezier(0.25,0.1,0.25,1) both",
         transition: `opacity 350ms cubic-bezier(0.4,0,0.2,1), transform 350ms cubic-bezier(0.4,0,0.2,1)`,
       }}
     >
-      <div className="absolute inset-0 overflow-hidden">
-        <div className="absolute rounded-full"
-          style={{
-            width: "120vmax", height: "120vmax", top: "50%", left: "50%",
-            transform: "translate(-50%, -50%)",
-            background: `radial-gradient(circle, rgba(255,255,255,0.06) 0%, transparent 60%)`,
-            animation: phase >= PHASE.ORBIT_LABELS.id ? "pulse-bg 3s ease-in-out infinite" : "none",
-          }} />
+      {/* Ambient atmospherics — same as Login */}
+      <div className="absolute top-[10%] left-[8%] w-[600px] h-[600px] rounded-full pointer-events-none"
+        style={{
+          background: "radial-gradient(circle, rgba(255,255,255,0.4), transparent 65%)",
+          filter: "blur(60px)",
+          animation: "loader-float 22s ease-in-out infinite",
+        }} />
+      <div className="absolute bottom-[15%] right-[6%] w-[500px] h-[500px] rounded-full pointer-events-none"
+        style={{
+          background: "radial-gradient(circle, rgba(168,197,255,0.5), transparent 65%)",
+          filter: "blur(70px)",
+        }} />
+
+      {/* Grain */}
+      <div className="absolute inset-0 pointer-events-none opacity-[0.04] mix-blend-overlay"
+        style={{
+          backgroundImage: "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\")",
+        }} />
+
+      {/* Drifting equations */}
+      {EQUATIONS.map((eq, i) => {
+        const left = (i * 19 + 3) % 92;
+        const dur = 26 + (i % 6) * 3;
+        const delay = -((i * 2.4) % dur);
+        const size = 11 + (i % 3);
+        return (
+          <div key={`eq-${i}`} className="absolute pointer-events-none"
+            style={{
+              bottom: "-10%",
+              left: `${left}%`,
+              fontSize: size,
+              fontFamily: "'SF Mono', 'JetBrains Mono', Menlo, monospace",
+              color: "rgba(255,255,255,0.45)",
+              fontWeight: 700,
+              letterSpacing: "0.04em",
+              whiteSpace: "nowrap",
+              animation: `${i % 2 === 0 ? "loader-drift" : "loader-drift-slow"} ${dur}s linear ${delay}s infinite`,
+            }}>
+            {eq}
+          </div>
+        );
+      })}
+
+      {/* Concentric rings (subtle, in white) */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute rounded-full border"
           style={{
             width: "40vmax", height: "40vmax", top: "50%", left: "50%",
             transform: `translate(-50%, -50%) scale(${phase >= PHASE.CONSOLIDATE.id ? 0 : 1})`,
-            borderColor: "rgba(255,255,255,0.08)",
+            borderColor: "rgba(255,255,255,0.18)",
             transition: "transform 400ms cubic-bezier(0.4,0,0.2,1)",
           }} />
         <div className="absolute rounded-full border"
           style={{
             width: "60vmax", height: "60vmax", top: "50%", left: "50%",
             transform: `translate(-50%, -50%) scale(${phase >= PHASE.CONSOLIDATE.id ? 0 : 1})`,
-            borderColor: "rgba(255,255,255,0.05)",
+            borderColor: "rgba(255,255,255,0.1)",
+            borderStyle: "dashed",
             transition: "transform 500ms cubic-bezier(0.4,0,0.2,1)",
           }} />
       </div>
 
+      {/* Connection lines (white with glow) */}
       <svg className="absolute inset-0 w-full h-full" viewBox="-500 -500 1000 1000" preserveAspectRatio="xMidYMid meet">
         {ENDPOINTS.map((ep, i) => {
           const rad = (ep.angle * Math.PI) / 180;
@@ -312,24 +369,26 @@ return () => clearTimeout(t);
           return (
             <g key={ep.key}>
               <line x1={x1} y1={y1} x2={x2} y2={y2}
-                stroke={isCompleted ? "#ffffff" : "rgba(255,255,255,0.25)"}
+                stroke={isCompleted ? "#ffffff" : "rgba(255,255,255,0.35)"}
                 strokeWidth={isCompleted ? 1.5 : 1}
                 strokeDasharray="600"
                 strokeDashoffset={isLineDrawing ? 0 : 600}
                 style={{
                   transition: `stroke-dashoffset 700ms cubic-bezier(0.4,0,0.2,1) ${i * 80}ms, stroke 300ms ease, stroke-width 300ms ease`,
                   opacity: phase >= PHASE.CONSOLIDATE.id ? 0 : 1,
+                  filter: isCompleted ? "drop-shadow(0 0 6px rgba(255,255,255,0.5))" : "none",
                 }} />
               {isCompleted && phase < PHASE.CONSOLIDATE.id && (
                 <circle cx={x1} cy={y1} r="4" fill="#ffffff"
-                  style={{ filter: "drop-shadow(0 0 8px rgba(255,255,255,0.8))", animation: "pulse-dot 1.2s ease-in-out infinite" }} />
+                  style={{ filter: "drop-shadow(0 0 8px rgba(255,255,255,0.9))", animation: "loader-pulse-dot 1.2s ease-in-out infinite" }} />
               )}
             </g>
           );
         })}
       </svg>
 
-      {ENDPOINTS.map((ep) => {
+{/* Orbiting labels — frosted chips that fly in from below to assemble */}
+      {ENDPOINTS.map((ep, i) => {
         const rad = (ep.angle * Math.PI) / 180;
         const r = 280;
         const x = Math.cos(rad) * r, y = Math.sin(rad) * r;
@@ -343,51 +402,84 @@ return () => clearTimeout(t);
               opacity: visible ? 1 : 0,
               transition: "opacity 300ms ease, transform 300ms cubic-bezier(0.4,0,0.2,1)",
             }}>
-            <p className="font-black uppercase tracking-widest" style={{ fontSize: 10, color: "rgba(255,255,255,0.5)", marginBottom: 4 }}>
-              {ep.label}
-            </p>
-            <p className="font-black tabular-nums"
+<div className="px-4 py-3 rounded-2xl backdrop-blur-md"
               style={{
-                fontSize: 28,
-                color: count !== undefined ? "#ffffff" : "rgba(255,255,255,0.3)",
-                transition: "color 200ms ease",
-                textShadow: count !== undefined ? "0 0 20px rgba(255,255,255,0.4)" : "none",
+                background: "rgba(255,255,255,0.12)",
+                border: "1px solid rgba(255,255,255,0.22)",
+                minWidth: 110,
               }}>
-              {count !== undefined ? count : "···"}
-            </p>
+              <p className="font-black uppercase tracking-widest" style={{ fontSize: 9, color: "rgba(255,255,255,0.7)", marginBottom: 4 }}>
+                {ep.label}
+              </p>
+              <p className="font-black tabular-nums"
+                style={{
+                  fontSize: 26,
+                  color: count !== undefined ? "#ffffff" : "rgba(255,255,255,0.4)",
+                  transition: "color 200ms ease",
+                  textShadow: count !== undefined ? "0 0 20px rgba(255,255,255,0.6)" : "none",
+                }}>
+                {count !== undefined ? count : "···"}
+              </p>
+            </div>
           </div>
         );
       })}
 
+{/* Centerpiece — logo + brand */}
       <div className="relative z-10 flex flex-col items-center"
         style={{
           transform: phase >= PHASE.CONSOLIDATE.id ? "scale(1.15)" : phase >= PHASE.LOGO_IN.id ? "scale(1)" : "scale(0.5)",
           opacity: phase >= PHASE.LOGO_IN.id ? 1 : 0,
           transition: "transform 350ms cubic-bezier(0.34,1.56,0.64,1), opacity 350ms ease",
         }}>
-        <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center shadow-2xl mb-5"
+        <div className="w-20 h-20 rounded-3xl flex items-center justify-center mb-5"
           style={{
+            background: "rgba(255,255,255,0.85)",
+            border: "1px solid rgba(255,255,255,0.95)",
+            backdropFilter: "blur(20px) saturate(150%)",
             boxShadow: phase >= PHASE.CONSOLIDATE.id
-              ? "0 0 80px rgba(255,255,255,0.8), 0 0 200px rgba(255,255,255,0.4)"
-              : "0 20px 60px rgba(0,0,0,0.3)",
+              ? "0 0 80px rgba(255,255,255,0.9), 0 0 200px rgba(168,197,255,0.6)"
+              : "0 20px 60px rgba(15,31,92,0.4), 0 8px 20px rgba(15,31,92,0.2)",
             transition: "box-shadow 400ms ease",
           }}>
-          <span className="font-black text-3xl" style={{ color: colors.primary }}>[K</span>
+          <img src="/logo-icon.png" alt="K" className="w-14 h-14 object-contain" />
         </div>
-        <p className="text-white font-black text-xl tracking-[0.3em]">KONSOLIDATOR</p>
-        <p className="text-xs mt-3 tracking-[0.25em] uppercase font-bold"
+        <p className="text-white font-black text-xl tracking-[0.3em]"
+          style={{ textShadow: "0 0 30px rgba(255,255,255,0.4), 0 0 60px rgba(168,197,255,0.5)" }}>
+          KONSOLIDATOR
+        </p>
+        <p className="text-[10px] mt-3 tracking-[0.25em] uppercase font-bold"
           style={{
-            color: "rgba(255,255,255,0.5)",
-            opacity: phase >= PHASE.CONSOLIDATE.id ? 1 : phase >= PHASE.ORBIT_LABELS.id ? 0.7 : 0,
+            color: "rgba(255,255,255,0.7)",
+            opacity: phase >= PHASE.CONSOLIDATE.id ? 1 : phase >= PHASE.ORBIT_LABELS.id ? 0.8 : 0,
             transition: "opacity 300ms ease",
           }}>
-          {phase >= PHASE.CONSOLIDATE.id ? "Group Consolidated" : phase >= PHASE.FETCH_LINES.id ? "Aggregating Sources" : "Initializing"}
+          {phase >= PHASE.CONSOLIDATE.id ? "━ Group Consolidated" : phase >= PHASE.FETCH_LINES.id ? "━ Aggregating Sources" : "━ Initializing"}
         </p>
       </div>
 
       <style>{`
-        @keyframes pulse-bg { 0%, 100% { opacity: 1; transform: translate(-50%, -50%) scale(1); } 50% { opacity: 0.7; transform: translate(-50%, -50%) scale(1.05); } }
-        @keyframes pulse-dot { 0%, 100% { opacity: 1; r: 4; } 50% { opacity: 0.5; r: 6; } }
+        @keyframes loader-float {
+          0%, 100% { transform: translate(0, 0); }
+          50%      { transform: translate(30px, -40px); }
+        }
+        @keyframes loader-drift {
+          0%   { transform: translateY(0)    rotate(0deg);  opacity: 0; }
+          10%  {                              opacity: 0.5; }
+          90%  {                              opacity: 0.5; }
+          100% { transform: translateY(-100vh) rotate(8deg); opacity: 0; }
+        }
+        @keyframes loader-drift-slow {
+          0%   { transform: translateY(0)     rotate(0deg);   opacity: 0; }
+          10%  {                              opacity: 0.4;  }
+          90%  {                              opacity: 0.4;  }
+          100% { transform: translateY(-110vh) rotate(-6deg); opacity: 0; }
+        }
+@keyframes loader-pulse-dot { 0%, 100% { opacity: 1; r: 4; } 50% { opacity: 0.5; r: 6; } }
+@keyframes loader-mount-fade {
+          from { opacity: 0; }
+          to   { opacity: 1; }
+        }
       `}</style>
     </div>
   );

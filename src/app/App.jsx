@@ -125,81 +125,97 @@ const handleLogout = () => {
       setRefreshKey(k => k + 1);
     }
   };
-
-  // ────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────
   // GATING
   // ────────────────────────────────────────────────────────
 
+  // Shared blue gradient backdrop — sits behind Login, EpicLoader,
+  // and the shell during mount/unmount swaps so there is no white flash.
+  const bluePane = {
+    minHeight: "100vh",
+    background: "linear-gradient(180deg, #1a2f8a 0%, #3a5cd9 50%, #7a9fef 70%, #d8e4ff 100%)",
+  };
+
   // 1. No hay token → login
-  if (!token) return <Login onLogin={handleLogin} />;
+  if (!token) return <div style={bluePane}><Login onLogin={handleLogin} /></div>;
 
   // 2. Login B2C OK pero NO tiene cuenta de reporting → activación
   if (reportingStatus?.status === "needs_activation") {
     return (
-      <ReportingActivationPanel
-        email={reportingStatus.email}
-        password={reportingStatus.password}
-        onLogout={handleLogout}
-        onActivated={handleActivationSuccess}
-      />
+      <div style={bluePane}>
+        <ReportingActivationPanel
+          email={reportingStatus.email}
+          password={reportingStatus.password}
+          onLogout={handleLogout}
+          onActivated={handleActivationSuccess}
+        />
+      </div>
     );
   }
 
   // 3. Cuenta inactiva → panel bloqueante
   if (reportingStatus?.status === "inactive") {
     return (
-      <BlockedPanel
-        variant="inactive"
-        email={reportingStatus.email}
-        onLogout={handleLogout}
-      />
+      <div style={bluePane}>
+        <BlockedPanel
+          variant="inactive"
+          email={reportingStatus.email}
+          onLogout={handleLogout}
+        />
+      </div>
     );
   }
 
   // 4. Trial expirado → panel bloqueante
   if (reportingStatus?.status === "trial_expired") {
     return (
-      <BlockedPanel
-        variant="trial_expired"
-        email={reportingStatus.email}
-        company={reportingStatus.company}
-        onLogout={handleLogout}
-      />
+      <div style={bluePane}>
+        <BlockedPanel
+          variant="trial_expired"
+          email={reportingStatus.email}
+          company={reportingStatus.company}
+          onLogout={handleLogout}
+        />
+      </div>
     );
   }
 
   // 5. Error técnico → panel bloqueante genérico
   if (reportingStatus?.status === "error") {
     return (
-      <BlockedPanel
-        variant="error"
-        message={reportingStatus.message}
-        onLogout={handleLogout}
-      />
+      <div style={bluePane}>
+        <BlockedPanel
+          variant="error"
+          message={reportingStatus.message}
+          onLogout={handleLogout}
+        />
+      </div>
     );
   }
 
-// 6. Acceso completo
+  // 6. Acceso completo
   return (
-    <AuthenticatedApp
-      token={token}
-      user={user}
-      creds={creds}
-      sessionId={sessionId}
-      preloadedData={preloadedData}
-      loaderActive={loaderActive}
-      shellReady={shellReady}
-      refreshKey={refreshKey}
-      onLogout={handleLogout}
-      onRefresh={handleRefresh}
-      onDataLoaded={(d) => setPreloadedData(d)}
-      onReady={() => {
-        setShellReady(true);
-        setTimeout(() => setLoaderActive(false), 100);
-        setTimeout(() => window.dispatchEvent(new Event('resize')), 200);
-        setTimeout(() => window.dispatchEvent(new Event('resize')), 600);
-      }}
-    />
+    <div style={bluePane}>
+      <AuthenticatedApp
+        token={token}
+        user={user}
+        creds={creds}
+        sessionId={sessionId}
+        preloadedData={preloadedData}
+        loaderActive={loaderActive}
+        shellReady={shellReady}
+        refreshKey={refreshKey}
+        onLogout={handleLogout}
+        onRefresh={handleRefresh}
+        onDataLoaded={(d) => setPreloadedData(d)}
+        onReady={() => {
+          setShellReady(true);
+          setTimeout(() => setLoaderActive(false), 100);
+          setTimeout(() => window.dispatchEvent(new Event('resize')), 200);
+          setTimeout(() => window.dispatchEvent(new Event('resize')), 600);
+        }}
+      />
+    </div>
   );
 }
 
@@ -265,7 +281,7 @@ export default function App() {
   return (
 <Routes>
       <Route path="/admin"  element={<AdminPortal />} />
-      <Route path="/signup" element={<Signup />} />
+      <Route path="/signup/*" element={<Signup />} />
       <Route path="/*"      element={<MainApp />} />
     </Routes>
   );
