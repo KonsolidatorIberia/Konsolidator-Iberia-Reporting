@@ -15,17 +15,75 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_APIKEY, {
 export const sbAccounts = supabase.schema("accounts");
 
 // ════════════════════════════════════════════════════════════════
+// Public email providers — domains that DON'T identify a company.
+// We can't use the "is there another user @same-domain?" heuristic
+// for these because two unrelated companies might both use Gmail.
+// ════════════════════════════════════════════════════════════════
+const PUBLIC_EMAIL_DOMAINS = new Set([
+  // Google
+  "gmail.com", "googlemail.com",
+  // Microsoft
+  "outlook.com", "hotmail.com", "live.com", "msn.com", "outlook.es",
+  // Apple
+  "icloud.com", "me.com", "mac.com",
+  // Yahoo
+  "yahoo.com", "yahoo.es", "yahoo.co.uk", "ymail.com",
+  // AOL
+  "aol.com",
+  // Proton
+  "proton.me", "protonmail.com",
+  // Other common
+  "gmx.com", "gmx.de", "gmx.es",
+  "mail.com",
+  "zoho.com",
+  "yandex.com", "yandex.ru",
+  "tutanota.com",
+  "fastmail.com",
+  // Ionos webmail
+  "ionos.com", "ionos.es", "1and1.com",
+  // ISPs / legacy
+  "comcast.net", "verizon.net", "att.net", "sbcglobal.net",
+  "btinternet.com", "sky.com",
+  "terra.es", "ya.com", "telefonica.net", "movistar.es",
+  "orange.es", "orange.fr",
+  "free.fr", "wanadoo.fr", "laposte.net",
+  "libero.it", "tin.it", "alice.it",
+  "t-online.de", "web.de",
+]);
+
+/**
+ * Returns true if any OTHER user in accounts.users shares the same
+ * email domain (case-insensitive). Skips public/free email providers
+ * because those are useless for company identification.
+ */
+async function companyExistsByEmailDomain(email) {
+  const domain = (email.split("@")[1] ?? "").toLowerCase().trim();
+  if (!domain || PUBLIC_EMAIL_DOMAINS.has(domain)) return false;
+
+  const { data, error } = await sbAccounts
+    .from("users")
+    .select("id, email")
+    .ilike("email", `%@${domain}`)
+    .neq("email", email.toLowerCase().trim())
+    .limit(1);
+
+  if (error) return false; // fail open — don't block login on a query error
+  return (data ?? []).length > 0;
+}
+
+// ════════════════════════════════════════════════════════════════
 // Reporting access status
 //
 // Después de un login Konsolidator B2C exitoso, esta función
 // determina qué acceso tiene el usuario al reporting.
 //
 // Retorna uno de:
-//   { status: "active",           user, company }      → acceso completo
-//   { status: "needs_activation", email, password }    → panel de activación
-//   { status: "inactive",         email }              → cuenta desactivada
-//   { status: "trial_expired",    email, company }     → trial caducado
-//   { status: "error",            message }            → error técnico
+//   { status: "active",                  user, company }      → acceso completo
+//   { status: "needs_activation",        email, password }    → panel de activación
+//   { status: "inactive",                email }              → cuenta desactivada
+//   { status: "trial_expired",           email, company }     → trial caducado
+//   { status: "company_exists_no_user",  email }              → ghost user
+//   { status: "error",                   message }            → error técnico
 // ════════════════════════════════════════════════════════════════
 export async function getReportingStatus(email, password) {
   try {
@@ -37,10 +95,11 @@ export async function getReportingStatus(email, password) {
 
 if (authErr || !authData?.user) {
       // Before offering trial activation, check if the company (derived
-      // from the email domain) already exists. If it does, this is a
-      // ghost user of a real customer — block with invalid credentials
-      // instead of letting them spin up a trial.
-const domainPart = email.split("@")[1] ?? "";
+      // from the email domain) already exists. Two ways:
+      //   1) slug = first part of domain matches an existing company
+      //   2) some other user already exists with the same email domain
+      // Either way, this is a ghost user → block with invalid credentials.
+      const domainPart = email.split("@")[1] ?? "";
       const slug = domainPart.split(".")[0].toLowerCase().replace(/[^a-z0-9-]/g, "-");
       if (slug) {
         const { data: companyExists } = await supabase
@@ -48,6 +107,9 @@ const domainPart = email.split("@")[1] ?? "";
         if (companyExists === true) {
           return { status: "company_exists_no_user", email };
         }
+      }
+      if (await companyExistsByEmailDomain(email)) {
+        return { status: "company_exists_no_user", email };
       }
       return { status: "needs_activation", email, password };
     }
@@ -60,8 +122,9 @@ const domainPart = email.split("@")[1] ?? "";
       .single();
 if (userErr || !userRow) {
       await supabase.auth.signOut();
-      // Same guard: if the company already exists, don't offer activation.
-const domainPart = email.split("@")[1] ?? "";
+      // Same guard: if the company already exists (by slug OR by peer
+      // user with same email domain), don't offer activation.
+      const domainPart = email.split("@")[1] ?? "";
       const slug = domainPart.split(".")[0].toLowerCase().replace(/[^a-z0-9-]/g, "-");
       if (slug) {
         const { data: companyExists } = await supabase
@@ -69,6 +132,9 @@ const domainPart = email.split("@")[1] ?? "";
         if (companyExists === true) {
           return { status: "company_exists_no_user", email };
         }
+      }
+      if (await companyExistsByEmailDomain(email)) {
+        return { status: "company_exists_no_user", email };
       }
       return { status: "needs_activation", email, password };
     }

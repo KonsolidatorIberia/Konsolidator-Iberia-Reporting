@@ -106,16 +106,6 @@ const fmtDate = (d) => {
 
 const initials = (s) => String(s ?? "").trim().split(/\s+/).slice(0, 2).map(p => p[0] ?? "").join("").toUpperCase() || "??";
 
-const generatePassword = () => {
-  const chars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789";
-  const symbols = "!@#$%&*";
-  let p = "";
-  for (let i = 0; i < 10; i++) p += chars[Math.floor(Math.random() * chars.length)];
-  p += symbols[Math.floor(Math.random() * symbols.length)];
-  p += Math.floor(Math.random() * 100);
-  return p;
-};
-
 // ════════════════════════════════════════════════════════════════
 // LIVE BACKGROUND — same lexicon as Login/EpicLoader
 // ════════════════════════════════════════════════════════════════
@@ -324,7 +314,7 @@ function HeroStat({ label, value, icon: Icon, color, accent, delay = 0 }) {
 // Replace the entire existing CompanyModal function with this.
 // All logic (state, handlers, refs, effects) stays identical.
 // ════════════════════════════════════════════════════════════════
-function CompanyModal({ company, onClose, onSaved, showToast, onEditUser, onAddUserForCompany, locale }) {
+function CompanyModal({ company, allLinks, onClose, onSaved, showToast, onEditUser, onAddUserForCompany, locale }) {
   const isEdit = !!company;
   const [form, setForm] = useState({
     name: company?.name ?? "",
@@ -441,24 +431,50 @@ function CompanyModal({ company, onClose, onSaved, showToast, onEditUser, onAddU
 
   const handleNameChange = (v) => setForm(f => ({ ...f, name: v, slug: slugDirty ? f.slug : slugify(v) }));
 
-  useEffect(() => {
-    if (!company?.id) return;
-    let cancelled = false;
-    (async () => {
-      if (!cancelled) setLoadingUsers(true);
-      const { data: links } = await sbAccounts.from("user_companies").select("user_id, is_active").eq("company_id", company.id);
-      const userIds = (links ?? []).map(l => l.user_id);
-      if (!userIds.length) { setLoadingUsers(false); return; }
-      const { data: users } = await sbAccounts.from("users").select("id, username, email, is_active").in("id", userIds);
-      const ucMap = new Map((links ?? []).map(l => [l.user_id, l]));
-      if (!cancelled) {
-        setCompanyUsers((users ?? []).map(u => ({ ...u, uc_is_active: ucMap.get(u.id)?.is_active ?? true })));
-        setLoadingUsers(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [company?.id]);
+const companyId = company?.id;
 
+  // Fetch users assigned to this company.
+  // Re-runs when:
+  //  - the modal opens for a different company (companyId changes)
+  //  - the parent reloads allLinks (e.g. after a user was added or removed)
+  useEffect(() => {
+    if (!companyId) return;
+    let cancelled = false;
+
+    (async () => {
+      if (cancelled) return;
+      setLoadingUsers(true);
+
+const { data: links } = await sbAccounts
+        .from("user_companies")
+        .select("user_id, is_active, role")
+        .eq("company_id", companyId);
+      if (cancelled) return;
+
+      const userIds = (links ?? []).map(l => l.user_id);
+      if (!userIds.length) {
+        setCompanyUsers([]);
+        setLoadingUsers(false);
+        return;
+      }
+
+      const { data: users } = await sbAccounts
+        .from("users")
+        .select("id, username, email, is_active")
+        .in("id", userIds);
+      if (cancelled) return;
+
+      const ucMap = new Map((links ?? []).map(l => [l.user_id, l]));
+      setCompanyUsers((users ?? []).map(u => ({
+        ...u,
+        uc_is_active: ucMap.get(u.id)?.is_active ?? true,
+        uc_role:      ucMap.get(u.id)?.role ?? "regular",
+      })));
+      setLoadingUsers(false);
+    })();
+
+    return () => { cancelled = true; };
+  }, [companyId, allLinks]);
   const selectedCountry = COUNTRIES.find(
     c => c.name.toLowerCase() === form.country.trim().toLowerCase() ||
          c.code.toLowerCase() === form.country.trim().toLowerCase()
@@ -1217,36 +1233,96 @@ style={{
                           onClick={() => onEditUser(u)}>
                           {initials(u.username || u.email)}
                         </div>
-                        <div className="flex-1 min-w-0 cursor-pointer" onClick={() => onEditUser(u)}>
+<div className="flex-1 min-w-0 cursor-pointer" onClick={() => onEditUser(u)}>
                           <p className="text-xs font-black truncate" style={{ color: C.navyDark }}>{u.username ?? "—"}</p>
                           <p className="text-[10px] truncate" style={{ color: `${C.navy}60` }}>{u.email}</p>
                         </div>
-                        <div className="flex-shrink-0 relative" style={{ minWidth: 70, height: 28 }}>
-                          <span className="absolute inset-0 flex items-center justify-end px-2 rounded-md text-[9px] font-black uppercase tracking-wider transition-opacity group-hover/urow:opacity-0 group-hover/urow:pointer-events-none pointer-events-none"
-                            style={{
-                              background: active ? "#d1fae5" : "rgba(26,47,138,0.08)",
-                              color: active ? "#047857" : `${C.navy}60`,
-                            }}>
-                            <span className="pointer-events-none">{active ? "Active" : "Inactive"}</span>
-                          </span>
-                          <div className="absolute inset-0 flex items-center justify-end gap-1 opacity-0 group-hover/urow:opacity-100 transition-opacity pointer-events-none group-hover/urow:pointer-events-auto">
-                            <button type="button"
-                              onClick={(e) => { e.stopPropagation(); onEditUser(u); }}
-                              className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-blue-50 hover:text-blue-600 transition-all"
-                              style={{ color: `${C.navy}60`, background: "rgba(255,255,255,0.95)" }}>
-                              <Edit2 size={11} />
-                            </button>
-                            <button type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setSelectedUsers(new Set([u.id]));
-                                handleBulkDelete();
-                              }}
-                              className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-red-50 hover:text-red-600 transition-all"
-                              style={{ color: `${C.navy}60`, background: "rgba(255,255,255,0.95)" }}>
-                              <Trash2 size={11} />
-                            </button>
-                          </div>
+
+                        {/* Role toggle — admin ↔ regular */}
+                        <button type="button"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const newRole = u.uc_role === "admin" ? "regular" : "admin";
+                            setCompanyUsers(prev => prev.map(x =>
+                              x.id === u.id ? { ...x, uc_role: newRole } : x
+                            ));
+                            const { error } = await sbAccounts.from("user_companies")
+                              .update({ role: newRole })
+                              .eq("user_id", u.id).eq("company_id", company.id);
+                            if (error) {
+                              setCompanyUsers(prev => prev.map(x =>
+                                x.id === u.id ? { ...x, uc_role: u.uc_role } : x
+                              ));
+                              showToast("error", error.message);
+                              return;
+                            }
+                            showToast("success", newRole === "admin" ? "Promoted to admin" : "Demoted to regular");
+                            onSaved?.();
+                          }}
+                          className="flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-wider transition-all hover:scale-105 cursor-pointer"
+                          style={{
+                            background: u.uc_role === "admin" ? `${C.amber}22` : "rgba(26,47,138,0.08)",
+                            color: u.uc_role === "admin" ? "#d97706" : `${C.navy}70`,
+                            border: `1px solid ${u.uc_role === "admin" ? `${C.amber}40` : "rgba(26,47,138,0.12)"}`,
+                          }}
+                          title="Click to toggle admin / regular">
+                          {u.uc_role === "admin" ? <><Crown size={9} /> Admin</> : <>Regular</>}
+                        </button>
+
+{/* Active toggle — always clickable */}
+                        <button type="button"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const newActive = !active;
+                            // Optimistic update
+                            setCompanyUsers(prev => prev.map(x =>
+                              x.id === u.id ? { ...x, is_active: newActive, uc_is_active: newActive } : x
+                            ));
+                            // Persist both: accounts.users.is_active (global) AND user_companies.is_active (link)
+                            const { error: userErr } = await sbAccounts.from("users")
+                              .update({ is_active: newActive }).eq("id", u.id);
+                            const { error: linkErr } = await sbAccounts.from("user_companies")
+                              .update({ is_active: newActive })
+                              .eq("user_id", u.id).eq("company_id", company.id);
+                            if (userErr || linkErr) {
+                              // Roll back optimistic update
+                              setCompanyUsers(prev => prev.map(x =>
+                                x.id === u.id ? { ...x, is_active: !newActive, uc_is_active: !newActive } : x
+                              ));
+                              showToast("error", userErr?.message ?? linkErr?.message ?? "Update failed");
+                              return;
+                            }
+                            showToast("success", newActive ? "User activated" : "User deactivated");
+                            onSaved?.();
+                          }}
+                          className="flex-shrink-0 px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-wider transition-all hover:scale-105 cursor-pointer"
+                          style={{
+                            background: active ? "#d1fae5" : "rgba(26,47,138,0.08)",
+                            color: active ? "#047857" : `${C.navy}60`,
+                            minWidth: 60,
+                          }}
+                          title="Click to toggle active status">
+                          {active ? "● Active" : "○ Inactive"}
+                        </button>
+
+                        {/* Edit + delete — only on hover */}
+                        <div className="flex-shrink-0 flex items-center gap-1 opacity-0 group-hover/urow:opacity-100 transition-opacity pointer-events-none group-hover/urow:pointer-events-auto">
+                          <button type="button"
+                            onClick={(e) => { e.stopPropagation(); onEditUser(u); }}
+                            className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-blue-50 hover:text-blue-600 transition-all"
+                            style={{ color: `${C.navy}60`, background: "rgba(255,255,255,0.95)" }}>
+                            <Edit2 size={11} />
+                          </button>
+                          <button type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedUsers(new Set([u.id]));
+                              handleBulkDelete();
+                            }}
+                            className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-red-50 hover:text-red-600 transition-all"
+                            style={{ color: `${C.navy}60`, background: "rgba(255,255,255,0.95)" }}>
+                            <Trash2 size={11} />
+                          </button>
                         </div>
                       </div>
                     );
@@ -1290,7 +1366,10 @@ function UserModal({ user, companies, allUsers = [], allLinks = [], onClose, onS
     is_super_admin: user?.is_super_admin ?? false,
     is_active:      user?.is_active      ?? true,
   });
-  const [companyLinks, setCompanyLinks] = useState(user?._company_links ?? []);
+  // Each link tracks its own role (admin vs regular). Defaults to regular for new ones.
+  const [companyLinks, setCompanyLinks] = useState(
+    (user?._company_links ?? []).map(l => ({ role: "regular", ...l }))
+  );
   const [saving, setSaving] = useState(false);
   const [openLinkDropdown, setOpenLinkDropdown] = useState(null);
   const [dropdownPos, setDropdownPos] = useState(null);
@@ -1325,7 +1404,7 @@ function UserModal({ user, companies, allUsers = [], allLinks = [], onClose, onS
     return () => document.removeEventListener("mousedown", handler);
   }, [openLinkDropdown]);
 
-  const addLink = () => {
+const addLink = () => {
     if (companyLinks.length >= 1) return;
     const remaining = companies.filter(c => !companyLinks.find(l => l.company_id === c.id));
     if (remaining.length === 0) return;
@@ -1362,10 +1441,10 @@ const handleSave = async () => {
       }
       setSaving(true);
 
-      const linksPayload = companyLinks.map(l => ({
+const linksPayload = companyLinks.map(l => ({
         user_id:    existingUserId,
         company_id: l.company_id,
-        role:       "admin",
+        role:       l.role ?? "regular",
         is_default: l.is_default,
         is_active:  l.is_active,
       }));
@@ -1453,12 +1532,12 @@ const handleSave = async () => {
       return;
     }
 
-    if (isEdit) await sbAccounts.from("user_companies").delete().eq("user_id", userId);
+if (isEdit) await sbAccounts.from("user_companies").delete().eq("user_id", userId);
     if (companyLinks.length > 0) {
       const linksPayload = companyLinks.map(l => ({
         user_id:    userId,
         company_id: l.company_id,
-        role:       "admin",
+        role:       l.role ?? "regular",
         is_default: l.is_default,
         is_active:  l.is_active,
       }));
@@ -1770,6 +1849,21 @@ return (
                           document.body
                         )}
                       </div>
+{/* Role pill — toggles admin ↔ regular */}
+                      <button type="button"
+                        onClick={() => updateLink(idx, { role: l.role === "admin" ? "regular" : "admin" })}
+                        className="flex items-center gap-1 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all hover:scale-105 flex-shrink-0"
+                        style={{
+                          background: l.role === "admin"
+                            ? `linear-gradient(135deg, ${C.amber}25, ${C.amber}15)`
+                            : "rgba(26,47,138,0.08)",
+                          color: l.role === "admin" ? "#d97706" : `${C.navy}70`,
+                          border: `1px solid ${l.role === "admin" ? `${C.amber}50` : "rgba(26,47,138,0.15)"}`,
+                        }}
+                        title="Click to toggle admin / regular">
+                        {l.role === "admin" ? <><Crown size={9} /> Admin</> : <>Regular</>}
+                      </button>
+
                       <button type="button" onClick={() => removeLink(idx)}
                         className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-red-50 hover:text-red-500 transition-all flex-shrink-0"
                         style={{ color: `${C.navy}40` }}>
@@ -2416,12 +2510,26 @@ className="w-full flex items-center gap-3 px-3.5 py-3 rounded-2xl text-[13px] fo
                               </div>
                               <p className="text-[11px] font-medium truncate" style={{ color: `${C.navy}65` }}>{u.email}</p>
 
-                              <div className="flex items-center gap-1 mt-2.5 flex-wrap">
+<div className="flex items-center gap-1 mt-2.5 flex-wrap">
                                 {u.is_super_admin && (
                                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider"
                                     style={{ background: "#fef3c7", color: "#d97706" }}>
                                     <Crown size={9} /> Super-Admin
                                   </span>
+                                )}
+                                {/* Role badge: shows "Admin" if user is admin in ANY company, else "Regular" */}
+                                {!u.is_super_admin && u._company_links.length > 0 && (
+                                  u._company_links.some(l => l.role === "admin") ? (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider"
+                                      style={{ background: `${C.amber}22`, color: "#d97706" }}>
+                                      <Crown size={9} /> Admin
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider"
+                                      style={{ background: "rgba(26,47,138,0.08)", color: `${C.navy}70` }}>
+                                      Regular
+                                    </span>
+                                  )
                                 )}
                                 {u.is_active ? (
                                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider"
@@ -2532,8 +2640,9 @@ className="w-full flex items-center gap-3 px-3.5 py-3 rounded-2xl text-[13px] fo
 
       {/* MODALS */}
 {showCompanyModal && (
-        <CompanyModal key={`co-${editingCompany?.id}-${users.length}`}
+        <CompanyModal key={`co-${editingCompany?.id}`}
           company={editingCompany}
+          allLinks={allLinks}
           onClose={() => setShowCompanyModal(false)}
           onSaved={reload} showToast={showToast} locale={adminLocale}
           onEditUser={(u) => {

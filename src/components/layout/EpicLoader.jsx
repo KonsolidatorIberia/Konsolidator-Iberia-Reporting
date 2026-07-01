@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { useSettings, useSettingsControls } from "./SettingsContext";
+import { useSettingsControls } from "./SettingsContext";
 import { useLatestPeriod } from "./LatestPeriodContext.jsx";
 
 const ENDPOINTS = [
@@ -106,7 +106,6 @@ const MIN_ANIM_MS = 1200; // minimum ms before exit animation — enough to see 
 const TOTAL_MAX   = 4000; // hard ceiling for slow networks
 
 export default function EpicLoader({ token, onReady, onDataLoaded }) {
-  const { colors } = useSettings();
   const { settings, setDetectedLocale } = useSettingsControls();
   const { setLatestPeriod } = useLatestPeriod();
   // Stable refs — effects don't restart if parent re-renders with new fn references
@@ -265,8 +264,7 @@ return () => clearTimeout(t);
 
 if (allDone) return null;
 
-  const isZoomOut = phase >= PHASE.ZOOM_OUT.id;
-  const isMounted = phase >= PHASE.LOGO_IN.id; // becomes true on first paint
+const isZoomOut = phase >= PHASE.ZOOM_OUT.id;
 
   // Equations for ambient background — same vibe as Login
   const EQUATIONS = [
@@ -388,7 +386,7 @@ return (
       </svg>
 
 {/* Orbiting labels — frosted chips that fly in from below to assemble */}
-      {ENDPOINTS.map((ep, i) => {
+      {ENDPOINTS.map((ep) => {
         const rad = (ep.angle * Math.PI) / 180;
         const r = 280;
         const x = Math.cos(rad) * r, y = Math.sin(rad) * r;

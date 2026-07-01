@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
@@ -139,7 +139,7 @@ const writeCreds = (email, password) => {
     expiresAt: Date.now() + IDLE_MS,
   }));
 };
-const clearCreds = () => { try { sessionStorage.removeItem(CREDS_KEY); } catch {} };
+const clearCreds = () => { try { sessionStorage.removeItem(CREDS_KEY); } catch { /* ignore */ } };
 
 const readToken = () => {
   try {
@@ -161,6 +161,24 @@ const writeToken = (email) => {
   }));
 };
 
+// Read the auto-verify hand-off payload from sessionStorage ONCE at module
+// load. This way the component just reads a plain object — no impure calls
+// during render. Login posts the payload immediately before navigating
+// here, so timing is fine.
+const AUTO_VERIFY = (() => {
+  try {
+    const raw = sessionStorage.getItem("signup_autoverify");
+    if (!raw) return { email: "", password: "", trigger: false };
+    sessionStorage.removeItem("signup_autoverify");
+    const payload = JSON.parse(raw);
+    if (!payload?.email || !payload?.password) return { email: "", password: "", trigger: false };
+    if (Date.now() - (payload.ts ?? 0) > 60_000) return { email: "", password: "", trigger: false };
+    return { email: payload.email, password: payload.password, trigger: true };
+  } catch {
+    return { email: "", password: "", trigger: false };
+  }
+})();
+
 export default function Signup() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -177,37 +195,33 @@ export default function Signup() {
     return "/signup";
   };
 
-  const [step, setStep] = useState(() => {
+// Step is derived from the URL — no useState needed.
+  // Browser back/forward changes the URL → useMemo recalculates → re-render.
+  // Programmatic navigation calls navigate(stepToUrl(s)) — same effect.
+  const step = useMemo(() => {
     const fromUrl = urlToStep(location.pathname);
-    // If user lands on /details or /payment but has no valid token → bounce to verify
+    // If user lands on /details or /payment without a token, treat as verify.
     if ((fromUrl === "checkout" || fromUrl === "payment") && !readToken()) return "verify";
     return fromUrl;
-  });
+  }, [location.pathname]);
 
-  // Keep URL in sync when step changes programmatically
+  // If the URL says checkout/payment but we just normalized to verify,
+  // sync the URL too (so a refresh doesn't keep bouncing).
   useEffect(() => {
     const desired = stepToUrl(step);
     if (location.pathname !== desired) navigate(desired, { replace: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step]);
+  }, [step, location.pathname, navigate]);
 
-  // Respond to URL changes (browser back/forward)
-  useEffect(() => {
-    const fromUrl = urlToStep(location.pathname);
-    if (fromUrl !== step) {
-      if ((fromUrl === "checkout" || fromUrl === "payment") && !readToken()) {
-        navigate("/signup", { replace: true });
-        setStep("verify");
-      } else {
-        setStep(fromUrl);
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname]);
+  // Helper: callers used to call setStep("payment") — now they navigate.
+  const setStep = (s) => navigate(stepToUrl(s), { replace: false });
+
+// Track whether we've already auto-triggered (module constant is read-only,
+  // so we mirror its trigger flag here to flip after firing once).
+  const autoTriggeredRef = useRef(!AUTO_VERIFY.trigger);
 
   // ─── Verify state ──────────────────────────────────────────────
-  const [vEmail, setVEmail]       = useState(() => readToken()?.email ?? "");
-  const [vPassword, setVPassword] = useState("");
+  const [vEmail, setVEmail]       = useState(() => AUTO_VERIFY.email || readToken()?.email || "");
+  const [vPassword, setVPassword] = useState(() => AUTO_VERIFY.password || "");
   const [vLoading, setVLoading]   = useState(false);
   const [vError, setVError]       = useState("");
 
@@ -250,10 +264,11 @@ const [planYears, setPlanYears]         = useState(3);
   const [payAcceptTerms, setPayAcceptTerms] = useState(false);
   const [showTermsModal, setShowTermsModal] = useState(false);
 
-  const lastActivityRef = useRef(Date.now());
+const lastActivityRef = useRef(null);
 
   useEffect(() => {
     if (step !== "checkout") return;
+    if (lastActivityRef.current === null) lastActivityRef.current = Date.now();
 const bump = () => {
       lastActivityRef.current = Date.now();
       const tk = readToken();
@@ -346,31 +361,17 @@ console.log("[handleVerify] writing token + creds + advancing to checkout");
     setStep("checkout");
   };
 
-  // ─── Auto-verify if credentials were handed off from Login ─────
-  // Login stores { email, password, ts } in sessionStorage under
-  // "signup_autoverify" when it detects a B2C-valid user with no
-  // reporting account. We consume it once on mount.
+// ─── Auto-verify on mount if Login handed off credentials ──────
+  // Inputs were already filled in the useState lazy init above. This
+  // effect only fires the async verification — no setState in body.
   useEffect(() => {
     if (step !== "verify") return;
-    let raw;
-    try { raw = sessionStorage.getItem("signup_autoverify"); }
-    catch { return; }
-    if (!raw) return;
-
-    sessionStorage.removeItem("signup_autoverify");
-
-    let payload;
-    try { payload = JSON.parse(raw); }
-    catch { return; }
-
-    // Expire after 60 seconds to avoid acting on stale credentials
-    if (!payload?.email || !payload?.password || Date.now() - (payload.ts ?? 0) > 60_000) return;
-
-    setVEmail(payload.email);
-    setVPassword(payload.password);
-    handleVerify(payload.email, payload.password);
+    if (autoTriggeredRef.current) return;
+    autoTriggeredRef.current = true;
+    handleVerify(AUTO_VERIFY.email, AUTO_VERIFY.password);
+    // handleVerify recreates each render but we only want to fire once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [step]);
 
 // ─── Address autocomplete (Photon / OpenStreetMap) ─────────────
   // Photon docs: https://photon.komoot.io
@@ -410,14 +411,6 @@ console.log("[handleVerify] writing token + creds + advancing to checkout");
         setAddrLoading(false);
       }
     }, 300);
-  };
-
-  const formatSuggestion = (f) => {
-    const p = f.properties ?? {};
-    const street = [p.name, p.housenumber].filter(Boolean).join(" ");
-    const cityPart = p.city ?? p.town ?? p.village ?? p.county ?? "";
-    const parts = [street, cityPart, p.postcode, p.country].filter(Boolean);
-    return parts.join(", ");
   };
 
 const pickSuggestion = (f) => {
@@ -1541,8 +1534,7 @@ onClick={() => { sessionStorage.removeItem(STORAGE_KEY); clearCreds(); navigate(
           coCompanyName={coCompanyName}
           coEmail={coEmail}
           planYears={planYears}
-          licenseNet={licenseNet}
-          licenseGross={licenseGross}
+licenseNet={licenseNet}
           discountPct={discountPct}
           yourSavings={yourSavings}
           IMPLEMENTATION={IMPLEMENTATION}
@@ -1571,7 +1563,7 @@ onClick={() => { sessionStorage.removeItem(STORAGE_KEY); clearCreds(); navigate(
 // ═══════════════════════════════════════════════════════════════
 function PaymentOverlay({
   coCompanyName, coEmail, planYears,
-  licenseNet, licenseGross, discountPct, yourSavings, IMPLEMENTATION, total,
+  licenseNet, discountPct, yourSavings, IMPLEMENTATION, total,
   payIban, setPayIban, payHolder, setPayHolder,
   payAcceptTerms, setPayAcceptTerms,
   showTermsModal, setShowTermsModal,

@@ -215,12 +215,25 @@ function Particles() {
   );
 }
 
+// Sparkline points generated once at module load — they're decorative,
+// so a single random shape is fine and avoids impure calls during render.
+const SPARK_POINTS = (() => {
+  const pts = [];
+  const W = 180, H = 50;
+  let y = H / 2;
+  for (let x = 0; x <= W; x += 6) {
+    y += (Math.random() - 0.5) * 8;
+    y = Math.max(8, Math.min(H - 8, y));
+    pts.push(`${x},${y.toFixed(1)}`);
+  }
+  return { pts: pts.join(" "), W, H };
+})();
+
 export default function Login({ onLogin }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
 const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-const [focused, setFocused] = useState(null);
   const [syncPrompt, setSyncPrompt] = useState(null); // { acctUser, b2cToken, reporting, userEmail } | null
   const [syncing, setSyncing] = useState(false);
   const [dismantling, setDismantling] = useState(false);
@@ -395,9 +408,28 @@ const handleLogin = async () => {
     return;
   }
 
-  // B2C accepted but user has no reporting account at all → bounce to sign up
-  // with credentials pre-filled so verify happens automatically.
+  // B2C accepted but user has no reporting account at all → before sending
+  // them to signup, check if any OTHER user shares the same email domain.
+  // If yes, the company already exists (slug just doesn't match the domain).
+  // Treat the same way as company_exists_no_user → invalid credentials.
   if (reporting?.status === "needs_activation") {
+    const domain = userEmail.split("@")[1] ?? "";
+    if (domain) {
+      const { data: peers, error: peerErr } = await sbAccounts
+        .from("users")
+        .select("id, email")
+        .ilike("email", `%@${domain}`)
+        .neq("email", userEmail)
+        .limit(1);
+
+      if (!peerErr && peers && peers.length > 0) {
+        setError("Invalid credentials. Please try again.");
+        setLoading(false);
+        return;
+      }
+    }
+
+    // No existing peers → genuine new signup, proceed
     sessionStorage.setItem("signup_autoverify", JSON.stringify({
       email: username.trim(),
       password,
@@ -759,12 +791,10 @@ className={`login-card relative flex flex-col p-10 max-w-[440px] w-full justify-
                 <label className="block text-[10px] font-black uppercase tracking-[0.14em] mb-2 text-[#1a2f8a]/55">
                   Email
                 </label>
-                <input
+<input
                   type="email"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  onFocus={() => setFocused("email")}
-                  onBlur={() => setFocused(null)}
                   onKeyDown={(e) => e.key === "Enter" && handleLogin()}
                   placeholder="you@konsolidator.com"
                   className="login-input"
@@ -774,12 +804,10 @@ className={`login-card relative flex flex-col p-10 max-w-[440px] w-full justify-
                 <label className="block text-[10px] font-black uppercase tracking-[0.14em] mb-2 text-[#1a2f8a]/55">
                   Password
                 </label>
-                <input
+<input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  onFocus={() => setFocused("password")}
-                  onBlur={() => setFocused(null)}
                   onKeyDown={(e) => e.key === "Enter" && handleLogin()}
                   placeholder="••••••••"
                   className="login-input"
@@ -943,18 +971,8 @@ function LiveBackground() {
     { l: "P/E",      v: "18.6 ×", c: "#fbbf24" },
   ];
 
-  // Mini chart (sparkline)
-  const sparkPoints = (() => {
-    const pts = [];
-    const W = 180, H = 50;
-    let y = H / 2;
-    for (let x = 0; x <= W; x += 6) {
-      y += (Math.random() - 0.5) * 8;
-      y = Math.max(8, Math.min(H - 8, y));
-      pts.push(`${x},${y.toFixed(1)}`);
-    }
-    return { pts: pts.join(" "), W, H };
-  })();
+// Mini chart (sparkline) — uses the module-level constant defined below
+  const sparkPoints = SPARK_POINTS;
 
   return (
     <div className="absolute inset-0 pointer-events-none overflow-hidden">

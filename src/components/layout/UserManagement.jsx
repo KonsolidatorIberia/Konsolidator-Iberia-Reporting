@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Loader2, X, Check, Search, Shield, Building2, Network, Library, Database, LayoutGrid } from "lucide-react";
+import { Loader2, X, Check, Search, Shield, Building2, Network, Library, Database, LayoutGrid, Crown, Plus, UserPlus, Trash2 } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
 import { getActiveCompanyId, listMappings } from "../../lib/mappingsApi";
 import { listMappings as listReportMappings } from "../../lib/reportMappingsApi";
@@ -78,8 +78,65 @@ function Toggle({ checked, onChange, color = "#1a2f8a", size = "md" }) {
   );
 }
 
+/* ─── 3-state segmented control: Inactive · Regular · Admin ─── */
+function StateSegmented({ user, disabled, onChange }) {
+  const active = user.is_active && user.uc_is_active;
+  const current = !active ? "inactive" : (user.uc_role === "admin" ? "admin" : "regular");
+
+  const SEGMENTS = [
+    { key: "inactive", label: "Off",     color: "#94a3b8", icon: null },
+    { key: "regular",  label: "Regular", color: "#1a2f8a", icon: null },
+    { key: "admin",    label: "Admin",   color: "#f59e0b", icon: Crown },
+  ];
+
+  return (
+    <div
+      title={disabled ? "Only super-admins and company admins can change roles" : undefined}
+      style={{
+        display: "inline-flex",
+        background: "#f5f5f7",
+        borderRadius: 10,
+        padding: 2,
+        border: "1px solid rgba(26,47,138,0.08)",
+        opacity: disabled ? 0.55 : 1,
+        cursor: disabled ? "not-allowed" : "default",
+      }}>
+      {SEGMENTS.map(seg => {
+        const isCurrent = current === seg.key;
+        const Icon = seg.icon;
+        return (
+          <button
+            key={seg.key}
+            onClick={() => !disabled && !isCurrent && onChange(seg.key)}
+            disabled={disabled || isCurrent}
+            style={{
+              display: "flex", alignItems: "center", gap: 4,
+              padding: "4px 8px", borderRadius: 8, border: "none",
+              fontSize: 10, fontWeight: 900, letterSpacing: "0.04em",
+              textTransform: "uppercase",
+              background: isCurrent
+                ? (seg.key === "admin"
+                    ? `linear-gradient(135deg, ${seg.color} 0%, #d97706 100%)`
+                    : seg.key === "regular"
+                    ? `linear-gradient(135deg, ${seg.color} 0%, #3a5fd9 100%)`
+                    : "#cbd5e1")
+                : "transparent",
+              color: isCurrent ? "#fff" : seg.color,
+              boxShadow: isCurrent ? `0 2px 6px -1px ${seg.color}70` : "none",
+              cursor: disabled ? "not-allowed" : isCurrent ? "default" : "pointer",
+              transition: "all 150ms ease",
+            }}>
+            {Icon && <Icon size={9} />}
+            {seg.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /* ─── Category pill ─── */
-function CatButton({ cat, count, total, onClick }) {
+function CatButton({ cat, count, total, onClick, disabled = false }) {
   const pct = total > 0 ? count / total : 0;
   const noneOn = count === 0;
   const allOn = total > 0 && count === total;
@@ -87,14 +144,18 @@ function CatButton({ cat, count, total, onClick }) {
 
   return (
 <div
-      title={`${cat.label}: ${count}/${total}`}
-      onClick={onClick}
+      title={disabled
+        ? "Only super-admins and company admins can change permissions"
+        : `${cat.label}: ${count}/${total}`}
+      onClick={() => { if (!disabled) onClick(); }}
       style={{
-        width: 40, height: 40, flexShrink: 0, cursor: "pointer",
-        transition: "transform 150ms ease",
+        width: 40, height: 40, flexShrink: 0,
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.45 : 1,
+        transition: "transform 150ms ease, opacity 150ms ease",
         transform: "translateZ(0)", willChange: "transform",
       }}
-      onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.08) translateZ(0)"; }}
+      onMouseEnter={e => { if (!disabled) e.currentTarget.style.transform = "scale(1.08) translateZ(0)"; }}
       onMouseLeave={e => { e.currentTarget.style.transform = "translateZ(0)"; }}>
 
       {/* Inner handles clip + visuals — no transform */}
@@ -282,14 +343,129 @@ function ListModal({ title, icon, color, items, selected, onChange, onClose }) {
   );
 }
 
+/* ─── Create user modal ─── */
+function CreateUserModal({ existingEmails, onClose, onCreate }) {
+const [email, setEmail]       = useState("");
+  const [username, setUsername] = useState("");
+  const [busy, setBusy]         = useState(false);
+  const [err, setErr]           = useState("");
+
+const emailValid = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(email.trim());
+  const emailTaken = email.trim() && existingEmails.has(email.trim().toLowerCase());
+  const canSubmit  = emailValid && !emailTaken && username.trim() && !busy;
+
+const submit = async () => {
+    if (!canSubmit) return;
+    setBusy(true);
+    setErr("");
+    try {
+      await onCreate({ email: email.trim(), username: username.trim() });
+      onClose();
+    } catch (e) {
+      setErr(e.message || "Failed to create user");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="Add user" icon={UserPlus} color="#1a2f8a" onClose={onClose}>
+      <div style={{ padding: 24, display: "flex", flexDirection: "column", gap: 16 }}>
+<p style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5, margin: 0 }}>
+          The new user is added to this company as <strong style={{ color: "#1a2f8a" }}>Regular</strong>.
+          They will set their password the first time they sign in. You can promote them to Admin afterwards.
+        </p>
+
+        <div>
+          <label style={{ fontSize: 10, fontWeight: 900, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.12em" }}>Email</label>
+          <input
+            type="email" value={email} autoFocus
+            onChange={e => { setEmail(e.target.value); setErr(""); }}
+            placeholder="user@company.com"
+            style={{
+              marginTop: 6, width: "100%",
+              padding: "10px 12px", borderRadius: 10,
+              border: `1.5px solid ${email && !emailValid ? "#e8394a55" : emailTaken ? "#e8394a55" : "rgba(26,47,138,0.15)"}`,
+              fontSize: 13, fontWeight: 600, color: "#1a1a2e",
+              background: "#fff", outline: "none",
+            }} />
+          {email && !emailValid && (
+            <p style={{ fontSize: 10, color: "#e8394a", fontWeight: 700, marginTop: 4 }}>Invalid email</p>
+          )}
+          {emailTaken && (
+            <p style={{ fontSize: 10, color: "#e8394a", fontWeight: 700, marginTop: 4 }}>Already in this company</p>
+          )}
+        </div>
+
+        <div>
+          <label style={{ fontSize: 10, fontWeight: 900, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.12em" }}>Username</label>
+          <input
+            type="text" value={username}
+            onChange={e => { setUsername(e.target.value); setErr(""); }}
+            placeholder="Jane Doe"
+            style={{
+              marginTop: 6, width: "100%",
+              padding: "10px 12px", borderRadius: 10,
+              border: "1.5px solid rgba(26,47,138,0.15)",
+              fontSize: 13, fontWeight: 600, color: "#1a1a2e",
+              background: "#fff", outline: "none",
+            }} />
+        </div>
+
+
+
+        {err && (
+          <div style={{ padding: "8px 12px", borderRadius: 10, background: "#fee2e2", border: "1px solid #fecaca",
+            fontSize: 11, fontWeight: 700, color: "#b91c1c" }}>
+            {err}
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, paddingTop: 4 }}>
+          <button
+            onClick={onClose}
+            disabled={busy}
+            style={{
+              padding: "8px 14px", borderRadius: 10, border: "none",
+              background: "#f5f5f7", color: "#475569",
+              fontSize: 11, fontWeight: 900, letterSpacing: "0.04em", textTransform: "uppercase",
+              cursor: busy ? "default" : "pointer",
+            }}>
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!canSubmit}
+            style={{
+              padding: "8px 14px", borderRadius: 10, border: "none",
+              display: "flex", alignItems: "center", gap: 6,
+              background: canSubmit ? "linear-gradient(135deg, #1a2f8a 0%, #3a5fd9 100%)" : "#cbd5e1",
+              color: "#fff",
+              fontSize: 11, fontWeight: 900, letterSpacing: "0.04em", textTransform: "uppercase",
+              cursor: canSubmit ? "pointer" : "not-allowed",
+              boxShadow: canSubmit ? "0 4px 16px -4px rgba(26,47,138,0.5)" : "none",
+            }}>
+            {busy && <Loader2 size={11} className="animate-spin" />}
+            {busy ? "Creating…" : "Create user"}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 /* ═══════════════════════════════════════════════════════
    MAIN
 ═══════════════════════════════════════════════════════ */
 export default function UserManagement({ token, preloadedData = {} }) {
   const [companyId, setCompanyId] = useState(null);
   const [myUserId, setMyUserId]   = useState(null);
-  const [users, setUsers]         = useState([]);
+const [users, setUsers]         = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
+
+  // Current user's role on this company — drives who can change roles.
+  // Super-admin (global) overrides everything; admin (per-link) can also edit.
+  const me = users.find(u => u.id === myUserId);
+  const canEditRoles = !!(me?.is_super_admin || me?.uc_role === "admin");
 
   const [companies,      setCompanies]      = useState([]);
   const [structures,     setStructures]     = useState([]);
@@ -303,7 +479,8 @@ export default function UserManagement({ token, preloadedData = {} }) {
   const [userPerms, setUserPerms] = useState(new Map());
   const [pending,   setPending]   = useState(new Map());
   const [saving,    setSaving]    = useState(false);
-  const [modal,     setModal]     = useState(null);
+const [modal,     setModal]     = useState(null);
+  const [createOpen, setCreateOpen] = useState(false);
 const [search,     setSearch]     = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const searchRef = useRef(null);
@@ -328,21 +505,25 @@ const [search,     setSearch]     = useState("");
     setLoadingUsers(true);
     (async () => {
       try {
-        // Users
+// Users
         const { data: ucRows, error: ucErr } = await supabase.schema("accounts")
-          .from("user_companies").select("user_id, is_active").eq("company_id", companyId);
+          .from("user_companies").select("user_id, is_active, role").eq("company_id", companyId);
         if (ucErr) throw ucErr;
 
         const userIds = (ucRows ?? []).map(r => r.user_id);
         if (!userIds.length) { setUsers([]); setLoadingUsers(false); return; }
 
         const { data: usersRows, error: uErr } = await supabase.schema("accounts")
-          .from("users").select("id, username, email, is_active").in("id", userIds);
+          .from("users").select("id, username, email, is_active, is_super_admin").in("id", userIds);
         if (uErr) throw uErr;
 
         const ucMap = new Map((ucRows ?? []).map(r => [r.user_id, r]));
         const combined = (usersRows ?? [])
-          .map(u => ({ ...u, uc_is_active: ucMap.get(u.id)?.is_active ?? true }))
+          .map(u => ({
+            ...u,
+            uc_is_active: ucMap.get(u.id)?.is_active ?? true,
+            uc_role:      ucMap.get(u.id)?.role ?? "regular",
+          }))
           .sort((a, b) => String(a.username ?? a.email ?? "").localeCompare(String(b.username ?? b.email ?? "")));
         setUsers(combined);
 
@@ -441,11 +622,138 @@ const [search,     setSearch]     = useState("");
     setPending(prev => { const m = new Map(prev); m.set(uid, { ...(m.get(uid) ?? {}), ...patch }); return m; });
   };
 
-  const toggleActive = async (u) => {
-    const next = !(u.is_active && u.uc_is_active);
-    setUsers(prev => prev.map(x => x.id === u.id ? { ...x, is_active: next, uc_is_active: next } : x));
-    await supabase.schema("accounts").from("user_companies")
-      .update({ is_active: next }).eq("user_id", u.id).eq("company_id", companyId);
+// Sets the user's combined state on this company: "inactive" | "regular" | "admin".
+  // - "inactive" sets is_active=false on both the user and the link
+  // - "regular"/"admin" sets is_active=true on the link and updates the role
+  const setUserState = async (u, nextState) => {
+    if (!canEditRoles) return;
+    if (u.id === myUserId && nextState !== (u.uc_role ?? "regular")) {
+      // Allow toggling your own active state but warn if you're demoting yourself out of admin
+      if (u.uc_role === "admin" && nextState === "regular") {
+        if (!window.confirm("Demote yourself to regular? You will lose admin permissions on this company.")) return;
+      }
+    }
+
+    const prev = { is_active: u.is_active, uc_is_active: u.uc_is_active, uc_role: u.uc_role };
+    const patch =
+      nextState === "inactive" ? { is_active: false, uc_is_active: false, uc_role: u.uc_role ?? "regular" } :
+      nextState === "admin"    ? { is_active: true,  uc_is_active: true,  uc_role: "admin" } :
+                                 { is_active: true,  uc_is_active: true,  uc_role: "regular" };
+
+    setUsers(list => list.map(x => x.id === u.id ? { ...x, ...patch } : x));
+
+    const linkUpdate = { is_active: patch.uc_is_active, role: patch.uc_role };
+    const { error: linkErr } = await supabase.schema("accounts").from("user_companies")
+      .update(linkUpdate).eq("user_id", u.id).eq("company_id", companyId);
+
+    // Keep global users.is_active in sync only when going inactive (or back to active)
+    const { error: userErr } = await supabase.schema("accounts").from("users")
+      .update({ is_active: patch.is_active }).eq("id", u.id);
+
+if (linkErr || userErr) {
+      // Rollback
+      setUsers(list => list.map(x => x.id === u.id ? { ...x, ...prev } : x));
+      alert("Update failed: " + (linkErr?.message ?? userErr?.message));
+    }
+  };
+
+  /* ── Create user for this company ── */
+const createUser = async ({ email, username }) => {
+    if (!canEditRoles) throw new Error("Not allowed");
+    if (!companyId)    throw new Error("No active company");
+
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) throw new Error("Session expired, please sign in again");
+
+    const res = await fetch(
+      "https://gmcawsapzkzmgrtiqebv.supabase.co/functions/v1/create-company-user",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          email:      email.trim(),
+          username:   username.trim(),
+          company_id: companyId,
+          role:       "regular",
+        }),
+      }
+    );
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error ?? `Error ${res.status}`);
+
+    // Append to local list
+    setUsers(prev => [...prev, {
+      id: result.user_id,
+      username: username.trim(),
+      email: email.trim(),
+      is_active: true,
+      is_super_admin: false,
+      uc_is_active: true,
+      uc_role: "regular",
+    }].sort((a, b) => String(a.username ?? a.email ?? "").localeCompare(String(b.username ?? b.email ?? ""))));
+  };
+
+  /* ── Delete user from this company ── */
+  // - If the user only belongs to THIS company → fully delete (edge function: auth + accounts.users cascade)
+  // - Otherwise → just remove the user_companies link
+  const deleteUser = async (u) => {
+    if (!canEditRoles) return;
+    if (u.id === myUserId) {
+      alert("You cannot remove yourself.");
+      return;
+    }
+
+    // Count this user's company links
+    const { data: links, error: linksErr } = await supabase.schema("accounts")
+      .from("user_companies").select("company_id").eq("user_id", u.id);
+    if (linksErr) { alert("Failed to check user companies: " + linksErr.message); return; }
+
+    const isOnlyHere = (links ?? []).length <= 1;
+    const msg = isOnlyHere
+      ? `Permanently delete ${u.username ?? u.email}? They don't belong to any other company so they'll be removed completely.`
+      : `Remove ${u.username ?? u.email} from this company? They'll keep access to their other companies.`;
+    if (!window.confirm(msg)) return;
+
+    // Optimistic: remove from list
+    const prevUsers = users;
+    setUsers(prev => prev.filter(x => x.id !== u.id));
+    setPending(prev => { const m = new Map(prev); m.delete(u.id); return m; });
+
+    try {
+      if (isOnlyHere) {
+        // Full delete via edge function
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) throw new Error("Session expired");
+
+        const res = await fetch(
+          "https://gmcawsapzkzmgrtiqebv.supabase.co/functions/v1/delete-user",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              apikey: "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA",
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify({ user_id: u.id, company_id: companyId }),
+          }
+        );
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error ?? `Error ${res.status}`);
+      } else {
+        // Just unlink from this company
+        const { error: delErr } = await supabase.schema("accounts").from("user_companies")
+          .delete().eq("user_id", u.id).eq("company_id", companyId);
+        if (delErr) throw new Error(delErr.message);
+      }
+    } catch (e) {
+      // Rollback
+      setUsers(prevUsers);
+      alert("Delete failed: " + e.message);
+    }
   };
 
   /* ── Save ── */
@@ -513,7 +821,10 @@ const [search,     setSearch]     = useState("");
 
 return (
   <div className="flex flex-col flex-1 min-h-0 gap-4">
-      <style>{`.um-search-input::placeholder { color: #c8ccdb; font-weight: 900; letter-spacing: 0.12em; text-transform: uppercase; font-size: 11px; }`}</style>
+<style>{`
+        .um-search-input::placeholder { color: #c8ccdb; font-weight: 900; letter-spacing: 0.12em; text-transform: uppercase; font-size: 11px; }
+        .um-row:hover .um-trash { opacity: 1 !important; }
+      `}</style>
 
 
 
@@ -521,7 +832,7 @@ return (
 <div style={{ flex: 1, minHeight: 0, background: "#fff", borderRadius: 20, border: "1px solid rgba(26,47,138,0.08)",
         boxShadow: "0 8px 40px -12px rgba(26,47,138,0.15), 0 2px 8px -2px rgba(0,0,0,0.04)",
         overflow: "hidden", display: "flex", flexDirection: "column" }}>
-<div style={{ display: "grid", gridTemplateColumns: "2fr 64px repeat(6, 1fr) auto", alignItems: "center",
+<div style={{ display: "grid", gridTemplateColumns: "2fr 36px 180px repeat(6, 1fr) auto", alignItems: "center",
           padding: "12px 24px", borderBottom: "1px solid #f0f0f0",
           background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", flexShrink: 0,
           boxShadow: "0 4px 24px -8px rgba(26,47,138,0.08)" }}>
@@ -559,7 +870,8 @@ return (
               </span>
             )}
           </div>
-          <span style={{ fontSize: 11, fontWeight: 900, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.12em", textAlign: "center" }}>Active</span>
+<span /> {/* trash column spacer */}
+          <span style={{ fontSize: 11, fontWeight: 900, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.12em", textAlign: "center" }}>Status</span>
           {CATEGORY_BUTTONS.map(cat => (
             <span key={cat.key} style={{ fontSize: 11, fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.12em", textAlign: "center", color: `${cat.color}99`, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
               <cat.icon size={10} style={{ color: `${cat.color}99` }} />
@@ -567,7 +879,7 @@ return (
             </span>
 ))}
           <div style={{ display: "flex", justifyContent: "flex-end" }}>
-            {pending.size > 0 && (
+{pending.size > 0 && canEditRoles && (
               <button onClick={save} disabled={saving} style={{
                 display: "flex", alignItems: "center", gap: 6, padding: "6px 14px", borderRadius: 10, border: "none",
                 background: saving ? "#94a3b8" : "linear-gradient(135deg, #1a2f8a 0%, #3a5fd9 100%)",
@@ -593,9 +905,9 @@ return (
             const isActive = u.is_active && u.uc_is_active;
             const isDirty  = pending.has(u.id);
             const initials = String(u.username ?? u.email ?? "U").slice(0, 2).toUpperCase();
-            return (
-<div key={u.id} style={{
-                display: "grid", gridTemplateColumns: "2fr 64px repeat(6, 1fr)",
+return (
+<div key={u.id} className="um-row" style={{
+                display: "grid", gridTemplateColumns: "2fr 36px 180px repeat(6, 1fr)",
                 alignItems: "center", padding: "12px 24px", borderBottom: "1px solid #f5f5f7",
                 background: isDirty ? "linear-gradient(90deg, #fffdf0 0%, #ffffff 100%)" : "transparent",
                 transition: "background 200ms",
@@ -620,25 +932,78 @@ return (
                   </div>
                 </div>
 
-                {/* Active */}
+{/* Trash — inline slot between user and status */}
                 <div style={{ display: "flex", justifyContent: "center" }}>
-                  <Toggle checked={isActive} onChange={() => toggleActive(u)} color="#10b981" size="sm" />
+                  {canEditRoles && u.id !== myUserId && (
+                    <button
+                      className="um-trash"
+                      onClick={(e) => { e.stopPropagation(); deleteUser(u); }}
+                      title="Remove user"
+                      style={{
+                        width: 26, height: 26, borderRadius: 8,
+                        border: "none",
+                        background: "rgba(232,57,74,0.08)",
+                        color: "#e8394a",
+                        cursor: "pointer",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        opacity: 0,
+                        transition: "opacity 150ms ease, background 150ms ease",
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.background = "rgba(232,57,74,0.18)"; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = "rgba(232,57,74,0.08)"; }}>
+                      <Trash2 size={12} />
+                    </button>
+                  )}
                 </div>
 
-                {/* Category buttons */}
+                {/* Status: Inactive · Regular · Admin */}
+                <div style={{ display: "flex", justifyContent: "center" }}>
+                  <StateSegmented
+                    user={u}
+                    disabled={!canEditRoles}
+                    onChange={(next) => setUserState(u, next)}
+                  />
+                </div>
+
+{/* Category buttons */}
 {CATEGORY_BUTTONS.map(cat => (
                   <div key={cat.key} style={{ display: "flex", justifyContent: "center", alignItems: "center" }}>
                     <CatButton
                       cat={cat}
                       count={countFor(u.id, cat.key)}
                       total={totalFor(cat.key)}
+                      disabled={!canEditRoles}
                       onClick={() => setModal({ userId: u.id, category: cat.key })}
                     />
                   </div>
                 ))}
-              </div>
+
+</div>
             );
           })}
+
+          {/* Add user row — only for admins / super-admins */}
+          {!loadingUsers && canEditRoles && (
+            <button
+              onClick={() => setCreateOpen(true)}
+              style={{
+                width: "100%",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+                padding: "16px 24px",
+                background: "transparent",
+                border: "none",
+                borderTop: "1px dashed rgba(26,47,138,0.15)",
+                cursor: "pointer",
+                color: "#1a2f8a",
+                fontSize: 11, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase",
+                transition: "background 200ms ease",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = "rgba(26,47,138,0.04)"; }}
+              onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>
+              <Plus size={14} />
+              Add user
+            </button>
+          )}
         </div>
       </div>
 
@@ -662,7 +1027,7 @@ return (
         // null = all allowed, show all selected
         const selected = raw === null ? items.map(i => i.id) : (raw ?? items.map(i => i.id));
 
-        return (
+return (
           <ListModal
             title={`${modalCat.label} — ${modalUser.username ?? modalUser.email}`}
             icon={modalCat.icon}
@@ -674,6 +1039,14 @@ return (
           />
         );
       })()}
+
+      {createOpen && (
+        <CreateUserModal
+          existingEmails={new Set(users.map(u => u.email?.toLowerCase()).filter(Boolean))}
+          onClose={() => setCreateOpen(false)}
+          onCreate={createUser}
+        />
+      )}
     </div>
   );
 }
