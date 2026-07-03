@@ -3,6 +3,10 @@
     {
       "source": "/v2/:path*",
       "destination": "https://api.konsolidator.com/v2/:path*"
+    },
+    {
+      "source": "/((?!v2/).*)",
+      "destination": "/index.html"
     }
   ]
 }
