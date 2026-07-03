@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import {
-  Home, Network, FileText, Layers, SlidersHorizontal,
+Home, Network, FileText, Layers,
   PieChart, Table, BookOpen, TrendingUp, BarChart3,
- Eye, Filter, Settings, Database, Library,
+  Eye, Filter, Settings, Database, Library,
 } from "lucide-react";
 import { useTypo, useSettings, useT } from "./SettingsContext";
 import { useCurrentUserPermissions } from "../../lib/userPermissionsApi";
@@ -28,20 +28,13 @@ const NAV_KEYS = [
       { key: "consolidated-dimensiones", labelKey: "nav_dimensions",    icon: Filter     },
       { key: "consolidated-cashflow",    labelKey: "nav_cashflow",      icon: TrendingUp },
       { key: "consolidated-notes",       labelKey: "nav_memory_notes",  icon: BookOpen   },
-    ],
+],
   },
   {
-    key: "controlling", labelKey: "nav_controlling", icon: SlidersHorizontal,
-    children: [
-      { key: "controlling-forecast",    labelKey: "nav_forecasting",  icon: TrendingUp        },
-      { key: "controlling-adjustments", labelKey: "nav_adjustments",  icon: SlidersHorizontal },
-      { key: "controlling-kpis",        labelKey: "nav_kpis",         icon: BarChart3         },
-    ],
-  },
-{
     key: "views", labelKey: "nav_views", icon: Eye,
     children: [
-      { key: "mappings", labelKey: "nav_mappings", icon: Library },
+      { key: "mappings",            labelKey: "nav_mappings",            icon: Library   },
+      { key: "statistical-parties", labelKey: "nav_statistical_parties", icon: BarChart3 },
     ],
   },
   {

@@ -3,6 +3,8 @@ import { Loader2, X, Check, Search, Shield, Building2, Network, Library, Databas
 import { supabase } from "../../lib/supabaseClient";
 import { getActiveCompanyId, listMappings } from "../../lib/mappingsApi";
 import { listMappings as listReportMappings } from "../../lib/reportMappingsApi";
+import { listMappings as listCashflowMappings } from "../../lib/cashflowMappingsApi";
+import { listMappings as listCashflowReportMappings } from "../../lib/cashflowReportMappingsApi";
 import { listUserPermissions, upsertUserPermissions, listUserResourceAccess, upsertUserResourceAccess } from "../../lib/userPermissionsApi";
 
 const BASE = "https://api.konsolidator.com/v2";
@@ -331,9 +333,26 @@ function ListModal({ title, icon, color, items, selected, onChange, onClose }) {
                 display: "flex", alignItems: "center", justifyContent: "center", transition: "all 150ms ease" }}>
                 {on && <Check size={10} style={{ color: "#fff" }} strokeWidth={3} />}
               </div>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "#1a1a2e" }}>{item.label}</div>
-                {item.meta && <div style={{ fontSize: 10, color: "#94a3b8" }}>{item.meta}</div>}
+<div style={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#1a1a2e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {item.label}
+                  </div>
+                  {item.meta && <div style={{ fontSize: 10, color: "#94a3b8" }}>{item.meta}</div>}
+                </div>
+                {item.pill && (
+                  <span style={{
+                    flexShrink: 0,
+                    display: "inline-flex", alignItems: "center",
+                    padding: "3px 8px", borderRadius: 6,
+                    fontSize: 9, fontWeight: 900, letterSpacing: "0.06em", textTransform: "uppercase",
+                    background: `${item.pill.color}18`,
+                    color: item.pill.color,
+                    border: `1px solid ${item.pill.color}30`,
+                  }}>
+                    {item.pill.text}
+                  </span>
+                )}
               </div>
             </div>
           );
@@ -467,12 +486,14 @@ const [users, setUsers]         = useState([]);
   const me = users.find(u => u.id === myUserId);
   const canEditRoles = !!(me?.is_super_admin || me?.uc_role === "admin");
 
-  const [companies,      setCompanies]      = useState([]);
-  const [structures,     setStructures]     = useState([]);
-  const [sources,        setSources]        = useState([]);
-  const [dimensions,     setDimensions]     = useState([]);
-  const [mappings,       setMappings]       = useState([]);
-  const [reportMappings, setReportMappings] = useState([]);
+const [companies,      setCompanies]      = useState(() => preloadedData.companies  ?? []);
+  const [structures,     setStructures]     = useState(() => preloadedData.structures ?? []);
+  const [sources,        setSources]        = useState(() => preloadedData.sources    ?? []);
+  const [dimensions,     setDimensions]     = useState(() => preloadedData.dimensions ?? []);
+const [mappings,               setMappings]               = useState([]);
+  const [reportMappings,         setReportMappings]         = useState([]);
+  const [cashflowMappings,       setCashflowMappings]       = useState([]);
+  const [cashflowReportMappings, setCashflowReportMappings] = useState([]);
 
   // Map<userId, { pages: {pageKey: bool}, companies: string[]|null, structures: string[]|null, ... }>
   // null = no restrictions = all allowed
@@ -499,11 +520,13 @@ const [search,     setSearch]     = useState("");
     })();
   }, []);
 
-  /* ── Load users + permissions ── */
+/* ── Load users + permissions ── */
   useEffect(() => {
     if (!companyId) return;
-    setLoadingUsers(true);
+    let cancelled = false;
     (async () => {
+      if (cancelled) return;
+      setLoadingUsers(true);
       try {
 // Users
         const { data: ucRows, error: ucErr } = await supabase.schema("accounts")
@@ -554,25 +577,21 @@ const [search,     setSearch]     = useState("");
           });
         });
         setUserPerms(permsMap);
-      } catch (e) {
+} catch (e) {
         console.error("Error loading users:", e);
       } finally {
-        setLoadingUsers(false);
+        if (!cancelled) setLoadingUsers(false);
       }
     })();
+    return () => { cancelled = true; };
   }, [companyId]);
 
   /* ── Load resources ── */
-  useEffect(() => {
-    if (preloadedData.companies?.length)  setCompanies(preloadedData.companies);
-    if (preloadedData.structures?.length) setStructures(preloadedData.structures);
-    if (preloadedData.sources?.length)    setSources(preloadedData.sources);
-    if (preloadedData.dimensions?.length) setDimensions(preloadedData.dimensions);
-  }, [preloadedData]);
+// preloadedData is consumed via lazy init above; no effect needed.
 
-  useEffect(() => {
+useEffect(() => {
     if (!token) return;
-    if (companies.length && structures.length && sources.length && dimensions.length) return;
+    let cancelled = false;
     const h = { Authorization: `Bearer ${token}`, Accept: "application/json" };
     Promise.all([
       fetch(`${BASE}/companies`,  { headers: h }).then(r => r.json()).catch(() => ({})),
@@ -580,19 +599,30 @@ const [search,     setSearch]     = useState("");
       fetch(`${BASE}/sources`,    { headers: h }).then(r => r.json()).catch(() => ({})),
       fetch(`${BASE}/dimensions`, { headers: h }).then(r => r.json()).catch(() => ({})),
     ]).then(([cos, strs, srcs, dims]) => {
-      if (!companies.length)  setCompanies(cos.value  ?? []);
-      if (!structures.length) setStructures(strs.value ?? []);
-      if (!sources.length)    setSources(srcs.value    ?? []);
-      if (!dimensions.length) setDimensions(dims.value ?? []);
+      if (cancelled) return;
+      // Functional updaters: only fill in when the current list is empty, so
+      // we don't clobber preloadedData that arrived via lazy init.
+      setCompanies(prev  => prev.length ? prev : (cos.value  ?? []));
+      setStructures(prev => prev.length ? prev : (strs.value ?? []));
+      setSources(prev    => prev.length ? prev : (srcs.value ?? []));
+      setDimensions(prev => prev.length ? prev : (dims.value ?? []));
     });
+    return () => { cancelled = true; };
   }, [token]);
 
-  useEffect(() => {
+useEffect(() => {
     if (!companyId) return;
     Promise.all([
       listMappings({ companyId }).catch(() => []),
       listReportMappings({ companyId }).catch(() => []),
-    ]).then(([sm, rm]) => { setMappings(sm); setReportMappings(rm); });
+      listCashflowMappings({ companyId }).catch(() => []),
+      listCashflowReportMappings({ companyId }).catch(() => []),
+    ]).then(([sm, rm, cm, crm]) => {
+      setMappings(sm);
+      setReportMappings(rm);
+      setCashflowMappings(cm);
+      setCashflowReportMappings(crm);
+    });
   }, [companyId]);
 
   /* ── Item lists ── */
@@ -604,10 +634,12 @@ const [search,     setSearch]     = useState("");
     const name = String(d.DimensionName ?? d.dimensionName ?? d.name ?? d.Name ?? code);
     return { id: code || name, label: name, meta: code && code !== name ? code : null };
   }), [dimensions]);
-  const mappingItems   = useMemo(() => [
-    ...mappings.map(m => ({ id: `sm:${m.mapping_id}`, label: m.name ?? "Untitled", meta: "Structure" })),
-    ...reportMappings.map(m => ({ id: `rm:${m.mapping_id}`, label: m.name ?? "Untitled", meta: "Report" })),
-  ], [mappings, reportMappings]);
+const mappingItems   = useMemo(() => [
+    ...mappings.map(m               => ({ id: `sm:${m.mapping_id}`,  label: m.name ?? "Untitled", pill: { text: "Structure", color: "#7c3aed" } })),
+    ...reportMappings.map(m         => ({ id: `rm:${m.mapping_id}`,  label: m.name ?? "Untitled", pill: { text: "Report",    color: "#CF305D" } })),
+    ...cashflowMappings.map(m       => ({ id: `cm:${m.mapping_id}`,  label: m.name ?? "Untitled", pill: { text: "CF",        color: "#0891b2" } })),
+    ...cashflowReportMappings.map(m => ({ id: `crm:${m.mapping_id}`, label: m.name ?? "Untitled", pill: { text: "CF Report", color: "#d97706" } })),
+  ], [mappings, reportMappings, cashflowMappings, cashflowReportMappings]);
 
   const itemsForCategory = (cat) => ({
     companies: companyItems, structures: structureItems, sources: sourceItems,

@@ -1402,8 +1402,94 @@ const currLeaf = sumLeafYTD(uploadedAccounts);
         cur = parentOf.get(cur);
       }
     });
-    return map;
+return map;
 }, [uploadedAccounts, previousUploadedAccounts, groupAccounts, effectivePeriodMode]);
+
+  const NO_DIM_KEY = "—:Sin dimensión";
+  const amountsByCodeDim = useMemo(() => {
+    const dimNameLookup = new Map();
+    dimensions.forEach(d => {
+      const c = String(d.dimensionCode ?? d.DimensionCode ?? d.code ?? "");
+      const nm = String(d.dimensionName ?? d.DimensionName ?? d.name ?? "");
+      if (c && nm) dimNameLookup.set(c, nm);
+    });
+    const sumByCodeDim = (rows) => {
+      const m = new Map();
+      rows.forEach(row => {
+        const code = String(row.AccountCode ?? row.accountCode ?? "");
+        const dimsRaw = String(row.Dimensions ?? row.dimensions ?? "");
+        if (!code || !dimsRaw || dimsRaw === "—") return;
+        const raw = row.AmountYTD ?? row.amountYTD ?? 0;
+        const amt = -(typeof raw === "number" ? raw : parseFloat(String(raw).replace(/[^\d.-]/g, "")) || 0);
+        dimsRaw.split("||").map(s => s.trim()).filter(Boolean).forEach(p => {
+          const idx = p.indexOf(":");
+          const g = idx !== -1 ? p.slice(0, idx).trim() : "";
+          const dc = idx !== -1 ? p.slice(idx + 1).trim() : p;
+          const nm = dimNameLookup.get(dc) ?? dc;
+          const key = `${code}||${g}:${nm}`;
+          m.set(key, (m.get(key) ?? 0) + amt);
+        });
+      });
+      return m;
+    };
+    const curr = sumByCodeDim(uploadedAccounts);
+    const base = effectivePeriodMode !== "monthly" ? curr : (() => {
+      const prev = sumByCodeDim(previousUploadedAccounts);
+      const all = new Set([...curr.keys(), ...prev.keys()]);
+      const out = new Map();
+      all.forEach(k => out.set(k, (curr.get(k) ?? 0) - (prev.get(k) ?? 0)));
+      return out;
+    })();
+    // Compute residual per account: total leaf amount - sum of all dim-tagged amounts
+    const dimSumByCode = new Map();
+    base.forEach((v, k) => {
+      const code = k.split("||")[0];
+      dimSumByCode.set(code, (dimSumByCode.get(code) ?? 0) + v);
+    });
+    // Only add residual for accounts that actually have some dim-tagged amounts
+    const leafByCode = new Map();
+    const rowsForLeaf = effectivePeriodMode !== "monthly" ? uploadedAccounts : null;
+    (rowsForLeaf ?? uploadedAccounts).forEach(row => {
+      const code = String(row.AccountCode ?? row.accountCode ?? "");
+      if (!code) return;
+      const raw = row.AmountYTD ?? row.amountYTD ?? 0;
+      const amt = -(typeof raw === "number" ? raw : parseFloat(String(raw).replace(/[^\d.-]/g, "")) || 0);
+      leafByCode.set(code, (leafByCode.get(code) ?? 0) + amt);
+    });
+    if (effectivePeriodMode === "monthly") {
+      const prevLeaf = new Map();
+      previousUploadedAccounts.forEach(row => {
+        const code = String(row.AccountCode ?? row.accountCode ?? "");
+        if (!code) return;
+        const raw = row.AmountYTD ?? row.amountYTD ?? 0;
+        const amt = -(typeof raw === "number" ? raw : parseFloat(String(raw).replace(/[^\d.-]/g, "")) || 0);
+        prevLeaf.set(code, (prevLeaf.get(code) ?? 0) + amt);
+      });
+      new Set([...leafByCode.keys(), ...prevLeaf.keys()]).forEach(code => {
+        leafByCode.set(code, (leafByCode.get(code) ?? 0) - (prevLeaf.get(code) ?? 0));
+      });
+    }
+    dimSumByCode.forEach((dSum, code) => {
+      const total = leafByCode.get(code) ?? 0;
+      const residual = total - dSum;
+      if (Math.abs(residual) >= 0.5) base.set(`${code}||${NO_DIM_KEY}`, residual);
+    });
+    return base;
+  }, [uploadedAccounts, previousUploadedAccounts, dimensions, effectivePeriodMode]);
+
+  // Extend dimsByGroupCode to include the synthetic residual dim
+  const dimsByGroupCodeWithResidual = useMemo(() => {
+    const out = new Map();
+    dimsByGroupCode.forEach((dims, code) => out.set(code, new Set(dims)));
+    amountsByCodeDim.forEach((_v, k) => {
+      const [code, dim] = k.split("||");
+      if (dim === NO_DIM_KEY) {
+        if (!out.has(code)) out.set(code, new Set());
+        out.get(code).add(dim);
+      }
+    });
+    return out;
+  }, [dimsByGroupCode, amountsByCodeDim]);
 
   const [tplRows, setTplRows] = useState([]);
   const [tplSections, setTplSections] = useState([]);
@@ -1553,13 +1639,20 @@ const clientTree = clientTreeBy[statement] ?? baseClientTree;
         out.set(id, result);
         return result;
       }
-      const amt = amountsByCode.get(node.code);
+let amt;
+      if (Array.isArray(node.dims) && node.dims.length > 0) {
+        let sum = 0, any = false;
+        node.dims.forEach(d => { const v = amountsByCodeDim.get(`${node.code}||${d}`); if (v !== undefined) { sum += v; any = true; } });
+        amt = any ? sum : undefined;
+      } else {
+        amt = amountsByCode.get(node.code);
+      }
       out.set(id, amt);
       return amt;
     };
     templateTree.forEach(walk);
     return out;
-  }, [templateTree, amountsByCode]);
+  }, [templateTree, amountsByCode, amountsByCodeDim]);
   const sectionByCode = useMemo(() => { const m = new Map(); tplSections.forEach(s => m.set(s.section_code, { label: s.label, color: s.color })); return m; }, [tplSections]);
 
 const handleSave = async ({ asNew = false } = {}) => {
@@ -1950,7 +2043,7 @@ if (sourceSide === "client") {
     <div className="flex flex-col h-full overflow-hidden">
 
 <div className="flex-1 grid grid-cols-2 gap-4 p-4 overflow-hidden">
-<ClientPanel mappingKind={mappingKind} amountsByCode={amountsByCode} onCopy={id => handleCopy("client", id)} tree={clientTree} statement={statement} movedIds={(() => {
+<ClientPanel mappingKind={mappingKind} amountsByCode={amountsByCode} amountsByCodeDim={amountsByCodeDim} onCopy={id => handleCopy("client", id)} tree={clientTree} statement={statement} movedIds={(() => {
   const effective = new Set(movedClientCodes);
   dimsByGroupCode.forEach((dims, code) => {
     const moved = movedDimsByCode.get(code);
@@ -1960,8 +2053,8 @@ if (sourceSide === "client") {
     if (moved.size > 0 && !dimsByGroupCode.has(code)) effective.add(code);
   });
   return effective;
-})()} movedDimsByCode={movedDimsByCode} onDrop={p => handleDrop({ ...p, destSide: "client" })} onRename={(id, name) => handleRename("client", id, name)} onDelete={id => handleDelete("client", id)} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} dimsByGroupCode={dimsByGroupCode} />
-      <TemplatePanel mappingKind={mappingKind} templateAmountsById={templateAmountsById} onCopy={id => handleCopy("template", id)} tree={templateTree} sectionByCode={sectionByCode} loading={tplLoading} accent={meta.accent} standardLabel={stdLabel(t, standard)} movedIds={movedTemplateIds} onDrop={p => handleDrop({ ...p, destSide: "template" })} onRename={(id, name) => handleRename("template", id, name)} onDelete={id => handleDelete("template", id)} onAddRow={handleAddRow} onAddBreaker={handleAddBreaker} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} highlightedIds={highlightedIds} onToggleHighlight={id => { pushHistory(); setHighlightedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; }); }}/>
+})()} movedDimsByCode={movedDimsByCode} onDrop={p => handleDrop({ ...p, destSide: "client" })} onRename={(id, name) => handleRename("client", id, name)} onDelete={id => handleDelete("client", id)} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} dimsByGroupCode={dimsByGroupCodeWithResidual} />
+<TemplatePanel mappingKind={mappingKind} templateAmountsById={templateAmountsById} amountsByCodeDim={amountsByCodeDim} onCopy={id => handleCopy("template", id)} tree={templateTree} sectionByCode={sectionByCode} loading={tplLoading} accent={meta.accent} standardLabel={stdLabel(t, standard)} movedIds={movedTemplateIds} onDrop={p => handleDrop({ ...p, destSide: "template" })} onRename={(id, name) => handleRename("template", id, name)} onDelete={id => handleDelete("template", id)} onAddRow={handleAddRow} onAddBreaker={handleAddBreaker} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} highlightedIds={highlightedIds} onToggleHighlight={id => { pushHistory(); setHighlightedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; }); }}/>
       </div>
       {conflict && <ConflictModal duplicates={conflict.duplicates} onResolve={conflict.onResolve} />}
       {showSaveForm && <SaveMappingForm name={currentName} setName={setCurrentName} description={currentDescription} setDescription={setCurrentDescription} error={saveError} saving={saving} asNew={!!editingMapping} accent={meta.accent} onCancel={() => { setShowSaveForm(false); setSaveError(null); }} onSave={() => handleSave({ asNew: !!editingMapping })} />}
@@ -2112,7 +2205,7 @@ function DimFilterDropdown({ value, onChange, options, placeholder, accent }) {
 }
 
 // ─── ClientPanel ──────────────────────────────────────────────
-function ClientPanel({ mappingKind = "structure", amountsByCode = new Map(), onCopy, tree, statement, movedIds, movedDimsByCode = new Map(), onDrop, onRename, onDelete, activeMultiSide, onSetMultiSide, dimsByGroupCode = new Map() }) {
+function ClientPanel({ mappingKind = "structure", amountsByCode = new Map(), amountsByCodeDim = new Map(), onCopy, tree, statement, movedIds, movedDimsByCode = new Map(), onDrop, onRename, onDelete, activeMultiSide, onSetMultiSide, dimsByGroupCode = new Map() }) {
   const t = useT();
   const [search, setSearch] = useState("");
 const [expanded, setExpanded] = useState({});
@@ -2345,7 +2438,7 @@ const unmappedToggleBtn = (
 <PanelToolbar search={search} setSearch={setSearch} placeholder={t("am_search_accounts")} count={visibleCount} total={totalCount} />
 
       <div className="flex-1 overflow-y-auto px-1"onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); if (data.sourceSide === "template") onDrop({ sourceNode: data.node, sourceSide: "template", targetId: null, position: "after" }); } catch { /* ignore parse */ } }}>
-     {filteredTree.length === 0 ? <EmptyPanelState icon={FileText} message={search ? t("am_no_matches") : t("am_no_accounts")} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="client" mappingKind={mappingKind} hideAmounts={hideAmounts} amountsByCode={amountsByCode}onCopy={onCopy} movedIds={movedIds} movedDimsByCode={movedDimsByCode}onDrop={onDrop} onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { onDelete([...selectedIds]); setSelectedIds(new Set()); } else { onDelete(id); } }}multiMode={multiMode} selectedIds={selectedIds} clientTree={tree}
+     {filteredTree.length === 0 ? <EmptyPanelState icon={FileText} message={search ? t("am_no_matches") : t("am_no_accounts")} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="client" mappingKind={mappingKind} hideAmounts={hideAmounts} amountsByCode={amountsByCode} amountsByCodeDim={amountsByCodeDim} onCopy={onCopy} movedIds={movedIds} movedDimsByCode={movedDimsByCode}onDrop={onDrop} onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { onDelete([...selectedIds]); setSelectedIds(new Set()); } else { onDelete(id); } }}multiMode={multiMode} selectedIds={selectedIds} clientTree={tree}
       onToggleSelect={(id, shiftKey) => {
   if (shiftKey && lastSelectedRef.current && lastSelectedRef.current !== id) {
     const from = flatSelectableIds.indexOf(lastSelectedRef.current);
@@ -2366,7 +2459,7 @@ setSelectedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(
 }
 
 // ─── TemplatePanel ────────────────────────────────────────────
-function TemplatePanel({ mappingKind = "structure", templateAmountsById = new Map(), onCopy, tree, sectionByCode, loading, accent, standardLabel, movedIds, onDrop, onRename, onDelete, onAddRow, onAddBreaker, activeMultiSide, onSetMultiSide, highlightedIds, onToggleHighlight }) {
+function TemplatePanel({ mappingKind = "structure", templateAmountsById = new Map(), amountsByCodeDim = new Map(), onCopy, tree, sectionByCode, loading, accent, standardLabel, movedIds, onDrop, onRename, onDelete, onAddRow, onAddBreaker, activeMultiSide, onSetMultiSide, highlightedIds, onToggleHighlight }) {
   const t = useT();
   const [pendingParentId, setPendingParentId] = useState(null);
 const [showBreakerForm, setShowBreakerForm] = useState(false);
@@ -2461,7 +2554,7 @@ const multiToggleBtn = (
       <AddBreakerForm accent={accent} open={showBreakerForm} onOpen={() => setShowBreakerForm(true)} onClose={() => setShowBreakerForm(false)} onAdd={onAddBreaker} />
 
 <div className="flex-1 overflow-y-auto px-1" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); if (data.sourceSide === "client") onDrop({ sourceNode: data.node, sourceSide: "client", targetId: null, position: "after" }); else if (data.sourceSide === "template") onDrop({ sourceNode: data.node, sourceSide: "template", targetId: null, position: "after" }); } catch { /* ignore parse */ } }}>
-        {loading ? <div className="text-center py-16 text-xs text-gray-400">{t("am_loading_template")}</div> : filteredTree.length === 0 ? <EmptyPanelState icon={Library} message={search ? t("am_no_matches") : t("am_no_rows")} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="template" mappingKind={mappingKind} hideAmounts={hideAmounts} templateAmountsById={templateAmountsById} onCopy={onCopy}movedIds={movedIds} onDrop={onDrop}onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { onDelete([...selectedIds]); setSelectedIds(new Set()); } else { onDelete(id); } }} onAddChild={parentId => { setPendingParentId(parentId); setExpanded(prev => ({ ...prev, [`tpl-${parentId}`]: true })); }} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} templateTree={tree} onToggleSelect={(id, shiftKey) => {
+        {loading ? <div className="text-center py-16 text-xs text-gray-400">{t("am_loading_template")}</div> : filteredTree.length === 0 ? <EmptyPanelState icon={Library} message={search ? t("am_no_matches") : t("am_no_rows")} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="template" mappingKind={mappingKind} hideAmounts={hideAmounts} templateAmountsById={templateAmountsById} amountsByCodeDim={amountsByCodeDim} onCopy={onCopy}movedIds={movedIds} onDrop={onDrop}onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { onDelete([...selectedIds]); setSelectedIds(new Set()); } else { onDelete(id); } }} onAddChild={parentId => { setPendingParentId(parentId); setExpanded(prev => ({ ...prev, [`tpl-${parentId}`]: true })); }} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} templateTree={tree} onToggleSelect={(id, shiftKey) => {
   if (shiftKey && lastSelectedRef.current && lastSelectedRef.current !== id) {
     const from = flatSelectableIds.indexOf(lastSelectedRef.current);
     const to = flatSelectableIds.indexOf(id);
@@ -2532,7 +2625,7 @@ function AnimatedAmount({ value, hidden }) {
 }
 
 // ─── DraggableTreeRow ─────────────────────────────────────────
-function DraggableTreeRow({ node, depth, expanded, onToggle, side, mappingKind = "structure", hideAmounts = false, amountsByCode = new Map(), templateAmountsById = new Map(), onCopy, movedIds, movedDimsByCode = new Map(), onDrop, onRename, onDelete, onAddChild, sectionByCode, multiMode, selectedIds, onToggleSelect, clientTree, templateTree, highlightedIds, onToggleHighlight, dimsByGroupCode }) {
+function DraggableTreeRow({ node, depth, expanded, onToggle, side, mappingKind = "structure", hideAmounts = false, amountsByCode = new Map(), templateAmountsById = new Map(), amountsByCodeDim = new Map(), onCopy, movedIds, movedDimsByCode = new Map(), onDrop, onRename, onDelete, onAddChild, sectionByCode, multiMode, selectedIds, onToggleSelect, clientTree, templateTree, highlightedIds, onToggleHighlight, dimsByGroupCode }) {
   const t = useT();
   const key = `${side === "client" ? "client" : "tpl"}-${node.code}`;
   const isOpen = !!expanded[key];
@@ -2635,7 +2728,7 @@ const accent = side === "client" ? "#1a2f8a" : "#374151";
           {editControls}
         </div>
         {dropZone === "after" && dropLine}
-     {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child}depth={1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} hideAmounts={hideAmounts} amountsByCode={amountsByCode} templateAmountsById={templateAmountsById} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onAddChild={onAddChild} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} />)}
+     {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child}depth={1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} hideAmounts={hideAmounts} amountsByCode={amountsByCode} templateAmountsById={templateAmountsById} amountsByCodeDim={amountsByCodeDim} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onAddChild={onAddChild} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} />)}
       </>
     );
   }
@@ -2724,6 +2817,18 @@ className={`group/dim flex items-center gap-1 py-1.5 rounded-lg transition-color
             <span className="w-3 flex-shrink-0" />
             <span className="text-[9px] font-black uppercase tracking-widest text-amber-400 flex-shrink-0 mr-1">{group}:</span>
             <span className="text-[10px] text-gray-600 leading-relaxed flex-1">{name}</span>
+            {(() => {
+              const dAmt = amountsByCodeDim.get(`${node.code}||${d}`);
+              const hasDA = dAmt !== undefined;
+              const isZ = hasDA && Math.abs(dAmt) < 0.5;
+              return (
+                <span className={`text-[10px] font-mono font-semibold flex-shrink-0 tabular-nums mr-1 ${!hasDA || isZ ? "text-gray-300" : dAmt < 0 ? "text-red-500" : "text-gray-600"}`}
+                  title={hasDA ? dAmt.toLocaleString() : ""}
+                  style={{ opacity: hideAmounts ? 0 : 1, maxWidth: hideAmounts ? 0 : 120, transition: "opacity 200ms, max-width 300ms", overflow: "hidden" }}>
+                  {!hasDA ? "—" : Math.round(dAmt).toLocaleString()}
+                </span>
+              );
+            })()}
             {isDimMoved && side === "client" && <CheckCircle2 size={10} className="text-emerald-500 flex-shrink-0" />}
             {side === "template" && (
               <button
@@ -2736,7 +2841,7 @@ className={`group/dim flex items-center gap-1 py-1.5 rounded-lg transition-color
           </div>
         );
       })}
-    {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} hideAmounts={hideAmounts} amountsByCode={amountsByCode} templateAmountsById={templateAmountsById} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onAddChild={onAddChild}sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} dimsByGroupCode={dimsByGroupCode} />)}
+    {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} hideAmounts={hideAmounts} amountsByCode={amountsByCode} templateAmountsById={templateAmountsById} amountsByCodeDim={amountsByCodeDim} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onAddChild={onAddChild}sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} dimsByGroupCode={dimsByGroupCode} />)}
     </>
   );
 }

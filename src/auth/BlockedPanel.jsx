@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Lock, Clock, AlertCircle, LogOut, Mail } from "lucide-react";
+import { Lock, Clock, AlertCircle, LogOut, Mail, UserX } from "lucide-react";
 
 const C = {
   navy:     "#1a2f8a",
@@ -19,6 +19,16 @@ const VARIANTS = {
     title: "Access blocked.",
     description: "Your Reporting account has been deactivated by an administrator.",
     cta: "Contact your administrator to restore access.",
+    contactEmail: null,
+  },
+  no_account: {
+    icon: UserX,
+    accent: "#1a2f8a",
+    accentDark: "#0f1f5c",
+    eyebrow: "No reporting account",
+    title: "You don't have access yet.",
+    description: "Your company uses Konsolidator Reporting, but no user account has been created for you.",
+    cta: "Contact your company administrator to request access.",
     contactEmail: null,
   },
   trial_expired: {

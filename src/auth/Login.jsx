@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { supabase, sbAccounts, getReportingStatus } from "../lib/supabaseClient";
 import { useNavigate } from "react-router-dom";
+import BlockedPanel from "./BlockedPanel";
 
 const TOKEN_URL = "https://konsolidatorsignin.b2clogin.com/konsolidatorsignin.onmicrosoft.com/B2C_1_ropc/oauth2/v2.0/token";
 const CLIENT_ID = "20e20379-2661-4066-b297-90c2e089e899";
@@ -234,9 +235,10 @@ export default function Login({ onLogin }) {
   const [password, setPassword] = useState("");
 const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [syncPrompt, setSyncPrompt] = useState(null); // { acctUser, b2cToken, reporting, userEmail } | null
+const [syncPrompt, setSyncPrompt] = useState(null); // { acctUser, b2cToken, reporting, userEmail } | null
   const [syncing, setSyncing] = useState(false);
   const [dismantling, setDismantling] = useState(false);
+  const [blocked, setBlocked] = useState(null); // { variant, email, company? } | null
 
 const navigate = useNavigate();
 
@@ -378,13 +380,20 @@ const handleLogin = async () => {
         const { data: links } = await supabase
           .rpc("get_user_company_links", { p_user_id: acctUser.id });
 
-        const defaultLink = links?.find(l => l.is_default) ?? links?.[0];
+const defaultLink = links?.find(l => l.is_default) ?? links?.[0];
         const company = defaultLink ? {
           name: defaultLink.company_name,
           slug: defaultLink.company_slug,
           is_trial: defaultLink.is_trial,
           trial_ends_at: defaultLink.trial_ends_at,
         } : null;
+
+        // Link deactivated by the company admin → same UX as inactive user
+        if (defaultLink && defaultLink.is_active === false) {
+          setBlocked({ variant: "inactive", email: userEmail });
+          setLoading(false);
+          return;
+        }
 
         if (!links || links.length === 0) {
           reporting = { status: "inactive", email: username };
@@ -401,9 +410,10 @@ const handleLogin = async () => {
     reporting = await getReportingStatus(username, password);
   }
 
-  // Ghost user of an existing company → invalid credentials
+// Ghost user of an existing company → user has valid B2C creds but no
+  // reporting account. Show BlockedPanel instead of a fake "invalid" message.
   if (reporting?.status === "company_exists_no_user") {
-    setError("Invalid credentials. Please try again.");
+    setBlocked({ variant: "no_account", email: userEmail });
     setLoading(false);
     return;
   }
@@ -422,8 +432,8 @@ const handleLogin = async () => {
         .neq("email", userEmail)
         .limit(1);
 
-      if (!peerErr && peers && peers.length > 0) {
-        setError("Invalid credentials. Please try again.");
+if (!peerErr && peers && peers.length > 0) {
+        setBlocked({ variant: "no_account", email: userEmail });
         setLoading(false);
         return;
       }
@@ -544,7 +554,19 @@ const handleCancelSync = () => {
 };
 
 
-return (
+// If the user is blocked, show the panel instead of the login form.
+  if (blocked) {
+    return (
+      <BlockedPanel
+        variant={blocked.variant}
+        email={blocked.email}
+        company={blocked.company}
+        onLogout={() => { setBlocked(null); setUsername(""); setPassword(""); setError(""); }}
+      />
+    );
+  }
+
+  return (
     <div className="h-screen flex relative overflow-hidden"
       style={{
         background: "linear-gradient(180deg, #1a2f8a 0%, #3a5cd9 50%, #7a9fef 70%, #d8e4ff 100%)",

@@ -1455,7 +1455,7 @@ function ConsolidatedGraphSection({
   sectionId, token, source, structure, topParent,
   sourceOpts, structureOpts, holdingOptions,
   kpiList, allKpis, ccTagToCodes, sectionCodes,
-  defaultKpiIds, onStateChange, colors, body1Style,
+  defaultKpiIds, onStateChange, colors,
   compareModeOuter,
 }) {
   const anchorY = parseInt(new Date().getFullYear());

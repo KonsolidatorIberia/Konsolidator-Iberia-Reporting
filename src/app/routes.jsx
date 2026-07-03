@@ -15,6 +15,7 @@ const ConsolidatedDimensionesPage = lazy(() => import("../components/layout/Cons
 const ConsolidatedMemoryNotesPage = lazy(() => import("../components/layout/ConsolidatedMemoryNotesPage.jsx"));
 const ConsolidatedKpiPage         = lazy(() => import("../components/layout/ConsolidatedKpiPage.jsx"));
 const MappingsPage                = lazy(() => import("../components/layout/MappingsPage.jsx"));
+const StatisticalPartiesPage = lazy(() => import("../components/layout/StatisticalPartiesPage.jsx"));
 const CashFlowMappingsView        = lazy(() => import("../components/views/CashFlowMappingsView.jsx"));
 import { useMemo } from "react";
 import { useCurrentUserPermissions, useCurrentUserResourceAccess } from "../lib/userPermissionsApi";
@@ -182,6 +183,13 @@ if (activePage === "consolidated-kpis") return (
       token={token}
       sources={sharedData.sources ?? []}
       structures={sharedData.structures ?? []}
+      companies={sharedData.companies ?? []}
+      dimensions={sharedData.dimensions ?? []}
+    />
+  );
+if (activePage === "statistical-parties") return (
+    <StatisticalPartiesPage
+      token={token}
       companies={sharedData.companies ?? []}
       dimensions={sharedData.dimensions ?? []}
     />
