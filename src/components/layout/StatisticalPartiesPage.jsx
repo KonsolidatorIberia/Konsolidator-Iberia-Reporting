@@ -8,7 +8,7 @@ import {
   Home, ShoppingCart, Wrench, Flame,
 } from "lucide-react";
 import PageHeader from "./PageHeader.jsx";
-import { useTypo, useSettings } from "./SettingsContext";
+import { useSettings } from "./SettingsContext";
 import { t } from "../../lib/i18n";
 import { supabase } from "../../lib/supabaseClient";
 import * as XLSX from "xlsx-js-style";
@@ -39,7 +39,8 @@ const COL_INDEX = Object.fromEntries(COL_LETTERS.map((c, i) => [c, i])); // "A" 
 // Legacy → normalized cells. Old rows stored `{ [month]: number }`.
 // New rows store `{ [month]: { value, formula } }`. Convert both.
 // ─────────────────────────────────────────────────────────────
-function normalizeValues(values) {
+// Normalize a single { year: { dim: { month: cell } } } tree.
+function normalizeYearTree(values) {
   const out = {};
   for (const [year, dims] of Object.entries(values ?? {})) {
     out[year] = {};
@@ -56,6 +57,27 @@ function normalizeValues(values) {
     }
   }
   return out;
+}
+
+// Handles two shapes:
+//  - shared:      { [year]: { [dim]: { [month]: cell } } }
+//  - per-company: { [companyCode]: { [year]: { [dim]: { [month]: cell } } } }
+// We detect the shape by checking if the top-level keys look like years
+// (4-digit numbers). Anything else → per-company map.
+function normalizeValues(values, sharedAcrossCompanies) {
+  if (sharedAcrossCompanies) return normalizeYearTree(values);
+  const out = {};
+  for (const [co, tree] of Object.entries(values ?? {})) {
+    out[co] = normalizeYearTree(tree);
+  }
+  return out;
+}
+
+// Small helper: pull the year-tree for a given company. In shared mode the
+// company arg is ignored.
+function getYearTree(group, company) {
+  if (group.sharedAcrossCompanies !== false) return group.values ?? {};
+  return group.values?.[company] ?? {};
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -266,7 +288,8 @@ function shiftFormula(formula, dCol, dRow, maxRows) {
 const MONTH_HEADERS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 // Build the blueprint workbook and trigger a download.
-function downloadBlueprint({ companyOpts, dimGroups, dimsByGroup }) {
+// mode: "shared" — one table per year. "per-company" — one block per (company × year).
+function downloadBlueprint({ companyOpts, dimGroups, dimsByGroup, mode = "shared" }) {
   // Konsolidator palette
   const NAVY_HEX     = "0A1647"; // deep navy
   const NAVY_MID_HEX = "1A2F8A"; // brand navy
@@ -363,19 +386,9 @@ function downloadBlueprint({ companyOpts, dimGroups, dimsByGroup }) {
     border: allBorders(borderThin),
   });
 
-  const wb = XLSX.utils.book_new();
+const wb = XLSX.utils.book_new();
   const lastYears = Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - i);
 
-  // Helper: apply a style to a range of cells
-  const styleRange = (sheet, r0, c0, r1, c1, style) => {
-    for (let r = r0; r <= r1; r++) {
-      for (let c = c0; c <= c1; c++) {
-        const addr = XLSX.utils.encode_cell({ r, c });
-        if (!sheet[addr]) sheet[addr] = { t: "s", v: "" };
-        sheet[addr].s = style;
-      }
-    }
-  };
   const setCell = (sheet, r, c, value, style) => {
     const addr = XLSX.utils.encode_cell({ r, c });
     const isNum = typeof value === "number";
@@ -425,11 +438,12 @@ function downloadBlueprint({ companyOpts, dimGroups, dimsByGroup }) {
   cfg["!rows"][r] = { hpt: 22 };
   r++;
 
-  const identityFields = [
+const identityFields = [
     ["Name", "", "Required — e.g. Employees, Buildings, Contracts"],
     ["Description", "", "Optional"],
     ["Unit", "", "e.g. headcount, m², units"],
    ["Icon", "chart", "Options: " + ICON_KEYS.join(" · ")],
+   ["Modo", mode === "per-company" ? "por empresa" : "compartido", "Options: compartido · por empresa"],
   ];
   identityFields.forEach(([label, value, hint]) => {
     setCell(cfg, r, 0, label, fieldLabelStyle);
@@ -491,15 +505,12 @@ function downloadBlueprint({ companyOpts, dimGroups, dimsByGroup }) {
     { s: { r: 1, c: 0 }, e: { r: 1, c: 2 } },
     { s: { r: 2, c: 0 }, e: { r: 2, c: 2 } },
   ];
-  // Merge section header bars (Identity / Companies / Years)
-  const sectionBarRows = [4, 9 + identityFields.length - 4, /* set below */];
-  // Simpler: compute by scanning cells we already wrote
+// Add merges for cover rows + each section header bar we drew
   cfg["!merges"] = [
     { s: { r: 0, c: 0 }, e: { r: 0, c: 2 } },
     { s: { r: 1, c: 0 }, e: { r: 1, c: 2 } },
     { s: { r: 2, c: 0 }, e: { r: 2, c: 2 } },
   ];
-  // Add merges for each section header we drew
   for (let rr = 0; rr <= r; rr++) {
     const addr = XLSX.utils.encode_cell({ r: rr, c: 0 });
     const cell = cfg[addr];
@@ -520,6 +531,18 @@ function downloadBlueprint({ companyOpts, dimGroups, dimsByGroup }) {
     inner.forEach((name, code) => allDims.push({ code, name, group: g }));
   });
 
+const companyBannerStyle = {
+    font: { name: "Inter", sz: 13, bold: true, color: { rgb: WHITE } },
+    fill: solidFill(NAVY_MID_HEX),
+    alignment: { horizontal: "left", vertical: "center", indent: 1 },
+    border: allBorders(borderMed),
+  };
+
+  const perCompany = mode === "per-company";
+  const companyBlocks = perCompany && companyOpts.length > 0
+    ? companyOpts.map(c => ({ code: c.value, label: c.label }))
+    : [{ code: null, label: null }];
+
   for (const year of lastYears) {
     const sh = {};
     sh["!ref"] = "A1:O1";
@@ -528,6 +551,7 @@ function downloadBlueprint({ companyOpts, dimGroups, dimsByGroup }) {
       ...Array(12).fill({ wch: 12 }),
     ];
     sh["!rows"] = [];
+    sh["!merges"] = [];
 
     let rr = 0;
 
@@ -535,50 +559,64 @@ function downloadBlueprint({ companyOpts, dimGroups, dimsByGroup }) {
     setCell(sh, rr, 0, "KONSOLIDATOR", kickerStyle);
     for (let c = 1; c <= 14; c++) setCell(sh, rr, c, "", kickerStyle);
     sh["!rows"][rr] = { hpt: 18 };
+    sh["!merges"].push({ s: { r: rr, c: 0 }, e: { r: rr, c: 14 } });
     rr++;
 
     setCell(sh, rr, 0, `Year ${year}`, titleStyle);
     for (let c = 1; c <= 14; c++) setCell(sh, rr, c, "", titleStyle);
     sh["!rows"][rr] = { hpt: 32 };
+    sh["!merges"].push({ s: { r: rr, c: 0 }, e: { r: rr, c: 14 } });
     rr++;
 
-    setCell(sh, rr, 0, "Fill values in the month columns for the dimensions you want to track. Leave a row blank to skip it. Formulas like =C4*1.05 are supported.", subtitleStyle);
+    const subtitle = perCompany
+      ? "Cada empresa tiene su propio bloque. Rellena los meses de las dimensiones que quieras trackear en cada bloque. Fórmulas como =D5*1.05 permitidas."
+      : "Fill values in the month columns for the dimensions you want to track. Leave a row blank to skip it. Formulas like =C4*1.05 are supported.";
+    setCell(sh, rr, 0, subtitle, subtitleStyle);
     for (let c = 1; c <= 14; c++) setCell(sh, rr, c, "", subtitleStyle);
     sh["!rows"][rr] = { hpt: 32 };
+    sh["!merges"].push({ s: { r: rr, c: 0 }, e: { r: rr, c: 14 } });
     rr += 2;
 
-    // Column headers
-    const headers = ["Group", "Code", "Dimension name", ...MONTH_HEADERS];
-    headers.forEach((h, i) => {
-      const style = i < 3 ? columnHeaderStyle : monthHeaderStyle;
-      setCell(sh, rr, i, h, style);
-    });
-    sh["!rows"][rr] = { hpt: 26 };
-    rr++;
+    const firstDataRow = rr + (perCompany ? 2 : 1);
 
-    const dataStartRow = rr;
-    allDims.forEach((d, i) => {
-      const odd = i % 2 === 1;
-      setCell(sh, rr, 0, d.group, groupBadgeStyle(odd));
-      setCell(sh, rr, 1, d.code, codeCellStyle(odd));
-      setCell(sh, rr, 2, d.name, dataCellStyle(odd));
-      for (let m = 0; m < 12; m++) {
-        setCell(sh, rr, 3 + m, "", numberCellStyle(odd));
+    companyBlocks.forEach((block, blockIdx) => {
+      if (block.code) {
+        const label = `EMPRESA · ${block.code}${block.label && block.label !== block.code ? ` — ${block.label}` : ""}`;
+        setCell(sh, rr, 0, label, companyBannerStyle);
+        for (let c = 1; c <= 14; c++) setCell(sh, rr, c, "", companyBannerStyle);
+        sh["!merges"].push({ s: { r: rr, c: 0 }, e: { r: rr, c: 14 } });
+        sh["!rows"][rr] = { hpt: 26 };
+        rr++;
       }
-      sh["!rows"][rr] = { hpt: 20 };
+
+      const headers = ["Group", "Code", "Dimension name", ...MONTH_HEADERS];
+      headers.forEach((h, i) => {
+        const style = i < 3 ? columnHeaderStyle : monthHeaderStyle;
+        setCell(sh, rr, i, h, style);
+      });
+      sh["!rows"][rr] = { hpt: 26 };
       rr++;
+
+      allDims.forEach((d, i) => {
+        const odd = i % 2 === 1;
+        setCell(sh, rr, 0, d.group, groupBadgeStyle(odd));
+        setCell(sh, rr, 1, d.code, codeCellStyle(odd));
+        setCell(sh, rr, 2, d.name, dataCellStyle(odd));
+        for (let m = 0; m < 12; m++) {
+          setCell(sh, rr, 3 + m, "", numberCellStyle(odd));
+        }
+        sh["!rows"][rr] = { hpt: 20 };
+        rr++;
+      });
+
+      if (blockIdx < companyBlocks.length - 1) {
+        sh["!rows"][rr] = { hpt: 10 };
+        rr++;
+      }
     });
 
-    // Merges for cover strip
-    sh["!merges"] = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: 14 } },
-      { s: { r: 1, c: 0 }, e: { r: 1, c: 14 } },
-      { s: { r: 2, c: 0 }, e: { r: 2, c: 14 } },
-    ];
-
-    // Freeze the header rows + first 3 columns
-    sh["!freeze"] = { xSplit: 3, ySplit: dataStartRow };
-    sh["!views"] = [{ state: "frozen", xSplit: 3, ySplit: dataStartRow, showGridLines: false }];
+    sh["!freeze"] = { xSplit: 3, ySplit: firstDataRow };
+    sh["!views"] = [{ state: "frozen", xSplit: 3, ySplit: firstDataRow, showGridLines: false }];
 
     XLSX.utils.book_append_sheet(wb, sh, String(year));
   }
@@ -588,13 +626,14 @@ function downloadBlueprint({ companyOpts, dimGroups, dimsByGroup }) {
 
 // Parse an uploaded blueprint back into a create-party payload. Returns
 // { draft, values } or throws with a friendly message.
-async function parseBlueprint(file, { dimsByGroup, companyOpts }) {
+async function parseBlueprint(file, { dimsByGroup, locale = "en" }) {
+  const TL = (k) => t(locale, k);
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: "array" });
 
   // ── CONFIG ───────────────────────────────────────────────
   const configSheet = wb.Sheets["Config"];
-  if (!configSheet) throw new Error("Missing 'Config' sheet");
+ if (!configSheet) throw new Error(TL("sp_err_missing_config"));
   const configRows = XLSX.utils.sheet_to_json(configSheet, { header: 1, defval: "" });
 
   // Parse the top field/value block
@@ -607,7 +646,7 @@ async function parseBlueprint(file, { dimsByGroup, companyOpts }) {
     return "";
   };
   const name = getField("Name");
-  if (!name) throw new Error("Config: 'Name' is required");
+ if (!name) throw new Error(TL("sp_err_missing_name"));
   const description = getField("Description");
   const unit = getField("Unit");
   let icon = getField("Icon").toLowerCase() || "chart";
@@ -641,8 +680,8 @@ async function parseBlueprint(file, { dimsByGroup, companyOpts }) {
   };
   const companies = readSection("COMPANIES", 1);
   const years = readSection("YEARS", 1);
-  if (companies.length === 0) throw new Error("Config: mark at least one company with X");
-  if (years.length === 0) throw new Error("Config: mark at least one year with X");
+if (companies.length === 0) throw new Error(TL("sp_err_mark_company"));
+  if (years.length === 0) throw new Error(TL("sp_err_mark_year"));
 
   // ── YEAR SHEETS → values ─────────────────────────────────
   // Build a lookup { code -> group } so we can rebuild dimGroups.
@@ -651,29 +690,32 @@ async function parseBlueprint(file, { dimsByGroup, companyOpts }) {
     inner.forEach((_, code) => dimToGroup.set(code, groupName));
   });
 
-  const values = {};
-  const usedDims = new Set();
-  for (const y of years) {
-    const sheet = wb.Sheets[y];
-    if (!sheet) continue;
-    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-    // Find the header row ("Group","Code","Dimension name","Jan"...)
-    let headerIdx = -1;
-    for (let i = 0; i < rows.length; i++) {
-      const cells = rows[i].map(c => String(c ?? "").trim().toLowerCase());
-      if (cells[0] === "group" && cells[1] === "code" && cells[3] === "jan") {
-        headerIdx = i; break;
-      }
-    }
-    if (headerIdx < 0) continue;
+// Detect mode from Config sheet. Backward-compatible default = shared.
+  const modeRaw = getField("Modo").toLowerCase();
+  const perCompany = modeRaw === "por empresa" || modeRaw === "per-company" || modeRaw === "per company";
+  const sharedAcrossCompanies = !perCompany;
 
-    values[y] = {};
-    for (let i = headerIdx + 1; i < rows.length; i++) {
+  const isHeaderRow = (row) => {
+    const cells = row.map(c => String(c ?? "").trim().toLowerCase());
+    return cells[0] === "group" && cells[1] === "code" && cells[3] === "jan";
+  };
+  const parseCompanyBanner = (label) => {
+   const m = /empresa\s*[·:-]\s*([^\s—-]+)/i.exec(label);
+    return m ? m[1].trim() : null;
+  };
+  const readDataBlock = (rows, headerIdx) => {
+    const dimData = {};
+    let any = false;
+    let i = headerIdx + 1;
+    for (; i < rows.length; i++) {
       const row = rows[i];
+      const first = String(row[0] ?? "").trim();
+      if (first.toUpperCase().startsWith("EMPRESA")) break;
+      if (isHeaderRow(row)) break;
       const code = String(row[1] ?? "").trim();
       if (!code) continue;
       const dimMap = {};
-      let any = false;
+      let rowAny = false;
       for (let m = 0; m < 12; m++) {
         const cell = row[3 + m];
         if (cell === "" || cell === null || cell === undefined) continue;
@@ -681,30 +723,75 @@ async function parseBlueprint(file, { dimsByGroup, companyOpts }) {
         if (!s) continue;
         if (s.startsWith("=")) {
           dimMap[m + 1] = { value: null, formula: s };
-          any = true;
+          rowAny = true;
         } else {
           const num = Number(s.replace(",", "."));
           if (Number.isFinite(num)) {
             dimMap[m + 1] = { value: num, formula: null };
-            any = true;
+            rowAny = true;
           }
         }
       }
-if (any) {
-        values[y][code] = dimMap;
-        usedDims.add(code);
+      if (rowAny) { dimData[code] = dimMap; any = true; }
+    }
+    return { dimData, hasData: any, nextIdx: i };
+  };
+
+  const values = {};
+  const usedDims = new Set();
+
+  for (const y of years) {
+    const sheet = wb.Sheets[y];
+    if (!sheet) continue;
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+    if (perCompany) {
+      let currentCompany = null;
+      let i = 0;
+      while (i < rows.length) {
+        const row = rows[i];
+        const first = String(row[0] ?? "").trim();
+        if (first.toUpperCase().startsWith("EMPRESA")) {
+          currentCompany = parseCompanyBanner(first);
+          i++;
+          continue;
+        }
+        if (currentCompany && isHeaderRow(row)) {
+          const { dimData, hasData, nextIdx } = readDataBlock(rows, i);
+          if (hasData) {
+            if (!values[currentCompany]) values[currentCompany] = {};
+            values[currentCompany][y] = dimData;
+            Object.keys(dimData).forEach(c => usedDims.add(c));
+          }
+          i = nextIdx;
+          continue;
+        }
+        i++;
+      }
+    } else {
+      let headerIdx = -1;
+      for (let i = 0; i < rows.length; i++) {
+        if (isHeaderRow(rows[i])) { headerIdx = i; break; }
+      }
+      if (headerIdx < 0) continue;
+      const { dimData, hasData } = readDataBlock(rows, headerIdx);
+      if (hasData) {
+        values[y] = dimData;
+        Object.keys(dimData).forEach(c => usedDims.add(c));
       }
     }
   }
 
   const dims = [...usedDims];
-  if (dims.length === 0) throw new Error("No values found in any year sheet");
+if (dims.length === 0) throw new Error(TL("sp_err_no_values"));
   const dimGroupsUsed = [...new Set(dims.map(c => dimToGroup.get(c)).filter(Boolean))];
 
   return {
     draft: {
       name, description, unit, icon,
-      companies, years, dimGroups: dimGroupsUsed, dims,
+      companies, years,
+      dimGroups: dimGroupsUsed, dims,
+      sharedAcrossCompanies,
     },
     values,
   };
@@ -712,7 +799,8 @@ if (any) {
 
 // Segmented toggle: two pills with a sliding navy indicator underneath.
 // Matches the aesthetic of the year switcher but with an animated pill.
-function DecimalToggle({ mode, onChange }) {
+function DecimalToggle({ mode, onChange, locale }) {
+  const T = (k, fb) => t(locale, k, fb);
   const isInt = mode === "integer";
   const BTN_W = 32;
   const BTN_H = 22;
@@ -728,7 +816,7 @@ function DecimalToggle({ mode, onChange }) {
         width: BTN_W * 2,
         height: BTN_H,
       }}
-      title={isInt ? "Rounded to integers" : "Showing decimals"}
+  title={isInt ? T("sp_dec_rounded") : T("sp_dec_decimals")}
     >
       <span
         aria-hidden
@@ -774,16 +862,22 @@ function formatNumber(n, mode) {
 // ─────────────────────────────────────────────────────────────
 function DrillHeaderExtra({
   group, year, onYearChange, decimalMode, onDecimalModeChange,
-  companyOpts, onEditCompanies, onEditYears,
+  companyOpts, onEditCompanies, onEditYears, onEditIdentity,
+  activeCompany, onActiveCompanyChange, locale,
 }) {
-  const effectiveYear = group.years.includes(year) ? year : (group.years[0] ?? String(new Date().getFullYear()));
-  const yearVals = group.values[effectiveYear] ?? {};
+  const T = (k, fb) => t(locale, k, fb);
+const effectiveYear = group.years.includes(year) ? year : (group.years[0] ?? String(new Date().getFullYear()));
+  const yearVals = useMemo(
+    () => getYearTree(group, activeCompany)[effectiveYear] ?? {},
+    [group, activeCompany, effectiveYear],
+  );
   const computed = useMemo(() => evaluateYear(yearVals, group.dims), [yearVals, group.dims]);
   const grandTotal = group.dims.reduce((s, d) => s + MONTHS.reduce((ss, m) => ss + (computed[d]?.[m] ?? 0), 0), 0);
   const filled = group.dims.reduce((s, d) => s + Object.keys(yearVals[d] ?? {}).length, 0);
   const capacity = group.dims.length * 12;
   const pct = capacity > 0 ? (filled / capacity) * 100 : 0;
   const fmt = (n) => formatNumber(n, decimalMode);
+  const perCompany = group.sharedAcrossCompanies === false;
 
 return (
     <div className="flex items-center gap-2 h-full pr-1">
@@ -821,23 +915,31 @@ return (
 
       <ToolbarDivider />
 
-      {/* Controls — one visual language: hairline chips */}
-      <CompaniesPicker
-        selected={group.companies}
-        options={companyOpts}
-        onChange={onEditCompanies}
+{/* Controls — one visual language: hairline chips.
+          Wrapped in a hover group so a pencil can appear next to the picker,
+          giving quick access to the identity/mode editor. */}
+<CompanyPickerWithEdit
+        perCompany={perCompany}
+        activeCompany={activeCompany}
+        onActiveCompanyChange={onActiveCompanyChange}
+        group={group}
+        companyOpts={companyOpts}
+        onEditCompanies={onEditCompanies}
+        onEditIdentity={onEditIdentity}
+        locale={locale}
       />
 
-      <YearsControl
+<YearsControl
         years={group.years}
         effectiveYear={effectiveYear}
         onYearChange={onYearChange}
         onEditYears={onEditYears}
+        locale={locale}
       />
 
       <ToolbarDivider />
 
-      <DecimalToggle mode={decimalMode} onChange={onDecimalModeChange} />
+      <DecimalToggle mode={decimalMode} onChange={onDecimalModeChange} locale={locale} />
     </div>
   );
 }
@@ -858,7 +960,8 @@ function ToolbarDivider() {
 // Year switcher — segmented control with a pencil that reveals on hover.
 // The pencil's slot collapses to zero width when not hovered, so the
 // controls to its right don't get pushed around.
-function YearsControl({ years, effectiveYear, onYearChange, onEditYears }) {
+function YearsControl({ years, effectiveYear, onYearChange, onEditYears, locale }) {
+  const T = (k, fb) => t(locale, k, fb);
   const [hover, setHover] = useState(false);
   return (
     <div
@@ -902,7 +1005,7 @@ function YearsControl({ years, effectiveYear, onYearChange, onEditYears }) {
           transition: "width 260ms cubic-bezier(0.34, 1.56, 0.64, 1), margin-left 260ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 180ms ease",
           pointerEvents: hover ? "auto" : "none",
         }}
-        title="Edit years"
+title={T("sp_edit_years")}
       >
         <Pencil size={11} strokeWidth={2.2} />
       </button>
@@ -910,9 +1013,186 @@ function YearsControl({ years, effectiveYear, onYearChange, onEditYears }) {
   );
 }
 
+
+
+// Wrap the (single- or multi-select) company picker in a hover group so a
+// pencil button reveals next to it, opening the identity/mode editor.
+function CompanyPickerWithEdit({
+  perCompany, activeCompany, onActiveCompanyChange,
+  group, companyOpts, onEditCompanies, onEditIdentity, locale,
+}) {
+  const T = (k, fb) => t(locale, k, fb);
+  const [hover, setHover] = useState(false);
+  const addCompany = (v) => {
+    if (group.companies.includes(v)) { onActiveCompanyChange(v); return; }
+    onEditCompanies([...group.companies, v]);
+    onActiveCompanyChange(v);
+  };
+  return (
+    <div
+      className="flex items-center"
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      {perCompany ? (
+<CompanySingleSelect
+          selected={activeCompany ?? group.companies[0] ?? null}
+          companies={group.companies}
+          options={companyOpts}
+          onChange={onActiveCompanyChange}
+          onAddCompany={addCompany}
+          locale={locale}
+        />
+      ) : (
+<CompaniesPicker
+          selected={group.companies}
+          options={companyOpts}
+          onChange={onEditCompanies}
+          locale={locale}
+        />
+      )}
+      <button
+        onClick={onEditIdentity}
+        className="h-7 rounded-lg flex items-center justify-center overflow-hidden"
+        style={{
+          width: hover ? 28 : 0,
+          marginLeft: hover ? 4 : 0,
+          opacity: hover ? 1 : 0,
+          background: `${NAVY}0d`,
+          color: NAVY,
+          transition: "width 260ms cubic-bezier(0.34, 1.56, 0.64, 1), margin-left 260ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 180ms ease",
+          pointerEvents: hover ? "auto" : "none",
+        }}
+       title={T("sp_edit_mode_tooltip")}
+      >
+        <Pencil size={11} strokeWidth={2.2} />
+      </button>
+    </div>
+  );
+}
+
+// Per-company mode: pick one company whose values we're editing/viewing.
+// The dropdown lists every company in the party's scope (with a radio dot on
+// the currently-active one), then a divider, then the remaining companies
+// available in the workspace with a plus glyph — clicking one of those adds
+// it to the party's scope AND makes it the active editing target.
+function CompanySingleSelect({ selected, companies, options, onChange, onAddCompany, locale }) {
+  const T = (k, fb) => t(locale, k, fb);
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const labelFor = (v) => options.find(o => o.value === v)?.label ?? v ?? "—";
+  const inScope = new Set(companies);
+  const availableToAdd = options.filter(o => !inScope.has(o.value));
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-2 px-2.5 h-7 rounded-lg text-[11px] font-black tabular-nums transition-all bg-white"
+        style={{
+          color: NAVY,
+          border: `1px solid ${open ? NAVY : "rgba(26,47,138,0.12)"}`,
+          boxShadow: open ? `0 0 0 3px ${NAVY}14` : "none",
+        }}
+      >
+        <Building2 size={11} strokeWidth={2.2} style={{ opacity: 0.7 }} />
+        <span className="truncate max-w-[160px]">{labelFor(selected)}</span>
+        <span className="text-[9px] font-black tabular-nums px-1 py-0.5 rounded"
+          style={{ background: `${NAVY}12`, color: NAVY }}>
+          1/{companies.length}
+        </span>
+        <ChevronDown size={10} style={{ opacity: 0.5, transform: open ? "rotate(180deg)" : "rotate(0)", transition: "transform 200ms" }} />
+      </button>
+      {open && (
+        <div
+          className="absolute right-0 mt-2 rounded-2xl bg-white overflow-hidden"
+          style={{
+            minWidth: 280, zIndex: 9999,
+            border: "1px solid rgba(26,47,138,0.10)",
+            boxShadow: "0 20px 50px -12px rgba(15,31,92,0.28)",
+          }}
+        >
+          <div className="max-h-[400px] overflow-y-auto sp-scroll">
+            {/* In-scope companies — switch active */}
+<div className="px-3 py-1.5 sp-kicker" style={{ color: NAVY, opacity: 0.4 }}>
+              {T("sp_in_this_party")}
+            </div>
+            {companies.length === 0 ? (
+              <div className="px-3 pb-2 text-[11px] font-semibold" style={{ color: NAVY, opacity: 0.4 }}>
+                {T("sp_none")}
+              </div>
+            ) : companies.map(v => {
+              const active = selected === v;
+              const label = labelFor(v);
+              return (
+                <button
+                  key={v}
+                  onClick={() => { onChange(v); setOpen(false); }}
+                  className="w-full flex items-center gap-3 px-3 py-2 text-left transition-colors"
+                  style={{ background: active ? `${NAVY}0d` : "transparent" }}
+                  onMouseEnter={e => { if (!active) e.currentTarget.style.background = "rgba(26,47,138,0.03)"; }}
+                  onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
+                >
+                  <div className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0"
+                    style={{ border: `2px solid ${active ? NAVY : "rgba(26,47,138,0.25)"}` }}>
+                    {active && <div className="w-2 h-2 rounded-full" style={{ background: NAVY }} />}
+                  </div>
+                  <span className="text-[13px] font-bold truncate flex-1" style={{ color: NAVY_DEEP }}>{label}</span>
+                  {label !== v && (
+                    <span className="text-[10px] font-mono font-bold" style={{ color: NAVY, opacity: 0.4 }}>{v}</span>
+                  )}
+                </button>
+              );
+            })}
+
+            {/* Available to add */}
+            {availableToAdd.length > 0 && (
+              <>
+                <div className="h-px mx-3 my-1" style={{ background: "rgba(26,47,138,0.08)" }} />
+<div className="px-3 py-1.5 sp-kicker" style={{ color: NAVY, opacity: 0.4 }}>
+                  {T("sp_add_to_party")}
+                </div>
+                {availableToAdd.map(o => (
+                  <button
+                    key={o.value}
+                    onClick={() => {
+                      if (onAddCompany) onAddCompany(o.value);
+                      setOpen(false);
+                    }}
+                    className="w-full flex items-center gap-3 px-3 py-2 text-left transition-colors"
+                    onMouseEnter={e => { e.currentTarget.style.background = "rgba(26,47,138,0.03)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+                  >
+                    <div className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0"
+                      style={{ background: `${NAVY}0d`, color: NAVY }}>
+                      <Plus size={9} strokeWidth={3} />
+                    </div>
+                    <span className="text-[13px] font-bold truncate flex-1" style={{ color: NAVY_DEEP, opacity: 0.75 }}>{o.label}</span>
+                    {o.label !== o.value && (
+                      <span className="text-[10px] font-mono font-bold" style={{ color: NAVY, opacity: 0.35 }}>{o.value}</span>
+                    )}
+                  </button>
+                ))}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Multi-select companies dropdown. Shows count/label collapsed, opens a
 // checklist on click.
-function CompaniesPicker({ selected, options, onChange }) {
+function CompaniesPicker({ selected, options, onChange, locale }) {
+  const T = (k, fb) => t(locale, k, fb);
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -926,11 +1206,11 @@ function CompaniesPicker({ selected, options, onChange }) {
     onChange(selected.includes(v) ? selected.filter(x => x !== v) : [...selected, v]);
   };
 
-  const label = selected.length === 0
-    ? "No companies"
+const label = selected.length === 0
+    ? T("sp_companies_none")
     : selected.length === 1
       ? (options.find(o => o.value === selected[0])?.label ?? selected[0])
-      : `${selected.length} companies`;
+      : T("sp_companies_n").replace("{n}", selected.length);
 
   return (
     <div ref={ref} className="relative">
@@ -965,8 +1245,8 @@ function CompaniesPicker({ selected, options, onChange }) {
         >
           <div className="max-h-[320px] overflow-y-auto sp-scroll py-1">
             {options.length === 0 ? (
-              <div className="px-4 py-3 text-[12px] font-semibold" style={{ color: NAVY, opacity: 0.5 }}>
-                No companies available
+<div className="px-4 py-3 text-[12px] font-semibold" style={{ color: NAVY, opacity: 0.5 }}>
+                {T("sp_no_x_available").replace("{label}", T("sp_label_companies"))}
               </div>
             ) : options.map(o => {
               const active = selected.includes(o.value);
@@ -1018,7 +1298,7 @@ export default function StatisticalPartiesPage({
   companies: propCompanies = [],
   dimensions: propDimensions = [],
 }) {
-  const { colors, locale } = useSettings();
+const { locale } = useSettings();
   const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
 
   // ── Self-fetch fallback ────────────────────────────────────
@@ -1055,37 +1335,45 @@ export default function StatisticalPartiesPage({
     setMetaLoading(false);
   }, [token, metaLoading]);
 
-  useEffect(() => {
-    if (propCompanies.length > 0 && propDimensions.length > 0) return;
-    const t = setTimeout(() => {
-      if (propCompanies.length === 0 || propDimensions.length === 0) {
-        metaFetchedRef.current = false;
-        fetchMetadata();
-      }
-    }, 1000);
-    return () => clearTimeout(t);
-  }, [propCompanies.length, propDimensions.length, fetchMetadata]);
-
-  useEffect(() => {
+useEffect(() => {
     if (!token) return;
     if (propCompanies.length > 0 && propDimensions.length > 0) return;
-    metaFetchedRef.current = false;
-    fetchMetadata();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+    const t = setTimeout(() => {
+      metaFetchedRef.current = false;
+      fetchMetadata();
+    }, propCompanies.length === 0 && propDimensions.length === 0 ? 0 : 1000);
+    return () => clearTimeout(t);
+  }, [token, propCompanies.length, propDimensions.length, fetchMetadata]);
 
   const effectiveCompanies  = propCompanies.length  > 0 ? propCompanies  : internalCompanies;
   const effectiveDimensions = propDimensions.length > 0 ? propDimensions : internalDimensions;
 
 const [groups, setGroups]          = useState([]);
   const [groupsLoading, setGroupsLoading] = useState(true);
-  const [activeGroupId, setActiveId] = useState(null);
+  // In per-company mode, this is the company whose grid the user is editing.
+  const [activeCompany, setActiveCompany] = useState(null);
+const [activeGroupId, setActiveIdRaw] = useState(null);
+  // Wrap setActiveId so opening/closing a party also resets the active
+  // company. In shared mode it stays null anyway; in per-company mode it'll
+  // be set from the drill header when the user picks a company.
+  const setActiveId = useCallback((id) => {
+    setActiveIdRaw(id);
+    setActiveCompany(prev => {
+      if (id == null) return null;
+      const grp = groups.find(g => g.id === id);
+      if (!grp || grp.sharedAcrossCompanies !== false) return null;
+      if (prev && grp.companies.includes(prev)) return prev;
+      return grp.companies[0] ?? null;
+    });
+  }, [groups]);
   const [createOpen, setCreateOpen]  = useState(false);
 const [landingQuery, setLandingQuery] = useState("");
   const [drillYear, setDrillYear]    = useState(null);
- const [decimalMode, setDecimalMode] = useState("auto"); // "auto" | "integer"
-  const [yearsModalOpen, setYearsModalOpen] = useState(false);
+const [decimalMode, setDecimalMode] = useState("auto"); // "auto" | "integer"
+const [yearsModalOpen, setYearsModalOpen] = useState(false);
   const [addDimModalOpen, setAddDimModalOpen] = useState(false);
+  const [blueprintModeOpen, setBlueprintModeOpen] = useState(false);
+  const [editIdentityGroup, setEditIdentityGroup] = useState(null); // party to edit
 
   // Load parties from Supabase on mount
   useEffect(() => {
@@ -1095,36 +1383,40 @@ const [landingQuery, setLandingQuery] = useState("");
       const { data, error } = await supabase.rpc("list_statistical_parties");
       if (cancelled) return;
       if (error) {
-        console.error("[SP] load failed:", error);
         setGroupsLoading(false);
         return;
       }
-const mapped = (data ?? []).map(r => ({
-        id: r.id,
-        name: r.name,
-        icon: r.icon ?? "chart",
-        unit: r.unit ?? "",
-        description: r.description ?? "",
-        companies: r.companies ?? [],
-        years: r.years ?? [],
-        dimGroups: r.dim_groups ?? [],
-        dims: r.dims ?? [],
-        values: normalizeValues(r.values ?? {}),
-        createdBy: r.created_by,
-        creatorName: r.creator_name,
-        createdAt: r.created_at,
-        updatedAt: r.updated_at,
-      }));
+const mapped = (data ?? []).map(r => {
+        const shared = r.shared_across_companies !== false; // default true
+        return {
+          id: r.id,
+          name: r.name,
+          icon: r.icon ?? "chart",
+          unit: r.unit ?? "",
+          description: r.description ?? "",
+          companies: r.companies ?? [],
+          years: r.years ?? [],
+          dimGroups: r.dim_groups ?? [],
+          dims: r.dims ?? [],
+          sharedAcrossCompanies: shared,
+          values: normalizeValues(r.values ?? {}, shared),
+          createdBy: r.created_by,
+          creatorName: r.creator_name,
+          createdAt: r.created_at,
+          updatedAt: r.updated_at,
+        };
+      });
       setGroups(mapped);
       setGroupsLoading(false);
     })();
     return () => { cancelled = true; };
   }, []);
 
-  const activeGroup = useMemo(
+const activeGroup = useMemo(
     () => groups.find(g => g.id === activeGroupId) ?? null,
     [groups, activeGroupId],
   );
+  
 
   const companyOpts = useMemo(() => {
     if (!effectiveCompanies.length) return [];
@@ -1154,7 +1446,7 @@ const mapped = (data ?? []).map(r => ({
   }, [effectiveDimensions]);
 
 const handleCreate = async (draft) => {
-    const { data, error } = await supabase.rpc("create_statistical_party", {
+const { data, error } = await supabase.rpc("create_statistical_party", {
       p_name:        draft.name.trim(),
       p_description: draft.description.trim() || null,
       p_unit:        draft.unit.trim() || null,
@@ -1163,16 +1455,17 @@ const handleCreate = async (draft) => {
       p_years:       draft.years,
       p_dim_groups:  draft.dimGroups,
       p_dims:        draft.dims,
+      p_shared_across_companies: draft.sharedAcrossCompanies !== false,
     });
     if (error) {
-      console.error("[SP] create failed:", error);
-      alert(`Failed to create party: ${error.message}`);
+   alert(T("sp_err_create").replace("{msg}", error.message));
       return;
     }
     // Re-fetch creator_name via list (or fetch just this one)
     const { data: fresh } = await supabase.rpc("list_statistical_parties");
     const row = (fresh ?? []).find(r => r.id === data.id) ?? data;
-const mapped = {
+const shared = row.shared_across_companies !== false;
+    const mapped = {
       id: row.id,
       name: row.name,
       icon: row.icon ?? "chart",
@@ -1182,7 +1475,8 @@ const mapped = {
       years: row.years ?? [],
       dimGroups: row.dim_groups ?? [],
       dims: row.dims ?? [],
-      values: normalizeValues(row.values ?? {}),
+      sharedAcrossCompanies: shared,
+      values: normalizeValues(row.values ?? {}, shared),
       createdBy: row.created_by,
       creatorName: row.creator_name,
       createdAt: row.created_at,
@@ -1194,14 +1488,13 @@ const mapped = {
   };
 
 const handleDelete = async (id) => {
-    if (!window.confirm("Delete this statistical party?")) return;
+if (!window.confirm(T("sp_confirm_delete_party"))) return;
     const { error } = await supabase
       .from("statistical_parties")
       .delete()
       .eq("id", id);
     if (error) {
-      console.error("[SP] delete failed:", error);
-      alert(`Failed to delete: ${error.message}`);
+      alert(T("sp_err_delete").replace("{msg}", error.message));
       return;
     }
     setGroups(prev => prev.filter(g => g.id !== id));
@@ -1215,43 +1508,56 @@ const flushValues = useCallback(async () => {
     const payload = pendingValuesRef.current;
     if (!payload) return;
     pendingValuesRef.current = null;
-    console.log("[SP] flushing values for", payload.id, payload.values);
-    const { data, error } = await supabase.rpc("update_statistical_party_values", {
+    const { data: _data, error } = await supabase.rpc("update_statistical_party_values", {
       p_id: payload.id,
       p_values: payload.values,
     });
     if (error) {
-      console.error("[SP] values sync FAILED:", error);
-      alert(`Save failed: ${error.message}`);
-    } else {
-      console.log("[SP] values saved:", data?.id);
+      alert(T("sp_err_save").replace("{msg}", error.message));
     }
-  }, []);
+  }, [T]);
 
  // Write a cell. `raw` is what the user typed. If it starts with "=" we store
   // a formula; otherwise a raw number. Empty string clears the cell.
+// Given a group + activeCompany, write one cell using the correct nesting.
+  const writeCell = (currentGroup, company, year, dimCode, month, raw) => {
+    const trimmed = String(raw ?? "").trim();
+    const buildCell = () => {
+      if (trimmed === "") return null;
+      if (trimmed.startsWith("=")) return { value: null, formula: trimmed };
+      const cleaned = trimmed.replace(/[^\d.-]/g, "");
+      const num = cleaned === "" || cleaned === "-" ? null : Number(cleaned);
+      if (num === null || Number.isNaN(num)) return null;
+      return { value: num, formula: null };
+    };
+    const cell = buildCell();
+
+    const shared = currentGroup.sharedAcrossCompanies !== false;
+    if (shared) {
+      const yr = currentGroup.values[year] ? { ...currentGroup.values[year] } : {};
+      const dimMap = yr[dimCode] ? { ...yr[dimCode] } : {};
+      if (cell === null) delete dimMap[month]; else dimMap[month] = cell;
+      yr[dimCode] = dimMap;
+      return { ...currentGroup.values, [year]: yr };
+    }
+    const co = company ?? currentGroup.companies[0];
+    if (!co) return currentGroup.values;
+    const coTree = currentGroup.values[co] ? { ...currentGroup.values[co] } : {};
+    const yr = coTree[year] ? { ...coTree[year] } : {};
+    const dimMap = yr[dimCode] ? { ...yr[dimCode] } : {};
+    if (cell === null) delete dimMap[month]; else dimMap[month] = cell;
+    yr[dimCode] = dimMap;
+    coTree[year] = yr;
+    return { ...currentGroup.values, [co]: coTree };
+  };
+
   const setCellValue = (year, dimCode, month, raw) => {
     if (!activeGroup) return;
     const currentGroup = groups.find(g => g.id === activeGroup.id);
     if (!currentGroup) return;
 
-    const yr = currentGroup.values[year] ? { ...currentGroup.values[year] } : {};
-    const dimMap = yr[dimCode] ? { ...yr[dimCode] } : {};
-
-    const trimmed = String(raw ?? "").trim();
-    if (trimmed === "") {
-      delete dimMap[month];
-    } else if (trimmed.startsWith("=")) {
-      dimMap[month] = { value: null, formula: trimmed };
-    } else {
-      const cleaned = trimmed.replace(/[^\d.-]/g, "");
-      const num = cleaned === "" || cleaned === "-" ? null : Number(cleaned);
-      if (num === null || Number.isNaN(num)) delete dimMap[month];
-      else dimMap[month] = { value: num, formula: null };
-    }
-    yr[dimCode] = dimMap;
-    const nextValues = { ...currentGroup.values, [year]: yr };
-
+    const co = activeCompany ?? currentGroup.companies[0];
+    const nextValues = writeCell(currentGroup, co, year, dimCode, month, raw);
     setGroups(prev => prev.map(g => g.id === activeGroup.id ? { ...g, values: nextValues } : g));
 
     pendingValuesRef.current = { id: activeGroup.id, values: nextValues };
@@ -1261,22 +1567,37 @@ const flushValues = useCallback(async () => {
 
   // Save any scope change (companies / years / dimGroups / dims). Uses direct
   // .update() on the table — swap for supabase.rpc if you add one later.
-  const saveScope = async (patch) => {
+const saveScope = async (patch) => {
     if (!activeGroup) return;
-    // Compute next scope + prune values for removed years / dims
     const currentGroup = groups.find(g => g.id === activeGroup.id);
     if (!currentGroup) return;
     const next = { ...currentGroup, ...patch };
-    // Prune values under removed years
+    const shared = next.sharedAcrossCompanies !== false;
     const yearsSet = new Set(next.years);
     const dimsSet  = new Set(next.dims);
-    const cleanedValues = {};
-    for (const [yr, dimMap] of Object.entries(next.values ?? {})) {
-      if (!yearsSet.has(yr)) continue;
-      cleanedValues[yr] = {};
-      for (const [dim, months] of Object.entries(dimMap ?? {})) {
-        if (!dimsSet.has(dim)) continue;
-        cleanedValues[yr][dim] = months;
+    const companiesSet = new Set(next.companies);
+
+    const pruneYearTree = (tree) => {
+      const out = {};
+      for (const [yr, dimMap] of Object.entries(tree ?? {})) {
+        if (!yearsSet.has(yr)) continue;
+        out[yr] = {};
+        for (const [dim, months] of Object.entries(dimMap ?? {})) {
+          if (!dimsSet.has(dim)) continue;
+          out[yr][dim] = months;
+        }
+      }
+      return out;
+    };
+
+    let cleanedValues;
+    if (shared) {
+      cleanedValues = pruneYearTree(next.values);
+    } else {
+      cleanedValues = {};
+      for (const [co, tree] of Object.entries(next.values ?? {})) {
+        if (!companiesSet.has(co)) continue;
+        cleanedValues[co] = pruneYearTree(tree);
       }
     }
     next.values = cleanedValues;
@@ -1286,22 +1607,22 @@ const flushValues = useCallback(async () => {
     const { error } = await supabase
       .from("statistical_parties")
       .update({
-        companies:  next.companies,
-        years:      next.years,
-        dim_groups: next.dimGroups,
-        dims:       next.dims,
-        values:     next.values,
+        companies:               next.companies,
+        years:                   next.years,
+        dim_groups:              next.dimGroups,
+        dims:                    next.dims,
+        values:                  next.values,
+        shared_across_companies: shared,
       })
       .eq("id", next.id);
     if (error) {
-      console.error("[SP] scope update failed:", error);
-      alert(`Failed to save: ${error.message}`);
+   alert(T("sp_err_scope").replace("{msg}", error.message));
     }
   };
 
   const removeDim = (code) => {
     if (!activeGroup) return;
-    if (!window.confirm("Remove this dimension? All values in this row will be lost.")) return;
+   if (!window.confirm(T("sp_confirm_remove_dim"))) return;
     saveScope({ dims: activeGroup.dims.filter(c => c !== code) });
   };
 
@@ -1323,8 +1644,8 @@ const flushValues = useCallback(async () => {
   // its values (formulas + numbers) in a follow-up call.
   const handleBlueprintUpload = async (file) => {
     try {
-      const { draft, values } = await parseBlueprint(file, { dimsByGroup, companyOpts });
-      const { data, error } = await supabase.rpc("create_statistical_party", {
+     const { draft, values } = await parseBlueprint(file, { dimsByGroup, locale });
+const { data, error } = await supabase.rpc("create_statistical_party", {
         p_name:        draft.name,
         p_description: draft.description || null,
         p_unit:        draft.unit || null,
@@ -1333,6 +1654,7 @@ const flushValues = useCallback(async () => {
         p_years:       draft.years,
         p_dim_groups:  draft.dimGroups,
         p_dims:        draft.dims,
+        p_shared_across_companies: draft.sharedAcrossCompanies !== false,
       });
       if (error) throw new Error(error.message);
       // Push values in a second call so formulas / drag data land immediately.
@@ -1340,55 +1662,84 @@ const flushValues = useCallback(async () => {
         p_id: data.id,
         p_values: values,
       });
-      if (vErr) throw new Error(`Party created but values failed: ${vErr.message}`);
+     if (vErr) throw new Error(T("sp_err_values_after_create").replace("{msg}", vErr.message));
       // Refresh the list
       const { data: fresh } = await supabase.rpc("list_statistical_parties");
       const row = (fresh ?? []).find(r => r.id === data.id) ?? data;
+const shared = row.shared_across_companies !== false;
       const mapped = {
         id: row.id, name: row.name, icon: row.icon ?? "chart",
         unit: row.unit ?? "", description: row.description ?? "",
         companies: row.companies ?? [], years: row.years ?? [],
         dimGroups: row.dim_groups ?? [], dims: row.dims ?? [],
-        values: normalizeValues(row.values ?? {}),
+        sharedAcrossCompanies: shared,
+        values: normalizeValues(row.values ?? {}, shared),
         createdBy: row.created_by, creatorName: row.creator_name,
         createdAt: row.created_at, updatedAt: row.updated_at,
       };
       setGroups(prev => [mapped, ...prev]);
       setActiveId(mapped.id);
     } catch (err) {
-      console.error("[SP] blueprint upload failed:", err);
-      alert(`Blueprint failed: ${err.message}`);
+     alert(T("sp_err_blueprint").replace("{msg}", err.message));
     }
   };
 
   const setYears = (years) => saveScope({ years });
   const setCompanies = (companies) => saveScope({ companies });
 
+  // Edit identity (name/icon/unit/description) on any party — not just the
+  // currently-active one, since this can be triggered from the landing card.
+const saveIdentity = async (id, patch) => {
+    const current = groups.find(g => g.id === id);
+    if (!current) return;
+    const merged = { ...current, ...patch };
+
+    // If the shared/per-company mode is being toggled, EditIdentityModal has
+    // already computed the migrated values in `patch.values`. Fall back to
+    // current values if none provided.
+    const modeChanged = patch.sharedAcrossCompanies !== undefined
+      && patch.sharedAcrossCompanies !== current.sharedAcrossCompanies;
+
+    // Flush any pending value writes for this party so we don't race with them
+    // (they'd stomp our merged.values right after we save).
+    if (pendingValuesRef.current?.id === id) {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      pendingValuesRef.current = null;
+    }
+
+    setGroups(prev => prev.map(g => g.id === id ? merged : g));
+
+    const update = {
+      name:        merged.name,
+      icon:        merged.icon,
+      unit:        merged.unit || null,
+      description: merged.description || null,
+      shared_across_companies: merged.sharedAcrossCompanies !== false,
+    };
+    if (modeChanged) update.values = merged.values ?? {};
+
+    const { error } = await supabase
+      .from("statistical_parties")
+      .update(update)
+      .eq("id", id);
+    if (error) {
+   alert(T("sp_err_scope").replace("{msg}", error.message));
+    }
+  };
+
   // Bulk-write many cells at once (used by the fill handle). `cells` is an
   // array of { year, dimCode, month, raw }.
-  const setCells = (cells) => {
+const setCells = (cells) => {
     if (!activeGroup || cells.length === 0) return;
     const currentGroup = groups.find(g => g.id === activeGroup.id);
     if (!currentGroup) return;
 
-    const nextValues = { ...currentGroup.values };
+    const co = activeCompany ?? currentGroup.companies[0];
+    let acc = { ...currentGroup, values: { ...currentGroup.values } };
     for (const { year, dimCode, month, raw } of cells) {
-      const yr = nextValues[year] ? { ...nextValues[year] } : {};
-      const dimMap = yr[dimCode] ? { ...yr[dimCode] } : {};
-      const trimmed = String(raw ?? "").trim();
-      if (trimmed === "") {
-        delete dimMap[month];
-      } else if (trimmed.startsWith("=")) {
-        dimMap[month] = { value: null, formula: trimmed };
-      } else {
-        const cleaned = trimmed.replace(/[^\d.-]/g, "");
-        const num = cleaned === "" || cleaned === "-" ? null : Number(cleaned);
-        if (num === null || Number.isNaN(num)) delete dimMap[month];
-        else dimMap[month] = { value: num, formula: null };
-      }
-      yr[dimCode] = dimMap;
-      nextValues[year] = yr;
+      acc = { ...acc, values: writeCell(acc, co, year, dimCode, month, raw) };
     }
+    const nextValues = acc.values;
 
     setGroups(prev => prev.map(g => g.id === activeGroup.id ? { ...g, values: nextValues } : g));
 
@@ -1408,8 +1759,8 @@ const flushValues = useCallback(async () => {
   return (
     <div className="flex flex-col gap-4 h-full min-h-0">
 <PageHeader
-        kicker={isDrill ? "Statistical parties · Detail" : "Views · Statistical Parties"}
-        title={isDrill ? activeGroup.name : "Statistical Parties"}
+        kicker={isDrill ? T("sp_page_kicker_detail") : T("sp_page_kicker_views")}
+        title={isDrill ? activeGroup.name : T("sp_page_title")}
         onBack={isDrill ? () => setActiveId(null) : undefined}
         headerExtra={
           !isDrill ? (
@@ -1423,7 +1774,7 @@ const flushValues = useCallback(async () => {
                   type="text"
                   value={landingQuery}
                   onChange={e => setLandingQuery(e.target.value)}
-                  placeholder="Search"
+placeholder={T("sp_search_placeholder")}
                   className="text-[12px] font-semibold outline-none bg-transparent w-40"
                   style={{ color: NAVY_DEEP }}
                 />
@@ -1434,7 +1785,7 @@ const flushValues = useCallback(async () => {
                 )}
               </div>
 <button
-                onClick={() => downloadBlueprint({ companyOpts, dimGroups, dimsByGroup })}
+                onClick={() => setBlueprintModeOpen(true)}
                 className="flex items-center gap-1.5 px-3 h-9 rounded-full text-[11px] font-black tracking-wide transition-all uppercase"
                 style={{
                   background: "white",
@@ -1450,22 +1801,22 @@ const flushValues = useCallback(async () => {
                   e.currentTarget.style.background = "white";
                   e.currentTarget.style.borderColor = `${NAVY}22`;
                 }}
-                title="Download an Excel blueprint to fill offline"
+              title={T("sp_blueprint_tooltip")}
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                   <polyline points="7 10 12 15 17 10"/>
                   <line x1="12" y1="15" x2="12" y2="3"/>
                 </svg>
-                Blueprint
+{T("sp_blueprint")}
               </button>
               <button
                 onClick={() => setCreateOpen(true)}
                 className="sp-shimmer-btn flex items-center gap-1.5 px-3 h-9 rounded-full text-white font-black text-[11px] tracking-wide transition-all hover:shadow-xl uppercase"
                 style={{ boxShadow: `0 8px 20px -6px ${RED}60` }}
               >
-                <Plus size={12} strokeWidth={2.8} />
-                New party
+<Plus size={12} strokeWidth={2.8} />
+                {T("sp_new_party")}
               </button>
             </div>
 ) : (
@@ -1478,6 +1829,10 @@ const flushValues = useCallback(async () => {
               companyOpts={companyOpts}
               onEditCompanies={setCompanies}
               onEditYears={() => setYearsModalOpen(true)}
+              onEditIdentity={() => setEditIdentityGroup(activeGroup)}
+              activeCompany={activeCompany}
+              onActiveCompanyChange={setActiveCompany}
+              locale={locale}
             />
           )
         }
@@ -1489,10 +1844,12 @@ const flushValues = useCallback(async () => {
           groupsLoading={groupsLoading}
           onOpen={setActiveId}
           onDelete={handleDelete}
+          onEdit={setEditIdentityGroup}
           onCreate={() => setCreateOpen(true)}
           query={landingQuery}
           setQuery={setLandingQuery}
           onBlueprintUpload={handleBlueprintUpload}
+          locale={locale}
         />
 ) : (
 <DrillView
@@ -1506,28 +1863,51 @@ const flushValues = useCallback(async () => {
           decimalMode={decimalMode}
           onRemoveDim={removeDim}
           onOpenAddDim={() => setAddDimModalOpen(true)}
+          activeCompany={activeCompany}
         />
       )}
 
-      {yearsModalOpen && activeGroup && (
+{editIdentityGroup && (
+        <EditIdentityModal
+          group={editIdentityGroup}
+          onCancel={() => setEditIdentityGroup(null)}
+          onSave={(patch) => { saveIdentity(editIdentityGroup.id, patch); setEditIdentityGroup(null); }}
+          locale={locale}
+        />
+      )}
+
+{blueprintModeOpen && (
+        <BlueprintModeModal
+          onCancel={() => setBlueprintModeOpen(false)}
+          onPick={(mode) => {
+            setBlueprintModeOpen(false);
+            downloadBlueprint({ companyOpts, dimGroups, dimsByGroup, mode });
+          }}
+          locale={locale}
+        />
+      )}
+
+{yearsModalOpen && activeGroup && (
         <YearsModal
           selected={activeGroup.years}
           onCancel={() => setYearsModalOpen(false)}
           onSave={(years) => { setYears(years); setYearsModalOpen(false); }}
+          locale={locale}
         />
       )}
 
-      {addDimModalOpen && activeGroup && (
+{addDimModalOpen && activeGroup && (
         <AddDimensionsModal
           group={activeGroup}
           dimGroups={dimGroups}
           dimsByGroup={dimsByGroup}
           onCancel={() => setAddDimModalOpen(false)}
           onAdd={(codes) => { addDims(codes); setAddDimModalOpen(false); }}
+          locale={locale}
         />
       )}
 
-      {createOpen && (
+{createOpen && (
         <CreateModal
           companyOpts={companyOpts}
           dimGroups={dimGroups}
@@ -1535,6 +1915,7 @@ const flushValues = useCallback(async () => {
           metaLoading={metaLoading}
           onCancel={() => setCreateOpen(false)}
           onCreate={handleCreate}
+          locale={locale}
         />
       )}
 
@@ -1624,9 +2005,10 @@ const flushValues = useCallback(async () => {
 // LANDING
 // ═══════════════════════════════════════════════════════════════
 function LandingView({
-  groups, groupsLoading, onOpen, onDelete, onCreate,
-  query, setQuery, onBlueprintUpload,
+  groups, groupsLoading, onOpen, onDelete, onEdit, onCreate,
+  query, onBlueprintUpload, locale,
 }) {
+  const T = (k, fb) => t(locale, k, fb);
   const filtered = query.trim()
     ? groups.filter(g =>
         g.name.toLowerCase().includes(query.toLowerCase()) ||
@@ -1657,7 +2039,7 @@ const [dragging, setDragging] = useState(false);
     const file = e.dataTransfer?.files?.[0];
     if (!file) return;
     if (!/\.(xlsx|xls)$/i.test(file.name)) {
-      alert("Please drop an .xlsx file");
+    alert(T("sp_please_drop_xlsx"));
       return;
     }
     setUploading(true);
@@ -1679,18 +2061,18 @@ const [dragging, setDragging] = useState(false);
           <div className="flex items-center justify-center py-20 gap-2">
             <div className="w-4 h-4 rounded-full border-2 animate-spin"
               style={{ borderColor: "rgba(26,47,138,0.15)", borderTopColor: NAVY }} />
-            <span className="text-[13px] font-semibold" style={{ color: NAVY, opacity: 0.6 }}>Loading parties…</span>
+           <span className="text-[13px] font-semibold" style={{ color: NAVY, opacity: 0.6 }}>{T("sp_loading_parties")}</span>
           </div>
-        ) : groups.length === 0 ? (
-          <EmptyState onCreate={onCreate} />
+) : groups.length === 0 ? (
+          <EmptyState onCreate={onCreate} locale={locale} />
         ) : filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 text-[13px] font-semibold" style={{ color: NAVY, opacity: 0.5 }}>
-            No parties match "{query}"
+<div className="flex flex-col items-center justify-center py-20 text-[13px] font-semibold" style={{ color: NAVY, opacity: 0.5 }}>
+            {T("sp_no_matches").replace("{q}", query)}
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {filtered.map((g, i) => (
-              <PartyCard key={g.id} group={g} index={i} onOpen={onOpen} onDelete={onDelete} />
+{filtered.map((g, i) => (
+              <PartyCard key={g.id} group={g} index={i} onOpen={onOpen} onDelete={onDelete} onEdit={onEdit} locale={locale} />
             ))}
           </div>
         )}
@@ -1713,8 +2095,8 @@ const [dragging, setDragging] = useState(false);
               <>
                 <div className="w-8 h-8 rounded-full border-4 animate-spin"
                   style={{ borderColor: `${NAVY}20`, borderTopColor: NAVY }} />
-                <span className="text-[13px] font-black uppercase tracking-wider" style={{ color: NAVY }}>
-                  Reading blueprint…
+<span className="text-[13px] font-black uppercase tracking-wider" style={{ color: NAVY }}>
+                  {T("sp_reading_blueprint")}
                 </span>
               </>
             ) : (
@@ -1727,11 +2109,11 @@ const [dragging, setDragging] = useState(false);
                     <line x1="12" y1="3" x2="12" y2="15"/>
                   </svg>
                 </div>
-                <span className="text-[15px] font-black tracking-tight" style={{ color: NAVY_DEEP }}>
-                  Drop to create party
+<span className="text-[15px] font-black tracking-tight" style={{ color: NAVY_DEEP }}>
+                  {T("sp_drop_to_create")}
                 </span>
                 <span className="text-[11px] font-bold uppercase tracking-wider" style={{ color: NAVY, opacity: 0.55 }}>
-                  .xlsx blueprint
+                  {T("sp_xlsx_blueprint")}
                 </span>
               </>
             )}
@@ -1742,17 +2124,18 @@ const [dragging, setDragging] = useState(false);
   );
 }
 
-function EmptyState({ onCreate }) {
+function EmptyState({ onCreate, locale }) {
+  const T = (k, fb) => t(locale, k, fb);
   return (
     <div className="flex flex-col items-center justify-center py-16 max-w-md mx-auto text-center"
       style={{ animation: "spRise 500ms ease-out both" }}>
-      <p className="sp-kicker mb-4" style={{ color: RED }}>Non-financial data</p>
+      <p className="sp-kicker mb-4" style={{ color: RED }}>{T("sp_empty_kicker")}</p>
       <h2 className="font-black tracking-tight leading-[1.05] mb-3"
         style={{ color: NAVY_DEEP, fontSize: "clamp(28px, 3vw, 40px)" }}>
-        Nothing here yet<span style={{ color: RED }}>.</span>
+        {T("sp_empty_title")}<span style={{ color: RED }}>.</span>
       </h2>
       <p className="text-[14px] font-medium leading-relaxed mb-8" style={{ color: NAVY, opacity: 0.6 }}>
-        Statistical parties track non-financial values — headcount, area, units — across companies, years and dimensions.
+        {T("sp_empty_desc")}
       </p>
       <button
         onClick={onCreate}
@@ -1760,29 +2143,47 @@ function EmptyState({ onCreate }) {
         style={{ boxShadow: `0 14px 36px -10px ${RED}60` }}
       >
         <Plus size={14} strokeWidth={2.8} />
-        Create your first party
+        {T("sp_empty_cta")}
       </button>
     </div>
   );
 }
 
-function PartyCard({ group: g, index, onOpen, onDelete }) {
+function PartyCard({ group: g, index, onOpen, onDelete, onEdit, locale }) {
+  const T = (k, fb) => t(locale, k, fb);
   const Icon = ICON_MAP[g.icon] ?? BarChart3;
-const totalCells = Object.values(g.values).reduce(
-    (s, yr) => s + Object.values(yr).reduce((ss, dm) => ss + Object.keys(dm).length, 0), 0);
-  const capacity = g.dims.length * 12 * g.years.length;
+
+  // Shape-aware: shared parties have one year tree, per-company parties have
+  // one tree per company. Compute once, reuse below.
+  const shared = g.sharedAcrossCompanies !== false;
+  const yearTrees = shared
+    ? [g.values ?? {}]
+    : Object.values(g.values ?? {});
+
+  const totalCells = (() => {
+    let s = 0;
+    yearTrees.forEach(tree => {
+      Object.values(tree ?? {}).forEach(yr => {
+        Object.values(yr ?? {}).forEach(dm => { s += Object.keys(dm ?? {}).length; });
+      });
+    });
+    return s;
+  })();
+  const capacity = g.dims.length * 12 * g.years.length * (shared ? 1 : Math.max(1, g.companies.length));
   const pct = capacity > 0 ? Math.round((totalCells / capacity) * 100) : 0;
 
-// sparkline: sum per month across all years/dims. Resolves formulas via
+  // sparkline: sum per month across all years/dims. Resolves formulas via
   // evaluateYear so formula-only cells contribute their computed value
   // instead of 0.
   const monthly = MONTHS.map(() => 0);
-  Object.entries(g.values ?? {}).forEach(([, yearVals]) => {
-    const computed = evaluateYear(yearVals, g.dims);
-    g.dims.forEach(dim => {
-      MONTHS.forEach((m, i) => {
-        const v = computed[dim]?.[m];
-        if (typeof v === "number") monthly[i] += v;
+  yearTrees.forEach(tree => {
+    Object.entries(tree ?? {}).forEach(([, yearVals]) => {
+      const computed = evaluateYear(yearVals, g.dims);
+      g.dims.forEach(dim => {
+        MONTHS.forEach((m, i) => {
+          const v = computed[dim]?.[m];
+          if (typeof v === "number") monthly[i] += v;
+        });
       });
     });
   });
@@ -1825,14 +2226,24 @@ const totalCells = Object.values(g.values).reduce(
               {g.name}
             </p>
           </div>
-          <button
-            onClick={e => { e.stopPropagation(); onDelete(g.id); }}
-            className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center transition-all"
-            style={{ background: `${RED}12`, color: RED }}
-            title="Delete"
-          >
-            <Trash2 size={11} />
-          </button>
+<div className="flex items-center gap-1.5">
+            <button
+              onClick={e => { e.stopPropagation(); onEdit(g); }}
+              className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center transition-all"
+              style={{ background: `${NAVY}12`, color: NAVY }}
+title={T("sp_edit")}
+            >
+              <Pencil size={11} />
+            </button>
+            <button
+              onClick={e => { e.stopPropagation(); onDelete(g.id); }}
+              className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center transition-all"
+              style={{ background: `${RED}12`, color: RED }}
+              title={T("sp_delete")}
+            >
+              <Trash2 size={11} />
+            </button>
+          </div>
         </div>
 
         {g.description ? (
@@ -1840,7 +2251,7 @@ const totalCells = Object.values(g.values).reduce(
             {g.description}
           </p>
         ) : (
-          <p className="text-[12px] italic mb-3" style={{ color: NAVY, opacity: 0.3 }}>No description</p>
+<p className="text-[12px] italic mb-3" style={{ color: NAVY, opacity: 0.3 }}>{T("sp_no_description")}</p>
         )}
 
         <div className="flex items-center gap-1.5 text-[11px] font-bold mb-3" style={{ color: NAVY, opacity: 0.65 }}>
@@ -1863,7 +2274,7 @@ const totalCells = Object.values(g.values).reduce(
 
 <div className="flex items-center justify-between pt-3 border-t" style={{ borderColor: "rgba(26,47,138,0.08)" }}>
           <span className="text-[10px] font-black uppercase tracking-widest" style={{ color: NAVY, opacity: 0.5 }}>
-            {g.dims.length} {g.dims.length === 1 ? "dim" : "dims"}
+       {g.dims.length} {g.dims.length === 1 ? T("sp_dim") : T("sp_dims")}
             {g.unit && <span className="ml-1.5" style={{ opacity: 0.5 }}>· {g.unit}</span>}
           </span>
           <span className="text-[11px] font-black tabular-nums" style={{ color: pct > 0 ? NAVY : NAVY_DEEP, opacity: pct > 0 ? 1 : 0.4 }}>
@@ -1872,10 +2283,10 @@ const totalCells = Object.values(g.values).reduce(
         </div>
         {g.creatorName && (
           <div className="mt-2 flex items-center gap-1.5 text-[10px] font-bold" style={{ color: NAVY, opacity: 0.5 }}>
-            <span>By {g.creatorName}</span>
+<span>{T("sp_by").replace("{name}", g.creatorName)}</span>
             {g.createdAt && <>
               <span style={{ opacity: 0.5 }}>·</span>
-              <span>{timeAgo(g.createdAt)}</span>
+              <span>{timeAgo(g.createdAt, locale)}</span>
             </>}
           </div>
         )}
@@ -1884,20 +2295,28 @@ const totalCells = Object.values(g.values).reduce(
   );
 }
 
-function timeAgo(iso) {
+function timeAgo(iso, locale = "en") {
+  if (!iso) return "";
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return "just now";
-  const m = Math.floor(s / 60); if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60); if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24); if (d < 30) return `${d}d ago`;
-  const mo = Math.floor(d / 30); if (mo < 12) return `${mo}mo ago`;
-  return `${Math.floor(mo / 12)}y ago`;
+  const L = {
+    en: { now: "just now", m: "m ago", h: "h ago", d: "d ago", mo: "mo ago", y: "y ago" },
+    da: { now: "lige nu",   m: "m siden", h: "t siden", d: "d siden", mo: "må siden", y: "å siden" },
+    es: { now: "ahora mismo", m: "m", h: "h", d: "d", mo: "meses", y: "años" },
+    pt: { now: "agora mesmo", m: "m", h: "h", d: "d", mo: "meses", y: "anos" },
+  }[locale] ?? L?.en ?? { now: "just now", m: "m ago", h: "h ago", d: "d ago", mo: "mo ago", y: "y ago" };
+  if (s < 60) return L.now;
+  const m = Math.floor(s / 60);   if (m < 60) return `${m}${L.m}`;
+  const h = Math.floor(m / 60);   if (h < 24) return `${h}${L.h}`;
+  const d = Math.floor(h / 24);   if (d < 30) return `${d}${L.d}`;
+  const mo = Math.floor(d / 30);  if (mo < 12) return `${mo} ${L.mo}`;
+  return `${Math.floor(mo / 12)} ${L.y}`;
 }
 
 // ═══════════════════════════════════════════════════════════════
 // DRILL — with a year switcher when multiple years
 // ═══════════════════════════════════════════════════════════════
-function DrillView({ group, dimsByGroup, onSetCell, onSetCells, locale, year, onYearChange, decimalMode, onRemoveDim, onOpenAddDim }) {
+function DrillView({ group, dimsByGroup, onSetCell, onSetCells, locale, year, decimalMode, onRemoveDim, onOpenAddDim, activeCompany }) {
+  const T = (k, fb) => t(locale, k, fb);
   // Fall back to first year if the parent hasn't picked one yet
   const effectiveYear = year && group.years.includes(year) ? year : (group.years[0] ?? String(new Date().getFullYear()));
 
@@ -1914,8 +2333,12 @@ function DrillView({ group, dimsByGroup, onSetCell, onSetCells, locale, year, on
 
 const fmt = (n) => formatNumber(n, decimalMode);
 
-  // Compute displayed values for this year (formulas resolved)
-  const yearVals = group.values[effectiveYear] ?? {};
+// Compute displayed values for this year (formulas resolved). Shape-aware:
+  // in per-company mode we read the tree under the active company.
+  const yearVals = useMemo(
+    () => getYearTree(group, activeCompany)[effectiveYear] ?? {},
+    [group, activeCompany, effectiveYear],
+  );
   const computed = useMemo(() => evaluateYear(yearVals, group.dims), [yearVals, group.dims]);
 
   const monthTotals = MONTHS.map(m => group.dims.reduce((s, d) => s + (computed[d]?.[m] ?? 0), 0));
@@ -2078,7 +2501,7 @@ const onFillMouseDown = (dimIdx, monthIdx) => (e) => {
                           onClick={() => onRemoveDim(code)}
                           className="opacity-0 group-hover/dim:opacity-100 w-6 h-6 rounded-md flex items-center justify-center transition-all flex-shrink-0"
                           style={{ background: `${RED}12`, color: RED }}
-                          title="Remove dimension"
+                          title={T("sp_remove_dimension")}
                         >
                           <Trash2 size={11} />
                         </button>
@@ -2165,7 +2588,7 @@ color: val !== undefined && val !== 0 ? NAVY : "rgba(26,47,138,0.25)",
                                 cursor: "crosshair",
                                 zIndex: 10,
                               }}
-                              title="Drag to fill"
+                           title={T("sp_drag_to_fill")}
                             />
                           )}
                         </td>
@@ -2200,7 +2623,7 @@ color: val !== undefined && val !== 0 ? NAVY : "rgba(26,47,138,0.25)",
                     <span className="w-4 h-4 rounded-md flex items-center justify-center" style={{ background: `${NAVY}12` }}>
                       <Plus size={10} strokeWidth={3} />
                     </span>
-                    Add dimension
+{T("sp_add_dimension")}
                   </button>
                 </td>
                 <td colSpan={13} />
@@ -2211,9 +2634,9 @@ color: val !== undefined && val !== 0 ? NAVY : "rgba(26,47,138,0.25)",
                     minWidth: 240,
                     borderRight: "1px solid rgba(26,47,138,0.06)",
                     color: NAVY,
-                    background: "white",
+background: "white",
                   }}>
-                  Total
+                  {T("sp_total")}
                 </td>
 {MONTHS.map((m, i) => (
                   <td key={m} className="px-3 py-3 text-center font-mono tabular-nums font-black text-[12px]"
@@ -2237,9 +2660,9 @@ color: val !== undefined && val !== 0 ? NAVY : "rgba(26,47,138,0.25)",
           </table>
         </div>
         <div className="px-4 py-2 border-t flex items-center gap-3 text-[10px] font-bold" style={{ borderColor: "rgba(26,47,138,0.08)", color: NAVY, opacity: 0.55 }}>
-          <span>Tip: start with <span className="font-mono" style={{ color: RED }}>=</span> for formulas — e.g. <span className="font-mono">=A1*1.05</span>, <span className="font-mono">=SUM(A1:L1)</span></span>
+<span>{T("sp_tip_formula")}</span>
           <span style={{ opacity: 0.4 }}>·</span>
-          <span>Drag the corner of a cell to fill across rows or columns</span>
+          <span>{T("sp_tip_drag")}</span>
         </div>
       </div>
     </div>
@@ -2281,9 +2704,283 @@ function MetaMulti({ label, values }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// EDIT IDENTITY MODAL — name, icon, unit, description
+// ═══════════════════════════════════════════════════════════════
+function EditIdentityModal({ group, onCancel, onSave, locale }) {
+  const T = (k, fb) => t(locale, k, fb);
+  const [draft, setDraft] = useState({
+    name: group.name ?? "",
+    icon: group.icon ?? "chart",
+    unit: group.unit ?? "",
+    description: group.description ?? "",
+    sharedAcrossCompanies: group.sharedAcrossCompanies !== false,
+  });
+  const [confirmKeepCompany, setConfirmKeepCompany] = useState(null); // company code to keep
+  const [confirmMigrate, setConfirmMigrate] = useState(false); // shared→per-company
+  const canSave = draft.name.trim().length > 0;
+  const originallyShared = group.sharedAcrossCompanies !== false;
+
+  const attemptShareChange = (next) => {
+    // No change — just update
+    if (next === draft.sharedAcrossCompanies) return;
+    // Changing without any existing values — no data risk
+    const hasValues = Object.keys(group.values ?? {}).length > 0;
+    if (!hasValues) { setDraft(d => ({ ...d, sharedAcrossCompanies: next })); return; }
+    // Shared → per-company: ask what to do with existing values
+    if (originallyShared && !next) {
+      setConfirmMigrate(true);
+      return;
+    }
+    // Per-company → shared: ask which company's data to keep
+    if (!originallyShared && next) {
+      setConfirmKeepCompany(group.companies[0] ?? null);
+      return;
+    }
+  };
+const handleSave = () => {
+    const patch = {
+      name: draft.name.trim(),
+      icon: draft.icon,
+      unit: draft.unit.trim(),
+      description: draft.description.trim(),
+      sharedAcrossCompanies: draft.sharedAcrossCompanies,
+    };
+    // Transform values when the mode changed.
+    if (originallyShared && draft.sharedAcrossCompanies === false) {
+      // Shared → per-company. draft._migrationValues was set by the confirm
+      // dialog (copy vs empty). If the user somehow skipped it, default to empty.
+      patch.values = draft._migrationValues ?? {};
+    } else if (!originallyShared && draft.sharedAcrossCompanies === true) {
+      // Per-company → shared. Keep only the chosen company's tree.
+      const co = draft._keepCompany;
+      patch.values = co && group.values?.[co] ? group.values[co] : {};
+    }
+    // If mode didn't change, don't touch values — the pending cell edits will
+    // save themselves through the values-only path.
+    onSave(patch);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
+      style={{ background: "rgba(26,47,138,0.32)", backdropFilter: "blur(10px)", animation: "spFade 200ms ease-out" }}
+      onClick={onCancel}>
+      <div className="bg-white rounded-3xl overflow-hidden flex flex-col"
+        style={{ maxWidth: 520, width: "100%", boxShadow: "0 30px 80px -20px rgba(15,31,92,0.4)", animation: "spRise 380ms cubic-bezier(0.34,1.56,0.64,1)" }}
+        onClick={e => e.stopPropagation()}>
+        <div className="px-6 py-5 flex items-start justify-between" style={{ borderBottom: "1px solid rgba(26,47,138,0.06)" }}>
+          <div>
+<p className="sp-kicker mb-1" style={{ color: RED }}>{T("sp_edit_party_kicker")}</p>
+            <h3 className="font-black tracking-tight leading-none" style={{ color: NAVY_DEEP, fontSize: 22 }}>{T("sp_edit_identity_title")}</h3>
+          </div>
+          <button onClick={onCancel} className="w-8 h-8 rounded-lg flex items-center justify-center"
+            style={{ background: "rgba(26,47,138,0.06)", color: NAVY }}>
+            <X size={14} strokeWidth={2.5} />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-4">
+<div>
+            <label className="text-[10px] font-black uppercase tracking-[0.14em] mb-2 block" style={{ color: NAVY, opacity: 0.55 }}>
+              {T("sp_field_name")}<span style={{ color: RED, marginLeft: 3 }}>*</span>
+            </label>
+            <input
+              autoFocus
+              type="text"
+              value={draft.name}
+              onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
+              placeholder={T("sp_ph_name")}
+              className="sp-input"
+              style={{ background: "white" }}
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-[0.14em] mb-2 block" style={{ color: NAVY, opacity: 0.55 }}>
+              {T("sp_field_unit")}
+            </label>
+            <input
+              type="text"
+              value={draft.unit}
+              onChange={e => setDraft(d => ({ ...d, unit: e.target.value }))}
+              placeholder={T("sp_ph_unit")}
+              className="sp-input"
+              style={{ background: "white" }}
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-[0.14em] mb-2 block" style={{ color: NAVY, opacity: 0.55 }}>
+              {T("sp_field_description")}
+            </label>
+            <input
+              type="text"
+              value={draft.description}
+              onChange={e => setDraft(d => ({ ...d, description: e.target.value }))}
+              placeholder={T("sp_ph_optional")}
+              className="sp-input"
+              style={{ background: "white" }}
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-[0.14em] mb-2 block" style={{ color: NAVY, opacity: 0.55 }}>
+              {T("sp_field_mode")}
+            </label>
+            <SharedToggle
+              shared={draft.sharedAcrossCompanies}
+              onChange={attemptShareChange}
+              locale={locale}
+            />
+          </div>
+
+<div>
+            <label className="text-[10px] font-black uppercase tracking-[0.14em] mb-2 block" style={{ color: NAVY, opacity: 0.55 }}>
+              {T("sp_field_icon")}
+            </label>
+            <div className="grid grid-cols-8 gap-1.5">
+              {ICON_KEYS.map(k => {
+                const I = ICON_MAP[k];
+                const active = draft.icon === k;
+                return (
+                  <button
+                    key={k}
+                    onClick={() => setDraft(d => ({ ...d, icon: k }))}
+                    className="aspect-square rounded-lg flex items-center justify-center transition-all"
+                    style={{
+                      background: active ? NAVY : "rgba(255,255,255,0.65)",
+                      color: active ? "white" : NAVY,
+                      border: `1px solid ${active ? NAVY : "rgba(26,47,138,0.12)"}`,
+                      boxShadow: active ? `0 4px 10px -2px ${NAVY}50` : "none",
+                    }}
+                    title={k}
+                  >
+                    <I size={14} strokeWidth={2} />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+<div className="px-6 py-4 flex items-center gap-3" style={{ background: "rgba(26,47,138,0.03)" }}>
+          <div className="flex-1" />
+          <button onClick={onCancel}
+            className="px-4 py-2 text-[11px] font-black uppercase tracking-wider rounded-xl"
+            style={{ color: NAVY, opacity: 0.7 }}>{T("sp_cancel")}</button>
+          <button
+            onClick={handleSave}
+            disabled={!canSave}
+            className="sp-shimmer-btn px-5 py-2 rounded-xl text-white font-black text-[11px] tracking-wider uppercase disabled:opacity-40"
+            style={{ boxShadow: `0 10px 28px -8px ${RED}60` }}>
+            {T("sp_save")}
+          </button>
+        </div>
+
+        {/* Confirm: shared → per-company */}
+        {confirmMigrate && (
+          <ConfirmDialog
+            title={T("sp_switch_to_per_title")}
+            body={T("sp_switch_to_per_body")}
+            options={[
+              { label: T("sp_switch_to_per_copy"),  value: "copy" },
+              { label: T("sp_switch_to_per_empty"), value: "empty" },
+            ]}
+            onCancel={() => setConfirmMigrate(false)}
+            onConfirm={(choice) => {
+              setConfirmMigrate(false);
+              let values = {};
+              if (choice === "copy") {
+                for (const co of group.companies) values[co] = group.values ?? {};
+              }
+              setDraft(d => ({ ...d, sharedAcrossCompanies: false, _migrationValues: values }));
+            }}
+            locale={locale}
+          />
+        )}
+
+        {/* Confirm: per-company → shared */}
+        {confirmKeepCompany !== null && (
+          <ConfirmDialog
+            title={T("sp_switch_to_shared_title")}
+            body={T("sp_switch_to_shared_body")}
+            options={group.companies.map(co => ({ label: co, value: co }))}
+            onCancel={() => setConfirmKeepCompany(null)}
+            onConfirm={(choice) => {
+              setConfirmKeepCompany(null);
+              setDraft(d => ({ ...d, sharedAcrossCompanies: true, _keepCompany: choice }));
+            }}
+            locale={locale}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BLUEPRINT MODE MODAL — pick shared vs per-company before download
+// ═══════════════════════════════════════════════════════════════
+function BlueprintModeCard({ title, desc, icon, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className="text-left flex items-center gap-4 px-4 py-4 rounded-2xl transition-all"
+      style={{
+        background: "rgba(255,255,255,0.65)",
+        border: "1px solid rgba(26,47,138,0.12)",
+      }}
+      onMouseEnter={e => {
+        e.currentTarget.style.background = "white";
+        e.currentTarget.style.borderColor = NAVY;
+        e.currentTarget.style.boxShadow = `0 12px 30px -10px ${NAVY}40`;
+      }}
+      onMouseLeave={e => {
+        e.currentTarget.style.background = "rgba(255,255,255,0.65)";
+        e.currentTarget.style.borderColor = "rgba(26,47,138,0.12)";
+        e.currentTarget.style.boxShadow = "none";
+      }}>
+      <div className="w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 text-[22px]"
+        style={{ background: `${NAVY}0d` }}>{icon}</div>
+      <div className="flex-1 min-w-0">
+        <p className="text-[14px] font-black" style={{ color: NAVY_DEEP }}>{title}</p>
+        <p className="text-[11px] font-medium leading-snug mt-0.5" style={{ color: NAVY, opacity: 0.6 }}>{desc}</p>
+      </div>
+    </button>
+  );
+}
+
+function BlueprintModeModal({ onCancel, onPick, locale }) {
+  const T = (k, fb) => t(locale, k, fb);
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
+      style={{ background: "rgba(26,47,138,0.32)", backdropFilter: "blur(10px)", animation: "spFade 200ms ease-out" }}
+      onClick={onCancel}>
+      <div className="bg-white rounded-3xl overflow-hidden"
+        style={{ maxWidth: 520, width: "100%", boxShadow: "0 30px 80px -20px rgba(15,31,92,0.4)", animation: "spRise 380ms cubic-bezier(0.34,1.56,0.64,1)" }}
+        onClick={e => e.stopPropagation()}>
+        <div className="px-6 py-5 flex items-start justify-between" style={{ borderBottom: "1px solid rgba(26,47,138,0.06)" }}>
+          <div>
+<p className="sp-kicker mb-1" style={{ color: RED }}>{T("sp_bp_kicker")}</p>
+            <h3 className="font-black tracking-tight leading-none" style={{ color: NAVY_DEEP, fontSize: 22 }}>{T("sp_bp_choose_mode")}</h3>
+          </div>
+          <button onClick={onCancel} className="w-8 h-8 rounded-lg flex items-center justify-center"
+            style={{ background: "rgba(26,47,138,0.06)", color: NAVY }}>
+            <X size={14} strokeWidth={2.5} />
+          </button>
+        </div>
+<div className="p-5 flex flex-col gap-2">
+<BlueprintModeCard title={T("sp_bp_shared")} desc={T("sp_bp_shared_desc")} icon="🟰" onClick={() => onPick("shared")} />
+          <BlueprintModeCard title={T("sp_bp_per_company")} desc={T("sp_bp_per_company_desc")} icon="⇅" onClick={() => onPick("per-company")} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // YEARS MODAL — quick multi-select of years for an existing party
 // ═══════════════════════════════════════════════════════════════
-function YearsModal({ selected, onCancel, onSave }) {
+function YearsModal({ selected, onCancel, onSave, locale }) {
+  const T = (k, fb) => t(locale, k, fb);
   const [picked, setPicked] = useState(selected);
   const toggle = (y) => setPicked(p => p.includes(y) ? p.filter(x => x !== y) : [...p, y].sort());
   return (
@@ -2295,8 +2992,8 @@ function YearsModal({ selected, onCancel, onSave }) {
         onClick={e => e.stopPropagation()}>
         <div className="px-6 py-5 flex items-start justify-between" style={{ borderBottom: "1px solid rgba(26,47,138,0.06)" }}>
           <div>
-            <p className="sp-kicker mb-1" style={{ color: RED }}>Edit scope</p>
-            <h3 className="font-black tracking-tight leading-none" style={{ color: NAVY_DEEP, fontSize: 22 }}>Years</h3>
+<p className="sp-kicker mb-1" style={{ color: RED }}>{T("sp_edit_scope")}</p>
+            <h3 className="font-black tracking-tight leading-none" style={{ color: NAVY_DEEP, fontSize: 22 }}>{T("sp_years_title")}</h3>
           </div>
           <button onClick={onCancel} className="w-8 h-8 rounded-lg flex items-center justify-center"
             style={{ background: "rgba(26,47,138,0.06)", color: NAVY }}>
@@ -2323,19 +3020,19 @@ function YearsModal({ selected, onCancel, onSave }) {
           </div>
         </div>
         <div className="px-6 py-4 flex items-center gap-3" style={{ background: "rgba(26,47,138,0.03)" }}>
-          <span className="text-[11px] font-bold tabular-nums" style={{ color: NAVY, opacity: 0.6 }}>
-            {picked.length} selected
+<span className="text-[11px] font-bold tabular-nums" style={{ color: NAVY, opacity: 0.6 }}>
+            {T("sp_selected").replace("{n}", picked.length)}
           </span>
           <div className="flex-1" />
           <button onClick={onCancel}
             className="px-4 py-2 text-[11px] font-black uppercase tracking-wider rounded-xl"
-            style={{ color: NAVY, opacity: 0.7 }}>Cancel</button>
+            style={{ color: NAVY, opacity: 0.7 }}>{T("sp_cancel")}</button>
           <button
             onClick={() => onSave(picked)}
             disabled={picked.length === 0}
             className="sp-shimmer-btn px-5 py-2 rounded-xl text-white font-black text-[11px] tracking-wider uppercase disabled:opacity-40"
             style={{ boxShadow: `0 10px 28px -8px ${RED}60` }}>
-            Save
+            {T("sp_save")}
           </button>
         </div>
       </div>
@@ -2346,12 +3043,13 @@ function YearsModal({ selected, onCancel, onSave }) {
 // ═══════════════════════════════════════════════════════════════
 // ADD DIMENSIONS MODAL — pick more dimensions from any group
 // ═══════════════════════════════════════════════════════════════
-function AddDimensionsModal({ group, dimGroups, dimsByGroup, onCancel, onAdd }) {
+function AddDimensionsModal({ group, dimGroups, dimsByGroup, onCancel, onAdd, locale }) {
+  const T = (k, fb) => t(locale, k, fb);
   const [picked, setPicked] = useState([]);
   const [search, setSearch] = useState("");
-  const alreadyIn = new Set(group.dims);
 
   const rows = useMemo(() => {
+    const alreadyIn = new Set(group.dims);
     const out = [];
     dimGroups.forEach(g => {
       const inner = dimsByGroup.get(g);
@@ -2381,8 +3079,8 @@ function AddDimensionsModal({ group, dimGroups, dimsByGroup, onCancel, onAdd }) 
         onClick={e => e.stopPropagation()}>
         <div className="px-6 py-5 flex items-start justify-between flex-shrink-0" style={{ borderBottom: "1px solid rgba(26,47,138,0.06)" }}>
           <div>
-            <p className="sp-kicker mb-1" style={{ color: RED }}>Edit scope</p>
-            <h3 className="font-black tracking-tight leading-none" style={{ color: NAVY_DEEP, fontSize: 22 }}>Add dimensions</h3>
+<p className="sp-kicker mb-1" style={{ color: RED }}>{T("sp_edit_scope")}</p>
+            <h3 className="font-black tracking-tight leading-none" style={{ color: NAVY_DEEP, fontSize: 22 }}>{T("sp_add_dimensions_title")}</h3>
           </div>
           <button onClick={onCancel} className="w-8 h-8 rounded-lg flex items-center justify-center"
             style={{ background: "rgba(26,47,138,0.06)", color: NAVY }}>
@@ -2396,7 +3094,7 @@ function AddDimensionsModal({ group, dimGroups, dimsByGroup, onCancel, onAdd }) 
               autoFocus
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Search dimensions"
+              placeholder={T("sp_ph_search_dimensions")}
               className="text-[13px] font-semibold outline-none bg-transparent flex-1"
               style={{ color: NAVY_DEEP }}
             />
@@ -2410,9 +3108,9 @@ function AddDimensionsModal({ group, dimGroups, dimsByGroup, onCancel, onAdd }) 
         <div className="flex-1 min-h-0 overflow-y-auto sp-scroll px-3 pb-3">
           {filtered.length === 0 ? (
             <div className="py-10 text-center text-[12px] font-semibold" style={{ color: NAVY, opacity: 0.4 }}>
-              {rows.length === 0 ? "All dimensions already added" : "No matches"}
+              {rows.length === 0 ? T("sp_all_dims_added") : T("sp_no_matches_generic")}
             </div>
-          ) : filtered.map(({ code, name, group: g }, i) => {
+          ) : filtered.map(({ code, name, group: g }) => {
             const active = picked.includes(code);
             return (
               <button key={code} onClick={() => toggle(code)}
@@ -2437,18 +3135,18 @@ function AddDimensionsModal({ group, dimGroups, dimsByGroup, onCancel, onAdd }) 
           })}
         </div>
         <div className="px-6 py-4 flex items-center gap-3 flex-shrink-0" style={{ background: "rgba(26,47,138,0.03)" }}>
-          <span className="text-[11px] font-bold tabular-nums" style={{ color: NAVY, opacity: 0.6 }}>
-            {picked.length} selected
+<span className="text-[11px] font-bold tabular-nums" style={{ color: NAVY, opacity: 0.6 }}>
+            {T("sp_selected").replace("{n}", picked.length)}
           </span>
           <div className="flex-1" />
           <button onClick={onCancel} className="px-4 py-2 text-[11px] font-black uppercase tracking-wider rounded-xl"
-            style={{ color: NAVY, opacity: 0.7 }}>Cancel</button>
+            style={{ color: NAVY, opacity: 0.7 }}>{T("sp_cancel")}</button>
           <button
             onClick={() => onAdd(picked)}
             disabled={picked.length === 0}
             className="sp-shimmer-btn px-5 py-2 rounded-xl text-white font-black text-[11px] tracking-wider uppercase disabled:opacity-40"
             style={{ boxShadow: `0 10px 28px -8px ${RED}60` }}>
-            Add {picked.length > 0 ? `${picked.length}` : ""}
+            {T("sp_add_dimension")} {picked.length > 0 ? `${picked.length}` : ""}
           </button>
         </div>
       </div>
@@ -2457,9 +3155,10 @@ function AddDimensionsModal({ group, dimGroups, dimsByGroup, onCancel, onAdd }) 
 }
 
 
-function CreateModal({ companyOpts, dimGroups, dimsByGroup, metaLoading, onCancel, onCreate }) {
+function CreateModal({ companyOpts, dimGroups, dimsByGroup, metaLoading, onCancel, onCreate, locale }) {
+  const T = (k, fb) => t(locale, k, fb);
 
-  const [draft, setDraft] = useState({
+const [draft, setDraft] = useState({
     name: "",
     icon: "chart",
     unit: "",
@@ -2468,6 +3167,7 @@ function CreateModal({ companyOpts, dimGroups, dimsByGroup, metaLoading, onCance
     years: [String(new Date().getFullYear())],
     dimGroups: [],
     dims: [],
+    sharedAcrossCompanies: true,
   });
   const [dimSearch, setDimSearch] = useState("");
   const [companySearch, setCompanySearch] = useState("");
@@ -2518,23 +3218,31 @@ function CreateModal({ companyOpts, dimGroups, dimsByGroup, metaLoading, onCance
     && draft.dimGroups.length > 0
     && draft.dims.length > 0;
 
-const toggle = (field, value) => {
-    if (field === "companies") userTouchedCompanies.current = true;
-    setDraft(d => ({
-      ...d,
-      [field]: d[field].includes(value) ? d[field].filter(x => x !== value) : [...d[field], value],
-    }));
-  };
-
-  // When dim groups change, prune dims that no longer belong to any selected group
-  useEffect(() => {
-    const validCodes = new Set(availableDims.map(([code]) => code));
+const toggle = useCallback((field, value) => {
     setDraft(d => {
-      const kept = d.dims.filter(c => validCodes.has(c));
-      if (kept.length === d.dims.length) return d;
-      return { ...d, dims: kept };
+      const next = d[field].includes(value)
+        ? d[field].filter(x => x !== value)
+        : [...d[field], value];
+      const patched = { ...d, [field]: next };
+      if (field === "dimGroups") {
+        const validCodes = new Set();
+        next.forEach(g => {
+          const inner = dimsByGroup.get(g);
+          if (!inner) return;
+          inner.forEach((_, code) => validCodes.add(code));
+        });
+        patched.dims = d.dims.filter(c => validCodes.has(c));
+      }
+      return patched;
     });
-  }, [availableDims]);
+  }, [dimsByGroup]);
+
+  // Toggle companies with the extra bookkeeping — recorded so the auto-init
+  // effect knows the user made a choice and doesn't overwrite it later.
+  const toggleCompany = useCallback((value) => {
+    userTouchedCompanies.current = true;
+    toggle("companies", value);
+  }, [toggle]);
 
   return (
     <div
@@ -2564,13 +3272,13 @@ background: "transparent",
 {/* Header */}
 <div className="px-8 py-6 flex items-start justify-between flex-shrink-0 relative z-10">
           <div>
-            <p className="sp-kicker mb-2" style={{ color: "#ff7080" }}>New statistical party</p>
+<p className="sp-kicker mb-2" style={{ color: "#ff7080" }}>{T("sp_create_kicker")}</p>
             <h3 className="font-black tracking-tight leading-[1.02] text-white"
               style={{ fontSize: 34, letterSpacing: "-0.018em", textShadow: "0 0 40px rgba(255,255,255,0.25)" }}>
-              Set up scope<span style={{ color: RED }}>.</span>
+              {T("sp_create_title")}<span style={{ color: RED }}>.</span>
             </h3>
             <p className="text-[13px] font-medium mt-2 text-white/75">
-              Pick one or more companies, years, and dimensions to track.
+              {T("sp_create_subtitle")}
             </p>
           </div>
           <button
@@ -2595,36 +3303,36 @@ background: "transparent",
             <div className="sp-glass rounded-3xl overflow-hidden flex flex-col min-w-0"
               style={{ background: "linear-gradient(160deg, rgba(255,255,255,0.75) 0%, rgba(232,240,255,0.68) 100%)" }}>
             <div className="p-6 flex-1 min-w-0 overflow-hidden">
-              <Section label="Identity">
-                <Field label="Name" required>
+<Section label={T("sp_section_identity")}>
+                <Field label={T("sp_field_name")} required>
                   <input
                     autoFocus
                     type="text"
                     value={draft.name}
                     onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
-                    placeholder="Employees, Buildings…"
+                    placeholder={T("sp_ph_name")}
                     className="sp-input"
                   />
                 </Field>
-                <Field label="Unit">
+                <Field label={T("sp_field_unit")}>
                   <input
                     type="text"
                     value={draft.unit}
                     onChange={e => setDraft(d => ({ ...d, unit: e.target.value }))}
-                    placeholder="headcount, m²…"
+                    placeholder={T("sp_ph_unit")}
                     className="sp-input"
                   />
                 </Field>
-                <Field label="Description">
+                <Field label={T("sp_field_description")}>
                   <input
                     type="text"
                     value={draft.description}
                     onChange={e => setDraft(d => ({ ...d, description: e.target.value }))}
-                    placeholder="Optional"
+                    placeholder={T("sp_ph_optional")}
                     className="sp-input"
                   />
                 </Field>
-<Field label="Icon">
+<Field label={T("sp_field_icon")}>
                   <div className="grid grid-cols-8 gap-1.5">
                     {ICON_KEYS.map(k => {
                       const I = ICON_MAP[k];
@@ -2649,8 +3357,8 @@ background: "transparent",
                   </div>
                 </Field>
 
-                <Field
-                  label="Years"
+<Field
+                  label={T("sp_field_years")}
                   required
                   right={
                     <MultiHint
@@ -2658,6 +3366,7 @@ background: "transparent",
                       total={YEARS.length}
                       onAll={() => setDraft(d => ({ ...d, years: YEARS.map(String) }))}
                       onNone={() => setDraft(d => ({ ...d, years: [] }))}
+                      locale={locale}
                     />
                   }
                 >
@@ -2690,24 +3399,30 @@ background: "transparent",
             <div className="sp-glass rounded-3xl overflow-hidden flex flex-col min-w-0"
               style={{ background: "linear-gradient(160deg, rgba(255,255,255,0.68) 0%, rgba(240,244,255,0.62) 100%)" }}>
             <div className="p-6 flex-1 min-w-0 overflow-y-auto sp-scroll">
-              <Section label="Scope">
-<Field
-                  label="Companies"
+<Section label={T("sp_section_scope")}>
+                <Field label={T("sp_field_mode")}>
+                  <SharedToggle
+                    shared={draft.sharedAcrossCompanies}
+                    onChange={(v) => setDraft(d => ({ ...d, sharedAcrossCompanies: v }))}
+                    locale={locale}
+                  />
+                </Field>
+                <Field
+                  label={T("sp_field_companies")}
                   required
-                  right={
+right={
                     <MultiHint
                       count={draft.companies.length}
                       total={companyOpts.length}
                       onAll={() => {
                         userTouchedCompanies.current = true;
-                        // Use companyOpts (not filteredCompanies) so "All" means
-                        // all available, not "all matching the current search".
                         setDraft(d => ({ ...d, companies: companyOpts.map(c => c.value) }));
                       }}
                       onNone={() => {
                         userTouchedCompanies.current = true;
                         setDraft(d => ({ ...d, companies: [] }));
                       }}
+                      locale={locale}
                     />
                   }
                 >
@@ -2718,7 +3433,7 @@ background: "transparent",
                         type="text"
                         value={companySearch}
                         onChange={e => setCompanySearch(e.target.value)}
-                        placeholder="Search companies"
+                        placeholder={T("sp_ph_search_companies")}
                         className="text-[12px] font-semibold outline-none bg-transparent flex-1"
                         style={{ color: NAVY_DEEP }}
                       />
@@ -2729,8 +3444,8 @@ background: "transparent",
                       )}
                     </div>
                   )}
-                  {companyOpts.length === 0 ? (
-                    <LoadingOrEmpty metaLoading={metaLoading} label="companies" />
+{companyOpts.length === 0 ? (
+                    <LoadingOrEmpty metaLoading={metaLoading} label={T("sp_label_companies")} locale={locale} />
                   ) : filteredCompanies.length > 0 ? (
                     <div className="max-h-[280px] overflow-y-auto sp-scroll sp-glass-row">
                       {filteredCompanies.map((c, i) => {
@@ -2738,7 +3453,7 @@ background: "transparent",
                         return (
                           <button
                             key={c.value}
-                            onClick={() => toggle("companies", c.value)}
+                            onClick={() => toggleCompany(c.value)}
                             className="w-full flex items-center gap-3 px-3.5 py-2 transition-colors text-left"
                             style={{
                               background: active ? `${NAVY}0d` : "transparent",
@@ -2762,8 +3477,8 @@ background: "transparent",
                         );
                       })}
                     </div>
-                  ) : (
-                    <EmptyBox>No matches</EmptyBox>
+) : (
+                    <EmptyBox>{T("sp_no_matches_generic")}</EmptyBox>
                   )}
                 </Field>
 
@@ -2775,9 +3490,9 @@ background: "transparent",
             <div className="sp-glass rounded-3xl overflow-hidden flex flex-col min-w-0"
               style={{ background: "linear-gradient(160deg, rgba(255,255,255,0.72) 0%, rgba(255,238,242,0.66) 100%)" }}>
             <div className="p-6 flex-1 min-w-0 overflow-y-auto sp-scroll">
-              <Section label="Dimensions">
+              <Section label={T("sp_section_dimensions")}>
                 <Field
-                  label="Groups"
+                  label={T("sp_field_dim_groups")}
                   required
                   right={
                     <MultiHint
@@ -2785,11 +3500,12 @@ background: "transparent",
                       total={dimGroups.length}
                       onAll={() => setDraft(d => ({ ...d, dimGroups: [...dimGroups] }))}
                       onNone={() => setDraft(d => ({ ...d, dimGroups: [], dims: [] }))}
+                      locale={locale}
                     />
                   }
                 >
                   {dimGroups.length === 0 ? (
-                    <LoadingOrEmpty metaLoading={metaLoading} label="dimension groups" />
+                    <LoadingOrEmpty metaLoading={metaLoading} label={T("sp_label_dim_groups")} locale={locale} />
                   ) : (
                     <div className="flex flex-wrap gap-1.5">
                       {dimGroups.map(g => {
@@ -2822,8 +3538,8 @@ background: "transparent",
                   )}
                 </Field>
 
-                <Field
-                  label="Dimensions"
+<Field
+                  label={T("sp_field_dimensions")}
                   required
                   right={
                     <MultiHint
@@ -2831,11 +3547,12 @@ background: "transparent",
                       total={availableDims.length}
                       onAll={() => setDraft(d => ({ ...d, dims: filteredDims.map(([code]) => code) }))}
                       onNone={() => setDraft(d => ({ ...d, dims: [] }))}
+                      locale={locale}
                     />
                   }
                 >
                   {draft.dimGroups.length === 0 ? (
-                    <EmptyBox>Pick one or more groups first</EmptyBox>
+                    <EmptyBox>{T("sp_pick_one_group_first")}</EmptyBox>
                   ) : (
                     <>
                       <div className="flex items-center gap-2 mb-2 px-3 py-2 sp-glass-search">
@@ -2844,7 +3561,7 @@ background: "transparent",
                           type="text"
                           value={dimSearch}
                           onChange={e => setDimSearch(e.target.value)}
-                          placeholder="Search dimensions"
+                          placeholder={T("sp_ph_search_dimensions")}
                           className="text-[12px] font-semibold outline-none bg-transparent flex-1"
                           style={{ color: NAVY_DEEP }}
                         />
@@ -2857,7 +3574,7 @@ background: "transparent",
                       <div className="max-h-[340px] overflow-y-auto sp-scroll sp-glass-row">
                         {filteredDims.length === 0 ? (
                           <div className="py-6 text-center text-[12px] font-semibold" style={{ color: NAVY, opacity: 0.4 }}>
-                            {dimSearch ? "No matches" : "No dimensions"}
+                            {dimSearch ? T("sp_no_matches_generic") : T("sp_no_dimensions")}
                           </div>
                         ) : filteredDims.map(([code, name, group], i) => {
                           const active = draft.dims.includes(code);
@@ -2904,16 +3621,20 @@ background: "transparent",
             className="px-4 py-2.5 text-[11px] font-black rounded-xl transition-all uppercase tracking-wider hover:bg-white/10"
             style={{ color: "rgba(255,255,255,0.85)" }}
           >
-            Cancel
+            {T("sp_cancel")}
           </button>
           <div className="flex-1" />
           {canCreate ? (
             <span className="text-[11px] font-bold tabular-nums text-white/80">
-              {draft.companies.length} co · {draft.years.length} yr · {draft.dimGroups.length} grp · {draft.dims.length} dim
+              {T("sp_create_summary")
+                .replace("{co}", draft.companies.length)
+                .replace("{yr}", draft.years.length)
+                .replace("{grp}", draft.dimGroups.length)
+                .replace("{dim}", draft.dims.length)}
             </span>
           ) : (
             <span className="text-[11px] font-bold text-white/60">
-              Fill required fields
+              {T("sp_fill_required")}
             </span>
           )}
           <button
@@ -2925,10 +3646,92 @@ background: "transparent",
               boxShadow: canCreate ? `0 14px 36px -10px ${RED}80` : "none",
             }}
           >
-            Create party →
+            {T("sp_create_party_cta")}
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+
+// Radio-list confirmation dialog. Used for mode-swap decisions.
+function ConfirmDialog({ title, body, options, onCancel, onConfirm, locale }) {
+  const T = (k, fb) => t(locale, k, fb);
+  const [choice, setChoice] = useState(options[0]?.value);
+  return (
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4"
+      style={{ background: "rgba(26,47,138,0.32)", backdropFilter: "blur(10px)" }}
+      onClick={onCancel}>
+      <div className="bg-white rounded-3xl overflow-hidden max-w-md w-full"
+        style={{ boxShadow: "0 30px 80px -20px rgba(15,31,92,0.4)" }}
+        onClick={e => e.stopPropagation()}>
+        <div className="p-6">
+         <p className="sp-kicker mb-2" style={{ color: RED }}>{T("sp_confirm")}</p>
+          <h3 className="font-black tracking-tight leading-none mb-2" style={{ color: NAVY_DEEP, fontSize: 20 }}>{title}</h3>
+          <p className="text-[13px] font-medium mb-4" style={{ color: NAVY, opacity: 0.7 }}>{body}</p>
+          <div className="flex flex-col gap-2">
+            {options.map(o => (
+              <button key={o.value}
+                onClick={() => setChoice(o.value)}
+                className="flex items-center gap-3 p-3 rounded-xl text-left transition-colors"
+                style={{
+                  background: choice === o.value ? `${NAVY}0d` : "rgba(255,255,255,0.65)",
+                  border: `1px solid ${choice === o.value ? NAVY : "rgba(26,47,138,0.12)"}`,
+                }}>
+                <div className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0"
+                  style={{ border: `2px solid ${choice === o.value ? NAVY : "rgba(26,47,138,0.25)"}` }}>
+                  {choice === o.value && <div className="w-2 h-2 rounded-full" style={{ background: NAVY }} />}
+                </div>
+                <span className="text-[13px] font-bold" style={{ color: NAVY_DEEP }}>{o.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="px-6 py-4 flex items-center gap-3" style={{ background: "rgba(26,47,138,0.03)" }}>
+          <div className="flex-1" />
+<button onClick={onCancel}
+            className="px-4 py-2 text-[11px] font-black uppercase tracking-wider rounded-xl"
+            style={{ color: NAVY, opacity: 0.7 }}>{T("sp_cancel")}</button>
+          <button onClick={() => onConfirm(choice)}
+            className="sp-shimmer-btn px-5 py-2 rounded-xl text-white font-black text-[11px] tracking-wider uppercase"
+            style={{ boxShadow: `0 10px 28px -8px ${RED}60` }}>
+            {T("sp_continue")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SharedToggleCard({ active, label, desc, icon, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex-1 rounded-2xl p-3 text-left transition-all"
+      style={{
+        background: active ? NAVY : "rgba(255,255,255,0.65)",
+        color: active ? "white" : NAVY,
+        border: `1px solid ${active ? NAVY : "rgba(26,47,138,0.12)"}`,
+        boxShadow: active ? `0 6px 16px -4px ${NAVY}50` : "none",
+      }}
+    >
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-[14px]">{icon}</span>
+        <span className="text-[11px] font-black uppercase tracking-wider">{label}</span>
+      </div>
+      <p className="text-[10px] font-medium leading-snug" style={{ opacity: active ? 0.85 : 0.55 }}>{desc}</p>
+    </button>
+  );
+}
+
+// Two-card switch for shared vs per-company mode.
+function SharedToggle({ shared, onChange, locale }) {
+  const T = (k, fb) => t(locale, k, fb);
+  return (
+    <div className="flex gap-2">
+      <SharedToggleCard active={shared === true}  label={T("sp_shared_toggle_shared")} desc={T("sp_shared_toggle_shared_desc")} icon="🟰" onClick={() => onChange(true)} />
+      <SharedToggleCard active={shared === false} label={T("sp_shared_toggle_per")}    desc={T("sp_shared_toggle_per_desc")}    icon="⇅" onClick={() => onChange(false)} />
     </div>
   );
 }
@@ -2951,7 +3754,8 @@ function Checkbox({ active }) {
   );
 }
 
-function MultiHint({ count, total, onAll, onNone }) {
+function MultiHint({ count, total, onAll, onNone, locale }) {
+  const T = (k, fb) => t(locale, k, fb);
   return (
     <div className="flex items-center gap-2.5 text-[11px] font-bold">
       <span className="tabular-nums" style={{ color: NAVY, opacity: 0.6 }}>
@@ -2963,20 +3767,21 @@ function MultiHint({ count, total, onAll, onNone }) {
         className="transition-colors font-black uppercase tracking-widest text-[10px]"
         style={{ color: NAVY }}
       >
-        All
+        {T("sp_all")}
       </button>
       <button
         onClick={onNone}
         className="transition-colors font-black uppercase tracking-widest text-[10px]"
         style={{ color: NAVY, opacity: 0.5 }}
       >
-        None
+        {T("sp_none")}
       </button>
     </div>
   );
 }
 
-function LoadingOrEmpty({ metaLoading, label }) {
+function LoadingOrEmpty({ metaLoading, label, locale }) {
+  const T = (k, fb) => t(locale, k, fb);
   return (
     <div className="rounded-xl px-4 py-5 flex items-center justify-center gap-2 text-[12px] font-semibold"
       style={{ background: "rgba(255,255,255,0.6)", border: "1px dashed rgba(26,47,138,0.18)" }}>
@@ -2984,10 +3789,10 @@ function LoadingOrEmpty({ metaLoading, label }) {
         <>
           <div className="w-3 h-3 rounded-full border-2 animate-spin"
             style={{ borderColor: "rgba(26,47,138,0.15)", borderTopColor: NAVY }} />
-          <span style={{ color: NAVY, opacity: 0.6 }}>Loading {label}…</span>
+          <span style={{ color: NAVY, opacity: 0.6 }}>{T("sp_loading_x").replace("{label}", label)}</span>
         </>
       ) : (
-        <span style={{ color: NAVY, opacity: 0.4 }}>No {label} available</span>
+        <span style={{ color: NAVY, opacity: 0.4 }}>{T("sp_no_x_available").replace("{label}", label)}</span>
       )}
     </div>
   );

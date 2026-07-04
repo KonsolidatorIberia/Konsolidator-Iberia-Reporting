@@ -303,8 +303,19 @@ case "account": {
       pivot.forEach((val, ac) => { if (ac === node.accountCode) total += val; });
       return -total;
     }
-    case "accountGroup": {
-      // New: groupCode picks one group account and sums it + all descendants
+case "accountGroup": {
+      // Group + dim → look up in dimPivot (keyed as "code:::dimGroup:::dimCode")
+      if (node.groupCode && (node.dimGroup || node.dimCode)) {
+        const descendants = pivot.__groupDescendants?.get(node.groupCode);
+        const codes = descendants && descendants.size > 0 ? [...descendants] : [node.groupCode];
+        let total = 0;
+        for (const c of codes) {
+          const key = `${c}:::${node.dimGroup ?? ""}:::${node.dimCode ?? ""}`;
+          total += (pivot.__dimPivot?.get(key) ?? 0);
+        }
+        return -total;
+      }
+      // No dim → sum the group account + its descendants
       if (node.groupCode) {
         const descendants = pivot.__groupDescendants?.get(node.groupCode);
         let total = 0;
@@ -320,7 +331,38 @@ case "account": {
       pivot.forEach((val, ac) => { if (node.prefix && ac.startsWith(node.prefix)) total += val; });
       return -total;
     }
-    case "manual": return Number(node.value) || 0;
+case "manual": return Number(node.value) || 0;
+case "party": {
+      // Statistical party lookup: sum party.values across the currently-
+      // selected dimensions for this pivot's company & period. Shape-aware:
+      //   shared:      values[year][dim][month]
+      //   per-company: values[company][year][dim][month]
+      if (!pivot.__parties || !pivot.__partyContext) return 0;
+      const party = pivot.__parties.get(node.partyId);
+      if (!party) return 0;
+      const ctx = pivot.__partyContext;
+      if (ctx.company && party.companies?.length && !party.companies.includes(ctx.company)) return 0;
+      const shared = party.sharedAcrossCompanies !== false;
+      const yearTree = shared
+        ? (party.values ?? {})
+        : (party.values?.[ctx.company] ?? {});
+      const yearMap = yearTree[String(ctx.year)];
+      if (!yearMap) return 0;
+      const selectedDims = ctx.selectedDims && ctx.selectedDims.size > 0
+        ? party.dims.filter(d => ctx.selectedDims.has(d))
+        : party.dims;
+      const dimsToSum = node.dimCode ? [node.dimCode] : selectedDims;
+      let total = 0;
+      for (const dim of dimsToSum) {
+        const dimMap = yearMap[dim];
+        if (!dimMap) continue;
+        const cell = dimMap[ctx.month];
+        if (cell == null) continue;
+        const v = typeof cell === "object" ? cell.value : cell;
+        if (typeof v === "number") total += v;
+      }
+      return total;
+    }
     case "op": {
       const l = evalFormulaWithCcTags(node.left,  pivot, cache, kpiList, ccTagToCodes, sectionCodes);
       const r = evalFormulaWithCcTags(node.right, pivot, cache, kpiList, ccTagToCodes, sectionCodes);
@@ -617,12 +659,17 @@ case "account": {
       if (node.dimGroup || node.dimCode) return `${base} [${node.dimGroup ?? ""}:${node.dimName || node.dimCode || ""}]`;
       return base;
     }
-    case "accountGroup": {
+case "accountGroup": {
       const code = node.groupCode ?? node.prefix ?? "?";
       const name = accountCodeLabels?.get?.(code);
-      return `Group Account ${code}${name ? ` — ${name}` : ""}`;
+      const base = `${code}${name ? ` — ${name}` : ""}`;
+      if (node.dimGroup || node.dimCode) {
+        return `${base} · ${node.dimGroup}: ${node.dimName || node.dimCode}`;
+      }
+      return base;
     }
-    case "manual": return String(node.value ?? 0);
+case "manual": return String(node.value ?? 0);
+    case "party": return `${node.partyName ?? node.partyId ?? "?"} (partida)`;
     case "op": {
       const sym = { "+": "+", "-": "−", "*": "×", "/": "÷" }[node.op] ?? node.op;
       return `(${describeFormulaNode(node.left, kpiList, accountCodeLabels)} ${sym} ${describeFormulaNode(node.right, kpiList, accountCodeLabels)})`;
@@ -657,17 +704,76 @@ function describeBenchmark(b) {
   return parts.length ? parts.join("  ·  ") : null;
 }
 
+// Convert any formula AST into text-formula shape { expression, variables }.
+// Each leaf (ref/account/accountGroup/party/manual/cc) becomes a letter.
+// Op/fn nodes turn into infix / function-call strings around the letters.
+function flattenFormulaToTextForm(formula) {
+  if (!formula) return null;
+  // Already text — take as-is.
+  if (formula.type === "text") {
+    const expr = String(formula.expression ?? "").replace(/^\s*=\s*/, "");
+    return { expression: expr, variables: formula.variables ?? {} };
+  }
+  const variables = {};
+  const usedLetters = [];
+  const nextLetter = () => {
+    // A..Z, then AA..AZ if we ever need more
+    const idx = usedLetters.length;
+    if (idx < 26) return String.fromCharCode(65 + idx);
+    const first = Math.floor(idx / 26) - 1;
+    return String.fromCharCode(65 + first) + String.fromCharCode(65 + (idx % 26));
+  };
+  const assignLetter = (node) => {
+    // Deduplicate identical leaves so the same account/ref reuses a letter.
+    const key = JSON.stringify(node);
+    for (const L of usedLetters) {
+      if (variables[L] && JSON.stringify(variables[L]) === key) return L;
+    }
+    const L = nextLetter();
+    variables[L] = node;
+    usedLetters.push(L);
+    return L;
+  };
+  const walk = (node) => {
+    if (!node) return "0";
+    switch (node.type) {
+      case "op": {
+        const l = walk(node.left);
+        const r = walk(node.right);
+        return `(${l} ${node.op} ${r})`;
+      }
+      case "fn": {
+        const inner = walk(node.arg);
+        if (node.fn === "neg") return `(-${inner})`;
+        if (node.fn === "abs") return `ABS(${inner})`;
+        if (node.fn === "pct") return `(${inner} * 100)`;
+        return inner;
+      }
+      // Leaves become letter substitutions
+      case "ref":
+      case "account":
+      case "accountGroup":
+      case "party":
+      case "cc":
+      case "manual":
+        return assignLetter(node);
+      default:
+        return "0";
+    }
+  };
+  const expression = walk(formula);
+  return { expression, variables };
+}
+
 function kpiFormulaSummary(kpi, kpiList, accountCodeLabels) {
   if (!kpi?.formula) return { expression: null, variables: [] };
-  const f = kpi.formula;
-  if (f.type === "text") {
-    const vars = Object.entries(f.variables ?? {}).map(([letter, node]) => ({
-      letter,
-      desc: node ? describeFormulaNode(node, kpiList, accountCodeLabels) : "—",
-    }));
-    return { expression: f.expression ?? "—", variables: vars };
-  }
-  return { expression: describeFormulaNode(f, kpiList, accountCodeLabels), variables: [] };
+  const flat = flattenFormulaToTextForm(kpi.formula);
+  if (!flat) return { expression: null, variables: [] };
+  const vars = Object.entries(flat.variables ?? {}).map(([letter, node]) => ({
+    letter,
+    desc: node ? describeFormulaNode(node, kpiList, accountCodeLabels) : "—",
+  }));
+  return { expression: flat.expression ?? "—", variables: vars };
 }
 
 async function repairXlsxDimensions(buffer) {
@@ -705,10 +811,16 @@ async function repairXlsxDimensions(buffer) {
 }
 
 async function exportKpisToXlsx({
-  kpiList, companyCodes, companyLabels, companyResults, companyResultsCmp,
+  kpiList, kpiListCompany, kpiListDimension, kpiListFull,
+  companyCodes, companyLabels, companyResults, companyResultsCmp,
   dimensionCodes, dimensionResults, dimensionResultsCmp, dimensionPivots,
   graphSections, filters, exportOpts = {}, accountCodeLabels = new Map(),
 }) {
+  const kListCompany   = kpiListCompany   ?? kpiList;
+  const kListDimension = kpiListDimension ?? kpiList;
+  // For ref-node label lookups, use the full library — even system KPIs
+  // not on the current dashboard need to resolve to their friendly label.
+  const kListForRefs   = kpiListFull ?? kpiList;
   const C = EXPORT_COLORS;
   const wb = new ExcelJS.Workbook();
   wb.creator = "Konsolidator";
@@ -733,7 +845,7 @@ const inlineDefs = exportOpts.inlineDefs !== false;
     vhealthy:  { label: "Excellent", hdrBg: "FF1E40AF", cellBg: "FFEFF6FF", text: "FF1E40AF" },
   };
 
-const addKpiMatrixSheet = (sheetName, titleText, cols, colLabels, sections) => {
+const addKpiMatrixSheet = (sheetName, titleText, cols, colLabels, sections, kList) => {
     // sections = [{ label, resultsMap, cmpResultsMap }, …]
     const anyCmp = cmpEnabled && sections.some(s => s.cmpResultsMap);
     const subColsPerCol = anyCmp ? 4 : 1;
@@ -746,7 +858,10 @@ const addKpiMatrixSheet = (sheetName, titleText, cols, colLabels, sections) => {
     const subLines = buildFilterLines(filters);
     const frozenY  = 1 + subLines.length + 1; // title + subs + spacer
 
-    const ws = wb.addWorksheet(sheetName, { views: [{ state: "frozen", xSplit: 1, ySplit: frozenY }] });
+const ws = wb.addWorksheet(sheetName, {
+      views: [{ state: "frozen", xSplit: 1, ySplit: frozenY }],
+      properties: { outlineProperties: { summaryBelow: false, summaryRight: false } },
+    });
     ws.properties.outlineLevelRow = 1;
     ws.properties.outlineLevelCol = 0;
     ws.properties.summaryBelow    = false;
@@ -877,8 +992,30 @@ lbl.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectBarBg } };
       }
 
       // Data rows
-      kpiList.forEach((kpi, rowIdx) => {
+kList.forEach((kpi, rowIdx) => {
         const bandColor = rowIdx % 2 === 0 ? C.band1 : C.band2;
+
+        // Per-variable values for this section (only for text-formula KPIs).
+        // varsMap: Map<col, Map<kpiId, Map<letter, number>>>
+        const varsForKpiByCol = new Map(); // col -> Map<letter, number>
+        cols.forEach(col => {
+          const perKpi = section.varsMap?.get(col);
+          const perLetter = perKpi?.get(kpi.id);
+          if (perLetter && perLetter.size > 0) varsForKpiByCol.set(col, perLetter);
+        });
+        // Union of letters actually used across all columns for this KPI.
+        const letters = [];
+        {
+          const seen = new Set();
+          varsForKpiByCol.forEach(m => m.forEach((_, L) => { if (!seen.has(L)) { seen.add(L); letters.push(L); } }));
+          letters.sort();
+        }
+// Flatten formula (works for both text-form and AST-form KPIs).
+        const flat = flattenFormulaToTextForm(kpi.formula);
+        const hasFormula = flat && letters.length > 0 && flat.expression;
+        const expression = hasFormula
+          ? flat.expression.replace(/^\s*=\s*/, "")
+          : null;
 
         const values = cols.map(col => {
           const res = resultsMap?.get(col);
@@ -901,6 +1038,16 @@ lbl.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectBarBg } };
         const aggregate = Number.isFinite(aggregateRaw) ? aggregateRaw : null;
 
         const dataRowNum = curRow;
+        // Pre-compute where each variable row will live so the KPI row's
+        // formula cells can reference them.
+        const varRowByLetter = new Map();
+        if (hasFormula) {
+          // description row (if any) will sit right after the KPI row, then
+          // one row per variable.
+          let base = dataRowNum + 1 + (kpi.description ? 1 : 0);
+          letters.forEach((L, i) => varRowByLetter.set(L, base + i));
+        }
+
         const kpiType = kpi._isOverridden
           ? { label: "EDITED", color: "FF7C3AED" }
           : (kpi._kpiType === "custom" || kpi._createdBy)
@@ -917,9 +1064,32 @@ lbl.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectBarBg } };
         labelCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
         labelCell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
 
+        // Build the Excel formula string for a given column, substituting each
+        // variable letter with a cell reference into that column's variable row.
+        const buildExcelFormula = (colLetter, colIdx) => {
+          if (!hasFormula) return null;
+          if (!varsForKpiByCol.has(cols[colIdx])) return null;
+          // Substitute LETTER → "{colLetter}{varRow}". Match whole-letter tokens
+          // only (avoid replacing letters inside function names like SUM/ABS).
+          let expr = expression;
+          letters.forEach(L => {
+            const row = varRowByLetter.get(L);
+            if (!row) return;
+            expr = expr.replace(new RegExp(`\\b${L}\\b`, "g"), `${colLetter}${row}`);
+          });
+          return "=" + expr;
+        };
+
         const writeNumCell = (rowN, colN, val, format, fillArgb, opts = {}) => {
           const cell = ws.getCell(rowN, colN);
-          if (!Number.isFinite(val)) {
+          if (opts.formula) {
+            cell.value = { formula: opts.formula, result: Number.isFinite(val) ? val : 0 };
+            cell.numFmt = format === "percent" ? '0.0"%"' : '#,##0;[Red]-#,##0';
+            cell.font = {
+              name: "Calibri", size: 10, bold: !!opts.bold,
+              color: { argb: opts.colorOverride ?? ((val ?? 0) < 0 ? C.red : (format === "percent" && (val ?? 0) >= 0 ? C.green : C.primary)) },
+            };
+          } else if (!Number.isFinite(val)) {
             cell.value = "—";
             cell.font = { name: "Calibri", size: 10, color: { argb: C.gray400 }, bold: !!opts.bold };
           } else {
@@ -935,6 +1105,13 @@ lbl.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectBarBg } };
           cell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
         };
 
+        // Convert an Excel column index (1-based) to letter(s): 1→A, 27→AA, …
+        const colToLetter = (n) => {
+          let s = "";
+          while (n > 0) { const rem = (n - 1) % 26; s = String.fromCharCode(65 + rem) + s; n = Math.floor((n - 1) / 26); }
+          return s;
+        };
+
         cols.forEach((_, i) => {
           if (showCmp) {
             const startCol = 2 + i * 4;
@@ -944,7 +1121,8 @@ lbl.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectBarBg } };
             const deltaPctRaw = (a !== null && c !== null && kpi.format !== "percent" && Math.abs(c) > 1e-9) ? ((a - c) / Math.abs(c)) * 100 : null;
             const delta    = Number.isFinite(deltaRaw)    ? deltaRaw    : null;
             const deltaPct = Number.isFinite(deltaPctRaw) ? deltaPctRaw : null;
-            writeNumCell(dataRowNum, startCol,     a, kpi.format, bandColor);
+            const primaryFormula = buildExcelFormula(colToLetter(startCol), i);
+            writeNumCell(dataRowNum, startCol,     a, kpi.format, bandColor, primaryFormula ? { formula: primaryFormula } : {});
             writeNumCell(dataRowNum, startCol + 1, c, kpi.format, bandColor, { colorOverride: c !== null && c < 0 ? C.red : C.compareB });
             writeNumCell(dataRowNum, startCol + 2, delta, kpi.format, bandColor, { colorOverride: delta === null ? null : (delta < 0 ? C.red : C.green) });
             const pctCell = ws.getCell(dataRowNum, startCol + 3);
@@ -960,7 +1138,9 @@ lbl.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectBarBg } };
             pctCell.alignment = { vertical: "middle", horizontal: "right", indent: 1 };
             pctCell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
           } else {
-            writeNumCell(dataRowNum, 2 + i, values[i], kpi.format, bandColor);
+            const colN = 2 + i;
+            const f = buildExcelFormula(colToLetter(colN), i);
+            writeNumCell(dataRowNum, colN, values[i], kpi.format, bandColor, f ? { formula: f } : {});
           }
         });
 
@@ -979,11 +1159,11 @@ lbl.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectBarBg } };
 
         curRow++;
 
-        // Collapsible trailers (only on first section to avoid duplication)
-        if (inlineDefs && sIdx === 0) {
-          const fSum = kpiFormulaSummary(kpi, kpiList, accountCodeLabels);
+        // ── Trailers: description + one row per variable (per section) ──
+        if (inlineDefs) {
+         const fSum = kpiFormulaSummary(kpi, kListForRefs, accountCodeLabels);
           const trailerBg = "FFF8F9FF";
-          const addTrailerRow = (label, value, accentArgb) => {
+          const addTextTrailer = (label, value, accentArgb) => {
             if (!value) return;
             const r = ws.getRow(curRow);
             r.height = 16;
@@ -1005,11 +1185,58 @@ lbl.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectBarBg } };
             }
             curRow++;
           };
-          if (kpi.description) addTrailerRow("DESCRIPTION", kpi.description, C.gray500);
-          if (fSum.expression) addTrailerRow("FORMULA", fSum.expression, C.primary);
-          if (fSum.variables.length > 0) {
-            const varsTxt = fSum.variables.map(v => `${v.letter} = ${v.desc}`).join("    •    ");
-            addTrailerRow("VARIABLES", varsTxt, C.primary);
+          // Description (once, on first section only, so it doesn't duplicate)
+          if (sIdx === 0 && kpi.description) addTextTrailer("DESCRIPTION", kpi.description, C.gray500);
+
+          // Variable rows — one per letter, with per-column numeric values.
+          if (hasFormula) {
+            letters.forEach(L => {
+              const r = ws.getRow(curRow);
+              r.height = 16;
+              r.outlineLevel = 1;
+              r.hidden = true;
+              // Label: "  A = Net Result"
+              const desc = fSum.variables.find(v => v.letter === L)?.desc ?? "";
+              const cell = r.getCell(1);
+              cell.value = {
+                richText: [
+                  { text: `    ${L}  `, font: { name: "Calibri", size: 9, bold: true, color: { argb: C.primary } } },
+                  { text: `= ${desc}`,  font: { name: "Calibri", size: 9, color: { argb: "FF374151" } } },
+                ]
+              };
+              cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: trailerBg } };
+              cell.alignment = { vertical: "middle", horizontal: "left", indent: 2 };
+              cell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+              // Per-column values
+              cols.forEach((col, i) => {
+                const v = varsForKpiByCol.get(col)?.get(L);
+                if (showCmp) {
+                  const startCol = 2 + i * 4;
+                  writeNumCell(curRow, startCol, Number.isFinite(v) ? v : null, "", trailerBg);
+                  // leave compare/delta/% blank for variable rows
+                  [startCol + 1, startCol + 2, startCol + 3].forEach(cc => {
+                    const b = r.getCell(cc);
+                    b.value = "";
+                    b.fill = { type: "pattern", pattern: "solid", fgColor: { argb: trailerBg } };
+                    b.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+                  });
+                } else {
+                  writeNumCell(curRow, 2 + i, Number.isFinite(v) ? v : null, "", trailerBg);
+                }
+              });
+              // Blank fills for total/bench cols
+              for (let cc = totalAvgCol; cc <= totalCols; cc++) {
+                const b = r.getCell(cc);
+                b.value = "";
+                b.fill = { type: "pattern", pattern: "solid", fgColor: { argb: trailerBg } };
+                b.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+              }
+              curRow++;
+            });
+} else if (fSum.expression) {
+            // No text-formula variables — show the formula description on
+            // every section so both YTD and Monthly get their own +/- toggle.
+            addTextTrailer("FORMULA", fSum.expression, C.primary);
           }
         }
       });
@@ -1041,22 +1268,22 @@ lbl.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectBarBg } };
 
 if (companyCodes && companyCodes.length > 0 && companyResults?.ytd) {
     const labels = (companyLabels && companyLabels.length === companyCodes.length) ? companyLabels : companyCodes;
-    addKpiMatrixSheet("Company KPIs", "KPI Dashboard — By Company",
+addKpiMatrixSheet("Company KPIs", "KPI Dashboard — By Company",
       companyCodes, labels,
       [
-        { label: "YTD · Year-to-Date",     resultsMap: companyResults.ytd,     cmpResultsMap: companyResultsCmp?.ytd     ?? null },
-        { label: "Monthly · Period Delta", resultsMap: companyResults.monthly, cmpResultsMap: companyResultsCmp?.monthly ?? null },
-      ]);
+        { label: "YTD · Year-to-Date",     resultsMap: companyResults.ytd,     cmpResultsMap: companyResultsCmp?.ytd     ?? null, varsMap: companyResults.ytdVars     },
+        { label: "Monthly · Period Delta", resultsMap: companyResults.monthly, cmpResultsMap: companyResultsCmp?.monthly ?? null, varsMap: companyResults.monthlyVars },
+      ], kListCompany);
   }
 
   if (dimensionCodes && dimensionCodes.length > 0 && dimensionResults?.ytd) {
     const dimLabels = dimensionCodes.map(dc => dimensionPivots?.get(dc)?.name ?? dc);
-    addKpiMatrixSheet("Dimension KPIs", "KPI Dashboard — By Dimension",
+addKpiMatrixSheet("Dimension KPIs", "KPI Dashboard — By Dimension",
       dimensionCodes, dimLabels,
       [
-        { label: "YTD · Year-to-Date",     resultsMap: dimensionResults.ytd,     cmpResultsMap: dimensionResultsCmp?.ytd     ?? null },
-        { label: "Monthly · Period Delta", resultsMap: dimensionResults.monthly, cmpResultsMap: dimensionResultsCmp?.monthly ?? null },
-      ]);
+        { label: "YTD · Year-to-Date",     resultsMap: dimensionResults.ytd,     cmpResultsMap: dimensionResultsCmp?.ytd     ?? null, varsMap: dimensionResults.ytdVars     },
+        { label: "Monthly · Period Delta", resultsMap: dimensionResults.monthly, cmpResultsMap: dimensionResultsCmp?.monthly ?? null, varsMap: dimensionResults.monthlyVars },
+      ], kListDimension);
   }
 
   // ── KPI Definitions sheet ──
@@ -1080,7 +1307,16 @@ if (companyCodes && companyCodes.length > 0 && companyResults?.ytd) {
       cell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
     });
 
-    kpiList.forEach((kpi, i) => {
+// Union of both views' KPIs, deduped by id, so definitions cover everything.
+    const _allKpisForDefs = (() => {
+      const seen = new Set();
+      const out = [];
+      [...kListCompany, ...kListDimension].forEach(k => {
+        if (!seen.has(k.id)) { seen.add(k.id); out.push(k); }
+      });
+      return out;
+    })();
+    _allKpisForDefs.forEach((kpi, i) => {
       const r = dws.getRow(3 + i);
       const band = i % 2 === 0 ? C.band1 : C.band2;
       const fSum = kpiFormulaSummary(kpi, kpiList, accountCodeLabels);
@@ -1247,10 +1483,14 @@ const buffer   = await wb.xlsx.writeBuffer();
   saveAs(blob, fname);
 }
 async function exportKpisToPdf({
-  kpiList, companyCodes, companyLabels, companyResults, companyResultsCmp,
+  kpiList, kpiListCompany, kpiListDimension, kpiListFull,
+  companyCodes, companyLabels, companyResults, companyResultsCmp,
   dimensionCodes, dimensionResults, dimensionResultsCmp, dimensionPivots,
   graphSections, filters, exportOpts = {}, accountCodeLabels = new Map(),
 }) {
+  const kListCompany   = kpiListCompany   ?? kpiList;
+  const kListDimension = kpiListDimension ?? kpiList;
+  const kListForRefs   = kpiListFull      ?? kpiList;
   const H = {
     primary:   [26, 47, 138],
     primaryDk: [13, 27, 84],
@@ -1486,10 +1726,11 @@ const dim = [];
     doc.text("Konsolidator", 24, pageH - 18);
   };
 
-  const renderMatrixTable = (cols, colLabels, resultsMap, cmpResultsMap, startY) => {
+const renderMatrixTable = (cols, colLabels, resultsMap, cmpResultsMap, startY, kList = kpiList, varsMap = null) => {
     const useCmp = cmpResultsMap != null;
 
-    const kpiAggregates = kpiList.map(kpi => {
+const _kListForAgg = kList;
+    const kpiAggregates = _kListForAgg.map(kpi => {
       const allVals = cols.map(col => {
         const res = resultsMap?.get(col);
         if (!res) return null;
@@ -1503,7 +1744,9 @@ const dim = [];
       return Number.isFinite(raw) ? raw : null;
     });
 
-    const renderChunk = (chunkCols, chunkLabels, sY) => {
+const renderChunk = (chunkCols, chunkLabels, sY) => {
+      const _kList = kList;
+      const _varsMap = varsMap;
       const nCols = chunkCols.length;
       let head, body;
       const totalAvgIdx = 1 + nCols * (useCmp ? 4 : 1);
@@ -1534,7 +1777,9 @@ const dim = [];
 
         head = [headSuper, headSub];
 
-        body = kpiList.map((kpi, ki) => {
+body = [];
+_kList.forEach((kpi) => {
+          const ki = _kListForAgg.indexOf(kpi);
           const row = [`${kpi.label}  [${kpiTypeBadge(kpi)}]`];
           chunkCols.forEach(col => {
             const aRes = resultsMap?.get(col);
@@ -1550,16 +1795,37 @@ const dim = [];
             row.push(!Number.isFinite(delta) ? "—" : fmtValue(delta, kpi.format));
             row.push(!Number.isFinite(dPct)  ? "—" : `${dPct > 0 ? "+" : ""}${dPct.toFixed(1)}%`);
           });
-          const agg = kpiAggregates[ki];
+          const agg = ki >= 0 ? kpiAggregates[ki] : null;
           row.push(agg === null ? "—" : fmtValue(agg, kpi.format));
           row.push(fmtBenchRange(kpi.benchmark?.unhealthy));
           row.push(fmtBenchRange(kpi.benchmark?.healthy));
           row.push(fmtBenchRange(kpi.benchmark?.vhealthy));
-          return row;
+          row._kpiId = kpi.id;
+          body.push(row);
+
+          // Variable sub-rows for traceability (works for text and AST formulas)
+          const flat = flattenFormulaToTextForm(kpi.formula);
+          if (flat && flat.variables) {
+            const letters = Object.keys(flat.variables).sort();
+            letters.forEach(L => {
+              const desc = describeFormulaNode(flat.variables[L], kListForRefs, accountCodeLabels);
+              const subRow = [`    ${L} = ${desc}`];
+              chunkCols.forEach(col => {
+                const v = _varsMap?.get(col)?.get(kpi.id)?.get(L);
+                subRow.push(Number.isFinite(v) ? fmtValue(v, "") : "—");
+                subRow.push(""); subRow.push(""); subRow.push("");
+              });
+              subRow.push(""); subRow.push(""); subRow.push(""); subRow.push("");
+              subRow._isVarRow = true;
+              body.push(subRow);
+            });
+          }
         });
       } else {
         head = [["KPI", ...chunkLabels, "Total/Avg", "Unhealthy", "Healthy", "Excellent"]];
-        body = kpiList.map((kpi, ki) => {
+        body = [];
+_kList.forEach((kpi) => {
+          const ki = _kListForAgg.indexOf(kpi);
           const vals = chunkCols.map(col => {
             const res = resultsMap?.get(col);
             if (!res) return null;
@@ -1568,12 +1834,30 @@ const dim = [];
           });
           const row = [`${kpi.label}  [${kpiTypeBadge(kpi)}]`];
           vals.forEach(v => row.push(v === null ? "—" : fmtValue(v, kpi.format)));
-          const agg = kpiAggregates[ki];
+          const agg = ki >= 0 ? kpiAggregates[ki] : null;
           row.push(agg === null ? "—" : fmtValue(agg, kpi.format));
           row.push(fmtBenchRange(kpi.benchmark?.unhealthy));
-          row.push(fmtBenchRange(kpi.benchmark?.healthy));
+row.push(fmtBenchRange(kpi.benchmark?.healthy));
           row.push(fmtBenchRange(kpi.benchmark?.vhealthy));
-          return row;
+          row._kpiId = kpi.id;
+          body.push(row);
+
+          // Variable sub-rows (non-cmp branch)
+          const flat = flattenFormulaToTextForm(kpi.formula);
+          if (flat && flat.variables) {
+            const letters = Object.keys(flat.variables).sort();
+            letters.forEach(L => {
+              const desc = describeFormulaNode(flat.variables[L], kListForRefs, accountCodeLabels);
+              const subRow = [`    ${L} = ${desc}`];
+              chunkCols.forEach(col => {
+                const v = _varsMap?.get(col)?.get(kpi.id)?.get(L);
+                subRow.push(Number.isFinite(v) ? fmtValue(v, "") : "—");
+              });
+              subRow.push(""); subRow.push(""); subRow.push(""); subRow.push("");
+              subRow._isVarRow = true;
+              body.push(subRow);
+            });
+          }
         });
       }
 
@@ -1602,8 +1886,18 @@ const dim = [];
         headStyles: { fillColor: H.primary, textColor: H.white, fontStyle: "bold", halign: "center", fontSize: useCmp ? 7 : 7, valign: "middle", lineColor: [255, 255, 255], lineWidth: 0.5 },
         columnStyles: colStyles,
         alternateRowStyles: { fillColor: H.band2 },
-        didParseCell: (data) => {
+didParseCell: (data) => {
           if (data.section === "body") {
+            const rowRaw = data.row.raw;
+            const isVarRow = rowRaw && rowRaw._isVarRow;
+            if (isVarRow) {
+              data.cell.styles.fontSize = (useCmp ? 5.5 : 6.5);
+              data.cell.styles.textColor = H.gray500;
+              data.cell.styles.fontStyle = "normal";
+              data.cell.styles.fillColor = [251, 252, 255];
+              if (data.column.index === 0) data.cell.styles.halign = "left";
+              return;
+            }
             const ci = data.column.index;
             if (ci === 0) return;
             if (ci === benchUnIdx) { data.cell.styles.fillColor = H.benchUnBg; data.cell.styles.textColor = H.benchUnHd; data.cell.styles.halign = "center"; return; }
@@ -1656,12 +1950,12 @@ const dim = [];
     return y;
   };
 
-  const renderViewSheet = (title, cols, colLabels, resultsBoth, cmpBoth) => {
+const renderViewSheet = (title, cols, colLabels, resultsBoth, cmpBoth, kList) => {
     drawTitleBar(title);
     let y = drawSubtitleLines(36, buildPdfFilterLines(filters));
 
     y = drawSectionBar("YTD · Year-to-Date", y + 6, H.primary);
-    y = renderMatrixTable(cols, colLabels, resultsBoth.ytd, cmpBoth?.ytd ?? null, y + 4);
+    y = renderMatrixTable(cols, colLabels, resultsBoth.ytd, cmpBoth?.ytd ?? null, y + 4, kList, resultsBoth.ytdVars ?? null);
 
     if (y + 100 > pageH) {
       doc.addPage();
@@ -1669,7 +1963,7 @@ const dim = [];
     }
 
     y = drawSectionBar("Monthly · Period Delta", y + 12, H.compareB);
-    renderMatrixTable(cols, colLabels, resultsBoth.monthly, cmpBoth?.monthly ?? null, y + 4);
+    renderMatrixTable(cols, colLabels, resultsBoth.monthly, cmpBoth?.monthly ?? null, y + 4, kList, resultsBoth.monthlyVars ?? null);
   };
 
   // ── Render order: Cover → Company → Dimension → Graphs → Definitions ──
@@ -1678,13 +1972,13 @@ const dim = [];
   if (companyCodes && companyCodes.length > 0 && companyResults?.ytd) {
     doc.addPage();
     const labels = (companyLabels && companyLabels.length === companyCodes.length) ? companyLabels : companyCodes;
-    renderViewSheet("KPI Dashboard — By Company", companyCodes, labels, companyResults, companyResultsCmp);
+renderViewSheet("KPI Dashboard — By Company", companyCodes, labels, companyResults, companyResultsCmp, kListCompany);
   }
 
   if (dimensionCodes && dimensionCodes.length > 0 && dimensionResults?.ytd) {
     doc.addPage();
     const dimLabels = dimensionCodes.map(dc => dimensionPivots?.get(dc)?.name ?? dc);
-    renderViewSheet("KPI Dashboard — By Dimension", dimensionCodes, dimLabels, dimensionResults, dimensionResultsCmp);
+renderViewSheet("KPI Dashboard — By Dimension", dimensionCodes, dimLabels, dimensionResults, dimensionResultsCmp, kListDimension);
   }
 
   if (graphSections && graphSections.length > 0) {
@@ -1759,8 +2053,17 @@ const dim = [];
     drawTitleBar("KPI Definitions · Formulas · Benchmarks");
 
     const defHead = [["KPI", "Category", "Format", "Formula · Variables", "Benchmark"]];
-    const defBody = kpiList.map(kpi => {
-      const fSum = kpiFormulaSummary(kpi, kpiList, accountCodeLabels);
+// Union of both view lists so definitions cover every KPI that showed up.
+    const _allKpisForDefs = (() => {
+      const seen = new Set();
+      const out = [];
+      [...kListCompany, ...kListDimension].forEach(k => {
+        if (!seen.has(k.id)) { seen.add(k.id); out.push(k); }
+      });
+      return out;
+    })();
+    const defBody = _allKpisForDefs.map(kpi => {
+      const fSum = kpiFormulaSummary(kpi, kListForRefs, accountCodeLabels);
       const bDesc = describeBenchmark(kpi.benchmark);
       const formulaTxt = [
         fSum.expression ? `Formula: ${fSum.expression}` : null,
@@ -2351,12 +2654,99 @@ function AccountPicker({ items, value, onChange, dimsByAccount = new Map() }) {
   );
 }
 
-function SlotPicker({ onSelect, onClose, kpiList, accountCodes, localAccounts = [], groupAccountsList = [], accountCodeLabels = new Map(), builtInIds = new Set(), dimsByAccount = new Map(), localDimsByAccount = new Map() }) {
+
+
+function PartyPicker({ parties, partyContext, evalPartyValue, value, onChange }) {
+  const [search, setSearch] = useState("");
+  // Filter to parties applicable to the current KPI page context:
+  //  1. Selected company must be in the party's `companies`
+  //  2. Selected year must be in the party's `years`
+  //  3. At least one currently-selected dim must be in the party's `dims`
+  //     (if no dims selected, all party dims count)
+  const applicable = useMemo(() => {
+    if (!partyContext) return parties;
+    const { company, year, selectedDims } = partyContext;
+    return parties.filter(p => {
+      if (company && p.companies?.length && !p.companies.includes(company)) return false;
+      if (year && p.years?.length && !p.years.includes(String(year))) return false;
+      if (selectedDims && selectedDims.size > 0) {
+        return p.dims?.some(d => selectedDims.has(d));
+      }
+      return true;
+    });
+  }, [parties, partyContext]);
+
+  const filtered = search.trim()
+    ? applicable.filter(p =>
+        p.name.toLowerCase().includes(search.toLowerCase()) ||
+        p.unit.toLowerCase().includes(search.toLowerCase()))
+    : applicable;
+
+  const fmtVal = (n) => typeof n === "number"
+    ? n.toLocaleString("de-DE", { maximumFractionDigits: 2 })
+    : "—";
+
+  return (
+    <div className="flex flex-col gap-3 flex-1 min-h-0">
+      <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-gray-50">
+        <Search size={12} className="text-gray-400" />
+        <input
+          autoFocus
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Buscar partida..."
+          className="text-sm outline-none bg-transparent flex-1"
+        />
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto border border-gray-100 rounded-xl">
+        {filtered.length === 0 ? (
+          <div className="py-10 text-center text-xs text-gray-400">
+            {applicable.length === 0
+              ? "No hay partidas aplicables al filtro actual (empresa, periodo, dimensiones)"
+              : "Sin resultados"}
+          </div>
+       ) : filtered.map((p) => {
+          const selected = value === p.id;
+          const preview = evalPartyValue ? evalPartyValue(p.id) : null;
+          return (
+            <button key={p.id}
+              onClick={() => onChange(p.id)}
+              className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors border-b border-gray-100 last:border-b-0"
+              style={{ background: selected ? "#ecfdf5" : "transparent" }}
+              onMouseEnter={e => { if (!selected) e.currentTarget.style.background = "#f9fafb"; }}
+              onMouseLeave={e => { if (!selected) e.currentTarget.style.background = "transparent"; }}>
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                style={{ background: selected ? "#059669" : "#d1fae5", color: selected ? "white" : "#059669" }}>
+                <span className="text-sm font-black">◆</span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-black text-gray-900 truncate">{p.name}</p>
+                <p className="text-[10px] font-bold text-gray-400 mt-0.5">
+                  {p.dims.length} dims{p.unit ? ` · ${p.unit}` : ""}
+                </p>
+              </div>
+              <div className="flex flex-col items-end">
+                <span className="text-[9px] font-black uppercase tracking-wider text-gray-400">Valor</span>
+                <span className="text-sm font-black tabular-nums" style={{ color: "#047857" }}>
+                  {fmtVal(preview)}
+                </span>
+              </div>
+              {selected && <Check size={12} className="text-emerald-600 flex-shrink-0" />}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SlotPicker({ onSelect, onClose, kpiList, accountCodes, localAccounts = [], groupAccountsList = [], accountCodeLabels = new Map(), builtInIds = new Set(), dimsByAccount = new Map(), localDimsByAccount = new Map(), parties = [], partyContext = null, evalPartyValue = null }) {
   const [step, setStep] = useState("type");
   const [type, setType] = useState(null);
   const [prefix, setPrefix] = useState("");
   const [accountCode, setAccountCode] = useState("");
-const [kpiId, setKpiId] = useState("");
+  const [kpiId, setKpiId] = useState("");
+  const [partyId, setPartyId] = useState("");
 
   // derive group prefixes from accountCodes (unique 1-2 char prefixes)
   const groupPrefixes = useMemo(() => {
@@ -2373,10 +2763,25 @@ const TYPES = [
     { id: "accountGroup", label: "Cuenta de grupo", desc: "Suma todas las cuentas locales bajo esta cuenta de grupo", color: "bg-blue-50 text-blue-700 border-blue-200" },
     { id: "account",      label: "Cuenta local", desc: "Cuenta de contabilización individual",   color: "bg-[#eef1fb] text-[#1a2f8a] border-[#1a2f8a]/20" },
     { id: "ref",          label: "KPI existente",     desc: "Referencia a otro KPI calculado", color: "bg-purple-50 text-purple-700 border-purple-200" },
+    { id: "party",        label: "Partida estadística", desc: "Empleados, superficie, u otras métricas no financieras", color: "bg-emerald-50 text-emerald-700 border-emerald-200" },
   ];
 
 const confirm = () => {
-    if (type === "accountGroup") onSelect({ type: "accountGroup", groupCode: prefix, prefix });
+    if (type === "accountGroup") {
+      if (prefix.includes(":::")) {
+        const [gc, dimGroup, dimCode] = prefix.split(":::");
+        const dimEntry = dimsByAccount.get(gc)?.find(d => d.group === dimGroup && d.code === dimCode);
+        onSelect({
+          type: "accountGroup",
+          groupCode: gc, prefix: gc,
+          dimGroup: dimGroup || undefined,
+          dimCode:  dimCode  || undefined,
+          dimName:  dimEntry?.name || dimCode || undefined,
+        });
+      } else {
+        onSelect({ type: "accountGroup", groupCode: prefix, prefix });
+      }
+    }
     else if (type === "account") {
 if (accountCode.includes(":::")) {
         const [ac, dimGroup, dimCode] = accountCode.split(":::");
@@ -2387,6 +2792,10 @@ if (accountCode.includes(":::")) {
       }
     }
     else if (type === "ref")      onSelect({ type: "ref", kpiId });
+    else if (type === "party") {
+      const p = parties.find(pp => pp.id === partyId);
+      onSelect({ type: "party", partyId, partyName: p?.name });
+    }
     onClose();
   };
 
@@ -2431,6 +2840,7 @@ return (
               { id: "accountGroup", label: "Cuenta de grupo", desc: "Suma todas las cuentas locales bajo esta cuenta de grupo", icon: "Σ", iconBg: "#dbeafe", iconColor: "#1d4ed8" },
               { id: "account",      label: "Cuenta local", desc: "Cuenta de contabilización individual", icon: "#", iconBg: "#eef1fb", iconColor: "#1a2f8a" },
               { id: "ref",          label: "KPI existente",     desc: "Referencia a otro KPI calculado", icon: "↗", iconBg: "#f3e8ff", iconColor: "#7c3aed" },
+              { id: "party",        label: "Partida estadística", desc: "Empleados, superficie, u otras métricas no financieras", icon: "◆", iconBg: "#d1fae5", iconColor: "#047857" },
             ].map((t) => (
               <button key={t.id} onClick={() => { setType(t.id); setStep("detail"); }}
                 className="text-left rounded-2xl border transition-all duration-200 group flex-1 flex items-center"
@@ -2500,9 +2910,12 @@ return (
 {type === "ref" && (
               <KpiRefPicker kpiList={kpiList} kpiId={kpiId} setKpiId={setKpiId} builtInIds={builtInIds} />
             )}
+{type === "party" && (
+              <PartyPicker parties={parties} partyContext={partyContext} evalPartyValue={evalPartyValue} value={partyId} onChange={setPartyId} />
+            )}
 </div>
             <button onClick={confirm}
-              disabled={(type === "accountGroup" && !prefix) || (type === "account" && !accountCode.split(":::")[0]) || (type === "ref" && !kpiId)}
+             disabled={(type === "accountGroup" && !prefix) || (type === "account" && !accountCode.split(":::")[0]) || (type === "ref" && !kpiId) || (type === "party" && !partyId)}
               className="w-full py-3 rounded-xl text-white text-sm font-black transition-all disabled:opacity-30 flex items-center justify-center gap-2 flex-shrink-0"
               style={{ background: "linear-gradient(135deg, #1a2f8a 0%, #3b54b8 100%)", boxShadow: "0 6px 20px -4px rgba(26,47,138,0.45)" }}>
               <Check size={14} /> Confirmar selección
@@ -2514,24 +2927,52 @@ return (
   );
 }
 
-function SlotLabel({ node, kpiList, accountCodeLabels = new Map() }) {
+function SlotLabel({ node, kpiList, accountCodeLabels = new Map(), dimsByAccount = new Map() }) {
   if (!node) return <span className="text-gray-300 italic">vacío</span>;
-  if (node.type === "accountGroup") {
-    const code = node.groupCode ?? node.prefix ?? "?";
+if (node.type === "accountGroup") {
+    // Legacy nodes stored the whole "code:::dimGroup:::dimCode" string inside
+    // groupCode/prefix. Detect and split so we can render nicely.
+    let code   = node.groupCode ?? node.prefix ?? "?";
+    let dimGroup = node.dimGroup;
+    let dimCode  = node.dimCode;
+    let dimName  = node.dimName;
+    if (code.includes(":::") && !dimGroup && !dimCode) {
+      const [gc, dg, dc] = code.split(":::");
+      code = gc; dimGroup = dg || undefined; dimCode = dc || undefined;
+    }
     const name = accountCodeLabels.get(code);
-    return <span>Grupo <span className="font-black">{name ? `${code} — ${name}` : code}</span></span>;
+    const base = name ? `${code} — ${name}` : code;
+if (dimGroup || dimCode) {
+      const entry = dimsByAccount.get(code)?.find(d => d.group === dimGroup && d.code === dimCode);
+      const label = dimName || entry?.name || dimCode;
+      return <span><span className="font-black">{base}</span> <span style={{ color: "#d97706", fontWeight: 700 }}> → {dimGroup}: {label}</span></span>;
+    }
+    return <span><span className="font-black">{base}</span></span>;
   }
 if (node.type === "account") {
-    const name = accountCodeLabels.get(node.accountCode);
-    const base = name ? `${node.accountCode} — ${name}` : (node.accountCode || "?");
-if (node.dimGroup || node.dimCode) {
-      return <span className="font-black">{base} <span style={{ color: "#d97706", fontWeight: 700 }}>· {node.dimGroup}: {node.dimName || node.dimCode}</span></span>;
+    let code    = node.accountCode ?? "?";
+    let dimGroup = node.dimGroup;
+    let dimCode  = node.dimCode;
+    let dimName  = node.dimName;
+    if (code.includes(":::") && !dimGroup && !dimCode) {
+      const [ac, dg, dc] = code.split(":::");
+      code = ac; dimGroup = dg || undefined; dimCode = dc || undefined;
+    }
+    const name = accountCodeLabels.get(code);
+    const base = name ? `${code} — ${name}` : code;
+if (dimGroup || dimCode) {
+      const entry = dimsByAccount.get(code)?.find(d => d.group === dimGroup && d.code === dimCode);
+      const label = dimName || entry?.name || dimCode;
+      return <span className="font-black">{base} <span style={{ color: "#d97706", fontWeight: 700 }}> → {dimGroup}: {label}</span></span>;
     }
     return <span className="font-black">{base}</span>;
   }
-  if (node.type === "ref") {
+if (node.type === "ref") {
     const k = kpiList.find(k => k.id === node.kpiId);
     return <span className="font-black">{k?.label || node.kpiId || "?"}</span>;
+  }
+  if (node.type === "party") {
+    return <span className="font-black">◆ {node.partyName || node.partyId || "?"}</span>;
   }
   if (node.type === "manual") return <span className="font-black">{node.value}</span>;
   return <span className="text-gray-400 text-[10px]">complejo</span>;
@@ -2542,7 +2983,7 @@ function Slot({ node, onChange, kpiList, accountCodes, accountCodeLabels = new M
     <>
       <button onClick={() => setOpen(true)}
         className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all hover:shadow-sm ${node ? color : "bg-gray-50 text-gray-400 border-gray-200 border-dashed hover:border-[#1a2f8a]/30 hover:bg-[#f8f9ff]"}`}>
-        {node ? <SlotLabel node={node} kpiList={kpiList} accountCodeLabels={accountCodeLabels} /> : <>
+        {node ? <SlotLabel node={node} kpiList={kpiList} accountCodeLabels={accountCodeLabels} dimsByAccount={dimsByAccount} /> : <>
           <Plus size={10} className="opacity-50" /> variable
         </>}
       </button>
@@ -2610,7 +3051,7 @@ function VisualFormula({ formula, onChange, kpiList, accountCodes, accountCodeLa
 // ── Text Formula Builder ──────────────────────────────────────────────────────
 const VARIABLE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
-function TextFormulaBuilder({ formula, onChange, kpiList, accountCodes, localAccounts = [], groupAccountsList = [], accountCodeLabels = new Map(), builtInIds = new Set(), dimsByAccount = new Map(), localDimsByAccount = new Map() }) {
+function TextFormulaBuilder({ formula, onChange, kpiList, accountCodes, localAccounts = [], groupAccountsList = [], accountCodeLabels = new Map(), builtInIds = new Set(), dimsByAccount = new Map(), localDimsByAccount = new Map(), parties = [], partyContext = null, evalPartyValue = null }) {
   const [expression, setExpression] = useState(() => {
     if (formula?.type === "text") return formula.expression ?? "";
     return "";
@@ -2738,7 +3179,7 @@ const updateExpr = (val) => {
                 {variables[letter] ? (
 <button onClick={() => setEditingVar(letter)}
                     className="text-xs font-black truncate hover:opacity-70 transition-opacity text-left w-full">
-                    <SlotLabel node={variables[letter]} kpiList={kpiList} accountCodeLabels={accountCodeLabels} />
+                  <SlotLabel node={variables[letter]} kpiList={kpiList} accountCodeLabels={accountCodeLabels} dimsByAccount={dimsByAccount} />
                   </button>
                 ) : (
                   <button onClick={() => setEditingVar(letter)}
@@ -2773,6 +3214,9 @@ const updateExpr = (val) => {
           builtInIds={builtInIds}
           dimsByAccount={dimsByAccount}
           localDimsByAccount={localDimsByAccount}
+          parties={parties}
+          partyContext={partyContext}
+          evalPartyValue={evalPartyValue}
         />
       )}
     </div>
@@ -3125,7 +3569,7 @@ function TagInput({ tag, setTag, allLocalKpis }) {
   );
 }
 
-function KpiEditorModal({ kpi, onSave, onClose, onReset, onEditLibraryKpi, onDeleteLibraryKpi, onDuplicate, allLocalKpis = [], systemKpis = [], accountCodes, localAccounts = [], groupAccountsList = [], accountCodeLabels = new Map(), builtInIds = new Set(), currentUserId, dimsByAccount = new Map(), localDimsByAccount = new Map() }) {
+function KpiEditorModal({ kpi, onSave, onClose, onReset, onEditLibraryKpi, onDeleteLibraryKpi, onDuplicate, allLocalKpis = [], systemKpis = [], accountCodes, localAccounts = [], groupAccountsList = [], accountCodeLabels = new Map(), builtInIds = new Set(), currentUserId, dimsByAccount = new Map(), localDimsByAccount = new Map(), parties = [], partyContext = null, evalPartyValue = null }) {
   const [mode, setMode] = useState(kpi ? "custom" : "library");
 
   const [label, setLabel] = useState(kpi?.label ?? "");
@@ -3633,6 +4077,9 @@ style={{
                   builtInIds={builtInIds}
                   dimsByAccount={dimsByAccount}
                   localDimsByAccount={localDimsByAccount}
+                  parties={parties}
+                  partyContext={partyContext}
+                  evalPartyValue={evalPartyValue}
                 />
               </div>
             )}
@@ -4802,7 +5249,32 @@ const refreshCompanyKpis = useCallback(() => {
     .catch(e => console.error("[KpiPage] listCompanyKpis:", e));
 }, [companyId]);
 
+// Kick off the initial fetch as soon as we have a companyId.
 useEffect(() => { refreshCompanyKpis(); }, [refreshCompanyKpis]);
+
+// Load statistical parties for the current company (from StatisticalPartiesPage)
+const [statParties, setStatParties] = useState([]);
+useEffect(() => {
+  if (!companyId) return;
+  (async () => {
+    const { data, error } = await supabase.rpc("list_statistical_parties");
+    if (error) {
+      console.error("[KpiPage] statistical parties load failed:", error);
+      return;
+    }
+setStatParties((data ?? []).map(r => ({
+      id: r.id,
+      name: r.name,
+      unit: r.unit ?? "",
+      companies: r.companies ?? [],
+      years:     r.years ?? [],
+      dimGroups: r.dim_groups ?? [],
+      dims:      r.dims ?? [],
+      sharedAcrossCompanies: r.shared_across_companies !== false,
+      values:    r.values ?? {},
+    })));
+  })();
+}, [companyId]);
 
 // Fetch this user's personal dashboards (one per tab)
 useEffect(() => {
@@ -5359,6 +5831,13 @@ const groupDescendantsMap = useMemo(() => {
   return desc;
 }, [groupAccounts]);
 
+// Party lookup by id — used for "party" variable nodes during formula eval.
+const partiesById = useMemo(() => {
+  const m = new Map();
+  statParties.forEach(p => m.set(p.id, p));
+  return m;
+}, [statParties]);
+
 const companyPivots = useMemo(() => {
     // Build dimPivot from ALL rows (no AccountType filter, no sum filter)
     // because dimension tags live on sum/aggregate rows (A.02, A.PL etc), not posting rows
@@ -5428,10 +5907,19 @@ if (Array.isArray(selDims)) {
 
 const pivots = new Map();
     companyData.forEach((rows, co) => {
-      const currPivot = buildPivot(rows);
+const currPivot = buildPivot(rows);
       // Overwrite with full raw dimPivot (includes sum account rows where dims live)
       currPivot.__dimPivot = buildDimPivotFromRaw(rows);
       currPivot.__groupDescendants = groupDescendantsMap;
+      // Attach party context so `party` node evaluation can find applicable
+      // parties + resolve values for the current company/year/month/dim scope.
+      currPivot.__parties = partiesById;
+      currPivot.__partyContext = {
+        company: co,
+        year: parseInt(year),
+        month: parseInt(month),
+        selectedDims: groupDimCodes ?? null,
+      };
 
       if (viewPeriod === "ytd") {
         pivots.set(co, currPivot);
@@ -5470,13 +5958,20 @@ monthlyPivot.__dimPivot = monthlyDimPivot;
           const pv = isJanuary ? 0 : (prevLP.get(lc) ?? 0);
           monthlyLocalPivot.set(lc, cv - pv);
         });
-        monthlyPivot.__localPivot = monthlyLocalPivot;
+monthlyPivot.__localPivot = monthlyLocalPivot;
         monthlyPivot.__groupDescendants = groupDescendantsMap;
+        monthlyPivot.__parties = partiesById;
+        monthlyPivot.__partyContext = {
+          company: co,
+          year: parseInt(year),
+          month: parseInt(month),
+          selectedDims: groupDimCodes ?? null,
+        };
         pivots.set(co, monthlyPivot);
       }
     });
     return pivots;
- }, [companyData, companyDataPrev, viewPeriod, month, selGroups, selDims, sumAccountCodes, groupDescendantsMap]);
+}, [companyData, companyDataPrev, viewPeriod, month, year, selGroups, selDims, sumAccountCodes, groupDescendantsMap, partiesById, groupDimCodes]);
 
 // Compare-scenario company pivots — same logic as companyPivots but reading
   // from companyDataCmp / companyDataCmpPrev.
@@ -5569,7 +6064,7 @@ if (groupDimCodes && !groupDimCodes.has(code)) continue;
             const key = code;
             const dimEntry = dimensions.find(d => (d.DimensionCode ?? d.dimensionCode ?? "") === code);
           const dimName = dimEntry?.DimensionName ?? dimEntry?.dimensionName ?? code;
-          if (!pivots.has(key)) pivots.set(key, { name: dimName, group, pivot: new Map() });
+if (!pivots.has(key)) pivots.set(key, { name: dimName, group, pivot: new Map() });
             const entry = pivots.get(key);
             entry.pivot.set(ac, (entry.pivot.get(ac) ?? 0) + amt);
           }
@@ -5578,7 +6073,24 @@ if (groupDimCodes && !groupDimCodes.has(code)) continue;
       return pivots;
     };
 
-    const currPivots = buildDimPivots(companyData);
+    // Attach the party context to every dim pivot so `case "party"` in the
+    // evaluator can resolve parties in the dimension view/export too. The
+    // context uses the first selected company as the party lookup key.
+    const attachPartyCtx = (pivots) => {
+      const co = selCompanies?.[0] ?? null;
+      pivots.forEach(entry => {
+        entry.pivot.__parties = partiesById;
+        entry.pivot.__partyContext = {
+          company: co,
+          year: parseInt(year),
+          month: parseInt(month),
+          selectedDims: groupDimCodes ?? null,
+        };
+      });
+      return pivots;
+    };
+
+    const currPivots = attachPartyCtx(buildDimPivots(companyData));
     if (viewPeriod === "ytd") return currPivots;
 
     // Monthly = curr YTD - prev YTD per dim
@@ -5600,10 +6112,10 @@ if (groupDimCodes && !groupDimCodes.has(code)) continue;
         const prevVal = isJanuary ? 0 : (prev?.pivot.get(ac) ?? 0);
         monthlyPivot.set(ac, currVal - prevVal);
       });
-      result.set(key, { name: meta.name, group: meta.group, pivot: monthlyPivot });
+result.set(key, { name: meta.name, group: meta.group, pivot: monthlyPivot });
     });
-    return result;
-}, [companyData, companyDataPrev, viewPeriod, month, groupDimCodes, sumAccountCodes, selGroups, selCompanies, dimensions]);
+    return attachPartyCtx(result);
+}, [companyData, companyDataPrev, viewPeriod, month, year, groupDimCodes, sumAccountCodes, selGroups, selCompanies, dimensions, partiesById]);
   // Compare-scenario dimension pivots — mirrors dimensionPivots but reads
   // from companyDataCmp / companyDataCmpPrev with cmpMonth as the period.
   const dimensionPivotsCmp = useMemo(() => {
@@ -5638,7 +6150,21 @@ if (cmpGroupDimCodes && !cmpGroupDimCodes.has(code)) continue;
       return pivots;
     };
 
-    const currPivots = buildDimPivots(companyDataCmp);
+const attachPartyCtx = (pivots) => {
+    const co = selCompanies?.[0] ?? null;
+      pivots.forEach(entry => {
+        entry.pivot.__parties = partiesById;
+        entry.pivot.__partyContext = {
+          company: co,
+          year: parseInt(year),
+          month: parseInt(cmpMonth),
+          selectedDims: cmpGroupDimCodes ?? null,
+        };
+      });
+      return pivots;
+    };
+
+    const currPivots = attachPartyCtx(buildDimPivots(companyDataCmp));
     if (viewPeriod === "ytd") return currPivots;
 
     const prevPivots = buildDimPivots(companyDataCmpPrev);
@@ -5659,10 +6185,10 @@ if (cmpGroupDimCodes && !cmpGroupDimCodes.has(code)) continue;
         const prevVal = isJanuary ? 0 : (prev?.pivot.get(ac) ?? 0);
         monthlyPivot.set(ac, currVal - prevVal);
       });
-      result.set(key, { name: meta.name, group: meta.group, pivot: monthlyPivot });
+result.set(key, { name: meta.name, group: meta.group, pivot: monthlyPivot });
     });
-    return result;
-}, [companyDataCmp, companyDataCmpPrev, viewPeriod, cmpMonth, cmpGroupDimCodes, sumAccountCodes, cmpSelGroups]);
+    return attachPartyCtx(result);
+}, [companyDataCmp, companyDataCmpPrev, viewPeriod, cmpMonth, year, cmpGroupDimCodes, sumAccountCodes, cmpSelGroups, selCompanies, partiesById]);
 
 const dimensionCodes = useMemo(() => [...dimensionPivots.keys()].sort(), [dimensionPivots]);
 
@@ -6299,6 +6825,11 @@ const buildGraphSections = useCallback(async () => {
 const buildExportPayload = async () => {
     const fullCompanyLabels = filteredCompanyCodes.map(c => companyLegalName(c));
 
+    // Each tab has its OWN dashboard selection. Build both KPI lists so the
+    // company sheet and the dimension sheet each show their own KPIs.
+    const kpiListCompany   = buildKpiList(dashboardKpiIds);
+    const kpiListDimension = buildKpiList(dashboardKpiIdsDim);
+
     // === Compute YTD + Monthly results inline for export ===
     const buildPivotOne = (rows, applyDimFilter, gFilter, dFilter) => {
       const p = new Map();
@@ -6334,10 +6865,11 @@ const buildExportPayload = async () => {
           if (lac && lac !== "—") localDimPivot.set(`${lac}:::${dGroup}:::${dCode}`, (localDimPivot.get(`${lac}:::${dGroup}:::${dCode}`) ?? 0) + amt);
         });
       });
-      p.__dimPivot      = dimPivot;
+p.__dimPivot      = dimPivot;
       p.__localPivot    = localPivot;
       p.__localDimPivot = localDimPivot;
       p.__groupDescendants = groupDescendantsMap;
+      // party context set by caller (needs company/year/month) — see buildResultsFor
       return p;
     };
 
@@ -6353,28 +6885,68 @@ const buildExportPayload = async () => {
         });
         return r;
       };
-      out.__dimPivot      = diffSub(curr.__dimPivot, prev.__dimPivot);
+out.__dimPivot      = diffSub(curr.__dimPivot, prev.__dimPivot);
       out.__localPivot    = diffSub(curr.__localPivot, prev.__localPivot);
       out.__localDimPivot = diffSub(curr.__localDimPivot, prev.__localDimPivot);
       out.__groupDescendants = groupDescendantsMap;
+      out.__parties = curr.__parties;
+      out.__partyContext = curr.__partyContext;
       return out;
     };
 
-    const buildResultsFor = (dataMap, prevMap, monthNum, gFilter, dFilter) => {
+// Resolve every variable letter for every KPI against a pivot. Returns
+    // Map<kpiId, Map<letter, number>>. Only KPIs with a text-formula have vars.
+const resolveVarsFor = (kList, pivot) => {
+      const out = new Map();
+      const cache = new Map();
+      kList.forEach(kpi => {
+        const flat = flattenFormulaToTextForm(kpi.formula);
+        if (!flat || !flat.variables) return;
+        const letterMap = new Map();
+        Object.entries(flat.variables).forEach(([letter, node]) => {
+          if (!node) return;
+          try {
+            const v = evalFormulaWithCcTags(node, pivot, cache, resolvedAllKpis, ccTagToCodes, sectionCodes);
+            if (Number.isFinite(v)) letterMap.set(letter, v);
+          } catch { /* ignore */ }
+        });
+        if (letterMap.size > 0) out.set(kpi.id, letterMap);
+      });
+      return out;
+    };
+
+    const buildResultsFor = (dataMap, prevMap, monthNum, gFilter, dFilter, selectedDims, kList) => {
       const isJan = parseInt(monthNum) === 1;
       const ytdResults = new Map();
       const monthlyResults = new Map();
+      const ytdVars = new Map();       // Map<co, Map<kpiId, Map<letter, val>>>
+      const monthlyVars = new Map();
       dataMap.forEach((rows, co) => {
         const curr = buildPivotOne(rows, true, gFilter, dFilter);
         const prev = buildPivotOne(prevMap.get(co) ?? [], true, gFilter, dFilter);
+        const partyCtx = {
+          company: co,
+          year: parseInt(year),
+          month: parseInt(monthNum),
+          selectedDims: selectedDims ?? null,
+        };
+        curr.__parties = partiesById;
+        curr.__partyContext = partyCtx;
+        prev.__parties = partiesById;
+        prev.__partyContext = partyCtx;
         const monthly = diffPivots(curr, prev, isJan);
-        ytdResults.set(co,     computeAllKpisResolved(kpiList, curr,    ccTagToCodes, sectionCodes, resolvedAllKpis));
-        monthlyResults.set(co, computeAllKpisResolved(kpiList, monthly, ccTagToCodes, sectionCodes, resolvedAllKpis));
+        ytdResults.set(co,     computeAllKpisResolved(kList, curr,    ccTagToCodes, sectionCodes, resolvedAllKpis));
+        monthlyResults.set(co, computeAllKpisResolved(kList, monthly, ccTagToCodes, sectionCodes, resolvedAllKpis));
+        ytdVars.set(co,      resolveVarsFor(kList, curr));
+        monthlyVars.set(co,  resolveVarsFor(kList, monthly));
       });
-      return { ytd: ytdResults, monthly: monthlyResults };
+      return {
+        ytd: ytdResults, monthly: monthlyResults,
+        ytdVars, monthlyVars,
+      };
     };
 
-    const buildDimResultsFor = (dataMap, prevMap, monthNum) => {
+const buildDimResultsFor = (dataMap, prevMap, monthNum, selectedDims, kList) => {
       const isJan = parseInt(monthNum) === 1;
       const buildDim = (dMap) => {
         const out = new Map();
@@ -6401,11 +6973,14 @@ const buildExportPayload = async () => {
         });
         return out;
       };
-      const currMap = buildDim(dataMap);
+const currMap = buildDim(dataMap);
       const prevMap2 = buildDim(prevMap);
       const ytdResults = new Map();
       const monthlyResults = new Map();
+      const ytdVars = new Map();
+      const monthlyVars = new Map();
       const allCodes = new Set([...currMap.keys(), ...prevMap2.keys()]);
+      const co = selCompanies?.[0] ?? null;
       allCodes.forEach(code => {
         const curr = currMap.get(code) ?? new Map();
         const prev = prevMap2.get(code) ?? new Map();
@@ -6413,19 +6988,32 @@ const buildExportPayload = async () => {
         new Set([...curr.keys(), ...prev.keys()]).forEach(ac => {
           monthly.set(ac, (curr.get(ac) ?? 0) - (isJan ? 0 : (prev.get(ac) ?? 0)));
         });
-        ytdResults.set(code,     computeAllKpisResolved(kpiList, curr,    ccTagToCodes, sectionCodes, resolvedAllKpis));
-        monthlyResults.set(code, computeAllKpisResolved(kpiList, monthly, ccTagToCodes, sectionCodes, resolvedAllKpis));
+        const partyCtx = { company: co, year: parseInt(year), month: parseInt(monthNum), selectedDims: selectedDims ?? null };
+        curr.__parties = partiesById;
+        curr.__partyContext = partyCtx;
+        monthly.__parties = partiesById;
+        monthly.__partyContext = partyCtx;
+        ytdResults.set(code,     computeAllKpisResolved(kList, curr,    ccTagToCodes, sectionCodes, resolvedAllKpis));
+        monthlyResults.set(code, computeAllKpisResolved(kList, monthly, ccTagToCodes, sectionCodes, resolvedAllKpis));
+        ytdVars.set(code,      resolveVarsFor(kList, curr));
+        monthlyVars.set(code,  resolveVarsFor(kList, monthly));
       });
-      return { ytd: ytdResults, monthly: monthlyResults };
+      return { ytd: ytdResults, monthly: monthlyResults, ytdVars, monthlyVars };
     };
 
-    const companyBoth    = buildResultsFor(companyData,    companyDataPrev,    month, selGroups, selDims);
-    const companyCmpBoth = compareMode ? buildResultsFor(companyDataCmp, companyDataCmpPrev, cmpMonth, cmpSelGroups, cmpSelDims) : null;
-    const dimBoth        = buildDimResultsFor(companyData,    companyDataPrev,    month);
-    const dimCmpBoth     = compareMode ? buildDimResultsFor(companyDataCmp, companyDataCmpPrev, cmpMonth) : null;
+const companyBoth    = buildResultsFor(companyData,    companyDataPrev,    month, selGroups, selDims, groupDimCodes, kpiListCompany);
+    const companyCmpBoth = compareMode ? buildResultsFor(companyDataCmp, companyDataCmpPrev, cmpMonth, cmpSelGroups, cmpSelDims, cmpGroupDimCodes, kpiListCompany) : null;
+    const dimBoth        = buildDimResultsFor(companyData,    companyDataPrev,    month, groupDimCodes, kpiListDimension);
+    const dimCmpBoth     = compareMode ? buildDimResultsFor(companyDataCmp, companyDataCmpPrev, cmpMonth, cmpGroupDimCodes, kpiListDimension) : null;
 
-    return {
-      kpiList,
+return {
+kpiList: kpiListCompany,             // legacy — used for graphs / single-list callers
+      kpiListCompany,
+      kpiListDimension,
+      // Full resolved list — used for describing ref nodes so variable labels
+      // like "A = Revenue" work even when the referenced KPI isn't on the
+      // current dashboard tab.
+      kpiListFull: resolvedAllKpis,
       companyCodes:        exportOpts.company   ? filteredCompanyCodes : [],
       companyLabels:       exportOpts.company   ? fullCompanyLabels    : [],
       companyResults:      companyBoth,
@@ -7232,11 +7820,39 @@ localAccounts={allLocalAccounts}
           groupAccountsList={allGroupAccountsList}
           accountCodeLabels={accountCodeLabels}
 builtInIds={new Set(resolvedAllKpis.map(k => k.id))}
-          currentUserId={authUserId}
+currentUserId={authUserId}
           dimsByAccount={dimsByAccount}
           localDimsByAccount={localDimsByAccount}
+          parties={statParties}
+          partyContext={{
+            company: companyCodes[0] ?? null,
+            year: parseInt(year || 0) || null,
+            month: parseInt(month || 0) || null,
+            selectedDims: groupDimCodes ?? null,
+          }}
+evalPartyValue={(partyId) => {
+            const p = partiesById.get(partyId);
+            if (!p) return null;
+            const co = companyCodes[0];
+            if (co && p.companies?.length && !p.companies.includes(co)) return null;
+            const shared = p.sharedAcrossCompanies !== false;
+            const yearTree = shared ? (p.values ?? {}) : (p.values?.[co] ?? {});
+            const yr = yearTree[String(year)];
+            if (!yr) return null;
+            const dimsToSum = groupDimCodes && groupDimCodes.size > 0
+              ? p.dims.filter(d => groupDimCodes.has(d))
+              : p.dims;
+            let total = 0;
+            for (const dim of dimsToSum) {
+              const cell = yr[dim]?.[parseInt(month)];
+              if (cell == null) continue;
+              const v = typeof cell === "object" ? cell.value : cell;
+              if (typeof v === "number") total += v;
+            }
+            return total;
+          }}
         />
       )}
     </div>
   );
-} 
+}
