@@ -1824,6 +1824,7 @@ if (hasC) {
         });
       }
 
+
 // ── Build real PL breakers from mapping/Supabase (matches PLStatement.effectiveBreakersPl) ──
       const hexToArgb = (h) => {
         const s = String(h || '').replace('#', '').replace(/^FF/i, '').toUpperCase();
@@ -6875,8 +6876,7 @@ const getDimValForCompany = useCallback((localCode, dimCode, co, isYtd) => {
 const journalByCode = useMemo(() => {
   const idx = new Map();
   (journalEntries || []).forEach(row => {
-    if (idx.size === 0) console.log('[A]', JSON.stringify(row));
-    const code = String(row.accountCode ?? row.AccountCode ?? row.AccountCode ?? "");
+    const code = String(row.accountCode ?? row.AccountCode ?? "");
     if (!code) return;
     const jt = String(row.journalType ?? row.JournalType ?? "").toUpperCase();
     if (jt !== "AJE" && jt !== "RJE") return;
@@ -6885,6 +6885,118 @@ const journalByCode = useMemo(() => {
   });
   return idx;
 }, [journalEntries]);
+
+const codesWithDims = useMemo(() => {
+  const set = new Set();
+  (uploadedAccounts || []).forEach(row => {
+    const code = String(getField(row, "accountCode") ?? "");
+    const dimCode = getField(row, "dimensionCode");
+    const dimStr = getField(row, "Dimensions", "dimensions");
+    const hasDim =
+      (dimCode != null && String(dimCode) !== "" && String(dimCode) !== "null" && String(dimCode) !== "—") ||
+      (dimStr && String(dimStr).length > 0 && String(dimStr) !== "—");
+    if (code && hasDim) set.add(code);
+  });
+  return set;
+}, [uploadedAccounts]);
+
+// Dims from the PREVIOUS month, per localAccountCode + `${group}:${code}` key.
+// Used to compute monthly = YTD - prevYTD for raw dim breakdowns.
+const prevDimsByLocalAccountCode = useMemo(() => {
+  const outer = new Map(); // localAccountCode -> Map<key, amount>
+  (prevUploadedAccounts || []).forEach(row => {
+    const lac = String(getField(row, "localAccountCode") ?? "");
+    if (!lac || lac === "—" || lac === "null" || lac === "") return;
+    const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+    const dimStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+    if (!dimStr || dimStr === "—") return;
+    dimStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+      const i = pair.indexOf(":");
+      if (i === -1) return;
+      const g = pair.slice(0, i).trim();
+      const v = pair.slice(i + 1).trim();
+      if (!v) return;
+      if (!outer.has(lac)) outer.set(lac, new Map());
+      const inner = outer.get(lac);
+      const key = `${g}:${v}`;
+      inner.set(key, (inner.get(key) ?? 0) + amt);
+    });
+  });
+  return outer;
+}, [prevUploadedAccounts]);
+
+const getPrevDimAmt = useCallback((localCode, group, dimCode) => {
+  if (Number(month) === 1) return 0;
+  const inner = prevDimsByLocalAccountCode.get(String(localCode));
+  if (!inner) return 0;
+  return inner.get(`${group}:${dimCode}`) ?? 0;
+}, [prevDimsByLocalAccountCode, month]);
+
+// Full breakdown of dims per localAccountCode, gathered from RAW rows.
+// Uses dimensions metadata to resolve real dim names.
+const dimsByLocalAccountCode = useMemo(() => {
+  // Build name lookup: "group:code" → name
+  const nameLookup = new Map();
+  (dimensions || []).forEach(d => {
+    const group = String(d.dimensionGroup ?? d.DimensionGroup ?? d.groupName ?? d.GroupName ?? "").trim();
+    const code  = String(d.dimensionCode  ?? d.DimensionCode  ?? d.code      ?? d.Code      ?? "").trim();
+    const name  = String(d.dimensionName  ?? d.DimensionName  ?? d.name      ?? d.Name      ?? "").trim();
+    if (group && code && name) nameLookup.set(`${group}:${code}`, name);
+  });
+
+  const outer = new Map(); // localAccountCode -> Map<key, { code, name, group, amount }>
+  (uploadedAccounts || []).forEach(row => {
+    const lac = String(getField(row, "localAccountCode") ?? "");
+    if (!lac || lac === "—" || lac === "null" || lac === "") return;
+    const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+    const dimStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+    if (!dimStr || dimStr === "—") return;
+    dimStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+      const i = pair.indexOf(":");
+      if (i === -1) return;
+      const g = pair.slice(0, i).trim();
+      const v = pair.slice(i + 1).trim();
+      if (!v) return;
+      if (!outer.has(lac)) outer.set(lac, new Map());
+      const inner = outer.get(lac);
+      const key = `${g}:${v}`;
+      if (!inner.has(key)) {
+        const resolvedName = nameLookup.get(key) || v;
+        inner.set(key, { code: v, name: resolvedName, group: g, amount: 0 });
+      }
+      inner.get(key).amount += amt;
+    });
+  });
+  const result = new Map();
+  outer.forEach((inner, lac) => result.set(lac, [...inner.values()]));
+  return result;
+}, [uploadedAccounts, dimensions]);
+
+const getDimsForLocalCode = useCallback((localAccountCode) => {
+  return dimsByLocalAccountCode.get(String(localAccountCode)) || [];
+}, [dimsByLocalAccountCode]);
+
+const hasDimsInSubtree = useCallback((node) => {
+  if (!node) return false;
+  if (codesWithDims.has(String(node.code))) return true;
+  if (Array.isArray(node.children)) {
+    for (const c of node.children) {
+      if (hasDimsInSubtree(c)) return true;
+    }
+  }
+  return false;
+}, [codesWithDims]);
+
+const countJournalsInSubtree = useCallback((node) => {
+  if (!node) return 0;
+  let total = (journalByCode.get(String(node.code)) || []).length;
+  if (Array.isArray(node.children)) {
+    for (const c of node.children) {
+      total += countJournalsInSubtree(c);
+    }
+  }
+  return total;
+}, [journalByCode]);
 
 const journalByCodeCmp = useMemo(() => {
   const idx = new Map();
@@ -8195,14 +8307,32 @@ title={Object.keys(expandedMap).some(k => k.startsWith('saved-') && expandedMap[
                   const sectionRows = [];
 
                   // Per-leaf+dim indexes for compare periods (saved-mapping path)
-                  const buildSavedLeafDimIdx = (rows) => {
+const buildSavedLeafDimIdx = (rows) => {
                     const m = new Map();
                     (rows || []).forEach(row => {
                       const lac = String(getField(row, "localAccountCode") ?? "");
-                      const dc  = String(getField(row, "dimensionCode") ?? "");
-                      if (!lac || !dc || dc === "null") return;
+                      if (!lac || lac === "—" || lac === "null") return;
                       const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
-                      m.set(`${lac}|${dc}`, (m.get(`${lac}|${dc}`) ?? 0) + amt);
+                      // Legacy: single dimensionCode column (first group only)
+                      const dc = String(getField(row, "dimensionCode") ?? "");
+                      if (dc && dc !== "null" && dc !== "") {
+                        m.set(`${lac}|${dc}`, (m.get(`${lac}|${dc}`) ?? 0) + amt);
+                      }
+                      // Multi-group: parse Dimensions string "Group1:Val1||Group2:Val2"
+                      const dimStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+                      if (dimStr && dimStr !== "—") {
+                        dimStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+                          const i = pair.indexOf(":");
+                          if (i === -1) return;
+                          const v = pair.slice(i + 1).trim();
+                          if (!v) return;
+                          // Key by localAccount|dimValue so it matches how getDimsForLocalCode produces dim.code
+                          const key = `${lac}|${v}`;
+                          // Avoid double-counting if dimensionCode column already captured this exact value
+                          if (v === dc) return;
+                          m.set(key, (m.get(key) ?? 0) + amt);
+                        });
+                      }
                     });
                     return m;
                   };
@@ -8311,9 +8441,9 @@ sectionRows.push(
                           return isHighlighted ? "bg-amber-50/60 hover:bg-amber-50" : "bg-white";
                         })()} ${hasDrill ? `cursor-pointer ${isHighlighted ? "" : "hover:bg-[#eef1fb]/60"}` : ""}`}
                         style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(sectionRows.length, 25) * 35 + 50}ms both` }}
-                        onClick={hasDrill ? (e) => { e.stopPropagation(); toggle(rowKey); } : undefined}
+onClick={hasDrill ? (e) => { e.stopPropagation(); toggle(rowKey); } : undefined}
 >
-                       <td className="py-3 whitespace-nowrap k-sticky-acc" style={{ paddingLeft: `${24 + depth * 20}px` }}>
+                       <td className="py-3 whitespace-nowrap k-sticky-acc group" style={{ paddingLeft: `${24 + depth * 20}px` }}>
                           <div className="flex items-center">
                             {hasDrill
                               ? <span className="text-[#1a2f8a]/50 mr-2">{expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
@@ -8331,17 +8461,29 @@ sectionRows.push(
                                   e.stopPropagation();
                                   setHoveredDimRow(hoveredDimRow === rowKey ? null : rowKey);
                                 }}
-                                className={`ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border transition-colors ${
+                                className={`ml-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full border ${
                                   hoveredDimRow === rowKey
-                                    ? "bg-amber-100 border-amber-300"
-                                    : "bg-amber-50 border-amber-200 hover:bg-amber-100"
+                                    ? "opacity-100 bg-amber-100/90 border-amber-300/60"
+                                    : "bg-amber-50/80 border-amber-200/60 hover:bg-amber-100/80"
                                 }`}>
-                                <span className="text-amber-500" style={{ fontSize: 8 }}>◆</span>
-                                <span className="text-[9px] font-bold text-amber-600 uppercase tracking-wider">
+                                <span className="w-1 h-1 rounded-full bg-amber-400" />
+                                <span className="text-[8px] font-semibold text-amber-600/90 uppercase tracking-[0.15em]">
                                   {node.dims.length}
                                 </span>
                               </button>
                             )}
+                            {(() => {
+                              const jrnCount = countJournalsInSubtree({ code: node.code, children: node.children || [] });
+                              if (jrnCount === 0) return null;
+                              return (
+                                <span className="ml-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full bg-indigo-50/80 border border-indigo-200/60">
+                                  <span className="w-1 h-1 rounded-full bg-indigo-400" />
+                                  <span className="text-[8px] font-semibold text-indigo-600/90 uppercase tracking-[0.15em]">
+                                    {jrnCount} {jrnCount === 1 ? (t("entry") || "entry") : (t("entries") || "entries")}
+                                  </span>
+                                </span>
+                              );
+                            })()}
                           </div>
                         </td>
 {multiCompany ? selectedCompanies.map(co => (
@@ -8462,12 +8604,14 @@ sectionRows.push(
                       });
                     }
 
-                    // Drill-down: local accounts + dim breakdown for this group account
+// Drill-down: local accounts + dim breakdown for this group account
                     if (expanded && hasDrill) {
                       leaves.forEach((leaf, i) => {
                         const leafKey = `${rowKey}-leaf-${i}`;
                         const leafExpanded = isOpen(leafKey);
-                        const hasDims = leaf.type === "localAccount" && leaf.children?.length > 0;
+                        const nativeDims = leaf.type === "localAccount" && leaf.children?.length > 0;
+                        const rawDimsCount = (leaf.type === "localAccount" && leaf.code) ? getDimsForLocalCode(leaf.code).length : 0;
+                        const hasDims = nativeDims || rawDimsCount > 0;
                         const amt = leaf.amount ?? 0;
 
 const leafIsMatch = (() => {
@@ -8485,8 +8629,28 @@ const leafIsMatch = (() => {
                                 {hasDims
                                   ? <span className="text-gray-300 flex-shrink-0">{leafExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>}</span>
                                   : <span className="w-3 flex-shrink-0" />}
-                                {leaf.code && <span className="font-mono text-gray-400 mr-2" style={subbody2Style}>{leaf.code}</span>}
+                                {leaf.code && <span className="font-mono text-gray-400" style={subbody2Style}>{leaf.code}</span>}
                                 <span style={subbody1Style}>{leaf.name || ""}</span>
+                                {hasDims && (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-50 border border-amber-200">
+                                    <span className="text-amber-500" style={{ fontSize: 8 }}>◆</span>
+                                    <span className="text-[9px] font-bold text-amber-600 uppercase tracking-wider">
+                                      {nativeDims ? leaf.children.length : rawDimsCount}
+                                    </span>
+                                  </span>
+                                )}
+                                {leaf.code && (() => {
+                                  const jrnCount = (journalByCode.get(String(leaf.code)) || []).length;
+                                  if (jrnCount === 0) return null;
+                                  return (
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-indigo-50 border border-indigo-200">
+                                      <span className="text-indigo-500" style={{ fontSize: 8 }}>●</span>
+                                      <span className="text-[9px] font-bold text-indigo-600 uppercase tracking-wider">
+                                        {jrnCount}
+                                      </span>
+                                    </span>
+                                  );
+                                })()}
                               </div>
                             </td>
 {multiCompany ? selectedCompanies.map(co => (
@@ -8540,14 +8704,16 @@ const leafIsMatch = (() => {
                         );
 
 // Dim breakdown under this leaf — filtered to matching dim only if saved node has dim filters
-                        if (leafExpanded && hasDims) {
-                          let dimChildren = leaf.children;
+                        if (leafExpanded) {
+                          // Prefer buildTree-nested dims; fall back to raw scan (multi-group support).
+                          let dimChildren = (nativeDims && leaf.children.length > 0)
+                            ? leaf.children
+                            : (leaf.code ? getDimsForLocalCode(leaf.code) : []);
                           if (node.dims && node.dims.length > 0) {
                             const acceptedKeys = new Set(node.dims.map(d => String(d)));
-                            dimChildren = leaf.children.filter(dim => {
+                            dimChildren = dimChildren.filter(dim => {
                               const dimCode = String(dim.code ?? "");
                               const dimName = String(dim.name ?? "");
-                              // Match if any saved dim key equals "*:code" or "*:name" (with or without group prefix)
                               return [...acceptedKeys].some(savedKey => {
                                 const colon = savedKey.indexOf(":");
                                 const savedVal = colon === -1 ? savedKey : savedKey.slice(colon + 1);
@@ -9444,7 +9610,7 @@ divider ? (
   </tr>
 ) : null,
 <tr key={node.code}
-      className={`border-b border-gray-100 ${isMatchSelf ? "bg-[#fef3c7]" : "bg-white"} cursor-pointer hover:bg-[#eef1fb]/60 transition-colors`}
+      className={`group border-b border-gray-100 ${isMatchSelf ? "bg-[#fef3c7]" : "bg-white"} cursor-pointer hover:bg-[#eef1fb]/60 transition-colors`}
       style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(nodeIdx, 25) * 35 + 50}ms both` }}
       onClick={(e) => { e.stopPropagation(); toggle(node.code); }}>
 <td className="py-3 px-6 whitespace-nowrap k-sticky-acc">
@@ -9453,9 +9619,29 @@ divider ? (
       ? <span className="text-[#1a2f8a]/50 mr-2">{expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
       : <span className="inline-block mr-2" style={{ width: 12 }} />}
     <span className="mr-2 font-mono text-gray-400" style={subbody2Style}>{node.code}</span>
-    <span style={body1Style}>
+<span style={body1Style}>
       {(() => { const n = localName(node); return n.charAt(0).toUpperCase() + n.slice(1).toLowerCase(); })()}
     </span>
+    {hasDimsInSubtree(node) && (
+      <span className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full bg-amber-50/80 border border-amber-200/60">
+        <span className="w-1 h-1 rounded-full bg-amber-400" />
+        <span className="text-[8px] font-semibold text-amber-600/90 uppercase tracking-[0.15em]">
+          {t("label_dim") || "dim"}
+        </span>
+      </span>
+    )}
+    {(() => {
+      const jrnCount = countJournalsInSubtree(node);
+      if (jrnCount === 0) return null;
+      return (
+        <span className="ml-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full bg-indigo-50/80 border border-indigo-200/60">
+          <span className="w-1 h-1 rounded-full bg-indigo-400" />
+          <span className="text-[8px] font-semibold text-indigo-600/90 uppercase tracking-[0.15em]">
+            {jrnCount} {jrnCount === 1 ? (t("entry") || "entry") : (t("entries") || "entries")}
+          </span>
+        </span>
+      );
+    })()}
   </div>
 </td>
 {multiCompany && selectedCompanies.map(co => (
@@ -9530,18 +9716,38 @@ const childExpanded = isOpen(`drill-${node.code}-${child.code}`);
     })();
 
 rows.push(
-  <tr key={child.code}
-    className={`border-b border-[#1a2f8a]/5 ${isChildMatch ? "bg-[#fef3c7]" : "bg-white"} transition-colors ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : "hover:bg-[#eef1fb]/20"}`}
+<tr key={child.code}
+    className={`group border-b border-[#1a2f8a]/5 ${isChildMatch ? "bg-[#fef3c7]" : "bg-white"} transition-colors ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : "hover:bg-[#eef1fb]/20"}`}
     onClick={hasMore ? (e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [`drill-${node.code}-${child.code}`]: !prev[`drill-${node.code}-${child.code}`] })); } : undefined}>
 <td className="py-2 whitespace-nowrap k-sticky-acc" style={{ paddingLeft: `${24 + depth * 20}px` }}>
-      <div className="flex items-center gap-2">
-        {hasMore
-          ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{childExpanded ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
-          : <span className="w-3 flex-shrink-0" />}
-        <span className="font-mono text-gray-400" style={subbody2Style}>{child.code}</span>
-        <span style={body2Style}>{localName(child)}</span>
-      </div>
-    </td>
+  <div className="flex items-center gap-2">
+    {hasMore
+      ? <span className="text-[#1a2f8a]/40 flex-shrink-0">{childExpanded ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}</span>
+      : <span className="w-3 flex-shrink-0" />}
+<span className="font-mono text-gray-400" style={subbody2Style}>{child.code}</span>
+    <span style={body2Style}>{localName(child)}</span>
+    {hasDimsInSubtree(child) && (
+      <span className="ml-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full bg-amber-50/80 border border-amber-200/60">
+        <span className="w-1 h-1 rounded-full bg-amber-400" />
+        <span className="text-[8px] font-semibold text-amber-600/90 uppercase tracking-[0.15em]">
+          {t("label_dim") || "dim"}
+        </span>
+      </span>
+    )}
+    {(() => {
+      const jrnCount = countJournalsInSubtree(child);
+      if (jrnCount === 0) return null;
+      return (
+        <span className="ml-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full bg-indigo-50/80 border border-indigo-200/60">
+          <span className="w-1 h-1 rounded-full bg-indigo-400" />
+          <span className="text-[8px] font-semibold text-indigo-600/90 uppercase tracking-[0.15em]">
+            {jrnCount}
+          </span>
+        </span>
+      );
+    })()}
+  </div>
+</td>
 {multiCompany && selectedCompanies.map(co => (
       <PLAmountCell key={`mc-child-${child.code}-${co}`} value={getNodeValForCompany(child.code, co, ytdOnly)} typoStyle={body2Style} centered />
     ))}
@@ -9755,8 +9961,10 @@ leaves.forEach((leaf, i) => {
     if (leaf.type === "plain") return;
     const leafKey = `drill-leaf-${node.code}-${parentCode ?? node.code}-${depth}-${i}`;
 
-    const leafExpanded = isOpen(leafKey);
-    const hasDims = leaf.type === "localAccount" && leaf.children?.length > 0;
+const leafExpanded = isOpen(leafKey);
+    const nativeDims = leaf.type === "localAccount" && leaf.children?.length > 0;
+    const rawDimsCount = (leaf.type === "localAccount" && leaf.code) ? getDimsForLocalCode(leaf.code).length : 0;
+    const hasDims = nativeDims || rawDimsCount > 0;
     const amt = leaf.amount ?? 0;
 
 const leafIsMatch = (() => {
@@ -9768,16 +9976,36 @@ const leafIsMatch = (() => {
   <tr key={leafKey}
     className={`border-b border-[#1a2f8a]/5 ${leafIsMatch ? "bg-[#fef3c7]" : "bg-white"} transition-colors ${hasDims ? "cursor-pointer hover:bg-amber-50/30" : "hover:bg-[#f0f3ff]"}`}
     onClick={hasDims ? (e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [leafKey]: !isOpen(leafKey) })); } : undefined}>
-    <td className="py-1.5 border-r-0 k-sticky-acc" style={{ paddingLeft: `${24 + depth * 20}px` }}>
-      <div className="flex items-center gap-2">
-        <div className="w-2 h-px bg-[#1a2f8a]/10 flex-shrink-0" />
-        {hasDims
-          ? <span className="text-gray-300 flex-shrink-0">{leafExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>}</span>
-          : <span className="w-3 flex-shrink-0" />}
-        {leaf.code && <span className="font-mono text-gray-400 mr-2" style={subbody2Style}>{leaf.code}</span>}
-        <span style={subbody1Style}>{leaf.name || ""}</span>
-      </div>
-    </td>
+<td className="py-1.5 border-r-0 k-sticky-acc" style={{ paddingLeft: `${24 + depth * 20}px` }}>
+  <div className="flex items-center gap-2">
+    <div className="w-2 h-px bg-[#1a2f8a]/10 flex-shrink-0" />
+    {hasDims
+      ? <span className="text-gray-300 flex-shrink-0">{leafExpanded ? <ChevronDown size={9}/> : <ChevronRight size={9}/>}</span>
+      : <span className="w-3 flex-shrink-0" />}
+    {leaf.code && <span className="font-mono text-gray-400 mr-2" style={subbody2Style}>{leaf.code}</span>}
+    <span style={subbody1Style}>{leaf.name || ""}</span>
+{hasDims && (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-50 border border-amber-200">
+        <span className="text-amber-500" style={{ fontSize: 8 }}>◆</span>
+        <span className="text-[9px] font-bold text-amber-600 uppercase tracking-wider">
+          {nativeDims ? leaf.children.length : rawDimsCount}
+        </span>
+      </span>
+    )}
+    {leaf.code && (() => {
+      const jrnCount = (journalByCode.get(String(leaf.code)) || []).length;
+      if (jrnCount === 0) return null;
+      return (
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-indigo-50 border border-indigo-200">
+          <span className="text-indigo-500" style={{ fontSize: 8 }}>●</span>
+          <span className="text-[9px] font-bold text-indigo-600 uppercase tracking-wider">
+            {jrnCount}
+          </span>
+        </span>
+      );
+    })()}
+  </div>
+</td>
 {multiCompany && selectedCompanies.map(co => (
       <PLAmountCell key={`mc-leaf-${leaf.code ?? "noleaf"}-${co}-${depth}-${i}`} value={leaf.code ? getLeafValForCompany(leaf.code, co, ytdOnly) : 0} typoStyle={subbody1Style} centered />
     ))}
@@ -9819,8 +10047,12 @@ const leafIsMatch = (() => {
   </tr>
 );
 
-if (leafExpanded && hasDims) {
-  leaf.children.forEach((dim, j) => {
+if (leafExpanded) {
+  // Prefer dims that buildTree nested; fall back to raw scan (multi-group support).
+  const dimsToRender = (hasDims && leaf.children.length > 0)
+    ? leaf.children
+    : (leaf.code ? getDimsForLocalCode(leaf.code) : []);
+  dimsToRender.forEach((dim, j) => {
     const dimIsMatch = q && (
       String(dim.code ?? "").toLowerCase().includes(q)||
       String(dim.name ?? "").toLowerCase().includes(q));
@@ -9837,7 +10069,14 @@ if (leafExpanded && hasDims) {
       </td>
 {multiCompany ? selectedCompanies.map(co => (
         <PLAmountCell key={`mc-dim-${dim.code ?? "nocode"}-${co}-${depth}-${i}-${j}`} value={leaf.code ? getDimValForCompany(leaf.code, dim.code, co, ytdOnly) : 0} typoStyle={subbody2Style} centered />
-      )) : <PLAmountCell value={-dim.amount} typoStyle={subbody2Style} />}
+      )) : (() => {
+        const ytdV = -(dim.amount ?? 0);
+        // Only apply monthly delta for raw-scanned dims (they have `group`);
+        // native buildTree dims don't have `group` and stay as YTD-only leaf.amount.
+        if (ytdOnly || !dim.group) return <PLAmountCell value={ytdV} typoStyle={subbody2Style} />;
+        const prevV = -getPrevDimAmt(leaf.code, dim.group, dim.code);
+        return <PLAmountCell value={ytdV - prevV} typoStyle={subbody2Style} />;
+      })()}
       {!multiCompany && compareMode && (() => {
         const k = `${leaf.code}|${dim.code}`;
         const cmpDimAmt = -(cmpLeafDimIndex.get(k) ?? 0);
@@ -10471,6 +10710,84 @@ const journalByCode = useMemo(() => {
   return idx;
 }, [journalEntries]);
 
+const codesWithDims = useMemo(() => {
+  const set = new Set();
+  (uploadedAccounts || []).forEach(row => {
+    const code = String(getField(row, "accountCode") ?? "");
+    const dimCode = getField(row, "dimensionCode");
+    const dimStr = getField(row, "Dimensions", "dimensions");
+    const hasDim =
+      (dimCode != null && String(dimCode) !== "" && String(dimCode) !== "null" && String(dimCode) !== "—") ||
+      (dimStr && String(dimStr).length > 0 && String(dimStr) !== "—");
+    if (code && hasDim) set.add(code);
+  });
+  return set;
+}, [uploadedAccounts]);
+
+const hasDimsInSubtree = useCallback((node) => {
+  if (!node) return false;
+  if (codesWithDims.has(String(node.code))) return true;
+  if (Array.isArray(node.children)) {
+    for (const c of node.children) {
+      if (hasDimsInSubtree(c)) return true;
+    }
+  }
+  return false;
+}, [codesWithDims]);
+
+const countJournalsInSubtree = useCallback((node) => {
+  if (!node) return 0;
+  let total = (journalByCode.get(String(node.code)) || []).length;
+  if (Array.isArray(node.children)) {
+    for (const c of node.children) {
+      total += countJournalsInSubtree(c);
+    }
+  }
+  return total;
+}, [journalByCode]);
+
+// Full breakdown of dims per localAccountCode, gathered from RAW rows.
+const dimsByLocalAccountCode = useMemo(() => {
+  const nameLookup = new Map();
+  (effectiveDimensions || []).forEach(d => {
+    const group = String(d.dimensionGroup ?? d.DimensionGroup ?? d.groupName ?? d.GroupName ?? "").trim();
+    const code  = String(d.dimensionCode  ?? d.DimensionCode  ?? d.code      ?? d.Code      ?? "").trim();
+    const name  = String(d.dimensionName  ?? d.DimensionName  ?? d.name      ?? d.Name      ?? "").trim();
+    if (group && code && name) nameLookup.set(`${group}:${code}`, name);
+  });
+
+  const outer = new Map();
+  (uploadedAccounts || []).forEach(row => {
+    const lac = String(getField(row, "localAccountCode") ?? "");
+    if (!lac || lac === "—" || lac === "null" || lac === "") return;
+    const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
+    const dimStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+    if (!dimStr || dimStr === "—") return;
+    dimStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+      const i = pair.indexOf(":");
+      if (i === -1) return;
+      const g = pair.slice(0, i).trim();
+      const v = pair.slice(i + 1).trim();
+      if (!v) return;
+      if (!outer.has(lac)) outer.set(lac, new Map());
+      const inner = outer.get(lac);
+      const key = `${g}:${v}`;
+      if (!inner.has(key)) {
+        const resolvedName = nameLookup.get(key) || v;
+        inner.set(key, { code: v, name: resolvedName, group: g, amount: 0 });
+      }
+      inner.get(key).amount += amt;
+    });
+  });
+  const result = new Map();
+  outer.forEach((inner, lac) => result.set(lac, [...inner.values()]));
+  return result;
+}, [uploadedAccounts, effectiveDimensions]);
+
+const getDimsForLocalCode = useCallback((localAccountCode) => {
+  return dimsByLocalAccountCode.get(String(localAccountCode)) || [];
+}, [dimsByLocalAccountCode]);
+
 const journalByCodeCmp = useMemo(() => {
   const idx = new Map();
   (journalEntriesCmp || []).forEach(row => {
@@ -10784,16 +11101,36 @@ const isChildMatch = (() => {
         return String(child.code ?? "").toLowerCase().includes(q) || String(localName(child) ?? "").toLowerCase().includes(q);
       })();
       rows.push(
-  <tr key={childKey}
-    className={`border-b border-[#1a2f8a]/5 ${isChildMatch ? "bg-[#fef3c7]" : ""} transition-colors ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : "hover:bg-[#eef1fb]/30"}`}
+<tr key={childKey}
+    className={`group border-b border-[#1a2f8a]/5 ${isChildMatch ? "bg-[#fef3c7]" : ""} transition-colors ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : "hover:bg-[#eef1fb]/30"}`}
     onClick={hasMore ? () => setBsDrillMap(prev => ({ ...prev, [childKey]: !prev[childKey] })) : undefined}>
 <td className="py-2 whitespace-nowrap k-sticky-acc" style={{ paddingLeft: `${24 + depth * 20}px` }}>
-<div className="flex items-center">
+<div className="flex items-center gap-2">
   {hasMore
-    ? <span className="text-[#1a2f8a]/50 mr-2">{childExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
-    : <span className="inline-block mr-2" style={{ width: 12 }} />}
-  <span className="mr-2 font-mono text-gray-400" style={subbody2Style}>{child.code}</span>
+    ? <span className="text-[#1a2f8a]/50 flex-shrink-0">{childExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
+    : <span className="w-3 flex-shrink-0" />}
+  <span className="font-mono text-gray-400" style={subbody2Style}>{child.code}</span>
   <span style={body2Style}>{child.name}</span>
+  {hasDimsInSubtree(child) && (
+    <span className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full bg-amber-50/80 border border-amber-200/60">
+      <span className="w-1 h-1 rounded-full bg-amber-400" />
+      <span className="text-[8px] font-semibold text-amber-600/90 uppercase tracking-[0.15em]">
+        {t("label_dim") || "dim"}
+      </span>
+    </span>
+  )}
+  {(() => {
+    const jrnCount = countJournalsInSubtree(child);
+    if (jrnCount === 0) return null;
+    return (
+      <span className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full bg-indigo-50/80 border border-indigo-200/60">
+        <span className="w-1 h-1 rounded-full bg-indigo-400" />
+        <span className="text-[8px] font-semibold text-indigo-600/90 uppercase tracking-[0.15em]">
+          {jrnCount}
+        </span>
+      </span>
+    );
+  })()}
 </div>
     </td>
 {multiCompany && selectedCompanies.map(co => (
@@ -10989,10 +11326,12 @@ if (jrnExpanded) {
       }
     });
 
-    leaves.forEach((leaf, i) => {
+leaves.forEach((leaf, i) => {
       const leafKey = `bsdrill-leaf-${contextKey}-${depth}-${i}`;
       const leafExpanded = isOpen(leafKey);
-      const hasDims = leaf.type === "localAccount" && leaf.children?.length > 0;
+      const nativeDims = leaf.type === "localAccount" && leaf.children?.length > 0;
+      const rawDimsCount = (leaf.type === "localAccount" && leaf.code) ? getDimsForLocalCode(leaf.code).length : 0;
+      const hasDims = nativeDims || rawDimsCount > 0;
       const amt = leaf.amount ?? 0;
 
       rows.push(
@@ -11005,12 +11344,32 @@ if (jrnExpanded) {
           })()} transition-colors ${hasDims ? "cursor-pointer hover:bg-amber-50/40" : "hover:bg-[#eef1fb]/20"}`}
           onClick={hasDims ? () => setBsDrillMap(prev => ({ ...prev, [leafKey]: !prev[leafKey] })) : undefined}>
 <td className="py-1.5 whitespace-nowrap k-sticky-acc" style={{ paddingLeft: `${24 + depth * 20}px` }}>
-  <div className="flex items-center">
+  <div className="flex items-center gap-2">
     {hasDims
-      ? <span className="text-[#1a2f8a]/50 mr-2">{leafExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
-      : <span className="inline-block mr-2" style={{ width: 12 }} />}
-    {leaf.code && <span className="font-mono text-gray-400 mr-2" style={subbody2Style}>{leaf.code}</span>}
+      ? <span className="text-[#1a2f8a]/50 flex-shrink-0">{leafExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
+      : <span className="w-3 flex-shrink-0" />}
+    {leaf.code && <span className="font-mono text-gray-400" style={subbody2Style}>{leaf.code}</span>}
     <span style={subbody1Style}>{leaf.name || ""}</span>
+    {hasDims && (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-50 border border-amber-200">
+        <span className="text-amber-500" style={{ fontSize: 8 }}>◆</span>
+        <span className="text-[9px] font-bold text-amber-600 uppercase tracking-wider">
+          {nativeDims ? leaf.children.length : rawDimsCount}
+        </span>
+      </span>
+    )}
+    {leaf.code && (() => {
+      const jrnCount = (journalByCode.get(String(leaf.code)) || []).length;
+      if (jrnCount === 0) return null;
+      return (
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-indigo-50 border border-indigo-200">
+          <span className="text-indigo-500" style={{ fontSize: 8 }}>●</span>
+          <span className="text-[9px] font-bold text-indigo-600 uppercase tracking-wider">
+            {jrnCount}
+          </span>
+        </span>
+      );
+    })()}
   </div>
 </td>
 {multiCompany && selectedCompanies.map(co => (
@@ -11045,8 +11404,11 @@ if (jrnExpanded) {
         </tr>
       );
 
-      if (leafExpanded && hasDims) {
-        leaf.children.forEach((dim, j) => {
+if (leafExpanded) {
+        const dimsToRender = (nativeDims && leaf.children.length > 0)
+          ? leaf.children
+          : (leaf.code ? getDimsForLocalCode(leaf.code) : []);
+        dimsToRender.forEach((dim, j) => {
           rows.push(
 <tr key={`bsdrill-dim-${contextKey}-${depth}-${i}-${j}`}
               className={`border-b border-[#1a2f8a]/5 ${(() => {
@@ -11326,8 +11688,8 @@ const isMatchSelf = (() => {
         return String(node.code ?? "").toLowerCase().includes(q) || String(localName(node) ?? "").toLowerCase().includes(q);
       })();
       rows.push(
-  <tr key={node.code}
-    className={`border-b border-gray-100 ${isMatchSelf ? "bg-[#fef3c7]" : "bg-white"} ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
+<tr key={node.code}
+    className={`group border-b border-gray-100 ${isMatchSelf ? "bg-[#fef3c7]" : "bg-white"} ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : ""} transition-colors`}
     style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rows.length, 25) * 40}ms both` }}
     onClick={hasMore ? () => bsDrill(drillKey) : undefined}>
 <td className="py-2.5 whitespace-nowrap k-sticky-acc" style={{ paddingLeft: `${24 + depth * 18}px` }}>
@@ -11339,6 +11701,26 @@ const isMatchSelf = (() => {
         <span style={rowStyle}>
           {(() => { const n = localName(node); return n.charAt(0).toUpperCase() + n.slice(1).toLowerCase(); })()}
         </span>
+        {hasDimsInSubtree(node) && (
+          <span className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full bg-amber-50/80 border border-amber-200/60">
+            <span className="w-1 h-1 rounded-full bg-amber-400" />
+            <span className="text-[8px] font-semibold text-amber-600/90 uppercase tracking-[0.15em]">
+              {t("label_dim") || "dim"}
+            </span>
+          </span>
+        )}
+        {(() => {
+          const jrnCount = countJournalsInSubtree(node);
+          if (jrnCount === 0) return null;
+          return (
+            <span className="ml-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full bg-indigo-50/80 border border-indigo-200/60">
+              <span className="w-1 h-1 rounded-full bg-indigo-400" />
+              <span className="text-[8px] font-semibold text-indigo-600/90 uppercase tracking-[0.15em]">
+                {jrnCount} {jrnCount === 1 ? (t("entry") || "entry") : (t("entries") || "entries")}
+              </span>
+            </span>
+          );
+        })()}
       </div>
     </td>
 {multiCompany
@@ -12506,19 +12888,39 @@ const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
                     return String(node.code ?? "").toLowerCase().includes(q) || String(node.name ?? "").toLowerCase().includes(q);
                   })();
                   rows.push(
-                    <tr key={rowKey}
-                      className={`border-b border-gray-100 ${isMatchSelf ? "bg-[#fef3c7]" : "bg-white"} ${hasKids ? "cursor-pointer" : ""} hover:bg-[#eef1fb]/60 transition-colors`}
+<tr key={rowKey}
+                      className={`group border-b border-gray-100 ${isMatchSelf ? "bg-[#fef3c7]" : "bg-white"} ${hasKids ? "cursor-pointer" : ""} hover:bg-[#eef1fb]/60 transition-colors`}
                       onClick={hasKids ? (e) => { e.stopPropagation(); bsDrill(rowKey); } : undefined}
                       style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rows.length, 25) * 40}ms both` }}>
 <td className="py-2.5 whitespace-nowrap k-sticky-acc" style={{ paddingLeft: `${24 + depth * 18}px` }}>
-                        <div className="flex items-center">
+                        <div className="flex items-center gap-2">
                           {hasKids
-                            ? <span className="text-[#1a2f8a]/50 mr-2">{expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
-                            : <span className="inline-block mr-2" style={{ width: 12 }} />}
-                          {node.code && <span className="mr-2 font-mono text-gray-400" style={subbody2Style}>{node.code}</span>}
+                            ? <span className="text-[#1a2f8a]/50 flex-shrink-0">{expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
+                            : <span className="w-3 flex-shrink-0" />}
+                          {node.code && <span className="font-mono text-gray-400" style={subbody2Style}>{node.code}</span>}
                           <span style={rowStyle}>
                             {node.name ? (node.name.charAt(0).toUpperCase() + node.name.slice(1).toLowerCase()) : node.code}
                           </span>
+                          {node.code && hasDimsInSubtree({ code: node.code, children: node.children || [] }) && (
+                            <span className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full bg-amber-50/80 border border-amber-200/60">
+                              <span className="w-1 h-1 rounded-full bg-amber-400" />
+                              <span className="text-[8px] font-semibold text-amber-600/90 uppercase tracking-[0.15em]">
+                                {t("label_dim") || "dim"}
+                              </span>
+                            </span>
+                          )}
+                          {node.code && (() => {
+                            const jrnCount = countJournalsInSubtree({ code: node.code, children: node.children || [] });
+                            if (jrnCount === 0) return null;
+                            return (
+                              <span className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full bg-indigo-50/80 border border-indigo-200/60">
+                                <span className="w-1 h-1 rounded-full bg-indigo-400" />
+                                <span className="text-[8px] font-semibold text-indigo-600/90 uppercase tracking-[0.15em]">
+                                  {jrnCount}
+                                </span>
+                              </span>
+                            );
+                          })()}
                         </div>
                       </td>
 {multiCompany ? selectedCompanies.map(co => (
@@ -12576,10 +12978,12 @@ const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
                     // Render uploadLeaves from the matching group-account
                     const gaNode = treeByCode.get(String(node.code));
                     const leaves = (gaNode?.uploadLeaves || []).filter(l => l.type !== "plain");
-                    leaves.forEach((leaf, i) => {
+leaves.forEach((leaf, i) => {
                       const leafKey = `${rowKey}-leaf-${i}`;
                       const leafExpanded = isOpen(leafKey);
-                      const hasDims = leaf.type === "localAccount" && leaf.children?.length > 0;
+                      const nativeDims = leaf.type === "localAccount" && leaf.children?.length > 0;
+                      const rawDimsCount = (leaf.type === "localAccount" && leaf.code) ? getDimsForLocalCode(leaf.code).length : 0;
+                      const hasDims = nativeDims || rawDimsCount > 0;
                       const amt = leaf.amount ?? 0;
                       const leafIsMatch = (() => {
                         const q = debouncedQuery.trim().toLowerCase();
@@ -12591,12 +12995,32 @@ const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
                           className={`border-b border-[#1a2f8a]/5 ${leafIsMatch ? "bg-[#fef3c7]" : "bg-[#fafbff]"} transition-colors ${hasDims ? "cursor-pointer hover:bg-amber-50/40" : "hover:bg-[#eef1fb]/20"}`}
                           onClick={hasDims ? () => bsDrill(leafKey) : undefined}>
                           <td className="py-1.5 whitespace-nowrap k-sticky-acc" style={{ paddingLeft: `${24 + (depth + 1) * 18}px` }}>
-                            <div className="flex items-center">
+                            <div className="flex items-center gap-2">
                               {hasDims
-                                ? <span className="text-[#1a2f8a]/50 mr-2">{leafExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
-                                : <span className="inline-block mr-2" style={{ width: 12 }} />}
-                              {leaf.code && <span className="font-mono text-gray-400 mr-2" style={subbody2Style}>{leaf.code}</span>}
+                                ? <span className="text-[#1a2f8a]/50 flex-shrink-0">{leafExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
+                                : <span className="w-3 flex-shrink-0" />}
+                              {leaf.code && <span className="font-mono text-gray-400" style={subbody2Style}>{leaf.code}</span>}
                               <span style={subbody1Style}>{leaf.name || ""}</span>
+                              {hasDims && (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-50 border border-amber-200">
+                                  <span className="text-amber-500" style={{ fontSize: 8 }}>◆</span>
+                                  <span className="text-[9px] font-bold text-amber-600 uppercase tracking-wider">
+                                    {nativeDims ? leaf.children.length : rawDimsCount}
+                                  </span>
+                                </span>
+                              )}
+                              {leaf.code && (() => {
+                                const jrnCount = (journalByCode.get(String(leaf.code)) || []).length;
+                                if (jrnCount === 0) return null;
+                                return (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-indigo-50 border border-indigo-200">
+                                    <span className="text-indigo-500" style={{ fontSize: 8 }}>●</span>
+                                    <span className="text-[9px] font-bold text-indigo-600 uppercase tracking-wider">
+                                      {jrnCount}
+                                    </span>
+                                  </span>
+                                );
+                              })()}
                             </div>
                           </td>
 {multiCompany ? selectedCompanies.map(co => (
@@ -12633,8 +13057,11 @@ const rowKey = `bssaved-${secIdx}-${parentPath}-${node.id}`;
                           )}
                         </tr>
                       );
-                      if (leafExpanded && hasDims) {
-                        leaf.children.forEach((dim, j) => {
+if (leafExpanded) {
+                        const bsLitDims = (nativeDims && leaf.children.length > 0)
+                          ? leaf.children
+                          : (leaf.code ? getDimsForLocalCode(leaf.code) : []);
+                        bsLitDims.forEach((dim, j) => {
                           const dimIsMatch = (() => {
                             const q = debouncedQuery.trim().toLowerCase();
                             if (!q) return false;
