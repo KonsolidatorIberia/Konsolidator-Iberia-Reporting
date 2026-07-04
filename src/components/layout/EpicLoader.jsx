@@ -430,22 +430,15 @@ return (
           opacity: phase >= PHASE.LOGO_IN.id ? 1 : 0,
           transition: "transform 350ms cubic-bezier(0.34,1.56,0.64,1), opacity 350ms ease",
         }}>
-        <div className="w-20 h-20 rounded-3xl flex items-center justify-center mb-5"
+<div className="mb-5"
           style={{
-            background: "rgba(255,255,255,0.85)",
-            border: "1px solid rgba(255,255,255,0.95)",
-            backdropFilter: "blur(20px) saturate(150%)",
-            boxShadow: phase >= PHASE.CONSOLIDATE.id
-              ? "0 0 80px rgba(255,255,255,0.9), 0 0 200px rgba(168,197,255,0.6)"
-              : "0 20px 60px rgba(15,31,92,0.4), 0 8px 20px rgba(15,31,92,0.2)",
-            transition: "box-shadow 400ms ease",
+            filter: phase >= PHASE.CONSOLIDATE.id
+              ? "drop-shadow(0 0 40px rgba(255,255,255,0.9)) drop-shadow(0 0 100px rgba(168,197,255,0.6))"
+              : "drop-shadow(0 10px 30px rgba(15,31,92,0.4))",
+            transition: "filter 400ms ease",
           }}>
-          <img src="/logo-icon.png" alt="K" className="w-14 h-14 object-contain" />
+          <img src="/favicon.svg" alt="" className="w-24 h-24 object-contain" />
         </div>
-        <p className="text-white font-black text-xl tracking-[0.3em]"
-          style={{ textShadow: "0 0 30px rgba(255,255,255,0.4), 0 0 60px rgba(168,197,255,0.5)" }}>
-          KONSOLIDATOR
-        </p>
         <p className="text-[10px] mt-3 tracking-[0.25em] uppercase font-bold"
           style={{
             color: "rgba(255,255,255,0.7)",
