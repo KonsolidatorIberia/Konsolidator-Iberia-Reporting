@@ -126,9 +126,12 @@ if (activePage === "individual-dimensiones") return (
   );
 
 if (activePage === "consolidated-sheet") return (
-    <ConsolidationSheetPage token={token} onNavigate={onNavigate} />
+    <ConsolidationSheetPage
+      token={token}
+      onNavigate={onNavigate}
+      activeStandardKey={rawData?.activeStandardKey ?? null}
+    />
   );
-
 
   if (activePage === "individual-kpis") return (
     <KpiIndividualesPage
@@ -141,7 +144,10 @@ if (activePage === "consolidated-sheet") return (
     />
   );
 if (activePage === "consolidated-cashflow") return (
-    <CashFlowPage token={token} />
+    <CashFlowPage
+      token={token}
+      activeStandardKey={rawData?.activeStandardKey ?? null}
+    />
   );
 
 if (activePage === "individual-cashflow") return (
@@ -179,16 +185,23 @@ if (activePage === "cashflow-mappings") {
   );
 
 if (activePage === "consolidated-kpis") return (
-    <ConsolidatedKpiPage token={token} />
+    <ConsolidatedKpiPage
+      token={token}
+      activeStandardKey={rawData?.activeStandardKey ?? null}
+    />
   );
 
-  if (activePage === "consolidated-notes") return (
-    <ConsolidatedMemoryNotesPage token={token} />
+if (activePage === "consolidated-notes") return (
+    <ConsolidatedMemoryNotesPage
+      token={token}
+      activeStandardKey={rawData?.activeStandardKey ?? null}
+    />
   );
 
-  if (activePage === "consolidated-dimensiones") return (
+if (activePage === "consolidated-dimensiones") return (
     <ConsolidatedDimensionesPage
       token={token}
+      activeStandardKey={rawData?.activeStandardKey ?? null}
       sources={sharedData.sources ?? []}
       structures={sharedData.structures ?? []}
       companies={sharedData.companies ?? []}

@@ -189,9 +189,11 @@ const SheetRow = React.memo(function SheetRow({
   body1Style, body2Style, subbody1Style, colors = { primary: "#1a2f8a" },
   cmpColsExiting = false, cmpColsVisible = false,
   rowIndex = 0,
+  rowMatchesDims = null,
 }) {
 const hasChildren = node.children?.length > 0;
-  const isExpanded  = expanded.has(node.AccountCode);
+  const rowKey = node._instanceId ?? node.AccountCode;
+  const isExpanded  = expanded.has(rowKey);
 
   const rowStyle = !hasChildren ? subbody1Style : (depth === 0 ? body1Style : body2Style);
   const cellStyle = (v) => {
@@ -199,17 +201,27 @@ const hasChildren = node.children?.length > 0;
     return { ...rowStyle, color: baseColor };
   };
 
+  // Filter rows by mapping-instance dims if this node has them
+  const nodeDims = node._dims || null;
+  const dimFilter = (r) => {
+    if (!nodeDims || nodeDims.length === 0) return true;
+    if (typeof rowMatchesDims !== "function") return true;
+    return rowMatchesDims(r, nodeDims);
+  };
+
   const byCompany = pivot.get(node.AccountCode) || {};
 
 const consTotal = (byCompany[topParent] ?? [])
     .filter(r => r.CompanyRole === "Group")
     .filter(r => !r.OriginCompanyShortName?.trim() && !r.CounterpartyShortName?.trim())
+    .filter(dimFilter)
     .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
 
-  const getContrib = (company) => {
+const getContrib = (company) => {
     const role = company === topParent ? "Parent" : "Contribution";
     return (byCompany[company] ?? [])
       .filter(r => r.CompanyRole === role)
+      .filter(dimFilter)
       .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
   };
 
@@ -1651,9 +1663,10 @@ function MappingsLibrary({ colors, kind, activeMapping, mappings, loading, error
 }
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
-export default function ConsolidationSheetPage({ token, onNavigate }) {
+export default function ConsolidationSheetPage({ token, onNavigate, activeStandardKey = null }) {
 const _h1 = useTypo("header1");
 const _h2 = useTypo("header2");
+const _h3 = useTypo("header3");
 const _b1 = useTypo("body1");
 const _b2 = useTypo("body2");
 const _sb1 = useTypo("subbody1");
@@ -1676,9 +1689,12 @@ const body2Style    = useMemo(() => _b2,     [_b2Key]);      // eslint-disable-l
 const subbody1Style = useMemo(() => _sb1,    [_sb1Key]);     // eslint-disable-line react-hooks/exhaustive-deps
 const colors        = useMemo(() => _colors, [_colorsKey]);  // eslint-disable-line react-hooks/exhaustive-deps
   const [periods,        setPeriods]        = useState([]);
-  const [sources,        setSources]        = useState([]);
+const [sources,        setSources]        = useState([]);
   const [structures,     setStructures]     = useState([]);
   const [companies,      setCompanies]      = useState([]);
+const [dimensions,     setDimensions]     = useState([]);
+  const [upDimGroups, setUpDimGroups] = useState(null);   // null = all, [] = none, [...] = selected
+  const [upDimensions, setUpDimensions] = useState(null);
   const [consolidations, setConsolidations] = useState([]);
   const [groupStructure, setGroupStructure] = useState([]);
 
@@ -1770,8 +1786,13 @@ useEffect(() => {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [elimExpanded]);
-const [breakers] = useState({});
-  const [breakerSortOrder, setBreakerSortOrder] = useState(new Map());
+const [breakers, setBreakers] = useState({});
+const [breakerSortOrder, setBreakerSortOrder] = useState(new Map());
+  const [codeToSectionInfo, setCodeToSectionInfo] = useState(new Map());
+  const [codeToNameFromStd, setCodeToNameFromStd] = useState(new Map());
+  const [codeToParentFromStd, setCodeToParentFromStd] = useState(new Map());
+  const [codeToStatementFromStd, setCodeToStatementFromStd] = useState(new Map());
+
 
 // ── Mappings state — single shared mapping for both P/L and B/S ──────────
   const [activeMapping, setActiveMapping] = useState(null);
@@ -1801,35 +1822,54 @@ const [recentMappings, setRecentMappings] = useState([]);
   // Convert saved mapping tree → flat { rows, sections }
 const convertMappingTree = useCallback((tree) => {
     if (!Array.isArray(tree) || tree.length === 0) return null;
+    // rows keyed by INSTANCE id (not code), so multiple instances of the
+    // same account code (with different dims) don't collide.
     const rows = new Map();
     const sections = new Map();
     let sortCounter = 0;
     let defaultSecCounter = 0;
-    const walk = (nodes, depth, parentSection) => {
+    let synthIdCounter = 0;
+
+    const walk = (nodes, depth, initialParentSection) => {
+      let currentSection = initialParentSection;
       for (const node of nodes || []) {
-        if (node?.kind === "breaker") {
+        if (!node) continue;
+        if (node.kind === "breaker") {
           const secCode = node.sectionCode || `section_${defaultSecCounter++}`;
-          sections.set(secCode, {
-            label: String(node.name ?? "Section"),
-            color: node.color || "#1a2f8a",
-          });
-          walk(node.children, depth, secCode);
-        } else if (node?.code) {
+          if (!sections.has(secCode)) {
+            sections.set(secCode, {
+              label: String(node.name ?? "Section"),
+              color: node.color || "#1a2f8a",
+            });
+          }
+          currentSection = secCode;
+          if (Array.isArray(node.children) && node.children.length > 0) {
+            walk(node.children, depth, secCode);
+          }
+        } else if (node.code != null) {
           const code = String(node.code);
-          const sec = parentSection || "_default";
+          const sec = currentSection || "_default";
           if (!sections.has(sec)) sections.set(sec, { label: "", color: "#1a2f8a" });
-          rows.set(code, {
+          const instanceId = String(node.id ?? `synth-${code}-${synthIdCounter++}`);
+          // Parse dims — each entry is "Group:Value" or just "Value"
+          const dims = Array.isArray(node.dims) ? node.dims.map(String).filter(Boolean) : [];
+          rows.set(instanceId, {
+            code,
+            name: node.name ?? "",
+            dims,
             section: sec,
             sortOrder: sortCounter++,
             isSum: !!node.isSum,
             showInSummary: !!node.showInSummary,
             level: depth,
           });
-          walk(node.children, depth + 1, sec);
+          if (Array.isArray(node.children) && node.children.length > 0) {
+            walk(node.children, depth + 1, sec);
+          }
         }
       }
     };
-walk(tree, 0, null);
+    walk(tree, 0, null);
     return rows.size > 0 ? { rows, sections } : null;
   }, []);
 
@@ -1935,12 +1975,14 @@ const handleApplyMapping = useCallback((m, kind = "structure") => {
       fetch(`${BASE}/sources`,         { headers: h }).then(r => r.json()).then(d => d.value || d),
       fetch(`${BASE}/structures`,      { headers: h }).then(r => r.json()).then(d => d.value || d),
       fetch(`${BASE}/companies`,       { headers: h }).then(r => r.json()).then(d => d.value || d),
-      fetch(`${BASE}/consolidations`,  { headers: h }).then(r => r.json()).then(d => d.value || d),
+fetch(`${BASE}/consolidations`,  { headers: h }).then(r => r.json()).then(d => d.value || d),
       fetch(`${BASE}/group-structure`, { headers: h }).then(r => r.json()).then(d => d.value || d || []).catch(() => []),
-    ]).then(([p, s, st, co, cons, gs]) => {
+      fetch(`${BASE}/dimensions`,      { headers: h }).then(r => r.json()).then(d => d.value || d || []).catch(() => []),
+    ]).then(([p, s, st, co, cons, gs, dims]) => {
       setPeriods(p); setSources(s); setStructures(st); setCompanies(co);
       setConsolidations(Array.isArray(cons) ? cons : []);
       setGroupStructure(Array.isArray(gs) ? gs : []);
+      setDimensions(Array.isArray(dims) ? dims : []);
       const latest = p
         .filter(x => x.Source === "Actual" && x.Closed === true)
         .sort((a, b) => b.Year !== a.Year ? b.Year - a.Year : b.Month - a.Month)[0]
@@ -2145,36 +2187,95 @@ useEffect(() => {
     const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
     const sbHeaders = { apikey: SUPABASE_APIKEY, Authorization: `Bearer ${SUPABASE_APIKEY}` };
 
+    const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+
+    // CUSTOM path: unified standard_statement_* tables, paginated fetch
+    if (isCustom) {
+      const fetchAllRows = async () => {
+        const all = [];
+        const PAGE = 1000;
+        let offset = 0;
+        while (true) {
+          const url = `${SUPABASE_URL}/standard_statement_rows?select=*` +
+            `&standard_key=eq.${encodeURIComponent(activeStandardKey)}` +
+            `&statement=in.(PL,BS,CF)` +
+            `&order=sort_order.asc` +
+            `&limit=${PAGE}&offset=${offset}`;
+          const r = await fetch(url, { headers: sbHeaders });
+          if (!r.ok) break;
+          const batch = await r.json();
+          if (!Array.isArray(batch) || batch.length === 0) break;
+          all.push(...batch);
+          if (batch.length < PAGE) break;
+          offset += PAGE;
+          if (offset > 20000) break;
+        }
+        return all;
+      };
+      Promise.all([
+        fetchAllRows(),
+        fetch(
+          `${SUPABASE_URL}/standard_statement_sections?select=*` +
+          `&standard_key=eq.${encodeURIComponent(activeStandardKey)}` +
+          `&statement=in.(PL,BS,CF)` +
+          `&order=sort_order.asc`,
+          { headers: sbHeaders }
+        ).then(r => r.json()),
+      ]).then(([rowsArr, secsArr]) => {
+        if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
+        const secByCode = new Map(secsArr.map(s => [s.section_code, { label: s.label, color: s.color }]));
+        const seen = new Set();
+        const out = {};
+        const codeSecMap = new Map();
+        const nameMap = new Map();
+        const parentMap = new Map();
+        const stmtMap = new Map();
+        rowsArr.forEach(r => {
+          if (r.section_code && secByCode.has(r.section_code)) {
+            const sec = secByCode.get(r.section_code);
+            codeSecMap.set(r.account_code, { section: r.section_code, label: sec.label, color: sec.color });
+          }
+          if (r.account_name) nameMap.set(r.account_code, r.account_name);
+          if (r.parent_code) parentMap.set(r.account_code, r.parent_code);
+          if (r.statement) stmtMap.set(r.account_code, r.statement);
+          if (seen.has(r.section_code) || !r.section_code) return;
+          seen.add(r.section_code);
+          const sec = secByCode.get(r.section_code);
+          if (sec) out[r.account_code] = { label: sec.label, color: sec.color };
+        });
+        const breakerOrder = new Map();
+        rowsArr.forEach(r => breakerOrder.set(r.account_code, r.sort_order));
+        setBreakers(out);
+        setBreakerSortOrder(breakerOrder);
+        setCodeToSectionInfo(codeSecMap);
+        setCodeToNameFromStd(nameMap);
+        setCodeToParentFromStd(parentMap);
+        setCodeToStatementFromStd(stmtMap);
+      }).catch(() => {});
+      return;
+    }
+
+    // Legacy path — regex detection
     (async () => {
       try {
-        // 1. Fetch all known standards and their table mappings
         const standards = await fetch(
           `${SUPABASE_URL}/accounting_standards?select=*`,
           { headers: sbHeaders }
         ).then(r => r.json());
-
         if (!Array.isArray(standards) || standards.length === 0) return;
-
-        // 2. Collect all account codes from rawData for detection
         const codes = [...new Set(rawData.map(r => String(r.AccountCode ?? "")))];
-
-        // 3. Find the first standard whose detect_pattern matches any code
         let matched = null;
         for (const std of standards) {
           if (!std.detect_pattern) continue;
           const re = new RegExp(std.detect_pattern);
           if (codes.some(c => re.test(c))) { matched = std; break; }
         }
-
         if (!matched) return;
-
-        // 4. Fetch all mapping tables for the matched standard in parallel
         const tablesToFetch = [
           matched.pl_table,
           matched.bs_table,
           matched.cf_table,
         ].filter(Boolean);
-
         const results = await Promise.all(
           tablesToFetch.map(t =>
             fetch(`${SUPABASE_URL}/${t}?select=*&order=sort_order.asc`, { headers: sbHeaders })
@@ -2183,17 +2284,14 @@ useEffect(() => {
               .catch(() => [])
           )
         );
-
         const allRows = results.flat();
         if (!allRows.length) return;
-
         const breakerOrder = new Map();
         allRows.forEach((r, idx) => breakerOrder.set(r.account_code, idx));
         setBreakerSortOrder(breakerOrder);
-
-} catch { /* swallow */ }
+      } catch { /* swallow */ }
     })();
-  }, [rawData]);
+  }, [rawData, activeStandardKey]);
 
   // ── Fetch compare data ────────────────────────────────────────────────────
 useEffect(() => {
@@ -2210,16 +2308,94 @@ useEffect(() => {
 
   // ── Derived data ──────────────────────────────────────────────────────────
 
+// Dimension name↔code lookup for filtering amounts by mapping instance dims.
+  // Mapping instances store dims as "Group:Name" but rawData rows have "Group:Code".
+  // Build a bidirectional map so we can match either shape.
+const dimGroups = useMemo(() => {
+    const seen = new Set();
+    return (dimensions || [])
+      .map(d => String(d.DimensionGroup ?? d.dimensionGroup ?? ""))
+      .filter(g => g && !seen.has(g) && seen.add(g));
+  }, [dimensions]);
+
+  const filteredDims = useMemo(() => {
+    if (!upDimGroups || upDimGroups.length === 0) return dimensions || [];
+    return (dimensions || []).filter(d => {
+      const g = String(d.DimensionGroup ?? d.dimensionGroup ?? "");
+      return upDimGroups.includes(g);
+    });
+  }, [dimensions, upDimGroups]);
+
+  const dimNameLookup = useMemo(() => {
+    // Map key: "Group:Name" → set of "Group:Code" equivalents
+    const nameToCodes = new Map();
+    (dimensions || []).forEach(d => {
+      const g = String(d.DimensionGroup ?? d.dimensionGroup ?? d.DimensionGroupName ?? d.dimensionGroupName ?? "").trim();
+      const cd = String(d.DimensionCode ?? d.dimensionCode ?? "").trim();
+      const nm = String(d.DimensionName ?? d.dimensionName ?? "").trim();
+      if (!g) return;
+      const nameKey = `${g}:${nm}`;
+      const codeKey = `${g}:${cd}`;
+      if (!nameToCodes.has(nameKey)) nameToCodes.set(nameKey, new Set());
+      if (cd) nameToCodes.get(nameKey).add(codeKey);
+      // Also identity mapping (allow direct match if mapping stores code already)
+      if (!nameToCodes.has(codeKey)) nameToCodes.set(codeKey, new Set([codeKey]));
+    });
+    return nameToCodes;
+  }, [dimensions]);
+
+  // Returns true if row's Dimensions string matches any of nodeDims (mapping instance dims).
+  // nodeDims is an array like ["Centro de Coste:Producción"]. row.Dimensions is like
+  // "Centro de Coste:1||Categoria:X".
+  const rowMatchesDims = useCallback((row, nodeDims) => {
+    if (!nodeDims || nodeDims.length === 0) return true; // no filter → all rows match
+    const dimsStr = String(row?.Dimensions ?? row?.dimensions ?? "").trim();
+    if (!dimsStr) return false; // no dims on row but mapping requires one
+    const rowPairs = new Set(
+      dimsStr.split("||").map(s => s.trim()).filter(Boolean)
+    );
+    // For each required nodeDim, check if row has an equivalent pair
+    return nodeDims.some(nd => {
+      const need = String(nd).trim();
+      // Direct match (mapping stored code that appears in row)
+      if (rowPairs.has(need)) return true;
+      // Name-based match: resolve to code equivalents
+      const codeEquivalents = dimNameLookup.get(need);
+      if (!codeEquivalents) return false;
+      for (const codeKey of codeEquivalents) {
+        if (rowPairs.has(codeKey)) return true;
+      }
+      return false;
+    });
+  }, [dimNameLookup]);
+
+// Pre-filter for dimension dropdowns (PageHeader multiselect)
+  const passesDimFilter = useCallback((r) => {
+    if (Array.isArray(upDimensions) && upDimensions.length > 0) {
+      const dCode = String(r.DimensionCode ?? r.dimensionCode ?? "");
+      if (!upDimensions.includes(dCode)) return false;
+    } else if (Array.isArray(upDimGroups) && upDimGroups.length > 0) {
+      const dimsStr = String(r.Dimensions ?? r.dimensions ?? "").trim();
+      if (!dimsStr) return false;
+      const rowGroups = dimsStr.split("||")
+        .map(p => p.slice(0, p.indexOf(":")).trim())
+        .filter(Boolean);
+      if (!rowGroups.some(g => upDimGroups.includes(g))) return false;
+    }
+    return true;
+  }, [upDimGroups, upDimensions]);
+
   const pivot = useMemo(() => {
     const m = new Map();
     rawData.forEach(r => {
+      if (!passesDimFilter(r)) return;
       if (!m.has(r.AccountCode)) m.set(r.AccountCode, {});
       const c = m.get(r.AccountCode);
       if (!c[r.CompanyShortName]) c[r.CompanyShortName] = [];
       c[r.CompanyShortName].push(r);
     });
     return m;
-  }, [rawData]);
+  }, [rawData, passesDimFilter]);
 
   // Compare-period pivot: { code → { company → consTotal, contribByCo } }
 const cmpPivot = useMemo(() => {
@@ -2332,22 +2508,25 @@ const mappingDerived = useMemo(() => {
       : activeMapping.bsTreeConverted;
     if (!converted || converted.rows.size === 0) return null;
     const { rows, sections } = converted;
-    const sortOrder = new Map();
-    const codeSection = new Map();   // code → sectionId
-    const mappedCodes = new Set();
-    rows.forEach((info, code) => {
-      sortOrder.set(code, info.sortOrder);
-      codeSection.set(code, info.section);
-      if (!info.isSum) mappedCodes.add(code);
+    // rows is keyed by instance id, each entry has { code, name, dims, section, sortOrder, isSum, ... }
+    const instances = [];       // ordered list of instances
+    const sortOrder = new Map(); // instanceId → sortOrder
+    const codeSection = new Map(); // instanceId → sectionId
+    const mappedCodes = new Set(); // code strings that appear in any instance
+    rows.forEach((info, instanceId) => {
+      instances.push({ instanceId, ...info });
+      sortOrder.set(instanceId, info.sortOrder);
+      codeSection.set(instanceId, info.section);
+      if (!info.isSum) mappedCodes.add(info.code);
     });
-    // sectionMeta: sectionId → { label, color }
+    instances.sort((a, b) => a.sortOrder - b.sortOrder);
     const sectionMeta = {};
     sections.forEach((secInfo, secId) => {
       if (secInfo && secInfo.label) {
         sectionMeta[secId] = { label: secInfo.label, color: secInfo.color || "#1a2f8a" };
       }
     });
-    return { sortOrder, codeSection, sectionMeta, mappedCodes };
+    return { instances, sortOrder, codeSection, sectionMeta, mappedCodes };
   }, [activeMapping, mappingTab]);
 
 // Account tree
@@ -2373,41 +2552,126 @@ if (!accountMap.size) return { accountMap, tree: [], mappingBreakersOverride: nu
     // Render EVERY mapped code regardless of whether it has data. Codes that
     // exist in the API response get real names/types/values; codes that only
     // live in the mapping render with the code as the name and zero values.
-if (mappingDerived && mappingDerived.mappedCodes.size > 0) {
-      const treeNodes = [];
-      mappingDerived.mappedCodes.forEach(code => {
-        const existing = accountMap.get(code);
-        if (!existing) return;
-        treeNodes.push({
-          AccountCode: code,
-          AccountName: existing.AccountName,
-          AccountType: existing.AccountType,
-          SumAccountCode: existing.SumAccountCode ?? null,
+if (mappingDerived && mappingDerived.instances && mappingDerived.instances.length > 0) {
+      // Each mapping instance becomes its own tree node. Multiple instances
+      // of the same account code (with different dims) do NOT collide —
+      // they render as separate rows.
+      const treeNodes = mappingDerived.instances.map(inst => {
+        const existing = accountMap.get(inst.code);
+        return {
+          AccountCode: inst.code,
+          AccountName: inst.name || existing?.AccountName || inst.code,
+          AccountType: existing?.AccountType || "P/L",
+          SumAccountCode: existing?.SumAccountCode ?? null,
           children: [],
-        });
+          _instanceId: inst.instanceId,
+          _dims: inst.dims || [],
+          _isSum: inst.isSum,
+        };
       });
-      treeNodes.sort((a, b) => {
-        const sA = mappingDerived.sortOrder.get(a.AccountCode) ?? 9999;
-        const sB = mappingDerived.sortOrder.get(b.AccountCode) ?? 9999;
-        return sA - sB;
-      });
-      // Assign breakers to the FIRST SURVIVING code of each section. If the
-      // section's original first code got filtered out (not in accountMap),
-      // the breaker would otherwise be lost — this transfers it to whichever
-      // mapped code actually made it into the tree first.
-const mappingBreakersOverride = {};
+      // Already ordered by sortOrder in mappingDerived.instances
+      const mappingBreakersOverride = {};
       const seenSections = new Set();
       treeNodes.forEach(node => {
-        const secId = mappingDerived.codeSection.get(node.AccountCode);
+        const secId = mappingDerived.codeSection.get(node._instanceId);
         if (!secId || seenSections.has(secId)) return;
         const meta = mappingDerived.sectionMeta[secId];
-        if (meta) mappingBreakersOverride[node.AccountCode] = meta;
+        if (meta) mappingBreakersOverride[node._instanceId] = meta;
         seenSections.add(secId);
       });
       return { accountMap, tree: treeNodes, mappingBreakersOverride };
     }
 
-    // ── Standard branch (no mapping for this tab) ──────────────────────────
+// ── Standard branch (no mapping for this tab) ──────────────────────────
+    // Effective sort: mapping overrides standard breaker order
+    const effectiveSortOrder = mappingDerived?.sortOrder ?? breakerSortOrder;
+    const isCustomStd = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+
+    // CUSTOM: build hierarchical tree from the standard (like Contributive).
+    // The standard is authoritative — accountMap only has ~4 top-level codes
+    // for Konsolidator, but the standard has ~1000. Build stdNodes from
+    // effectiveSortOrder and overlay accountMap data where present.
+    if (isCustomStd && codeToSectionInfo && codeToSectionInfo.size > 0 && effectiveSortOrder.size > 0) {
+      const STMT_TO_TYPE = { PL: "P/L", BS: "B/S", CF: "C/F" };
+      const isGrandTotal = (code) => {
+        const info = codeToSectionInfo.get(code);
+        return !info || !info.section;
+      };
+
+      const stdNodes = new Map();
+      for (const code of effectiveSortOrder.keys()) {
+        const fromMap = accountMap.get(code);
+        const stmt = codeToStatementFromStd.get(code);
+        const accountType = fromMap?.AccountType ?? STMT_TO_TYPE[stmt] ?? "P/L";
+        stdNodes.set(code, {
+          AccountCode: code,
+          AccountName: fromMap?.AccountName ?? codeToNameFromStd.get(code) ?? code,
+          AccountType: accountType,
+          SumAccountCode: fromMap?.SumAccountCode ?? codeToParentFromStd.get(code) ?? "",
+          children: [],
+        });
+      }
+
+      // Wire parent-child links, SKIP if parent is grand total OR cross-section
+      stdNodes.forEach(node => {
+        const parentCode = node.SumAccountCode;
+        if (!parentCode) return;
+        if (isGrandTotal(parentCode)) return;
+        const nodeSec = codeToSectionInfo.get(node.AccountCode)?.section;
+        const parentSec = codeToSectionInfo.get(parentCode)?.section;
+        if (nodeSec && parentSec && nodeSec !== parentSec) return;
+        const parent = stdNodes.get(parentCode);
+        if (parent && parent !== node) parent.children.push(node);
+      });
+
+      // typeFilter for tab
+      const passesTypeFilter = (n) => {
+        const t = n.AccountType ?? "";
+        if (typeFilter === "P/L") return t === "P/L" || t === "DIS";
+        if (typeFilter === "B/S") return t === "B/S";
+        if (typeFilter === "C/F") return t === "C/F" || t === "CFS";
+        // "Todos" excludes CF (rendered separately in Contributive; here just PL+BS)
+        return t !== "C/F" && t !== "CFS";
+      };
+
+      const filteredSet = new Set(
+        [...stdNodes.values()].filter(passesTypeFilter).map(n => n.AccountCode)
+      );
+      const sortRec = (node) => {
+        if (!node.children || !node.children.length) return;
+        node.children = node.children
+          .filter(c => filteredSet.has(c.AccountCode))
+          .sort((a, b) => {
+            const sA = effectiveSortOrder.get(a.AccountCode) ?? 9999999;
+            const sB = effectiveSortOrder.get(b.AccountCode) ?? 9999999;
+            return sA - sB;
+          });
+        node.children.forEach(sortRec);
+      };
+
+      const roots = [...stdNodes.values()]
+        .filter(passesTypeFilter)
+        .filter(n => {
+          const p = n.SumAccountCode;
+          if (!p) return true;
+          if (isGrandTotal(p)) return true;
+          if (!stdNodes.has(p)) return true;
+          if (!filteredSet.has(p)) return true;
+          const nodeSec = codeToSectionInfo.get(n.AccountCode)?.section;
+          const parentSec = codeToSectionInfo.get(p)?.section;
+          if (nodeSec && parentSec && nodeSec !== parentSec) return true;
+          return false;
+        })
+        .sort((a, b) => {
+          const sA = effectiveSortOrder.get(a.AccountCode) ?? 9999999;
+          const sB = effectiveSortOrder.get(b.AccountCode) ?? 9999999;
+          return sA - sB;
+        });
+      roots.forEach(sortRec);
+      return { accountMap, tree: roots, mappingBreakersOverride: null };
+    }
+
+    // Legacy path
     const typeFilteredMap = new Map([...accountMap.entries()].filter(([, v]) => {
       const t = v.AccountType ?? "";
       let typeMatches;
@@ -2417,9 +2681,6 @@ const mappingBreakersOverride = {};
       else typeMatches = (t !== "C/F" && t !== "CFS");
       return typeMatches;
     }));
-
-    // Effective sort: mapping overrides standard breaker order
-    const effectiveSortOrder = mappingDerived?.sortOrder ?? breakerSortOrder;
 
     if (effectiveSortOrder.size > 0) {
       const tree = [...typeFilteredMap.values()]
@@ -2432,15 +2693,15 @@ const mappingBreakersOverride = {};
           return tA - tB;
         })
         .map(n => ({ ...n, children: [] }));
-return { accountMap, tree, mappingBreakersOverride: null };
+      return { accountMap, tree, mappingBreakersOverride: null };
     }
     const tree = buildTree([...typeFilteredMap.values()]).sort((a, b) => {
       const tA = TYPE_ORDER[a.AccountType ?? ""] ?? 99;
       const tB = TYPE_ORDER[b.AccountType ?? ""] ?? 99;
       return tA - tB;
     });
-return { accountMap, tree, mappingBreakersOverride: null };
-  }, [rawData, breakerSortOrder, typeFilter, mappingDerived]);
+    return { accountMap, tree, mappingBreakersOverride: null };
+  }, [rawData, breakerSortOrder, typeFilter, mappingDerived, activeStandardKey, codeToSectionInfo, codeToNameFromStd, codeToParentFromStd, codeToStatementFromStd]);
 
 // ── Pre-built trees for each export view ─────────────────────────────────
   // The on-screen `tree` uses the user's current typeFilter. The Excel export
@@ -2725,6 +2986,28 @@ tabs={viewsMode ? [] : [
                   value: co,
                   label: companies.find(c => c.CompanyShortName === co)?.CompanyLegalName || co,
                 })),
+              }]
+            : []),
+          ...(dimGroups.length > 0
+            ? [{
+                label: T("filter_dim_group", "Dim group"),
+                multiselect: true,
+                values: upDimGroups,
+                onChange: vs => { setUpDimGroups(vs); setUpDimensions(null); },
+                options: dimGroups.map(g => ({ value: g, label: g })),
+              }]
+            : []),
+          ...(filteredDims.length > 0
+            ? [{
+                label: T("filter_dims", "Dimension"),
+                multiselect: true,
+                values: upDimensions,
+                onChange: setUpDimensions,
+                options: filteredDims.map(d => {
+                  const v = String(d.DimensionCode ?? d.dimensionCode ?? "");
+                  const l = String(d.DimensionName ?? d.dimensionName ?? v);
+                  return { value: v, label: l };
+                }),
               }]
             : []),
         ]}
@@ -3231,7 +3514,10 @@ const TYPE_LABELS_LOCAL = {
   // owns the structure, since the mapping might intentionally put DIS codes
   // somewhere other than "Distribution of Result".
 const effectiveBreakers = mappingBreakersOverride ?? mappingDerived?.breakers ?? breakers;
-  const mappingBreaker = effectiveBreakers[node.AccountCode] ?? null;
+  // When mapping is active with instances, look up breaker by instanceId;
+  // otherwise fall back to account code (standard render).
+  const breakerKey = node._instanceId ?? node.AccountCode;
+  const mappingBreaker = effectiveBreakers[breakerKey] ?? null;
   const breaker = mappingDerived
     ? mappingBreaker
     : (mappingBreaker || (typeChanged && TYPE_LABELS[type] ? TYPE_LABELS[type] : null));
@@ -3242,12 +3528,12 @@ const totalCols = 1 // account col
     + 1 + (compareMode ? 3 : 0) // contribution sum
     + effectiveCompanies.length * (compareMode ? 4 : 1); // per-company
   return (
-    <React.Fragment key={node.AccountCode}>
+   <React.Fragment key={node._instanceId ?? node.AccountCode}>
       {breaker && (
-        <tr>
+<tr>
           <td className="sticky left-0 z-10 px-5 py-1.5"
             style={{ backgroundColor: breaker.color }}>
-            <span className="text-[9px] font-black uppercase tracking-[0.18em]" style={{ color: "#fff", opacity: 0.92 }}>
+            <span className="uppercase tracking-widest" style={{ ..._h3, color: "#fff", opacity: 0.92 }}>
               {breaker.label}
             </span>
           </td>
@@ -3264,7 +3550,8 @@ const totalCols = 1 // account col
         elimColsExiting={elimColsExiting}
         compareMode={cmpColsVisible} cmpPivot={cmpPivot}
         body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style}
-        colors={colors} cmpColsExiting={cmpColsExiting} cmpColsVisible={cmpColsVisible} />
+        colors={colors} cmpColsExiting={cmpColsExiting} cmpColsVisible={cmpColsVisible}
+        rowMatchesDims={rowMatchesDims} />
     </React.Fragment>
   );
 })}

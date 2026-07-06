@@ -537,6 +537,8 @@ function buildSavedMappingLiteral(tree) {
   const sections = []; // [{ label, color, nodes: [literalNode, ...] }]
   let current = { label: null, color: null, nodes: [] };
   sections.push(current);
+  const _debugTree = tree.slice(0, 6).map(n => ({ kind: n?.kind, code: n?.code, name: n?.name, dims: n?.dims, childrenLen: (n?.children||[]).length }));
+  console.log('[buildSavedMappingLiteral input]', _debugTree);
 
 function literal(node, depth, visited = new WeakSet()) {
     if (!node || depth > 50 || visited.has(node)) {
@@ -573,45 +575,78 @@ function literal(node, depth, visited = new WeakSet()) {
       current.nodes.push(literal(node, 0));
     }
   }
-  const cleaned = sections.filter((s, i) => i > 0 || s.nodes.length > 0);
+const cleaned = sections.filter((s, i) => i > 0 || s.nodes.length > 0);
+  console.log('[buildSavedMappingLiteral output]', cleaned.map(s => ({
+    label: s.label,
+    nodeCount: s.nodes.length,
+    first600: s.nodes.filter(n => n.code === "600000").map(n => ({ dims: n.dims, isSum: n.isSum }))
+  })));
   return cleaned.length === 0 ? null : cleaned;
 }
 
 function convertSavedMappingTree(tree) {
   if (!Array.isArray(tree) || tree.length === 0) return null;
-  const rows = new Map();
+  const rows = new Map();           // keyed by code (compat with existing code)
+  const instances = [];              // ordered list of instances (for dim-aware rendering)
   const sections = new Map();
   let sortCounter = 0;
   let defaultSecCounter = 0;
-  function walk(nodes, depth, parentSection) {
-    for (const node of nodes) {
+  let synthIdCounter = 0;
+
+  // Walker handles BOTH styles:
+  //   1. Recursive (breakers own their code children via `children`)
+  //   2. Linear/sibling (breakers and codes at same level; the breaker
+  //      assigns section to all subsequent siblings until another breaker)
+  function walk(nodes, depth, initialParentSection) {
+    let currentSection = initialParentSection;
+    for (const node of nodes || []) {
       if (!node) continue;
       if (node.kind === "breaker") {
         const secCode = node.sectionCode || `section_${defaultSecCounter++}`;
-        sections.set(secCode, {
-          label: String(node.name ?? "Section"),
-          color: node.color || "#1a2f8a",
-        });
-        walk(node.children || [], depth, secCode);
+        if (!sections.has(secCode)) {
+          sections.set(secCode, {
+            label: String(node.name ?? "Section"),
+            color: node.color || "#1a2f8a",
+          });
+        }
+        currentSection = secCode;
+        if (Array.isArray(node.children) && node.children.length > 0) {
+          walk(node.children, depth, secCode);
+        }
       } else {
         const code = String(node.code ?? "");
         if (!code) continue;
-        const sec = parentSection || "_default";
+        const sec = currentSection || "_default";
         if (!sections.has(sec)) sections.set(sec, { label: "", color: "#1a2f8a" });
-        rows.set(code, {
+        const instanceId = String(node.id ?? `synth-${code}-${synthIdCounter++}`);
+        const dims = Array.isArray(node.dims) ? node.dims.map(String).filter(Boolean) : [];
+        const info = {
           section: sec,
           sortOrder: sortCounter++,
           isSum: true,
           showInSummary: !!node.showInSummary,
           level: depth,
+          parent_code: node.parent_code ?? node.SumAccountCode ?? null,
+        };
+        // First-seen wins for rows Map (existing consumers) — but instances[]
+        // captures every instance in order so the dim-aware render can iterate.
+        if (!rows.has(code)) rows.set(code, info);
+        instances.push({
+          instanceId,
+          code,
+          name: node.name ?? "",
+          dims,
+          ...info,
         });
-        walk(node.children || [], depth + 1, sec);
+        if (Array.isArray(node.children) && node.children.length > 0) {
+          walk(node.children, depth + 1, sec);
+        }
       }
     }
   }
   walk(tree, 0, null);
-  if (rows.size === 0) return null;
-  return { rows, sections };
+  if (rows.size === 0 && instances.length === 0) return null;
+  return { rows, sections, instances };
 }
 
 const MONTHS = [
@@ -797,9 +832,12 @@ function FilterPill({ label, value, onChange, options }) {
 }
 
 const INDENT = 14;
-const DimensionRow = React.memo(function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null, valCache = null, cmpCache = null, isAnimatingData = false, tableJustLoaded = false, cmpRecentlyToggled = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), onToggleDrillAccount = null, statementType = "pl", selGroups = new Set(), selDims = new Set(), sign = -1, groupAccounts = [], masterCompany = "", computeDrillCompanyRows = null }) {
+const DimensionRow = React.memo(function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null, valCache = null, cmpCache = null, isAnimatingData = false, tableJustLoaded = false, cmpRecentlyToggled = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), onToggleDrillAccount = null, statementType = "pl", selGroups = new Set(), selDims = new Set(), sign = -1, groupAccounts = [], masterCompany = "", computeDrillCompanyRows = null, dimNameToCodes = null }) {
   const subbody2Style = useTypo("subbody2");
   const code = node.AccountCode;
+if (code === "600000") {
+    console.log('[DimRow 600000]', { instId: node._instanceId, dims: node._dims, dimCols: dimCols?.length, dimNameToCodes: dimNameToCodes ? [...dimNameToCodes.keys()].slice(0, 6) : 'null' });
+  }
   const visibleChildren = excludeCodes
     ? (node.children || []).filter(c => !excludeCodes.has(String(c.AccountCode)))
     : (node.children || []);
@@ -814,9 +852,32 @@ const DimensionRow = React.memo(function DimensionRow({ node, depth, expandedSet
   // Fall back to self's own value only when every child resolves to zero (covers
   // accounts posted directly at the summary level with no separate leaf rows).
 const getNodeVal = (dimKey) => {
+    const nodeDims = node._dims;
+    if (Array.isArray(nodeDims) && nodeDims.length > 0) {
+      // dimKey is a code ("1", "DK", etc.). node._dims stores names/labels
+      // like "Centro de Coste:Producción". Resolve names → codes via
+      // dimNameToCodes and match against dimKey.
+      const matches = nodeDims.some(nd => {
+        const s = String(nd).trim();
+        if (s === String(dimKey)) return true;
+        const colonIdx = s.indexOf(":");
+        if (colonIdx > 0 && s.slice(colonIdx + 1) === String(dimKey)) return true;
+        if (dimNameToCodes) {
+          const codesForFull = dimNameToCodes.get(s);
+          if (codesForFull && codesForFull.has(String(dimKey))) return true;
+          if (colonIdx > 0) {
+            const nameOnly = s.slice(colonIdx + 1);
+            const codesForName = dimNameToCodes.get(nameOnly);
+            if (codesForName && codesForName.has(String(dimKey))) return true;
+          }
+        }
+        return false;
+      });
+      if (!matches) return 0;
+    }
     const sumNode = (n, depth = 0) => {
       if (depth > 25) return 0;
-      const k = `${n.AccountCode}|${dimKey}`;
+      const k = `${n.AccountCode}|${dimKey}|${node._instanceId ?? ""}`;
       if (valCache) {
         const cached = valCache.get(k);
         if (cached !== undefined) return cached;
@@ -1142,6 +1203,7 @@ function AccountsTab({ data }) {
 
 /* ── Pivot Tab ────────────────────────────────────────────── */
 function PivotTab({ data, dimensions, groupAccounts = [], selGroups = new Set(), selDims = new Set(), compareMode, statementType = "pl", externalViewMode = null, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), drillPrevRows = [], onToggleDrillAccount = () => {}, activeStandardKey = null }) {
+  console.log('[PivotTab.mount]', { statementType, hasCustomMapping, hasPlMap: !!plMapping, hasBsMap: !!bsMapping, plRowsSize: plMapping?.rows?.size, plInstancesLen: plMapping?.instances?.length });
 
 const header2Style = useTypo("header2");
   const body1Style = useTypo("body1");
@@ -1480,6 +1542,29 @@ const getVal = useCallback((ac, dk) => {
     return ytd - prevYtd;
   }, [pivot, prevPivotMain, sign, viewMode]);
 
+  // Dim name → code resolver. Mapping instances store dims as "Group:Name"
+  // but dimCols are keyed by code (e.g. "1" for "Producción"). Build a
+  // lookup so DimensionRow can match its restriction dims against the col key.
+  const dimNameToCodes = useMemo(() => {
+    // Map "Group:Name" → Set<code> and "Name" → Set<code>
+    const m = new Map();
+    (dimensions || []).forEach(d => {
+      const g = String(d.DimensionGroup ?? d.dimensionGroup ?? "").trim();
+      const nm = String(d.DimensionName ?? d.dimensionName ?? "").trim();
+      const cd = String(d.DimensionCode ?? d.dimensionCode ?? "").trim();
+      if (!cd) return;
+      const keys = [];
+      if (g && nm) keys.push(`${g}:${nm}`);
+      if (nm) keys.push(nm);
+      if (g && cd) keys.push(`${g}:${cd}`);
+      keys.push(cd);
+      keys.forEach(k => {
+        if (!m.has(k)) m.set(k, new Set());
+        m.get(k).add(cd);
+      });
+    });
+    return m;
+  }, [dimensions]);
 // Shared rollup cache. New Map() when underlying data changes; otherwise
   // the same Map is reused across every DimensionRow + expand/collapse, so
   // walking the BS tree only happens once per node per render cycle.
@@ -1743,6 +1828,15 @@ const displayedTreeIndex = useMemo(() => {
 
 const isCustomMapping = hasCustomMapping;
 const orderedRows = useMemo(() => {
+    console.log('[orderedRows.debug]', {
+      hasActiveMapping: !!activeMapping,
+      hasRows: !!activeMapping?.rows,
+      rowsSize: activeMapping?.rows?.size,
+      hasInstances: !!activeMapping?.instances,
+      instancesLen: activeMapping?.instances?.length,
+      isCustomMapping,
+      firstInstance: activeMapping?.instances?.[0],
+    });
     // CUSTOM standards (CUSTOM-*) use the hierarchical displayedTree directly.
 if (activeMapping?.rows) {
 if (isCustomMapping) {
@@ -1751,23 +1845,48 @@ if (isCustomMapping) {
           const code = String(a.AccountCode ?? a.accountCode ?? "");
           if (code) gaMap.set(code, a);
         });
-        return [...activeMapping.rows.entries()]
-          .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
-          .map(([code]) => {
-            // Prefer node from displayedTree (has children with dim data)
-            if (displayedTreeIndex.has(code)) return displayedTreeIndex.get(code);
-            if (treeIndex.has(code)) return treeIndex.get(code);
-            const ga = gaMap.get(code);
-            if (ga) return {
-              AccountCode: code,
-              AccountName: ga.AccountName ?? ga.accountName ?? code,
-              SumAccountCode: ga.SumAccountCode ?? ga.sumAccountCode ?? "",
-              children: [],
+        // Iterate INSTANCES (not codes) so the same code with different dims
+        // renders as separate rows. Falls back to rows Map if instances[] is absent.
+// Iterate INSTANCES (not codes) so the same code with different dims
+      // renders as separate rows. Falls back to rows Map if instances[] is absent.
+      const src = Array.isArray(activeMapping.instances) && activeMapping.instances.length > 0
+        ? activeMapping.instances
+        : [...activeMapping.rows.entries()]
+            .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+            .map(([code, info]) => ({ instanceId: code, code, dims: [], ...info }));
+      const result = src
+        .slice()
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map(inst => {
+            const code = inst.code;
+            let base;
+            if (displayedTreeIndex.has(code)) base = displayedTreeIndex.get(code);
+            else if (treeIndex.has(code)) base = treeIndex.get(code);
+            else {
+              const ga = gaMap.get(code);
+              if (ga) base = {
+                AccountCode: code,
+                AccountName: ga.AccountName ?? ga.accountName ?? code,
+                SumAccountCode: ga.SumAccountCode ?? ga.sumAccountCode ?? "",
+                children: [],
+              };
+            }
+if (!base) return null;
+            // Attach instance-specific dim/instanceId so DimensionRow can filter
+            return {
+              ...base,
+              _instanceId: inst.instanceId,
+              _dims: inst.dims || [],
             };
-            return null;
           })
           .filter(Boolean);
+console.log('[orderedRows.customMapping]',
+          'len:', result.length,
+          '600s:', JSON.stringify(result.filter(n => n.AccountCode === "600000").map(n => ({ instId: n._instanceId, dims: n._dims })))
+        );
+        return result;
       }
+// Default standard mapping — respect Summary/Detailed toggle
 // Default standard mapping — respect Summary/Detailed toggle
       const filterFn = summaryMode ? (info => info.showInSummary) : (info => info.isSum);
       const flatOrdered = [...activeMapping.rows.entries()]
@@ -1886,17 +2005,25 @@ const dividerMap = useMemo(() => {
       return out;
     }
 
-    // Default: one breaker per section, first-appearance in orderedRows.
+// Default: one breaker per section, first-appearance in orderedRows.
+    // Use instance-level section when available (mapping with dims).
     const seen = new Set();
     let i = 0;
+    const instBySortOrder = new Map(); // instanceId → info
+    if (Array.isArray(activeMapping.instances)) {
+      activeMapping.instances.forEach(inst => instBySortOrder.set(inst.instanceId, inst));
+    }
     for (const node of orderedRows) {
-      const m = activeMapping.rows.get(String(node.AccountCode));
+      // Prefer instance-level section lookup (each instance has its own section)
+      const instInfo = node._instanceId ? instBySortOrder.get(node._instanceId) : null;
+      const m = instInfo ?? activeMapping.rows.get(String(node.AccountCode));
       if (!m) continue;
       if (seen.has(m.section)) continue;
       seen.add(m.section);
       const sec = activeMapping.sections.get(m.section);
       if (sec) {
-        out[String(node.AccountCode)] = { label: sec.label, color: palette[i] ?? sec.color };
+        const key = String(node._instanceId ?? node.AccountCode);
+        out[key] = { label: sec.label, color: palette[i] ?? sec.color };
         i++;
       }
     }
@@ -3596,6 +3723,14 @@ onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary
                 // walks the literal tree (with breakers, sum nodes, dim filters),
                 // indents by tree depth, and rolls up via own + descendants.
 const literal = statementType === "pl" ? plLiteral : bsLiteral;
+                console.log('[render-literal-check]', {
+                  hasLiteral: !!literal,
+                  literalLen: literal?.length,
+                  hasPlLiteral: !!plLiteral,
+                  plLiteralLen: plLiteral?.length,
+                  statementType,
+                  firstSection: literal?.[0] ? { label: literal[0].label, nodeCount: literal[0].nodes?.length, first600s: literal[0].nodes?.filter(n => n.code === "600000").map(n => ({ dims: n.dims, isSum: n.isSum })) } : null,
+                });
                 if (literal && literal.length > 0) {
                   const ROW_H = 44;
                   const BUFFER = 10;
@@ -3607,12 +3742,26 @@ const literal = statementType === "pl" ? plLiteral : bsLiteral;
                   // This guarantees the drill math is byte-identical to the parent's.
                   const makeSumLit = (getValFn) => {
                     const cache = new Map();
-                    const leaf = (n, dk) => {
+const leaf = (n, dk) => {
                       if (n.dims && n.dims.length > 0) {
+                        const dkStr = String(dk);
                         const match = n.dims.some(d => {
-                          const i = d.indexOf(":");
-                          const v = i === -1 ? d : d.slice(i + 1);
-                          return String(v) === String(dk);
+                          const s = String(d);
+                          if (s === dkStr) return true;
+                          const i = s.indexOf(":");
+                          const nameOrValue = i === -1 ? s : s.slice(i + 1);
+                          const groupHint   = i === -1 ? "" : s.slice(0, i);
+                          if (String(nameOrValue) === dkStr) return true;
+                          // Resolve name → code via dimensions catalog
+                          for (const dd of (dimensions || [])) {
+                            const gg = String(dd.DimensionGroup ?? dd.dimensionGroup ?? "");
+                            const nn = String(dd.DimensionName ?? dd.dimensionName ?? "");
+                            const cc = String(dd.DimensionCode ?? dd.dimensionCode ?? "");
+                            if (!cc) continue;
+                            if (groupHint && groupHint !== gg) continue;
+                            if (nn === nameOrValue && cc === dkStr) return true;
+                          }
+                          return false;
                         });
                         if (!match) return 0;
                       }
@@ -3939,11 +4088,16 @@ const perCompanyPivots = new Map();
 const levelByCode = (hasCustomMapping && activeMapping?.rows)
                   ? new Map([...activeMapping.rows.entries()].map(([code, info]) => [String(code), info.level ?? 0]))
                   : null;                         
+console.log('[render-map]',
+                  'total:', orderedRows.length,
+                  '600s:', orderedRows.filter(n => n.AccountCode === "600000").length,
+                  'first10:', orderedRows.slice(0, 10).map(n => n.AccountCode).join(","),
+                );
                 return orderedRows.map((node, idx) => {
-                  const divider = dividerMap[String(node.AccountCode)];
+                  const divider = dividerMap[String(node._instanceId ?? node.AccountCode)];
                   const depth = levelByCode?.get(String(node.AccountCode)) ?? 0;
                   return (
-                    <React.Fragment key={node.AccountCode}>
+                    <React.Fragment key={node._instanceId ?? node.AccountCode}>
                       {divider && (
                         <tr>
                           <td className="sticky left-0 z-20 px-6 py-1.5" style={{ backgroundColor: divider.color }}>
@@ -3967,7 +4121,8 @@ const levelByCode = (hasCustomMapping && activeMapping?.rows)
 drillExpanded={drillExpanded} drillCache={drillCache} drillLoadingSet={drillLoadingSet}
                         onToggleDrillAccount={onToggleDrillAccount} statementType={statementType}
                         selGroups={selGroups} selDims={selDims} sign={sign} groupAccounts={groupAccounts}
-                        masterCompany={masterCompany} computeDrillCompanyRows={computeDrillCompanyRows} />
+                       masterCompany={masterCompany} computeDrillCompanyRows={computeDrillCompanyRows}
+                        dimNameToCodes={dimNameToCodes} />
                     </React.Fragment>
                   );
                 });

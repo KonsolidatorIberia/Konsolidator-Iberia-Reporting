@@ -1780,15 +1780,42 @@ function PivotRow({
   body1Style, body2Style, colors,
   perspectiveMode, rowIndex = 0,
   breakers = {}, totalColSpan = 10, breakerSortOrder = new Map(),
+  rowMatchesDims = null,
 }) {
   const code        = node.AccountCode;
+  if (node._instanceId && node._dims?.length) {
+    console.log('[pivotrow-props]', { code, instId: node._instanceId, dims: node._dims, rowMatchesDimsFn: typeof rowMatchesDims });
+  }
   const hasChildren = node.children?.length > 0;
   const isExpanded  = isOpen ? isOpen(code) : expandedSet.has(code);
   const isSummary   = /\.S$/i.test(code) || hasChildren;
   const rowStyle    = depth === 0 ? body1Style : body2Style;
   const isMatch     = rowMatchesSelf(node);
 
-  const getVal   = co => pivot.get(code)?.[co]?.total ?? 0;
+const getVal   = co => {
+    const cell = pivot.get(code)?.[co];
+    if (!cell) return 0;
+    const nodeDims = node._dims;
+    if (code === "600000" && co === "CAP" && nodeDims?.length > 0) {
+      console.log('[dim-debug]', {
+        code, co, nodeDims,
+        cellRowsLen: cell.rows?.length,
+        firstRowDims: cell.rows?.[0]?.Dimensions,
+        rowMatchesDimsFn: typeof rowMatchesDims,
+        sample: cell.rows?.slice(0, 3).map(r => ({ dims: r.Dimensions, amt: r._amt, role: r.CompanyRole })),
+      });
+    }
+    if (Array.isArray(nodeDims) && nodeDims.length > 0 && Array.isArray(cell.rows) && typeof rowMatchesDims === "function") {
+      // Sum only rows matching this instance's dims
+      let total = 0;
+      cell.rows.forEach(r => {
+        if (!rowMatchesDims(r, nodeDims)) return;
+        total += Number(r._amt ?? 0);
+      });
+      return total;
+    }
+    return Number(cell.total ?? 0);
+  };
   const getJp    = co => journalPivot?.get(code)?.[co] ?? {};
   const getSaldo = co => getVal(co);
 
@@ -2246,6 +2273,7 @@ compareMode, cmpPivot,
   dimIdx = null, journalDimIdx = null, cptyDimIdx = null, cmpDimIdx = null,
 activeStandardKey = null,
   codeToSectionInfo = new Map(),
+  rowMatchesDims = null,
 }) {
 const [dragCol, setDragCol] = useState(null);
   const [dragOverCol, setDragOverCol] = useState(null);
@@ -2690,21 +2718,49 @@ style={{
     // to the FIRST code in the actual render tree that belongs to that section.
     // The static `breakers` prop misses breakers when the first standard row
     // for a section is a sum-code that isn't in the tree.
-    const effectiveBreakers = { ...breakers };
+const effectiveBreakers = { ...breakers };
     if (codeToSectionInfo && codeToSectionInfo.size > 0) {
+      // Reset seenSections and rebuild breakers dispatch from scratch based on
+      // the actual tree. The static `breakers` prop from the effect assigns
+      // section labels to arbitrary standard codes, but those codes may not
+      // appear in the tree at all. Better strategy: for each top-level node,
+      // walk its descendants to find any code that carries a section_code.
+      // The first top-level node encountered per section owns the breaker.
+      const newBreakers = {};
       const seenSections = new Set();
-      // Add already-set breakers to seen (from static breakers prop).
-      Object.keys(breakers).forEach(code => {
-        const info = codeToSectionInfo.get(code);
-        if (info) seenSections.add(info.section);
-      });
+
+      const findSectionOfSubtree = (node) => {
+        // Returns the "dominant" section of a subtree: first section found
+        // via DFS on codeToSectionInfo. Priority is on the node itself, then
+        // its descendants.
+        const stack = [node];
+        while (stack.length) {
+          const n = stack.pop();
+          const info = codeToSectionInfo.get(String(n.AccountCode));
+          if (info?.section) return info;
+          const children = n.children || [];
+          // Reverse so first child is processed first
+          for (let k = children.length - 1; k >= 0; k--) stack.push(children[k]);
+        }
+        return null;
+      };
+
       tree.forEach(node => {
-        const info = codeToSectionInfo.get(String(node.AccountCode));
+        const info = findSectionOfSubtree(node);
         if (!info || seenSections.has(info.section)) return;
         seenSections.add(info.section);
-        effectiveBreakers[node.AccountCode] = { label: info.label, color: info.color };
+        newBreakers[node.AccountCode] = { label: info.label, color: info.color };
       });
+
+      // Replace effectiveBreakers with the freshly-computed set (do not merge
+      // with the static breakers prop, which may point to codes not in tree).
+      Object.keys(effectiveBreakers).forEach(k => delete effectiveBreakers[k]);
+      Object.assign(effectiveBreakers, newBreakers);
     }
+    console.log('[effectiveBreakers.final]', {
+      finalKeys: Object.keys(effectiveBreakers),
+      treeLen: tree.length,
+    });
     return tree.map((node, i) => {
             const type = node.AccountType ?? node.accountType ?? "";
             const prevType = i > 0 ? (tree[i-1].AccountType ?? tree[i-1].accountType ?? "") : null;
@@ -2724,19 +2780,25 @@ const TYPE_LABELS = {
             const divider = (showDivider && !suppressTypeDivider) ? (TYPE_LABELS[type] ?? { label: type, color: colors.quaternary }) : null;
             return (
               <>
-{effectiveBreakers[node.AccountCode] && (
-              <tr key={`breaker-${node.AccountCode}`}
-                style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(i, 25) * 35}ms both`, height: 28 }}>
-                <td colSpan={totalColSpan}
-                  style={{ backgroundColor: effectiveBreakers[node.AccountCode].color, padding: 0, height: 28 }}>
-                  <div className="sticky left-0 px-5 py-1.5" style={{ width: "fit-content" }}>
-                    <span style={{ ...header3Style, textTransform: "uppercase", color: "#fff" }}>
-                      {effectiveBreakers[node.AccountCode].label}
-                    </span>
-                  </div>
-                </td>
-              </tr>
-            )}
+{(() => {
+              // Breakers can be keyed by instanceId (mapping active) or AccountCode (standard render)
+              const brKey = node._instanceId ?? node.AccountCode;
+              const br = effectiveBreakers[brKey];
+              if (!br) return null;
+              return (
+                <tr key={`breaker-${brKey}`}
+                  style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(i, 25) * 35}ms both`, height: 28 }}>
+                  <td colSpan={totalColSpan}
+                    style={{ backgroundColor: br.color, padding: 0, height: 28 }}>
+                    <div className="sticky left-0 px-5 py-1.5" style={{ width: "fit-content" }}>
+                      <span style={{ ...header3Style, textTransform: "uppercase", color: "#fff" }}>
+                        {br.label}
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })()}
 {divider && (
                   <tr key={`divider-${node.AccountCode}`} style={{ height: 28 }}>
                     <td
@@ -2755,7 +2817,7 @@ const TYPE_LABELS = {
                     </td>
                   </tr>
                 )}
-<PivotRow key={node.AccountCode} node={node} depth={0}
+<PivotRow key={node._instanceId ?? node.AccountCode} node={node} depth={0}
                   expandedSet={expandedSet} onToggle={toggleExpand}
                   isOpen={isOpen} rowMatchesSelf={rowMatchesSelf}
                   cols={cols} pivot={pivot}
@@ -2766,7 +2828,8 @@ const TYPE_LABELS = {
                   body1Style={body1Style} body2Style={body2Style} colors={colors}
                   perspectiveMode={perspectiveMode} rowIndex={i}
                   breakers={breakers}
-            breakerSortOrder={breakerSortOrder} totalColSpan={totalColSpan} breakerSortOrder={breakerSortOrder}
+                  rowMatchesDims={rowMatchesDims}
+                  breakerSortOrder={breakerSortOrder} totalColSpan={totalColSpan}
                 />
               </>
 );
@@ -3555,7 +3618,13 @@ const [breakers, setBreakers] = useState({});
   // For CUSTOM standards: map<account_code, {section, label, color}> so we can
   // dispatch section breakers to the FIRST code of each section that actually
   // exists in the render tree (some standard sums have no data).
-  const [codeToSectionInfo, setCodeToSectionInfo] = useState(new Map());
+const [codeToSectionInfo, setCodeToSectionInfo] = useState(new Map());
+  // Cache from the standard: full metadata to build the tree skeleton
+  // independently of runtime data. Fixes Contributive where Konsolidator
+  // does not emit Contribution rows for every roll-up (C.01, E.PL, F.PL...).
+  const [codeToNameFromStd, setCodeToNameFromStd] = useState(new Map());
+const [codeToParentFromStd, setCodeToParentFromStd] = useState(new Map());
+  const [codeToStatementFromStd, setCodeToStatementFromStd] = useState(new Map());
 const [pgcSections] = useState({});
 const [expandedSet,setExpandedSet]= useState(new Set());
   useEffect(() => { setExpandedSet(new Set()); }, [typeFilter]);
@@ -3611,33 +3680,53 @@ const headers = useCallback(() => ({
 
   // Convert a saved mapping tree → flat { rows, sections } map for standard-style
   // rendering. Used when we want the literal to interop with our existing sortOrder.
-  const convertMappingTree = useCallback((tree) => {
+const convertMappingTree = useCallback((tree) => {
     if (!Array.isArray(tree) || tree.length === 0) return null;
+    // rows keyed by INSTANCE id (not code), so multiple instances of the
+    // same code (with different dims) don't collide.
     const rows = new Map();
     const sections = new Map();
     let sortCounter = 0;
     let defaultSecCounter = 0;
-    const walk = (nodes, depth, parentSection) => {
+    let synthIdCounter = 0;
+
+    // Walker handles BOTH styles: recursive (breakers own code children)
+    // and linear/sibling (breakers and codes at same level).
+    const walk = (nodes, depth, initialParentSection) => {
+      let currentSection = initialParentSection;
       for (const node of nodes || []) {
-        if (node?.kind === "breaker") {
+        if (!node) continue;
+        if (node.kind === "breaker") {
           const secCode = node.sectionCode || `section_${defaultSecCounter++}`;
-          sections.set(secCode, {
-            label: String(node.name ?? "Section"),
-            color: node.color || "#1a2f8a",
-          });
-          walk(node.children, depth, secCode);
-        } else if (node?.code) {
+          if (!sections.has(secCode)) {
+            sections.set(secCode, {
+              label: String(node.name ?? "Section"),
+              color: node.color || "#1a2f8a",
+            });
+          }
+          currentSection = secCode;
+          if (Array.isArray(node.children) && node.children.length > 0) {
+            walk(node.children, depth, secCode);
+          }
+        } else if (node.code != null) {
           const code = String(node.code);
-          const sec = parentSection || "_default";
+          const sec = currentSection || "_default";
           if (!sections.has(sec)) sections.set(sec, { label: "", color: "#1a2f8a" });
-          rows.set(code, {
+          const instanceId = String(node.id ?? `synth-${code}-${synthIdCounter++}`);
+          const dims = Array.isArray(node.dims) ? node.dims.map(String).filter(Boolean) : [];
+          rows.set(instanceId, {
+            code,
+            name: node.name ?? "",
+            dims,
             section: sec,
             sortOrder: sortCounter++,
             isSum: !!node.isSum,
             showInSummary: !!node.showInSummary,
             level: depth,
           });
-          walk(node.children, depth + 1, sec);
+          if (Array.isArray(node.children) && node.children.length > 0) {
+            walk(node.children, depth + 1, sec);
+          }
         }
       }
     };
@@ -3930,14 +4019,32 @@ useEffect(() => {
     // CUSTOM path: unified standard_statement_* tables filtered by
     // (standard_key, statement=PL).
 if (isCustom) {
+      // Paginated fetch — Supabase/PostgREST caps at 1000 rows per request
+      // by default. Standards can have >1000 rows (Konsolidator has 1190),
+      // so we page until we've read everything.
+      const fetchAllRows = async () => {
+        const all = [];
+        const PAGE = 1000;
+        let offset = 0;
+        while (true) {
+          const url = `${SUPABASE_URL}/standard_statement_rows?select=*` +
+            `&standard_key=eq.${encodeURIComponent(activeStandardKey)}` +
+            `&statement=in.(PL,BS,CF)` +
+            `&order=sort_order.asc` +
+            `&limit=${PAGE}&offset=${offset}`;
+          const r = await fetch(url, { headers: sbHeaders });
+          if (!r.ok) break;
+          const batch = await r.json();
+          if (!Array.isArray(batch) || batch.length === 0) break;
+          all.push(...batch);
+          if (batch.length < PAGE) break;
+          offset += PAGE;
+          if (offset > 20000) break; // safety
+        }
+        return all;
+      };
       Promise.all([
-        fetch(
-          `${SUPABASE_URL}/standard_statement_rows?select=*` +
-          `&standard_key=eq.${encodeURIComponent(activeStandardKey)}` +
-          `&statement=in.(PL,BS,CF)` +
-          `&order=sort_order.asc`,
-          { headers: sbHeaders }
-        ).then(r => r.json()),
+        fetchAllRows(),
         fetch(
           `${SUPABASE_URL}/standard_statement_sections?select=*` +
           `&standard_key=eq.${encodeURIComponent(activeStandardKey)}` +
@@ -3945,17 +4052,23 @@ if (isCustom) {
           `&order=sort_order.asc`,
           { headers: sbHeaders }
         ).then(r => r.json()),
-]).then(([rowsArr, secsArr]) => {
+      ]).then(([rowsArr, secsArr]) => {
         if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
         const secByCode = new Map(secsArr.map(s => [s.section_code, { label: s.label, color: s.color }]));
         const seen = new Set();
         const out = {};
-        const codeSecMap = new Map();
+const codeSecMap = new Map();
+        const nameMap = new Map();
+        const parentMap = new Map();
+        const stmtMap = new Map();
         rowsArr.forEach(r => {
           if (r.section_code && secByCode.has(r.section_code)) {
             const sec = secByCode.get(r.section_code);
             codeSecMap.set(r.account_code, { section: r.section_code, label: sec.label, color: sec.color });
           }
+          if (r.account_name) nameMap.set(r.account_code, r.account_name);
+          if (r.parent_code) parentMap.set(r.account_code, r.parent_code);
+          if (r.statement) stmtMap.set(r.account_code, r.statement);
           if (seen.has(r.section_code) || !r.section_code) return;
           seen.add(r.section_code);
           const sec = secByCode.get(r.section_code);
@@ -3966,6 +4079,9 @@ if (isCustom) {
         setBreakers(out);
         setBreakerSortOrder(breakerOrder);
         setCodeToSectionInfo(codeSecMap);
+        setCodeToNameFromStd(nameMap);
+setCodeToParentFromStd(parentMap);
+        setCodeToStatementFromStd(stmtMap);
       }).catch(() => {});
       return;
     }
@@ -4152,13 +4268,33 @@ setRawData(consolidated);
   }, [token, metaReady, year, month, source, structure, headers]);
   
 const [cmpCfUploadedData, setCmpCfUploadedData] = useState([]);
-  const [dimensionsMeta, setDimensionsMeta] = useState([]); // [{DimensionGroupName, DimensionGroupCode, DimensionName, DimensionCode}]
+const [dimensionsMeta, setDimensionsMeta] = useState([]); // [{DimensionGroupName, DimensionGroupCode, DimensionName, DimensionCode}]
+  // Dimension filter (PageHeader): null = all, [] = none, [...] = selected
+  const [upDimGroups, setUpDimGroups] = useState(null);
+  const [upDimensions, setUpDimensions] = useState(null);
+
+  // Derived catalogues for dropdowns
+  const dimGroups = useMemo(() => {
+    const seen = new Set();
+    return (dimensionsMeta || [])
+      .map(d => String(d.DimensionGroup ?? d.dimensionGroup ?? ""))
+      .filter(g => g && !seen.has(g) && seen.add(g));
+  }, [dimensionsMeta]);
+
+  const filteredDims = useMemo(() => {
+    if (!upDimGroups || upDimGroups.length === 0) return dimensionsMeta || [];
+    return (dimensionsMeta || []).filter(d => {
+      const g = String(d.DimensionGroup ?? d.dimensionGroup ?? "");
+      return upDimGroups.includes(g);
+    });
+  }, [dimensionsMeta, upDimGroups]);
 
   /* ── Fetch dimensions metadata (for code↔name mirror in dim index) ── */
   useEffect(() => {
     if (!token || !metaReady) return;
     const h = headers();
 fetch(`${BASE_URL}/v2/dimensions`, { headers: h })
+.then(r => r.json())
 .then(d => {
         const arr = d.value ?? (Array.isArray(d) ? d : []);
         console.log("🗂️ /v2/dimensions count:", arr.length);
@@ -4250,39 +4386,38 @@ fetch(`${BASE_URL}/v2/dimensions`, { headers: h })
   // IMPORTANT: When `treeLiteral` is available (Phase E), we skip this entire
   // derivation because the literal render path handles ordering, breakers,
   // filtering, duplicates and sum nodes itself. Phase D would interfere.
-  const mappingDerived = useMemo(() => {
+const mappingDerived = useMemo(() => {
     if (activeMapping?.treeLiteral) return null;
     if (!activeMapping?.treeConverted) return null;
     const { rows, sections } = activeMapping.treeConverted;
-    const sortOrder = new Map();
-    const mappedCodes = new Set();
-    rows.forEach((info, code) => {
-      sortOrder.set(code, info.sortOrder);
-      // Skip sum nodes from the data table — they have no direct values
-      // (they'd need a recursive sum render path which is Phase E).
-      if (!info.isSum) mappedCodes.add(code);
+    // rows keyed by instance id, each with { code, name, dims, section, ... }
+    const instances = [];
+    const sortOrder = new Map();   // instanceId → sortOrder
+    const codeSection = new Map(); // instanceId → sectionId
+    const mappedCodes = new Set(); // unique code strings for filtering rawData
+    rows.forEach((info, instanceId) => {
+      if (!info.isSum) mappedCodes.add(info.code);
+      instances.push({ instanceId, ...info });
+      sortOrder.set(instanceId, info.sortOrder);
+      codeSection.set(instanceId, info.section);
     });
-    // For each section, find the lowest-sortOrder code and attach the breaker
-    // there — the renderer paints the breaker as a row ABOVE that account.
-    const firstBySection = new Map();
-    rows.forEach((info, code) => {
-      if (info.isSum) return;
-      const cur = firstBySection.get(info.section);
-      if (!cur || info.sortOrder < cur.sortOrder) {
-        firstBySection.set(info.section, { code, sortOrder: info.sortOrder });
-      }
-    });
+    instances.sort((a, b) => a.sortOrder - b.sortOrder);
+    // Assign breaker to first instance of each section
     const breakers = {};
-    firstBySection.forEach(({ code }, section) => {
-      const secInfo = sections.get(section);
+    const seenSections = new Set();
+    instances.forEach(inst => {
+      if (inst.isSum) return;
+      if (seenSections.has(inst.section)) return;
+      seenSections.add(inst.section);
+      const secInfo = sections.get(inst.section);
       if (secInfo && secInfo.label) {
-        breakers[code] = { label: secInfo.label, color: secInfo.color || "#1a2f8a" };
+        breakers[inst.instanceId] = { label: secInfo.label, color: secInfo.color || "#1a2f8a" };
       }
     });
-    return { sortOrder, breakers, mappedCodes };
+    return { instances, sortOrder, codeSection, breakers, mappedCodes };
   }, [activeMapping]);
 
-const { accountMap, pivot, tree, cols, journalPivot, counterpartyPivot, cmpPivot, dimIdx, journalDimIdx, cptyDimIdx, cmpDimIdx } = useMemo(() => {
+const { accountMap, pivot, tree, cols, journalPivot, counterpartyPivot, cmpPivot, dimIdx, journalDimIdx, cptyDimIdx, cmpDimIdx, rowMatchesDims } = useMemo(() => {
     if (!rawData.length) return { accountMap: new Map(), pivot: new Map(), tree: [], cols: [], journalPivot: new Map(), cmpPivot: new Map() };
 
     const accountMap = new Map();
@@ -4304,10 +4439,23 @@ const filtered = rawData.filter(r => {
         const matchesCF = typeFilter === "C/F" && (t === "C/F" || t === "CFS");
         if (!matchesPL && !matchesCF && t !== typeFilter) return false;
       }
-      // PERSPECTIVE FILTER: only keep companies that are children of the selected parent
+// PERSPECTIVE FILTER: only keep companies that are children of the selected parent
       if (perspectiveMode) {
         const co = r.CompanyShortName ?? r.companyShortName ?? "";
         if (!childrenOfPerspective.includes(co)) return false;
+      }
+      // DIMENSION FILTER (from PageHeader multiselect)
+      if (Array.isArray(upDimensions) && upDimensions.length > 0) {
+        const dCode = String(r.DimensionCode ?? r.dimensionCode ?? "");
+        if (!upDimensions.includes(dCode)) return false;
+      } else if (Array.isArray(upDimGroups) && upDimGroups.length > 0) {
+        // Filter by group when no specific dimension chosen
+        const dimsStr = String(r.Dimensions ?? r.dimensions ?? "").trim();
+        if (!dimsStr) return false;
+        const rowGroups = dimsStr.split("||")
+          .map(p => p.slice(0, p.indexOf(":")).trim())
+          .filter(Boolean);
+        if (!rowGroups.some(g => upDimGroups.includes(g))) return false;
       }
       return true;
     });
@@ -4340,7 +4488,7 @@ const dimCatalogue = (dimensionsMeta || []).map(d => {
       };
     });
 
-    const dimResolver = (value, groupHint) => {
+const dimResolver = (value, groupHint) => {
       const v = String(value || "").trim();
       const g = String(groupHint || "").trim();
       if (!v) return [];
@@ -4349,6 +4497,33 @@ const dimCatalogue = (dimensionsMeta || []).map(d => {
         if (!matchVal) return false;
         if (!g) return true;
         return d.groupName === g || d.groupCode === g;
+      });
+    };
+
+    // rowMatchesDims: nodeDims is ["Group:Name"] from mapping. row.Dimensions
+    // is like "Group:Code||OtherGroup:Code". Resolves name↔code via catalogue.
+    const rowMatchesDims = (r, nodeDims) => {
+      if (!nodeDims || nodeDims.length === 0) return true;
+      const dimsStr = String(r?.Dimensions ?? r?.dimensions ?? "").trim();
+      if (!dimsStr) return false;
+      const rowPairs = new Set(
+        dimsStr.split("||").map(s => s.trim()).filter(Boolean)
+      );
+      return nodeDims.some(nd => {
+        const need = String(nd).trim();
+        if (rowPairs.has(need)) return true;
+        const colonIdx = need.indexOf(":");
+        if (colonIdx <= 0) return false;
+        const grp = need.slice(0, colonIdx).trim();
+        const val = need.slice(colonIdx + 1).trim();
+        const hits = dimResolver(val, grp);
+        for (const h of hits) {
+          if (rowPairs.has(`${grp}:${h.code}`)) return true;
+          if (rowPairs.has(`${h.groupCode}:${h.code}`)) return true;
+          if (rowPairs.has(`${grp}:${h.name}`)) return true;
+          if (rowPairs.has(`${h.groupCode}:${h.name}`)) return true;
+        }
+        return false;
       });
     };
 
@@ -4367,8 +4542,7 @@ const reportingAmt = Number(r.ReportingAmountYTD ?? r.reportingAmountYTD);
         ? (Number.isFinite(localAmt) ? localAmt : 0)
         : (Number.isFinite(reportingAmt) ? reportingAmt : (Number.isFinite(localAmt) ? localAmt : 0));
       c[co].total += amt;
-      c[co].rows.push(r);
-
+      c[co].rows.push({ ...r, _amt: amt });
 // Dim index for literal-mode dim filters
       const dimKeys = buildDimKeys(r, dimResolver);
       if (dimKeys.size > 0) {
@@ -4381,64 +4555,168 @@ const reportingAmt = Number(r.ReportingAmountYTD ?? r.reportingAmountYTD);
 const TYPE_ORDER = { "P/L": 0, "DIS": 0, "B/S": 1, "C/F": 2, "CFS": 2 };
 
 // Effective sort order: mapping overrides standard.
+    // Note: when mapping is active, sortOrder is keyed by instanceId (not code).
     const effectiveSortOrder = mappingDerived?.sortOrder ?? breakerSortOrder;
 
 let tree;
-    if (effectiveSortOrder.size > 0) {
-      // Build tree with children first, then flatten to top-level roots per
-      // section — matching the pattern in DimensionesPage. Cross-section
-      // jumps become roots; children come from buildTree so expand/collapse
-      // still works.
-      const filtered = [...accountMap.values()].filter(n => {
-        const type = n.AccountType ?? "";
-        return type === "P/L" || type === "DIS" || type === "B/S" || type === "C/F" || type === "CFS";
-      });
-      const fullTree = buildTree(filtered);
-      const treeIndex = new Map();
-      const walk = (nodes) => nodes.forEach(n => {
-        treeIndex.set(String(n.AccountCode), n);
-        walk(n.children || []);
-      });
-      walk(fullTree);
+    // Mapping-active branch: build a tree with one node per INSTANCE, so the
+    // same code with different dims renders as separate rows (Sabana pattern).
+    if (mappingDerived && mappingDerived.instances && mappingDerived.instances.length > 0) {
+      const instTree = mappingDerived.instances
+        .filter(inst => !inst.isSum) // sum instances not shown as data rows
+        .map(inst => {
+          const existing = accountMap.get(inst.code);
+          return {
+            AccountCode: inst.code,
+            AccountName: inst.name || existing?.AccountName || inst.code,
+            AccountType: existing?.AccountType || "P/L",
+            SumAccountCode: existing?.SumAccountCode ?? null,
+            children: [],
+            _instanceId: inst.instanceId,
+            _dims: inst.dims || [],
+            _isSum: inst.isSum,
+          };
+        });
+      tree = instTree;
+    } else if (effectiveSortOrder.size > 0) {
+      const isCustomStd = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
 
-      // Flat list ordered by mapping sort_order — every account in the mapping
-      const flatOrdered = filtered
-        .map(n => treeIndex.get(String(n.AccountCode)) ?? { ...n, children: [] })
-        .filter(n => effectiveSortOrder.has(n.AccountCode))
-        .sort((a, b) => {
-          const sA = effectiveSortOrder.get(a.AccountCode) ?? 9999;
-          const sB = effectiveSortOrder.get(b.AccountCode) ?? 9999;
-          if (sA !== sB) return sA - sB;
-          const tA = TYPE_ORDER[a.AccountType ?? ""] ?? 99;
-          const tB = TYPE_ORDER[b.AccountType ?? ""] ?? 99;
-          return tA - tB;
+if (isCustomStd && codeToSectionInfo && codeToSectionInfo.size > 0) {
+        // CUSTOM: build hierarchical tree from the standard.
+        //
+        // The standard defines parent_code for every account. But grand
+        // totals (section_code=null, e.g. I.PL, C, H) semantically
+        // aggregate across sections, so we do NOT nest their children
+        // beneath them for the render — that would collapse Revenue,
+        // COGS, etc. beneath I.PL. Instead, we treat grand-total accounts
+        // as leaves (no children) and let their descendants become roots
+        // at the section level.
+        const STMT_TO_TYPE = { PL: "P/L", BS: "B/S", CF: "C/F" };
+        const isGrandTotal = (code) => {
+          const info = codeToSectionInfo.get(code);
+          return !info || !info.section;
+        };
+
+        // Build nodes for every code in the standard
+        const stdNodes = new Map();
+        for (const code of effectiveSortOrder.keys()) {
+          const fromMap = accountMap.get(code);
+          const stmt = codeToStatementFromStd.get(code);
+          const accountType = fromMap?.AccountType ?? STMT_TO_TYPE[stmt] ?? "P/L";
+          stdNodes.set(code, {
+            AccountCode: code,
+            AccountName: fromMap?.AccountName ?? codeToNameFromStd.get(code) ?? code,
+            AccountType: accountType,
+            SumAccountCode: fromMap?.SumAccountCode ?? codeToParentFromStd.get(code) ?? "",
+            children: [],
+          });
+        }
+// Wire parent-child links. SKIP the link if:
+        //  1. parent is a grand total (section=null) — nesting under I.PL, C,
+        //     H collapses everything under one root
+        //  2. parent belongs to a DIFFERENT section than the child — the
+        //     standard uses narrative parent_code where A.01(REV) parents to
+        //     A.03.a(COGS), which is contable but breaks section rendering
+        stdNodes.forEach(node => {
+          const parentCode = node.SumAccountCode;
+          if (!parentCode) return;
+          if (isGrandTotal(parentCode)) return;
+          const nodeSec = codeToSectionInfo.get(node.AccountCode)?.section;
+          const parentSec = codeToSectionInfo.get(parentCode)?.section;
+          if (nodeSec && parentSec && nodeSec !== parentSec) return;
+          const parent = stdNodes.get(parentCode);
+          if (parent && parent !== node) parent.children.push(node);
         });
 
-      const isCustomStd = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
-      if (!isCustomStd) {
-        // Legacy: keep flat behavior
-        tree = flatOrdered.map(n => ({ ...n, children: [] }));
-      } else {
-        // CUSTOM: filter to nodes whose ancestor (via SumAccountCode chain)
-        // is NOT in the flat list. Those are roots. Their children remain
-        // populated in the tree.
-        const flatCodes = new Set(flatOrdered.map(n => String(n.AccountCode)));
-        const hasAncestorInFlat = (code) => {
-          const seen = new Set();
-          let cur = String(code);
-          let hops = 0;
-          while (cur && !seen.has(cur) && hops < 25) {
-            seen.add(cur);
-            const node = treeIndex.get(cur);
-            const parent = node ? String(node.SumAccountCode ?? "") : "";
-            if (!parent) return false;
-            if (flatCodes.has(parent)) return true;
-            cur = parent;
-            hops++;
-          }
-          return false;
+// typeFilter (tab). In "Todos" view (no typeFilter) exclude CF nodes
+        // from the standard tree — they're rendered from cfTree (which has
+        // actual CF data from uploaded-accounts, not consolidated-accounts).
+        const passesTypeFilter = (n) => {
+          const t = n.AccountType ?? "";
+          if (!typeFilter) return t !== "C/F" && t !== "CFS";
+          if (typeFilter === "P/L") return t === "P/L" || t === "DIS";
+          if (typeFilter === "C/F") return t === "C/F" || t === "CFS";
+          return t === typeFilter;
         };
-        tree = flatOrdered.filter(n => !hasAncestorInFlat(n.AccountCode));
+
+        // Recursively sort children arrays by sort_order and drop non-passing
+        const filteredSet = new Set(
+          [...stdNodes.values()].filter(passesTypeFilter).map(n => n.AccountCode)
+        );
+        const sortRec = (node) => {
+          if (!node.children || !node.children.length) return;
+          node.children = node.children
+            .filter(c => filteredSet.has(c.AccountCode))
+            .sort((a, b) => {
+              const sA = effectiveSortOrder.get(a.AccountCode) ?? 9999999;
+              const sB = effectiveSortOrder.get(b.AccountCode) ?? 9999999;
+              return sA - sB;
+            });
+          node.children.forEach(sortRec);
+        };
+
+// Roots: filtered nodes whose parent link was skipped
+        console.log('[branch] F/G check:', {
+          F_inStdNodes: stdNodes.has('F'),
+          G_inStdNodes: stdNodes.has('G'),
+          F_inEffective: effectiveSortOrder.has('F'),
+          G_inEffective: effectiveSortOrder.has('G'),
+          F_inCSI: codeToSectionInfo.has('F'),
+          G_inCSI: codeToSectionInfo.has('G'),
+          F_parent: stdNodes.get('F')?.SumAccountCode,
+          G_parent: stdNodes.get('G')?.SumAccountCode,
+          F_passes: stdNodes.get('F') ? passesTypeFilter(stdNodes.get('F')) : 'not in nodes',
+          G_passes: stdNodes.get('G') ? passesTypeFilter(stdNodes.get('G')) : 'not in nodes',
+          F_type: stdNodes.get('F')?.AccountType,
+          G_type: stdNodes.get('G')?.AccountType,
+        });
+        const roots = [...stdNodes.values()]
+          .filter(passesTypeFilter)
+          .filter(n => {
+            const p = n.SumAccountCode;
+            if (!p) return true;
+            if (isGrandTotal(p)) return true;
+            if (!stdNodes.has(p)) return true;
+            if (!filteredSet.has(p)) return true;
+            const nodeSec = codeToSectionInfo.get(n.AccountCode)?.section;
+            const parentSec = codeToSectionInfo.get(p)?.section;
+            if (nodeSec && parentSec && nodeSec !== parentSec) return true;
+            return false;
+          })
+          .sort((a, b) => {
+            const sA = effectiveSortOrder.get(a.AccountCode) ?? 9999999;
+            const sB = effectiveSortOrder.get(b.AccountCode) ?? 9999999;
+            return sA - sB;
+          });
+roots.forEach(sortRec);
+        tree = roots;
+        const bsRoots = roots.filter(r => r.AccountType === 'B/S').map(r => r.AccountCode);
+        console.log('[branch] CUSTOM tree roots:', tree.length, 'total nodes:', stdNodes.size, 'typeFilter:', typeFilter, 'BSroots:', bsRoots);
+      } else {
+        // Non-CUSTOM legacy path
+        const filtered = [...accountMap.values()].filter(n => {
+          const type = n.AccountType ?? "";
+          return type === "P/L" || type === "DIS" || type === "B/S" || type === "C/F" || type === "CFS";
+        });
+        const fullTree = buildTree(filtered);
+        const treeIndex = new Map();
+        const walk = (nodes) => nodes.forEach(n => {
+          treeIndex.set(String(n.AccountCode), n);
+          walk(n.children || []);
+        });
+        walk(fullTree);
+        const flatOrdered = filtered
+          .map(n => treeIndex.get(String(n.AccountCode)) ?? { ...n, children: [] })
+          .filter(n => effectiveSortOrder.has(n.AccountCode))
+          .sort((a, b) => {
+            const sA = effectiveSortOrder.get(a.AccountCode) ?? 9999;
+            const sB = effectiveSortOrder.get(b.AccountCode) ?? 9999;
+            if (sA !== sB) return sA - sB;
+            const tA = TYPE_ORDER[a.AccountType ?? ""] ?? 99;
+            const tB = TYPE_ORDER[b.AccountType ?? ""] ?? 99;
+            return tA - tB;
+          });
+        tree = flatOrdered.map(n => ({ ...n, children: [] }));
       }
     } else {
       const rawTree = buildTree([...accountMap.values()]);
@@ -4597,12 +4875,26 @@ const dimKeys = buildDimKeys(r, dimResolver);
       }
     });
 
-return { accountMap, pivot, tree, cols, journalPivot: rolled, counterpartyPivot: rolledCpty, cmpPivot, dimIdx, journalDimIdx, cptyDimIdx, cmpDimIdx };
-}, [rawData, journalData, typeFilter, cmpRawData, perspectiveMode, childrenOfPerspective, breakerSortOrder, currencyMode, mappingDerived, dimensionsMeta]);
+console.log('[tree.debug]', {
+  treeCodes: tree.map(n => `${n.AccountCode}(${n.AccountType})`),
+  treeLen: tree.length,
+  cSIsize: codeToSectionInfo?.size,
+  effSize: effectiveSortOrder?.size,
+  effHasA01: effectiveSortOrder?.has('A.01'),
+  effHasCPL: effectiveSortOrder?.has('C.01'),
+  breakerSSize: breakerSortOrder?.size,
+  mappingDerived: !!mappingDerived,
+  isCustomStd_atLog: activeStandardKey,
+});
+return { accountMap, pivot, tree, cols, journalPivot: rolled, counterpartyPivot: rolledCpty, cmpPivot, dimIdx, journalDimIdx, cptyDimIdx, cmpDimIdx, rowMatchesDims };
+}, [rawData, journalData, typeFilter, cmpRawData, perspectiveMode, childrenOfPerspective, breakerSortOrder, currencyMode, mappingDerived, dimensionsMeta, activeStandardKey, codeToSectionInfo, codeToNameFromStd, codeToParentFromStd, codeToStatementFromStd, upDimGroups, upDimensions]);
 
 // CF-specific pivot from uploaded data
  const { cfTree, cfPivot, cfCols, cmpCfPivot } = useMemo(() => {
-if (typeFilter !== "C/F" || !cfUploadedData.length || !cfMetadata.size) {
+// Compute for "C/F" tab AND "Todos" view (typeFilter is null/empty).
+// In Todos, the Cash Flow sheet still needs cfTree/cfPivot to render.
+const shouldComputeCf = (typeFilter === "C/F" || !typeFilter);
+if (!shouldComputeCf || !cfUploadedData.length || !cfMetadata.size) {
       return { cfTree: [], cfPivot: new Map(), cfCols: [], cmpCfPivot: new Map() };
     }
     // When a CF mapping is active, mappingDerived tells us which CF account
@@ -4841,7 +5133,7 @@ let cfTree;
     });
 
 return { cfTree, cfPivot: piv, cfCols, cmpCfPivot: cmpPivCf };
-  }, [typeFilter, cfUploadedData, cfMetadata, cfGroupToCf, perspectiveMode, childrenOfPerspective, cmpCfUploadedData, mappingDerived, mappingTab, cfNameDict, cfMapping]);
+}, [typeFilter, cfUploadedData, cfMetadata, cfGroupToCf, perspectiveMode, childrenOfPerspective, cmpCfUploadedData, mappingDerived, mappingTab, cfNameDict, cfMapping, activeStandardKey, breakerSortOrder]);
 
 
 
@@ -4977,6 +5269,7 @@ const baseEffectiveCols = selectedCompanies.length === 0
       )}
 
 <PageHeader
+      collapseTabsOnFilterHover
 kicker={viewsMode ? T("mappings") : T("kicker_accounts")}
         title={viewsMode === "landing" ? T("mappings")
              : viewsMode === "structure" ? T("am_card_structure_title")
@@ -5033,6 +5326,28 @@ tabs={viewsMode ? [] : [
                     (c.CompanyShortName ?? c.companyShortName) === co
                   )?.CompanyLegalName ?? co,
                 })),
+              }]
+            : []),
+          ...(dimGroups.length > 0
+            ? [{
+                label: T("filter_dim_group", "Dim group"),
+                multiselect: true,
+                values: upDimGroups,
+                onChange: vs => { setUpDimGroups(vs); setUpDimensions(null); },
+                options: dimGroups.map(g => ({ value: g, label: g })),
+              }]
+            : []),
+          ...(filteredDims.length > 0
+            ? [{
+                label: T("filter_dims", "Dimension"),
+                multiselect: true,
+                values: upDimensions,
+                onChange: setUpDimensions,
+                options: filteredDims.map(d => {
+                  const v = String(d.DimensionCode ?? d.dimensionCode ?? "");
+                  const l = String(d.DimensionName ?? d.dimensionName ?? v);
+                  return { value: v, label: l };
+                }),
               }]
             : []),
         ]}
@@ -5396,10 +5711,11 @@ companies, groupStructure,
         ) : (
 <SyncedTable
             T={T}
-            activeStandardKey={activeStandardKey}
+activeStandardKey={activeStandardKey}
             codeToSectionInfo={codeToSectionInfo}
+            rowMatchesDims={rowMatchesDims}
             cols={typeFilter === "C/F" ? cfCols : effectiveCols}
-            tree={typeFilter === "C/F" ? cfTree : tree}
+            tree={typeFilter === "C/F" ? cfTree : (!typeFilter ? [...tree, ...cfTree] : tree)}
             pivot={typeFilter === "C/F" ? cfPivot : undefined}
 treeLiteral={activeMapping?.treeLiteral ?? null}
             highlightedIds={activeMapping?.highlightedIds ?? null}
@@ -5419,7 +5735,7 @@ treeLiteral={activeMapping?.treeLiteral ?? null}
             expandedColsMap={expandedColsMap}
             toggleCol={toggleCol}
             toggleExpand={toggleExpand}
-            pivot={typeFilter === "C/F" ? cfPivot : pivot}
+            pivot={typeFilter === "C/F" ? cfPivot : (!typeFilter ? new Map([...pivot, ...cfPivot]) : pivot)}
             journalPivot={journalPivot}
             accountMap={accountMap}
             companies={companies}

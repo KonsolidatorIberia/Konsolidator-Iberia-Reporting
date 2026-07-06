@@ -812,6 +812,7 @@ onMappingsClick,
   mappingsQuickAccess = [],   // [{ id, name, kind: "structure" | "report", updated_at }]
   onQuickApplyMapping,        // (mapping) => void
   showAllFilters = false,
+  collapseTabsOnFilterHover = false,
 }) {
 const { colors } = useSettings();
   const headerStyle = useTypo("header1");
@@ -949,16 +950,45 @@ style={{
         {/* Divider */}
         {titleSuffix && (<><SoftDivider /><div className="px-3 flex items-center"><span className="text-sm font-bold" style={{ color: colors.primary, opacity: 0.65 }}>{titleSuffix}</span></div></>)}
 {((tabs?.length > 0) || filters.length > 0) && <SoftDivider />}
-
-        {/* Tabs */}
+        {/* Tabs — optionally collapse when More filters hover is active */}
         {tabs?.length > 0 && (
-          <div className="flex items-center px-3">
-            <TabSwitcher tabs={tabs} activeTab={activeTab} onChange={onTabChange} />
-          </div>
+          collapseTabsOnFilterHover ? (
+            <div
+              className="flex items-center overflow-hidden flex-shrink-0"
+              style={{
+                maxWidth: moreFiltersOpen ? 0 : 1200,
+                opacity: moreFiltersOpen ? 0 : 1,
+                paddingLeft: moreFiltersOpen ? 0 : 12,
+                paddingRight: moreFiltersOpen ? 0 : 12,
+                transition: `max-width 420ms ${SPRING}, opacity 240ms ${SMOOTH}, padding 320ms ${SMOOTH}`,
+                pointerEvents: moreFiltersOpen ? "none" : "auto",
+              }}
+            >
+              <TabSwitcher tabs={tabs} activeTab={activeTab} onChange={onTabChange} />
+            </div>
+          ) : (
+            <div className="flex items-center px-3">
+              <TabSwitcher tabs={tabs} activeTab={activeTab} onChange={onTabChange} />
+            </div>
+          )
         )}
-
-{/* Divider */}
-        {tabs?.length > 0 && filters.length > 0 && <SoftDivider />}
+{/* Divider — collapses with tabs only when the tabs do */}
+        {tabs?.length > 0 && filters.length > 0 && (
+          collapseTabsOnFilterHover ? (
+            <div
+              className="flex-shrink-0 self-stretch flex items-center overflow-hidden"
+              style={{
+                width: moreFiltersOpen ? 0 : 1,
+                opacity: moreFiltersOpen ? 0 : 1,
+                transition: `width 420ms ${SPRING}, opacity 240ms ${SMOOTH}`,
+              }}
+            >
+              <SoftDivider />
+            </div>
+          ) : (
+            <SoftDivider />
+          )
+        )}
 
 {/* Filters — primary always visible; secondary revealed on More filters hover */}
 {filters.length > 0 && (
