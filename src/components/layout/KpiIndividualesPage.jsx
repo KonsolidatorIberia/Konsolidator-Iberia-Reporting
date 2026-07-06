@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from "react";
-import { useTypo, useSettings } from "./SettingsContext";
+import { useTypo, useSettings, useSettingsControls } from "./SettingsContext";
 import { useLatestPeriod } from "./LatestPeriodContext.jsx";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
@@ -58,12 +58,53 @@ const DEFAULT_VISIBLE_KPI_IDS = new Set([
   "net_result",
   "net_margin",
 ]);
-const SB_HEADERS = {
-  apikey:        SUPABASE_APIKEY,
-  Authorization: `Bearer ${SUPABASE_APIKEY}`,
+// Grab the user's live JWT so RLS policies see auth.uid() correctly.
+// Falls back to the publishable key when no session (safe for public tables).
+function getSbAuthToken() {
+  try {
+    const key = Object.keys(localStorage).find(k => k.includes("auth-token"));
+    if (!key) return null;
+    const parsed = JSON.parse(localStorage.getItem(key));
+    return parsed?.access_token ?? parsed?.data?.session?.access_token ?? null;
+  } catch { return null; }
+}
+
+
+
+// Paginated fetch — PostgREST caps individual responses at 1000 rows
+// regardless of Range header. Standard tables can exceed this (Konsolidator: 1089).
+// Fetch in 1000-row pages and concatenate.
+const sbGet = async (path) => {
+  const token = getSbAuthToken();
+  const baseHeaders = {
+    apikey: SUPABASE_APIKEY,
+    Authorization: `Bearer ${token ?? SUPABASE_APIKEY}`,
+    Prefer: "count=exact",
+  };
+
+  const PAGE = 1000;
+  const all = [];
+  let offset = 0;
+
+  for (let safety = 0; safety < 20; safety++) {
+    const rangeEnd = offset + PAGE - 1;
+    const res = await fetch(`${SUPABASE_URL}/${path}`, {
+      headers: { ...baseHeaders, Range: `${offset}-${rangeEnd}` },
+    });
+    const chunk = await res.json();
+    if (!Array.isArray(chunk)) return chunk;
+    all.push(...chunk);
+    if (chunk.length < PAGE) break;
+    const cr = res.headers.get("content-range");
+    if (!cr) break;
+    const parts = cr.split("/");
+    const total = parseInt(parts[1], 10);
+    if (!isNaN(total) && all.length >= total) break;
+    offset += PAGE;
+  }
+
+  return all;
 };
-const sbGet = (path) =>
-  fetch(`${SUPABASE_URL}/${path}`, { headers: SB_HEADERS }).then(r => r.json());
 
 function detectStandard(groupAccounts) {
   if (!groupAccounts?.length) {
@@ -130,16 +171,30 @@ const STANDARD_TO_BS_TABLE = {
 };
 
 async function loadStandardMapping(standard, groupAccounts) {
-  const plTable = STANDARD_TO_PL_TABLE[standard];
-  const bsTable = STANDARD_TO_BS_TABLE[standard];
-  if (!plTable) return null;
+  if (!standard) return null;
 
-  // Fetch BOTH tables in parallel
-const [plRows, bsRows] = await Promise.all([
-    sbGet(`${plTable}?select=account_code,account_name,section_code,parent_code,is_sum,cc_tag`),
-    sbGet(`${bsTable}?select=account_code,account_name,section_code,parent_code,is_sum,cc_tag`).catch(() => []),
-  ]);
-  const allRows = [...(Array.isArray(plRows) ? plRows : []), ...(Array.isArray(bsRows) ? bsRows : [])];
+  const isCustom = standard.startsWith("CUSTOM-");
+
+  let allRows = [];
+  if (isCustom) {
+    // Unified schema: one table, filter by standard_key + statement.
+    const rows = await sbGet(
+      `standard_statement_rows?select=account_code,account_name,section_code,parent_code,is_sum,cc_tag` +
+      `&standard_key=eq.${encodeURIComponent(standard)}` +
+      `&statement=in.(PL,BS)`
+    );
+    allRows = Array.isArray(rows) ? rows : [];
+  } else {
+    const plTable = STANDARD_TO_PL_TABLE[standard];
+    const bsTable = STANDARD_TO_BS_TABLE[standard];
+    if (!plTable) return null;
+
+    const [plRows, bsRows] = await Promise.all([
+      sbGet(`${plTable}?select=account_code,account_name,section_code,parent_code,is_sum,cc_tag`),
+      sbGet(`${bsTable}?select=account_code,account_name,section_code,parent_code,is_sum,cc_tag`).catch(() => []),
+    ]);
+    allRows = [...(Array.isArray(plRows) ? plRows : []), ...(Array.isArray(bsRows) ? bsRows : [])];
+  }
 
   // STEP 1: build codeCcTag and codeSection from taxonomy (ignore is_sum filter)
   const codeCcTag = new Map();
@@ -149,8 +204,14 @@ const [plRows, bsRows] = await Promise.all([
     if (r.section_code) codeSection.set(String(r.account_code), r.section_code);
   }
 
-  // STEP 2: build parentOf from groupAccounts (climb SumAccountCode chain)
+// STEP 2: build parentOf — first from standard mapping table's parent_code,
+  // then overridden by groupAccounts.SumAccountCode for runtime leaves.
   const parentOf = new Map();
+  for (const r of allRows) {
+    if (r.account_code && r.parent_code) {
+      parentOf.set(String(r.account_code), String(r.parent_code));
+    }
+  }
   for (const ga of (groupAccounts || [])) {
     if (ga.AccountCode && ga.SumAccountCode) {
       parentOf.set(String(ga.AccountCode), String(ga.SumAccountCode));
@@ -192,11 +253,14 @@ const [plRows, bsRows] = await Promise.all([
 
   return { ccTagToCodes, sectionCodes };
 }
-async function loadKpiLibrary(standard) {
-  const [defs, overrides] = await Promise.all([
+async function loadKpiLibrary(standard, companyId) {
+  const [defs, standardOverrides, companyOverrides] = await Promise.all([
     sbGet("kpi_definitions?select=*&order=sort_order.asc"),
     standard
-      ? sbGet(`kpi_definitions_override?select=*&standard=eq.${encodeURIComponent(standard)}`)
+      ? sbGet(`kpi_definitions_override?select=*&standard=eq.${encodeURIComponent(standard)}&company_id=is.null`)
+      : Promise.resolve([]),
+    companyId
+      ? sbGet(`kpi_definitions_override?select=*&company_id=eq.${encodeURIComponent(companyId)}`)
       : Promise.resolve([]),
   ]);
 
@@ -205,9 +269,14 @@ async function loadKpiLibrary(standard) {
     return [];
   }
 
-  const overrideByKpi = new Map();
-  if (Array.isArray(overrides)) {
-    overrides.forEach(o => overrideByKpi.set(o.kpi_id, o.formula));
+const overrideByKpi = new Map();
+  // Standard-level overrides applied first
+  if (Array.isArray(standardOverrides)) {
+    standardOverrides.forEach(o => overrideByKpi.set(o.kpi_id, o.formula));
+  }
+  // Company-level overrides win over standard-level
+  if (Array.isArray(companyOverrides)) {
+    companyOverrides.forEach(o => overrideByKpi.set(o.kpi_id, o.formula));
   }
 
   console.log(`[KpiResolver] loaded ${defs.length} KPI definitions`);
@@ -224,8 +293,25 @@ async function loadKpiLibrary(standard) {
   }));
 }
 
-function useResolvedKpiList(groupAccounts) {
-  const standard = useMemo(() => detectStandard(groupAccounts), [groupAccounts]);
+// Resolve the standard for a company:
+//   1. If activeStandardKey is passed in (from EpicLoader prefetch) → use it
+//   2. Otherwise if companyId is known → check binding
+//   3. Otherwise → fall back to code-pattern sniff
+async function resolveStandardKey(companyId, groupAccounts, preResolvedKey) {
+  if (preResolvedKey) return preResolvedKey;
+  if (companyId) {
+    try {
+      const rows = await sbGet(
+        `company_active_standard?select=standard_key&company_id=eq.${companyId}`
+      );
+      const boundKey = Array.isArray(rows) && rows[0]?.standard_key;
+      if (boundKey) return boundKey;
+    } catch { /* fall through to sniff */ }
+  }
+  return detectStandard(groupAccounts);
+}
+
+function useResolvedKpiList(groupAccounts, companyId, preResolvedStandardKey) {
 
   const [state, setState] = useState({
     kpiList:      [],
@@ -239,15 +325,22 @@ function useResolvedKpiList(groupAccounts) {
 
 useEffect(() => {
     let cancelled = false;
-    if (!standard) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setState(s => ({ ...s, ready: true, kpiList: [], standard: null }));
-      return;
-    }
-setState(s => ({ ...s, ready: false, error: null }));
+    setState(s => ({ ...s, ready: false, error: null }));
 
-    Promise.all([loadStandardMapping(standard, groupAccounts), loadKpiLibrary(standard)])
-      .then(([{ ccTagToCodes, sectionCodes }, fullKpiList]) => {
+    (async () => {
+      const standard = await resolveStandardKey(companyId, groupAccounts, preResolvedStandardKey);
+      if (cancelled) return;
+      if (!standard) {
+        setState(s => ({ ...s, ready: true, kpiList: [], standard: null }));
+        return;
+      }
+      try {
+        const [mapping, fullKpiList] = await Promise.all([
+          loadStandardMapping(standard, groupAccounts),
+          loadKpiLibrary(standard, companyId),
+        ]);
+        if (cancelled) return;
+        const { ccTagToCodes, sectionCodes } = mapping ?? { ccTagToCodes: new Map(), sectionCodes: new Map() };
         if (cancelled) return;
         // Only show the 4 default KPIs in the table, but keep the rest in
         // `allKpis` so ref-based formulas (e.g. net_result → ebt → ebit) resolve.
@@ -261,15 +354,15 @@ setState(s => ({ ...s, ready: false, error: null }));
           ready:         true,
           error:         null,
         });
-      })
-      .catch(e => {
+} catch (e) {
         if (cancelled) return;
         console.error("[KpiResolver] load failed:", e);
         setState(s => ({ ...s, ready: true, error: String(e?.message ?? e) }));
-      });
+      }
+    })();
 
-return () => { cancelled = true; };
-  }, [standard, groupAccounts]);
+    return () => { cancelled = true; };
+  }, [groupAccounts, companyId, preResolvedStandardKey]);
 
   return state;
 }
@@ -5088,7 +5181,7 @@ function AnimatedTabSelector({
 }
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
-export default function KpiIndividualesPage({ token, sources = [], structures = [], companies = [], dimensions = [], groupAccounts: groupAccountsProp = [] }) {
+export default function KpiIndividualesPage({ token, sources = [], structures = [], companies = [], dimensions = [], groupAccounts: groupAccountsProp = [], activeStandardKey = null }) {
   // Auto-fetch groupAccounts if parent didn't pass them
   const [groupAccountsLocal, setGroupAccountsLocal] = useState([]);
   useEffect(() => {
@@ -5124,6 +5217,7 @@ const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
   const filterStyle = useTypo("filter");
 const { colors, locale } = useSettings();
+const { companyId: settingsCompanyId } = useSettingsControls();
 const tt = (k, fb) => t(locale, k, fb);
   const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();
   const [year, setYear] = useState("");
@@ -5159,7 +5253,7 @@ const {
   standard: detectedStandard,
   ready:    kpiResolverReady,
   error:    kpiResolverError,
-} = useResolvedKpiList(groupAccounts);
+} = useResolvedKpiList(groupAccounts, settingsCompanyId, activeStandardKey);
 
 // activeMapping comes from the Views/Mappings modal. When set, we override
 // the cc_tag → account-code map so KPIs are computed against the user's

@@ -160,8 +160,9 @@ function filterTree(tree, predicate) { function walk(nodes) { return nodes.map(n
 function filterTreeTpl(tree, q) { function walk(nodes) { return nodes.map(n => { const kids = walk(n.children || []); const matches = n.code.toLowerCase().includes(q) || (n.name ?? "").toLowerCase().includes(q); return (matches || kids.length > 0) ? { ...n, children: kids } : null; }).filter(Boolean); } return walk(tree); }
 
 // ─── Main export ─────────────────────────────────────────────
-export default function MappingsPage({ token, preloadedData = {} }) {
-const { colors } = useSettings();
+export default function MappingsPage({ token, preloadedData, onNavigate, onPendingEditConsumed, activeStandardKey = null }) {
+  console.log("[MappingsPage] activeStandardKey =", activeStandardKey);
+  const { colors } = useSettings();
   const t = useT();
 const groupAccounts = preloadedData.groupAccounts ?? [];
   const preloadedDimensions = preloadedData.dimensions ?? [];
@@ -195,7 +196,8 @@ return (
         colors={colors}
         token={token}
         onBack={() => { setSelected(null); setSearch(""); }}
-mappingKind="structure"
+        mappingKind="structure"
+        activeStandardKey={activeStandardKey}
         pendingEdit={pendingEdit}
         onPendingEditConsumed={() => setPendingEdit(null)}
       />
@@ -205,7 +207,7 @@ mappingKind="structure"
 // ── Report view ─────────────────────────────────────────────
   if (category === "account" && selected === "report") {
     return (
-      <StructureMappingsView
+<StructureMappingsView
         groupAccounts={groupAccounts}
         dimensions={preloadedDimensions}
         search={search}
@@ -213,7 +215,8 @@ mappingKind="structure"
         colors={colors}
         token={token}
         onBack={() => { setSelected(null); setSearch(""); }}
-mappingKind="report"
+        mappingKind="report"
+        activeStandardKey={activeStandardKey}
         pendingEdit={pendingEdit}
         onPendingEditConsumed={() => setPendingEdit(null)}
       />
@@ -223,7 +226,7 @@ mappingKind="report"
 // ── Cash flow Structure view ────────────────────────────────
   if (category === "cashflow" && selected === "structure") {
     return (
-      <CashFlowMappingsView
+<CashFlowMappingsView
         groupAccounts={groupAccounts}
         dimensions={preloadedDimensions}
         search={search}
@@ -232,6 +235,7 @@ mappingKind="report"
         token={token}
         onBack={() => { setSelected(null); setSearch(""); }}
         mappingKind="structure"
+        activeStandardKey={activeStandardKey}
         pendingEdit={pendingEdit}
         onPendingEditConsumed={() => setPendingEdit(null)}
       />
@@ -525,7 +529,7 @@ mappingKind="report"
 }
 
 // ─── Structure Mappings View ──────────────────────────────────
-function StructureMappingsView({ groupAccounts, dimensions = [], search, setSearch, colors, onBack, token, mappingKind = "structure", initialView = "list", initialStandard = null, pendingEdit = null, onPendingEditConsumed }) {
+function StructureMappingsView({ groupAccounts, dimensions = [], search, setSearch, colors, onBack, token, mappingKind = "structure", initialView = "list", initialStandard = null, pendingEdit = null, onPendingEditConsumed, activeStandardKey = null }) {
 const t = useT();
   const api = useMemo(() => (
     mappingKind === "report"
@@ -769,7 +773,10 @@ useEffect(() => {
   }, [mapperDirty]);
 
 const kindLabel = mappingKind === "report" ? t("am_list_title_report") : t("am_list_title_structure");
-const activeAccent = (selectedStandard && STANDARD_META[selectedStandard]?.accent) || colors?.primary || "#1a2f8a";
+const isCustomSelected = selectedStandard && selectedStandard.startsWith("CUSTOM-");
+const activeAccent = isCustomSelected
+  ? (colors?.primary ?? "#7c3aed")
+  : ((selectedStandard && STANDARD_META[selectedStandard]?.accent) || colors?.primary || "#1a2f8a");
   const headerConfig = {
     list: { title: kindLabel, back: onBack },
     create: { title: t("am_create_title"), back: () => setView("list") },
@@ -903,9 +910,10 @@ headerSearch={view === "list" ? { value: search, onChange: setSearch, placeholde
             onCancel={() => setView("list")}
           />
         )}
-        {view === "selectStandard" && (
+{view === "selectStandard" && (
           <SelectStandardView
             detectedStandard={detectedStandard}
+            activeStandardKey={activeStandardKey}
             onPick={std => { setSelectedStandard(std); setView("mapper"); }}
           />
         )}
@@ -1220,28 +1228,58 @@ function CreateView({ onScratch, onExisting }) {
 }
 
 // ─── SelectStandardView ───────────────────────────────────────
-function SelectStandardView({ detectedStandard, onPick }) {
+function SelectStandardView({ detectedStandard, activeStandardKey, onPick }) {
   const t = useT();
+  const { colors } = useSettings();
   const [catalog, setCatalog] = useState([]);
-const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
     fetch(`${SUPABASE_URL}/template_catalog?select=*&active=eq.true`, { headers: sbHeaders })
       .then(r => r.json()).then(rows => { if (Array.isArray(rows)) setCatalog(rows); }).catch(() => setCatalog([])).finally(() => setLoading(false));
   }, []);
   const standardsAvailable = useMemo(() => { const set = new Set(catalog.map(c => c.standard)); return ["PGC","SpanishIFRS","DanishIFRS"].filter(s => set.has(s)); }, [catalog]);
 
-if (loading) return <div className="flex-1 flex items-center justify-center text-xs text-gray-400">{t("am_loading_templates")}</div>;
+  // If this tenant has a CUSTOM-* standard bound, show it as an extra card
+  // (marked recommended, using their brand colour).
+const hasCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+  console.log("[SelectStandardView] activeStandardKey =", activeStandardKey, "hasCustom =", hasCustom);
+
+  if (loading) return <div className="flex-1 flex items-center justify-center text-xs text-gray-400">{t("am_loading_templates")}</div>;
 
   return (
     <div className="flex-1 flex flex-col min-h-0 p-5">
-      <div className="grid grid-cols-3 gap-5 flex-1 min-h-0">
-        {standardsAvailable.map(std => <StandardCard key={std} stdKey={std} meta={STANDARD_META[std]} isRecommended={detectedStandard === std} onClick={() => onPick(std)} />)}
+      <div className={`grid ${hasCustom ? "grid-cols-4" : "grid-cols-3"} gap-5 flex-1 min-h-0`}>
+        {hasCustom && (
+          <StandardCard
+            key={activeStandardKey}
+            stdKey={activeStandardKey}
+            meta={{
+              accent:      colors?.primary ?? "#7c3aed",
+              accentBg:    `${colors?.primary ?? "#7c3aed"}12`,
+              customLabel: activeStandardKey.replace(/^CUSTOM-/, "").toUpperCase(),
+              customFull:  t("am_std_custom_full", "Custom standard"),
+              customDesc:  t("am_std_custom_desc", "The onboarding standard tailored specifically for your organization"),
+            }}
+            isRecommended={true}
+            isCustom={true}
+            onClick={() => onPick(activeStandardKey)}
+          />
+        )}
+        {standardsAvailable.map(std => (
+          <StandardCard
+            key={std}
+            stdKey={std}
+            meta={STANDARD_META[std]}
+            isRecommended={!hasCustom && detectedStandard === std}
+            onClick={() => onPick(std)}
+          />
+        ))}
       </div>
     </div>
   );
 }
 
-function StandardCard({ stdKey, meta, isRecommended, onClick }) {
+function StandardCard({ stdKey, meta, isRecommended, isCustom = false, onClick }) {
   const t = useT();
   return (
     <button onClick={onClick}
@@ -1270,9 +1308,9 @@ function StandardCard({ stdKey, meta, isRecommended, onClick }) {
               <Library size={32} className="text-white" strokeWidth={1.8} />
             </div>
           </div>
-<p className="font-black text-2xl text-gray-800 mb-1">{stdLabel(t, stdKey)}</p>
-          <p className="text-[10px] font-bold uppercase tracking-widest mb-3" style={{ color: meta.accent }}>{stdFull(t, stdKey)}</p>
-          <p className="text-sm text-gray-500 leading-relaxed max-w-xs">{stdDesc(t, stdKey)}</p>
+<p className="font-black text-2xl text-gray-800 mb-1">{isCustom ? meta.customLabel : stdLabel(t, stdKey)}</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest mb-3" style={{ color: meta.accent }}>{isCustom ? meta.customFull : stdFull(t, stdKey)}</p>
+          <p className="text-sm text-gray-500 leading-relaxed max-w-xs">{isCustom ? meta.customDesc : stdDesc(t, stdKey)}</p>
         </div>
         <div className="mt-10 flex items-center justify-between">
           <span className="px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider" style={{ background: `${meta.accent}15`, color: meta.accent }}>{t("am_pl_plus_bs")}</span>
@@ -1285,8 +1323,15 @@ function StandardCard({ stdKey, meta, isRecommended, onClick }) {
 
 // ─── MapperView ───────────────────────────────────────────────
 function MapperView({ standard, groupAccounts, uploadedAccounts = [], previousUploadedAccounts = [], dimensions = [], authUserId, companyId, editingMapping, existingMappings = [], onSaved, statement, periodMode = "ytd", saveRef, resetRef, onDirtyChange, api = { create: createMapping, update: updateMapping }, mappingKind = "structure" }) {
-  const t = useT();
-  const meta = STANDARD_META[standard];
+const t = useT();
+  const { colors: mapperColors } = useSettings();
+  // CUSTOM standards live outside STANDARD_META — synthesize a meta shell
+  // so components that read meta.accent / meta.accentBg don't blow up.
+  const meta = STANDARD_META[standard] ?? (
+    standard?.startsWith("CUSTOM-")
+      ? { accent: (mapperColors?.primary ?? "#7c3aed"), accentBg: `${mapperColors?.primary ?? "#7c3aed"}12` }
+      : { accent: "#1a2f8a", accentBg: "#eef1fb" }
+  );
   // Balance Sheet is a point-in-time snapshot — always YTD regardless of toggle
   const effectivePeriodMode = statement === "BS" ? "ytd" : periodMode;
 
@@ -1520,16 +1565,28 @@ if (standard === "Scratch") {
       return;
     }
     setTplLoading(true); setTplRows([]); setTplSections([]); setTplStatement(null);
+
+    // CUSTOM-* standards live in the unified standard_statement_* tables.
+    // Built-in standards (PGC/SpanishIFRS/DanishIFRS) still come from the
+    // legacy template_* tables. Column shapes match, so downstream is agnostic.
+    const isCustom = standard.startsWith("CUSTOM-");
+    const rowsUrl = isCustom
+      ? `${SUPABASE_URL}/standard_statement_rows?select=*&standard_key=eq.${encodeURIComponent(standard)}&statement=eq.${statement}&order=sort_order.asc`
+      : `${SUPABASE_URL}/template_rows?select=*&standard=eq.${standard}&statement=eq.${statement}&order=sort_order.asc`;
+    const secsUrl = isCustom
+      ? `${SUPABASE_URL}/standard_statement_sections?select=*&standard_key=eq.${encodeURIComponent(standard)}&statement=eq.${statement}&order=sort_order.asc`
+      : `${SUPABASE_URL}/template_sections?select=*&standard=eq.${standard}&statement=eq.${statement}&order=sort_order.asc`;
+
     (async () => {
       try {
         const [rowsRes, secsRes] = await Promise.all([
-          fetch(`${SUPABASE_URL}/template_rows?select=*&standard=eq.${standard}&statement=eq.${statement}&order=sort_order.asc`, { headers: sbHeaders, signal: ac.signal }),
-          fetch(`${SUPABASE_URL}/template_sections?select=*&standard=eq.${standard}&statement=eq.${statement}&order=sort_order.asc`, { headers: sbHeaders, signal: ac.signal }),
+          fetch(rowsUrl, { headers: sbHeaders, signal: ac.signal }),
+          fetch(secsUrl, { headers: sbHeaders, signal: ac.signal }),
         ]);
         const rows = await rowsRes.json(), secs = await secsRes.json();
         if (ac.signal.aborted) return;
-        const cleanRows = Array.isArray(rows) ? rows.filter(r => r.statement === statement && r.standard === standard) : [];
-        const cleanSecs = Array.isArray(secs) ? secs.filter(s => s.statement === statement && s.standard === standard) : [];
+        const cleanRows = Array.isArray(rows) ? rows.filter(r => r.statement === statement) : [];
+        const cleanSecs = Array.isArray(secs) ? secs.filter(s => s.statement === statement) : [];
         setTplRows(cleanRows); setTplSections(cleanSecs); setTplStatement(statement);
       } catch (e) { if (e.name !== "AbortError") { setTplRows([]); setTplSections([]); } }
       finally { if (!ac.signal.aborted) setTplLoading(false); }

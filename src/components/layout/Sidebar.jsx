@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import {
 Home, Network, FileText, Layers,
   PieChart, Table, BookOpen, TrendingUp, BarChart3,
-  Eye, Filter, Settings, Database, Library,
+  Eye, Filter, Settings, Database, Library, ShieldCheck,
 } from "lucide-react";
 import { useTypo, useSettings, useT } from "./SettingsContext";
 import { useCurrentUserPermissions } from "../../lib/userPermissionsApi";
@@ -37,11 +37,15 @@ const NAV_KEYS = [
       { key: "statistical-parties", labelKey: "nav_statistical_parties", icon: BarChart3 },
     ],
   },
-  {
+{
     key: "data-explorer", labelKey: "nav_data_explorer", icon: Database,
     children: [
       { key: "structure", labelKey: "nav_structure", icon: Network },
     ],
+  },
+  {
+    key: "admin-onboarding", labelKey: "nav_admin_onboarding", icon: ShieldCheck,
+    adminOnly: true,
   },
 ];
 
@@ -55,12 +59,32 @@ export default function Sidebar({ activePage, onNavigate, user, height = "100vh"
   const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
   const t = useT();
-  const { can, loaded: permsLoaded } = useCurrentUserPermissions();
+const { can, loaded: permsLoaded } = useCurrentUserPermissions();
 
-  // Filter NAV based on permissions: drop children with allowed=false,
-  // drop parents whose all children are hidden (unless the parent itself is a leaf with its own key).
+  // Async admin check — user has role='admin' on any user_companies row.
+  // We fetch once on mount and stash the result. Falsy until resolved so
+  // the nav item flashes in cleanly only for actual admins.
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { supabase } = await import("../../lib/supabaseClient");
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) return;
+        const { data } = await supabase.schema("accounts").from("user_companies")
+          .select("role").eq("user_id", uid).eq("is_active", true);
+        if (!cancelled) setIsAdmin((data ?? []).some(r => r.role === "admin"));
+      } catch { /* silent */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Filter NAV based on permissions + admin flag for admin-only entries.
   const NAV = NAV_KEYS
     .map(item => {
+      if (item.adminOnly && !isAdmin) return null;
       const label = t(item.labelKey, item.labelKey);
       if (!item.children?.length) {
         return can(item.key) ? { ...item, label } : null;
@@ -93,9 +117,13 @@ export default function Sidebar({ activePage, onNavigate, user, height = "100vh"
 
 const handleNavigate = (key) => {
     // Block disallowed pages. "user" is the avatar-click target, always allowed.
+    // Admin-only nav items bypass `can()` since they gate on isAdmin instead.
+    const adminOnlyKeys = new Set(NAV_KEYS.filter(n => n.adminOnly).map(n => n.key));
     if (key !== "user") {
       if (key === "settings") {
         if (!canSettings) return;
+      } else if (adminOnlyKeys.has(key)) {
+        if (!isAdmin) return;
       } else if (!can(key)) {
         return;
       }

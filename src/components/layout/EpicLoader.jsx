@@ -106,7 +106,7 @@ const MIN_ANIM_MS = 1200; // minimum ms before exit animation — enough to see 
 const TOTAL_MAX   = 4000; // hard ceiling for slow networks
 
 export default function EpicLoader({ token, onReady, onDataLoaded }) {
-  const { settings, setDetectedLocale } = useSettingsControls();
+const { settings, setDetectedLocale } = useSettingsControls();
   const { setLatestPeriod } = useLatestPeriod();
   // Stable refs — effects don't restart if parent re-renders with new fn references
   const onReadyRef = useRef(onReady);
@@ -169,6 +169,49 @@ const silentFetches = SILENT_ENDPOINTS.map(async ({ key, endpoint }) => {
         }
       });
 
+// Prefetch the SaaS tenant's active accounting standard so HomePage
+      // resolves the correct standard on first render (no race with
+      // useSettingsControls loading companyId async). Resolve companyId
+      // directly instead of relying on the settings hook (which loads async).
+      const standardPrefetch = (async () => {
+        try {
+          const { supabase } = await import("../../lib/supabaseClient");
+          const { data: { session } } = await supabase.auth.getSession();
+          const uid = session?.user?.id;
+          const jwt = session?.access_token;
+          if (!uid || !jwt) { dataRef.current.activeStandardKey = null; return; }
+
+          // Step 1 — resolve the user's active company (SaaS tenant)
+          const ucRes = await fetch(
+            `https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1/user_companies?user_id=eq.${uid}&is_active=eq.true&select=company_id,is_default`,
+            { headers: {
+              apikey: "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA",
+              Authorization: `Bearer ${jwt}`,
+              "Accept-Profile": "accounts",
+            } }
+          );
+          const ucRows = await ucRes.json();
+          if (!Array.isArray(ucRows) || !ucRows.length) { dataRef.current.activeStandardKey = null; return; }
+          const cid = ucRows.find(r => r.is_default)?.company_id ?? ucRows[0]?.company_id;
+          if (!cid) { dataRef.current.activeStandardKey = null; return; }
+
+          // Step 2 — fetch the binding
+          const casRes = await fetch(
+            `https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1/company_active_standard?select=standard_key&company_id=eq.${cid}`,
+            { headers: {
+              apikey: "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA",
+              Authorization: `Bearer ${jwt}`,
+            } }
+          );
+          const rows = await casRes.json();
+          dataRef.current.activeStandardKey = Array.isArray(rows) && rows[0]?.standard_key
+            ? rows[0].standard_key
+            : null;
+        } catch {
+          dataRef.current.activeStandardKey = null;
+        }
+      })();
+
       // Signal completion so the completedKeys effect waits for groupAccounts
       // before calling onDataLoaded — prevents the 40% stall caused by
       // initialData.groupAccounts being empty when KPI resolver first runs.
@@ -180,10 +223,11 @@ const silentFetches = SILENT_ENDPOINTS.map(async ({ key, endpoint }) => {
         return prefetchHomeData(token, s ?? [], st ?? [], co ?? []);
       })();
 
-      const [homePrefetch] = await Promise.all([
+const [homePrefetch] = await Promise.all([
         homePromise,
         Promise.all(visibleFetches),
         Promise.all(silentFetches),
+        standardPrefetch,
       ]);
 if (cancelled) return;
 if (homePrefetch) {

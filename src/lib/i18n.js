@@ -1304,6 +1304,9 @@ dim_consolidated_accounts: "Consolidated rows",
     // Decimal toggle tooltips
     sp_dec_rounded:               "Rounded to integers",
     sp_dec_decimals:              "Showing decimals",
+    nav_admin_onboarding: "Client onboarding",
+bs_family_assets: "ASSETS",
+bs_family_liab_equity: "EQUITY & LIABILITIES"
   },
 
 
@@ -2476,6 +2479,9 @@ dim_consolidated_accounts: "Konsoliderede rækker",
     sp_err_no_values:             "Ingen værdier fundet i noget år-ark",
     sp_dec_rounded:               "Afrundet til heltal",
     sp_dec_decimals:              "Viser decimaler",
+    nav_admin_onboarding: "Kunde-onboarding",
+bs_family_assets: "AKTIVER",
+bs_family_liab_equity: "PASSIVER OG EGENKAPITAL"
   },
 
 
@@ -3639,6 +3645,9 @@ dim_consolidated_accounts: "Filas consolidadas",
     sp_err_no_values:             "No se encontraron valores en ninguna hoja de año",
     sp_dec_rounded:               "Redondeado a enteros",
     sp_dec_decimals:              "Mostrando decimales",
+    nav_admin_onboarding: "Onboarding de clientes",
+bs_family_assets: "ACTIVOS",
+bs_family_liab_equity: "PATRIMONIO Y PASIVO"
   },
 
 
@@ -4730,6 +4739,9 @@ dim_consolidated_accounts: "Linhas consolidadas",
     sp_err_no_values:             "Sem valores em qualquer folha de ano",
     sp_dec_rounded:               "Arredondado a inteiros",
     sp_dec_decimals:              "A mostrar decimais",
+    nav_admin_onboarding: "Onboarding de clientes",
+bs_family_assets: "ATIVO",
+bs_family_liab_equity: "PATRIMÔNIO LÍQUIDO E PASSIVO"
   },
 };
 

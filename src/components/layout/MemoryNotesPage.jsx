@@ -659,8 +659,7 @@ pivot.set(key, value);
         Object.entries(env).forEach(([k, v]) => {
           expr = expr.replaceAll(k, `(${Number.isFinite(v) ? v : 0})`);
         });
-        // eslint-disable-next-line no-new-func
-        result = Function(`"use strict"; return (${expr})`)();
+result = Function(`"use strict"; return (${expr})`)();
         if (!Number.isFinite(result)) result = 0;
       } catch { result = 0; }
       pivot.set(key, result);
@@ -690,18 +689,34 @@ pivot.set(key, value);
 export default function MemoryNotesPage({
   token, sources = [], structures = [], companies = [],
 }) {
-  const { colors } = useSettings();
-  const header1Style = useTypo("header1");
+const { colors } = useSettings();
 
   // Filters
   const [year, setYear]           = useState(String(new Date().getFullYear() - 1));
   const [month, setMonth]         = useState("12");
-  const [source, setSource]       = useState("");
-  const [structure, setStructure] = useState("");
-  const [company, setCompany]     = useState("");
-const [templateId, setTemplateId] = useState("pgc_normal");
+const [sourceOverride, setSource]       = useState(null);
+  const [structureOverride, setStructure] = useState(null);
+  const [companyOverride, setCompany]     = useState(null);
+  const defaultSource = useMemo(() => {
+    if (sources.length === 0) return "";
+    const s = sources[0];
+    return typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s);
+  }, [sources]);
+  const defaultStructure = useMemo(() => {
+    if (structures.length === 0) return "";
+    const s = structures[0];
+    return typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s);
+  }, [structures]);
+  const defaultCompany = useMemo(() => {
+    if (companies.length === 0) return "";
+    const c = companies[0];
+    return typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : String(c);
+  }, [companies]);
+  const source = sourceOverride ?? defaultSource;
+  const structure = structureOverride ?? defaultStructure;
+  const company = companyOverride ?? defaultCompany;
+const [templateId, setTemplateId] = useState(null);
 const [activeNoteId, setActiveNoteId] = useState(null);
-  const [viewsModalOpen, setViewsModalOpen] = useState(false);
   // Overrides manuales por nota. Map<noteId, Map<"rowId|colId", number>>.
   // null como valor elimina el override (la celda vuelve a su valor calculado).
   const [overridesByNote, setOverridesByNote] = useState(() => new Map());
@@ -734,30 +749,19 @@ const [groupAccounts, setGroupAccounts] = useState([]); // chart of accounts del
   const [loadingData, setLoadingData] = useState(false);
 
   // Defaults from props
-  useEffect(() => {
-    if (sources.length > 0 && !source) {
-      const s = sources[0];
-      setSource(typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s));
-    }
-  }, [sources]); // eslint-disable-line
-  useEffect(() => {
-    if (structures.length > 0 && !structure) {
-      const s = structures[0];
-      setStructure(typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s));
-    }
-  }, [structures]); // eslint-disable-line
-  useEffect(() => {
-    if (companies.length > 0 && !company) {
-      const c = companies[0];
-      setCompany(typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : String(c));
-    }
-  }, [companies]); // eslint-disable-line
 
 // Load templates list
   useEffect(() => {
     sbGet("memory", "templates?select=*&order=sort_order.asc&scope=eq.individual").then(d => {
-      if (Array.isArray(d)) setTemplates(d);
+      if (Array.isArray(d)) {
+        setTemplates(d);
+        // Default to first available template only if none selected yet
+        if (!templateId && d.length > 0) {
+          setTemplateId(d[0].id);
+        }
+      }
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
 // Load chart of accounts (group-accounts) — para clasificar por AccountType real
@@ -788,10 +792,11 @@ const [groupAccounts, setGroupAccounts] = useState([]); // chart of accounts del
       .catch(() => setCfMapping([]));
   }, [token]);
 
-  // Load notes + rows + cols for current template
+// Load notes + rows + cols for current template
   useEffect(() => {
     if (!templateId) return;
-    setLoadingTemplate(true);
+    let cancelled = false;
+    queueMicrotask(() => { if (!cancelled) setLoadingTemplate(true); });
     Promise.all([
       sbGet("memory", `template_notes?select=*&template_id=eq.${templateId}&order=sort_order.asc`),
 sbGet("memory", `template_rows?select=*&note_id=like.${templateId}%3A*&order=sort_order.asc`),
@@ -842,8 +847,9 @@ const dedupeBy = (arr, keyFn) => {
       if (uniqNotes.length > 0) {
         setActiveNoteId(prev => (prev && uniqNotes.find(x => x.id === prev)) ? prev : uniqNotes[0].id);
       }
-      setLoadingTemplate(false);
+setLoadingTemplate(false);
     });
+    return () => { cancelled = true; };
   }, [templateId]);
 
   // Fetch current and prev period uploaded-accounts
@@ -863,18 +869,20 @@ const dedupeBy = (arr, keyFn) => {
     }
   }, [token, source, structure, company]);
 
-  // Load uploaded data when filters change
+// Load uploaded data when filters change
   useEffect(() => {
     if (!year || !month || !source || !structure || !company) return;
-    setLoadingData(true);
+    let cancelled = false;
+    queueMicrotask(() => { if (!cancelled) setLoadingData(true); });
     Promise.all([
       fetchUploaded(year, month),
       fetchUploaded(String(parseInt(year) - 1), month),
     ]).then(([cur, prev]) => {
       setCurrentRows(cur);
-      setPrevRows(prev);
+setPrevRows(prev);
       setLoadingData(false);
     });
+    return () => { cancelled = true; };
   }, [year, month, source, structure, company, fetchUploaded]);
 
   // Memoized lookups by note
@@ -896,8 +904,14 @@ const dedupeBy = (arr, keyFn) => {
   }, [cols]);
 
   const activeNote = useMemo(() => notes.find(n => n.id === activeNoteId), [notes, activeNoteId]);
-  const activeRows = activeNote ? (rowsByNote.get(activeNote.id) ?? []) : [];
-  const activeCols = activeNote ? (colsByNote.get(activeNote.id) ?? []) : [];
+const activeRows = useMemo(
+    () => activeNote ? (rowsByNote.get(activeNote.id) ?? []) : [],
+    [activeNote, rowsByNote]
+  );
+  const activeCols = useMemo(
+    () => activeNote ? (colsByNote.get(activeNote.id) ?? []) : [],
+    [activeNote, colsByNote]
+  );
 
 // Hierarchy index del chart de cuentas grupo (incluye fallback a códigos
   // huérfanos que sólo aparecen en los postings).
@@ -964,7 +978,7 @@ return buildPivot({
       sources: accountSources,
       overrides: overridesByNote.get(activeNote.id) ?? null,
     });
-  }, [activeNote, activeRows, activeCols, accountSources, overridesByNote]);
+}, [activeNote, activeRows, activeCols, accountSources, overridesByNote, currentRows.length, prevRows.length]);
 
   // Filter options
   const sourceOpts    = [...new Set(sources.map(s  => typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));

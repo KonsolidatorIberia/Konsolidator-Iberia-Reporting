@@ -150,7 +150,7 @@ const DimPctCell = React.memo(function DimPctCell({ value, animate, color, width
     </td>
   );
 });
-import { useTypo, useSettings } from "./SettingsContext";
+import { useTypo, useSettings, useSettingsControls } from "./SettingsContext";
 import { useLatestPeriod } from "./LatestPeriodContext.jsx";
 import { t } from "../../lib/i18n";
 import PageHeader, { FilterPill as HeaderFilterPill, MultiFilterPill } from "./PageHeader.jsx";
@@ -170,14 +170,63 @@ const BASE_URL = "";
 // ════════════════════════════════════════════════════════════════════════════
 
 const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
+
+// Normalize BS section codes to a canonical family — CUSTOM standards use
+// NCA/CA/EQ/NCL/CL, legacy PGC uses ACTIVO/PASIVO/PATRIMONIO. Same helper as
+// in IndividualesPage for consistency.
+function bsSectionFamily(sectionCode) {
+  const s = String(sectionCode || "").toUpperCase();
+  if (s === "ACTIVO" || s === "NCA" || s === "CA") return "assets";
+  if (s === "PASIVO" || s === "PATRIMONIO" || s === "EQ" || s === "NCL" || s === "CL") return "liab_equity";
+  return "unknown";
+}
 const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
 
-const SB_HEADERS = {
-  apikey:        SUPABASE_APIKEY,
-  Authorization: `Bearer ${SUPABASE_APIKEY}`,
+// Grab the user's live JWT so RLS policies see auth.uid() correctly.
+function getSbAuthToken() {
+  try {
+    const key = Object.keys(localStorage).find(k => k.includes("auth-token"));
+    if (!key) return null;
+    const parsed = JSON.parse(localStorage.getItem(key));
+    return parsed?.access_token ?? parsed?.data?.session?.access_token ?? null;
+  } catch { return null; }
+}
+
+// Basic headers for one-off fetches.
+
+// Paginated fetch — PostgREST caps at 1000 rows per response. Standard tables
+// exceed this (Konsolidator: 1089 PL+BS+CF). Fetch in 1000-row pages.
+const sbGet = async (path) => {
+  const token = getSbAuthToken();
+  const baseHeaders = {
+    apikey: SUPABASE_APIKEY,
+    Authorization: `Bearer ${token ?? SUPABASE_APIKEY}`,
+    Prefer: "count=exact",
+  };
+
+  const PAGE = 1000;
+  const all = [];
+  let offset = 0;
+
+  for (let safety = 0; safety < 20; safety++) {
+    const rangeEnd = offset + PAGE - 1;
+    const res = await fetch(`${SUPABASE_URL}/${path}`, {
+      headers: { ...baseHeaders, Range: `${offset}-${rangeEnd}` },
+    });
+    const chunk = await res.json();
+    if (!Array.isArray(chunk)) return chunk;
+    all.push(...chunk);
+    if (chunk.length < PAGE) break;
+    const cr = res.headers.get("content-range");
+    if (!cr) break;
+    const parts = cr.split("/");
+    const total = parseInt(parts[1], 10);
+    if (!isNaN(total) && all.length >= total) break;
+    offset += PAGE;
+  }
+
+  return all;
 };
-const sbGet = (path) =>
-  fetch(`${SUPABASE_URL}/${path}`, { headers: SB_HEADERS }).then(r => r.json());
 
 function detectStandard(groupAccounts) {
   if (!groupAccounts?.length) return null;
@@ -207,11 +256,26 @@ const STANDARD_TO_PL_TABLE = {
 };
 
 async function loadStandardMapping(standard, groupAccounts) {
-  const plTable = STANDARD_TO_PL_TABLE[standard];
-  if (!plTable) return null;
+  if (!standard) return null;
 
-  const plRows = await sbGet(`${plTable}?select=account_code,account_name,section_code,parent_code,is_sum,cc_tag`);
-  const allRows = Array.isArray(plRows) ? plRows : [];
+  const isCustom = standard.startsWith("CUSTOM-");
+  let allRows = [];
+
+  if (isCustom) {
+    // Unified schema: PL + BS both live under standard_statement_rows keyed
+    // by (standard_key, statement).
+    const rows = await sbGet(
+      `standard_statement_rows?select=account_code,account_name,section_code,parent_code,is_sum,cc_tag` +
+      `&standard_key=eq.${encodeURIComponent(standard)}` +
+      `&statement=in.(PL,BS)`
+    );
+    allRows = Array.isArray(rows) ? rows : [];
+  } else {
+    const plTable = STANDARD_TO_PL_TABLE[standard];
+    if (!plTable) return null;
+    const plRows = await sbGet(`${plTable}?select=account_code,account_name,section_code,parent_code,is_sum,cc_tag`);
+    allRows = Array.isArray(plRows) ? plRows : [];
+  }
 
   // Build code → cc_tag from the taxonomy table (pgc_pl_rows etc).
   const codeCcTag = new Map();
@@ -219,9 +283,16 @@ async function loadStandardMapping(standard, groupAccounts) {
     if (r.cc_tag) codeCcTag.set(String(r.account_code), r.cc_tag);
   }
 
-  // Build child → parent from groupAccounts so we can walk a posting account
-  // up to whatever ancestor carries a cc_tag.
+// Build child → parent chain. First from standard mapping table (for CUSTOM
+  // standards the parent_code is authoritative), then overridden by runtime
+  // groupAccounts.SumAccountCode so posting accounts outside the taxonomy
+  // still climb correctly.
   const parentOf = new Map();
+  for (const r of allRows) {
+    if (r.account_code && r.parent_code) {
+      parentOf.set(String(r.account_code), String(r.parent_code));
+    }
+  }
   for (const ga of (groupAccounts || [])) {
     if (ga.AccountCode && ga.SumAccountCode) {
       parentOf.set(String(ga.AccountCode), String(ga.SumAccountCode));
@@ -269,17 +340,44 @@ async function loadKpiLibrary() {
 }
 
 // Hook: load standard mapping + KPI library reactively
-function useKpiResolver(groupAccounts) {
-  const standard = useMemo(() => detectStandard(groupAccounts), [groupAccounts]);
-const [loadedStandard, setLoadedStandard] = useState(null);
+// Resolve the standard for a company:
+//   1. If preResolvedKey passed → use it (EpicLoader prefetch path)
+//   2. Otherwise if companyId known → check company_active_standard binding
+//   3. Otherwise → code-pattern sniff fallback
+async function resolveStandardKey(companyId, groupAccounts, preResolvedKey) {
+  if (preResolvedKey) return preResolvedKey;
+  if (companyId) {
+    try {
+      const rows = await sbGet(
+        `company_active_standard?select=standard_key&company_id=eq.${companyId}`
+      );
+      const boundKey = Array.isArray(rows) && rows[0]?.standard_key;
+      if (boundKey) return boundKey;
+    } catch { /* fall through */ }
+  }
+  return detectStandard(groupAccounts);
+}
+
+function useKpiResolver(groupAccounts, companyId, preResolvedStandardKey) {
+  const [standard, setStandard] = useState(null);
+  const [loadedStandard, setLoadedStandard] = useState(null);
   const [loaded, setLoaded] = useState({
     kpiList: [],
     ccTagToCodes: new Map(),
     resolveCcTag: () => null,
   });
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const resolved = await resolveStandardKey(companyId, groupAccounts, preResolvedStandardKey);
+      if (!cancelled) setStandard(resolved);
+    })();
+    return () => { cancelled = true; };
+  }, [companyId, groupAccounts, preResolvedStandardKey]);
+
 useEffect(() => {
-    if (!standard) return; // initial state already represents "no standard"
+    if (!standard) return;
     let cancelled = false;
     Promise.all([loadStandardMapping(standard, groupAccounts), loadKpiLibrary()])
       .then(([mapping, kpiList]) => {
@@ -586,14 +684,45 @@ function pgcSort(a, b) {
 }
 
 
-function buildTree(accounts) {
-  // Normalize field names (API returns camelCase, our pivot uses PascalCase)
-  const normalized = accounts.map(a => ({
-    ...a,
-    AccountCode:    a.AccountCode    ?? a.accountCode    ?? "",
-    AccountName:    a.AccountName    ?? a.accountName    ?? "",
-    SumAccountCode: a.SumAccountCode ?? a.sumAccountCode ?? "",
-  })).filter(a => a.AccountCode);
+function buildTree(accounts, standardMapping = null) {
+  // Normalize field names (API returns camelCase, our pivot uses PascalCase).
+  // When standardMapping is provided (CUSTOM standards + rows Map from
+  // standard_statement_rows), the standard's parent_code overrides the
+  // runtime SumAccountCode. This is required because Konsolidator's
+  // groupAccounts have their own SumAccountCode chain, but the custom
+  // standard reorganized the hierarchy (e.g. leaves point to A.02, B.1)
+  // and we want the standard's hierarchy in the UI.
+  const normalized = accounts.map(a => {
+    const code = a.AccountCode ?? a.accountCode ?? "";
+    const stdRow = standardMapping?.rows?.get(String(code));
+    const parentFromStd = stdRow ? String(stdRow.parent_code ?? stdRow.parentCode ?? "") : "";
+    const parentFromGa = a.SumAccountCode ?? a.sumAccountCode ?? "";
+    return {
+      ...a,
+      AccountCode:    code,
+      AccountName:    a.AccountName    ?? a.accountName    ?? "",
+      SumAccountCode: parentFromStd || parentFromGa,
+    };
+  }).filter(a => a.AccountCode);
+
+  // If we have a standard mapping, also add its own rows that aren't in
+  // groupAccounts (e.g. section headers like A.01, B.1 that Konsolidator
+  // doesn't post to but that must appear in the UI as expand/collapse
+  // anchors for the leaves below them).
+  if (standardMapping?.rows) {
+    const existingCodes = new Set(normalized.map(n => n.AccountCode));
+    standardMapping.rows.forEach((info, code) => {
+      if (!existingCodes.has(code)) {
+        const parentFromStd = String(info.parent_code ?? info.parentCode ?? "");
+        normalized.push({
+          AccountCode: code,
+          AccountName: info.account_name ?? info.accountName ?? code,
+          SumAccountCode: parentFromStd,
+          isVirtual: true, // marker: not in groupAccounts, no amounts of its own
+        });
+      }
+    });
+  }
 
   const sorted = [...normalized].sort(pgcSort);
   const map = new Map();
@@ -601,26 +730,19 @@ function buildTree(accounts) {
 
   // Detect chart type: PGC uses `.S`-suffixed summary accounts; Danish/numeric
   // standards just have a hierarchy of numeric codes where any account can have
-  // children. The two need different attachment rules.
-  const hasPgcSummaries = sorted.some(a => /\.S$/i.test(a.AccountCode));
+  // children. CUSTOM standards use the .S-agnostic path (attachment purely by
+  // parent lookup).
+  const hasPgcSummaries = !standardMapping && sorted.some(a => /\.S$/i.test(a.AccountCode));
 
-const roots = [];
+  const roots = [];
   sorted.forEach(a => {
-    // Defend against self-referencing SumAccountCode rows that would otherwise
-    // attach a node as its own child and break every recursion downstream.
     const isSelfRef = a.SumAccountCode && String(a.SumAccountCode) === String(a.AccountCode);
     const parent = !isSelfRef && a.SumAccountCode ? map.get(a.SumAccountCode) : null;
-
-    // Attach to parent when:
-    // - PGC: parent must NOT be a `.S` summary (PGC quirk: `.S` siblings, not parents)
-    // - Numeric / Danish: any existing parent in the map is valid
     const canAttach = parent && (hasPgcSummaries ? !/\.S$/i.test(parent.AccountCode) : true);
 
     if (canAttach) {
       parent.children.push(map.get(a.AccountCode));
     } else {
-      // PGC-only filter: drop numeric leaves whose `.S` parent isn't in the map
-      // (those are orphans of an unloaded section). Doesn't apply to non-PGC.
       if (hasPgcSummaries) {
         const isNum   = /^\d/.test(a.AccountCode);
         const missing = a.SumAccountCode && !map.has(a.SumAccountCode);
@@ -631,6 +753,8 @@ const roots = [];
   });
   return roots;
 }
+
+
 function FilterPill({ label, value, onChange, options }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -1017,7 +1141,7 @@ function AccountsTab({ data }) {
 
 
 /* ── Pivot Tab ────────────────────────────────────────────── */
-function PivotTab({ data, dimensions, groupAccounts = [], selGroups = new Set(), selDims = new Set(), compareMode, statementType = "pl", externalViewMode = null, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), drillPrevRows = [], onToggleDrillAccount = () => {} }) {
+function PivotTab({ data, dimensions, groupAccounts = [], selGroups = new Set(), selDims = new Set(), compareMode, statementType = "pl", externalViewMode = null, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), drillPrevRows = [], onToggleDrillAccount = () => {}, activeStandardKey = null }) {
 
 const header2Style = useTypo("header2");
   const body1Style = useTypo("body1");
@@ -1035,7 +1159,9 @@ const { colors, locale } = useSettings();
 
   // Summary/Detailed toggle (only used in non-compare mode). statementType
   // is lifted to DimensionesPage to drive PageHeader tabs.
-const [summaryMode, setSummaryMode] = useState(true);
+const [summaryMode] = useState(true);
+// BS view tab: "all" (both sides + grand totals), "assets", or "equity"
+const [bsView, setBsView] = useState("all");
   // `cmpExiting` is the only stored state — `cmpVisible` is derived.
   // Trigger logic runs at render (adjust-state-on-prop-change); the actual
   // exit timer lives in an effect keyed off `cmpExiting`.
@@ -1479,7 +1605,7 @@ const cmp2DimGroups = useMemo(() => {
 const cmpCompanies  = companies.length > 0 && typeof companies[0] === "object"
     ? companies.map(c => ({ value: c.companyShortName ?? c.CompanyShortName ?? String(c), label: c.CompanyLegalName ?? c.companyLegalName ?? c.companyShortName ?? c.CompanyShortName ?? String(c) })).filter(o => o.value)
     : [...new Set(companies.map(c => String(c)).filter(Boolean))].map(v => ({ value: v, label: v }));
-const ACOL = 480, TCOL = 150;
+const ACOL = 580, TCOL = 150;
   const CMP_COL = 140, DELTA_COL = 110, PCT_COL = 90;
   const MIN_DCOL = 140;
 
@@ -1583,8 +1709,12 @@ const displayedTree = useMemo(() => {
       });
     });
 
-    return buildTree([...groupMap.values()]);
- }, [data, groupAccounts, statementType]);
+// Pass the CUSTOM standard mapping (when active) so buildTree uses
+    // parent_code from the standard rather than SumAccountCode from the
+    // client's chart of accounts.
+    const activeStdMapping = statementType === "pl" ? plMapping : bsMapping;
+    return buildTree([...groupMap.values()], activeStdMapping);
+ }, [data, groupAccounts, statementType, plMapping, bsMapping]);
 
 const treeIndex = useMemo(() => {
   const idx = new Map();
@@ -1612,8 +1742,9 @@ const displayedTreeIndex = useMemo(() => {
 }, [displayedTree]);
 
 const isCustomMapping = hasCustomMapping;
-  const orderedRows = useMemo(() => {
-    if (activeMapping?.rows) {
+const orderedRows = useMemo(() => {
+    // CUSTOM standards (CUSTOM-*) use the hierarchical displayedTree directly.
+if (activeMapping?.rows) {
 if (isCustomMapping) {
         const gaMap = new Map();
         (groupAccounts || []).forEach(a => {
@@ -1637,22 +1768,126 @@ if (isCustomMapping) {
           })
           .filter(Boolean);
       }
-      // Default standard mapping — respect Summary/Detailed toggle
+// Default standard mapping — respect Summary/Detailed toggle
       const filterFn = summaryMode ? (info => info.showInSummary) : (info => info.isSum);
-      return [...activeMapping.rows.entries()]
+      const flatOrdered = [...activeMapping.rows.entries()]
         .filter(([, info]) => filterFn(info))
         .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
-        .map(([code]) => treeIndex.get(code))
+        .map(([code]) => treeIndex.get(code) ?? displayedTreeIndex.get(code))
         .filter(Boolean);
+
+      // For CUSTOM standards: every sum account has showInSummary=true, so
+      // the flat list contains the whole tree flattened. That double-renders:
+      // once as a sibling and again as a descendant via node.children.
+      // Filter to roots only — nodes whose ancestor (via activeMapping's
+      // parent_code chain) is NOT in the flat list. DimensionRow will render
+      // descendants recursively from node.children, matching Individuales.
+const isCustomStandard = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+      if (!isCustomStandard) return flatOrdered;
+      const flatCodeSet = new Set(flatOrdered.map(n => String(n.AccountCode)));
+// Cross-section jumps become roots. This makes narrative rendering work:
+      // Revenue, COGS, OPEX etc. each become their own top-level cluster, and
+      // grand totals with section=null (like I.PL or C, H in BS) also become
+      // roots so they're not hidden inside another section's subtree.
+      const parentInFlatSameSection = (code) => {
+        const nodeInfo = activeMapping.rows.get(String(code));
+        const nodeSection = nodeInfo?.section ?? null;
+        let cur = String(code);
+        let hops = 0;
+        while (cur && hops < 25) {
+          const info = activeMapping.rows.get(cur);
+          const parent = info?.parent_code ?? "";
+          if (!parent) return false;
+          if (flatCodeSet.has(parent)) {
+            const parentInfo = activeMapping.rows.get(parent);
+            const parentSection = parentInfo?.section ?? null;
+            if (parentSection === nodeSection && nodeSection !== null) return true;
+            return false;
+          }
+          cur = parent;
+          hops++;
+        }
+        return false;
+      };
+let result = flatOrdered.filter(n => !parentInFlatSameSection(n.AccountCode));
+
+      // For BS: filter by view (all / assets / equity). Grand totals with
+      // section=null are shown in "all" only.
+      if (statementType === "bs" && bsView !== "all") {
+        result = result.filter(n => {
+          const info = activeMapping.rows.get(String(n.AccountCode));
+          const fam = bsSectionFamily(info?.section);
+          if (bsView === "assets") return fam === "assets";
+          if (bsView === "equity") return fam === "liab_equity";
+          return true;
+        });
+      }
+      return result;
     }
 return displayedTree;
-  }, [activeMapping, isCustomMapping, summaryMode, treeIndex, displayedTree, displayedTreeIndex, groupAccounts]);
+  }, [activeMapping, isCustomMapping, summaryMode, treeIndex, displayedTree, displayedTreeIndex, groupAccounts, activeStandardKey, statementType, bsView]);
 
 const dividerMap = useMemo(() => {
     if (!activeMapping?.rows || !activeMapping?.sections) return {};
     const palette = [colors.primary, colors.secondary, colors.tertiary];
-    const seen = new Set();
     const out = {};
+
+    // BS view "all" (or any BS view under a CUSTOM standard): emit two virtual
+    // family breakers ("Assets" and "Equity+Liab") on grand-total nodes with
+    // section=null, so users can see the family split even though the roll-ups
+    // themselves don't belong to any section.
+    if (statementType === "bs" && bsView === "all") {
+      const seenFam = new Set();
+      let ci = 0;
+      const familyLabel = (fam) => fam === "assets"
+        ? (T?.("bs_family_assets") || "ASSETS")
+        : fam === "liab_equity"
+          ? (T?.("bs_family_liab_equity") || "EQUITY & LIABILITIES")
+          : null;
+      const familyOfNode = (node) => {
+        const m = activeMapping.rows.get(String(node.AccountCode));
+        const fam = bsSectionFamily(m?.section);
+        if (fam !== "unknown") return fam;
+        // Grand total (section=null) — infer from any child in the tree
+        const kids = node.children || [];
+        for (const k of kids) {
+          const km = activeMapping.rows.get(String(k.AccountCode));
+          const kf = bsSectionFamily(km?.section);
+          if (kf !== "unknown") return kf;
+        }
+        return "unknown";
+      };
+      for (const node of orderedRows) {
+        const fam = familyOfNode(node);
+        if (fam === "unknown") continue;
+        if (seenFam.has(fam)) continue;
+        seenFam.add(fam);
+        const label = familyLabel(fam);
+        if (label) {
+          out[String(node.AccountCode)] = { label, color: palette[ci] ?? colors.primary };
+          ci++;
+        }
+      }
+      // Also add section breakers within the current run so users still see
+      // NCA / CA / EQ / NCL / CL headers under each family.
+      const seenSec = new Set();
+      let si = 2;
+      for (const node of orderedRows) {
+        const m = activeMapping.rows.get(String(node.AccountCode));
+        if (!m || !m.section) continue;
+        if (seenSec.has(m.section)) continue;
+        seenSec.add(m.section);
+        const sec = activeMapping.sections.get(m.section);
+        if (sec && !out[String(node.AccountCode)]) {
+          out[String(node.AccountCode)] = { label: sec.label, color: palette[si] ?? sec.color };
+          si++;
+        }
+      }
+      return out;
+    }
+
+    // Default: one breaker per section, first-appearance in orderedRows.
+    const seen = new Set();
     let i = 0;
     for (const node of orderedRows) {
       const m = activeMapping.rows.get(String(node.AccountCode));
@@ -1665,8 +1900,8 @@ const dividerMap = useMemo(() => {
         i++;
       }
     }
-return out;
-  }, [activeMapping, orderedRows, colors]);
+    return out;
+  }, [activeMapping, orderedRows, colors, statementType, bsView, T]);
 
   // Row keys that must be force-expanded because a descendant matches the search.
   const searchExpansionSet = useMemo(() => {
@@ -3178,7 +3413,7 @@ table td, table th { vertical-align: middle; }
         <div ref={headerRef} style={{ overflowX: "auto", overflowY: "hidden", flexShrink: 0, scrollbarWidth: "none", msOverflowStyle: "none", boxShadow: "0 4px 12px -4px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",contain: "layout style" }} onScroll={onHeaderScroll}>
 <table style={{ borderCollapse: "collapse", minWidth: totalWidth, width: "100%", tableLayout: "fixed" }}>
 <colgroup>
-              <col style={{ width: 480, minWidth: 480 }} />
+              <col style={{ width: ACOL, minWidth: ACOL }} />
 {orderedDimCols.map((_, i) => (
                 <React.Fragment key={i}>
                   <col style={{ width: dimColWidths[i], minWidth: dimColWidths[i] }} />
@@ -3252,11 +3487,11 @@ onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary
                             }
                           </span>
                         </button>
-{!hasCustomMapping && <div className="relative flex items-center"
+{!hasCustomMapping && statementType === "bs" && <div className="relative flex items-center"
                           ref={el => {
                             if (!el) return;
                             const tabs = el.querySelectorAll("[data-dim-tab]");
-                            const idx = summaryMode ? 0 : 1;
+                            const idx = bsView === "all" ? 0 : bsView === "assets" ? 1 : 2;
                             const active = tabs[idx];
                             const indicator = el.querySelector(".dim-view-indicator");
                             if (active && indicator) {
@@ -3270,10 +3505,10 @@ onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary
                             transition: "left 320ms cubic-bezier(0.34, 1.56, 0.64, 1), width 320ms cubic-bezier(0.34, 1.56, 0.64, 1)",
                             pointerEvents: "none",
                           }} />
-                          {[["summary", T("view_summary")], ["detailed", T("view_detailed")]].map(([v, label]) => {
-                            const active = (v === "summary" && summaryMode) || (v === "detailed" && !summaryMode);
+                          {[["all", T("view_summary")], ["assets", T("bs_assets")], ["equity", T("bs_equity_liab")]].map(([v, label]) => {
+                            const active = bsView === v;
                             return (
-                              <button key={v} data-dim-tab onClick={() => setSummaryMode(v === "summary")}
+                              <button key={v} data-dim-tab onClick={() => setBsView(v)}
                                 className="px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] whitespace-nowrap"
                                 style={{
                                   background: "transparent",
@@ -3747,8 +3982,9 @@ drillExpanded={drillExpanded} drillCache={drillCache} drillLoadingSet={drillLoad
 
 /* ── Main ─────────────────────────────────────────────────── */
 /* ── Main ─────────────────────────────────────────────────── */
-export default function DimensionesPage({ token, onNavigate, sources = [], structures = [], companies = [], dimensions = [], cachedPeriod = null }) {
+export default function DimensionesPage({ token, onNavigate, sources = [], structures = [], companies = [], dimensions = [], cachedPeriod = null, activeStandardKey = null }) {
 const { colors, locale } = useSettings();
+const { companyId: settingsCompanyId } = useSettingsControls();
 const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
 const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();
 
@@ -3980,7 +4216,7 @@ const rows = d.value ?? (Array.isArray(d) ? d : []);
     kpiList,
     ccTagToCodes: defaultCcTagToCodes,
     resolveCcTag: defaultResolveCcTag,
-  } = useKpiResolver(groupAccountsLocal);
+} = useKpiResolver(groupAccountsLocal, settingsCompanyId, activeStandardKey);
 
   // Load Supabase row/section mappings for breakers (PGC / Danish / Spanish IFRS-ES)
   const [pgcPlMapping, setPgcPlMapping] = useState(null);
@@ -3992,11 +4228,14 @@ const rows = d.value ?? (Array.isArray(d) ? d : []);
 
   useEffect(() => {
     if (!groupAccountsLocal.length) return;
-    const codes = groupAccountsLocal.map(g => String(g.AccountCode ?? g.accountCode ?? ""));
-    const isPGC = codes.some(c => /[a-zA-Z]/.test(c) && c.endsWith(".S"));
-    const isSpEs = !isPGC && codes.some(c => /\.PL$/.test(c));
-    const isDan = !isPGC && !isSpEs && codes.some(c => /^\d{5,6}$/.test(c));
+const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
 
+    const codes = groupAccountsLocal.map(g => String(g.AccountCode ?? g.accountCode ?? ""));
+    const isPGC = !isCustom && codes.some(c => /[a-zA-Z]/.test(c) && c.endsWith(".S"));
+    const isSpEs = !isCustom && !isPGC && codes.some(c => /\.PL$/.test(c));
+    const isDan = !isCustom && !isPGC && !isSpEs && codes.some(c => /^\d{5,6}$/.test(c));
+
+    // Legacy loader: for built-in per-standard tables (pgc_pl_rows, etc.)
     const loadMapping = async (rowsTable, sectionsTable, setter) => {
       try {
         const [rowsArr, secsArr] = await Promise.all([
@@ -4004,13 +4243,18 @@ const rows = d.value ?? (Array.isArray(d) ? d : []);
           sbGet(`${sectionsTable}?select=*&order=sort_order.asc`),
         ]);
         if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
-        const rows = new Map();
+const rows = new Map();
+        console.log('[loadCustomMapping]', statement, 'first row:', JSON.stringify(rowsArr[0]));
         rowsArr.forEach(r => rows.set(String(r.account_code), {
           section: String(r.section_code),
           sortOrder: Number(r.sort_order),
           isSum: !!r.is_sum,
           showInSummary: !!r.show_in_summary,
           level: Number(r.level ?? 0),
+          // Preserve parent_code + account_name so buildTree() can use them
+          // to construct the CUSTOM hierarchy (overriding runtime SumAccountCode).
+          parent_code: r.parent_code ? String(r.parent_code) : "",
+          account_name: r.account_name ?? "",
         }));
         const sections = new Map();
         secsArr.forEach(s => sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) }));
@@ -4018,7 +4262,52 @@ const rows = d.value ?? (Array.isArray(d) ? d : []);
       } catch { setter(null); }
     };
 
-    if (isPGC) {
+    // Custom loader: unified standard_statement_rows filtered by standard_key + statement.
+    const loadCustomMapping = async (statement, setter) => {
+      try {
+        const [rowsArr, secsArr] = await Promise.all([
+          sbGet(
+            `standard_statement_rows?select=*` +
+            `&standard_key=eq.${encodeURIComponent(activeStandardKey)}` +
+            `&statement=eq.${statement}` +
+            `&order=sort_order.asc`
+          ),
+          sbGet(
+            `standard_statement_sections?select=*` +
+            `&standard_key=eq.${encodeURIComponent(activeStandardKey)}` +
+            `&statement=eq.${statement}` +
+            `&order=sort_order.asc`
+          ),
+        ]);
+        if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
+const rows = new Map();
+        rowsArr.forEach(r => rows.set(String(r.account_code), {
+          section: String(r.section_code),
+          sortOrder: Number(r.sort_order),
+          isSum: !!r.is_sum,
+          showInSummary: !!r.show_in_summary,
+          level: Number(r.level ?? 0),
+          // Preserve parent_code + account_name so buildTree() can construct
+          // the CUSTOM hierarchy (overriding runtime SumAccountCode from
+          // groupAccounts, which may point to different roll-up codes than
+          // the custom standard).
+          parent_code: r.parent_code ? String(r.parent_code) : "",
+          account_name: r.account_name ?? "",
+        }));
+        const sections = new Map();
+        secsArr.forEach(s => sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) }));
+        setter({ rows, sections });
+      } catch { setter(null); }
+    };
+
+    if (isCustom) {
+      // Route CUSTOM to unified tables. Store in the pgc slot as
+      // "defaultPlMapping / defaultBsMapping" resolution falls back through
+      // pgc → danish → spEs; using pgc slot means Konsolidator's custom
+      // mapping is picked up unconditionally by downstream selectors.
+      loadCustomMapping("PL", setPgcPlMapping);
+      loadCustomMapping("BS", setPgcBsMapping);
+    } else if (isPGC) {
       loadMapping("pgc_pl_rows", "pgc_pl_sections", setPgcPlMapping);
       loadMapping("pgc_bs_rows", "pgc_bs_sections", setPgcBsMapping);
     } else if (isDan) {
@@ -4028,7 +4317,7 @@ const rows = d.value ?? (Array.isArray(d) ? d : []);
       loadMapping("spanish_ifrs_es_pl_rows", "spanish_ifrs_es_pl_sections", setSpIfrsEsPlMapping);
       loadMapping("spanish_ifrs_es_bs_rows", "spanish_ifrs_es_bs_sections", setSpIfrsEsBsMapping);
     }
-  }, [groupAccountsLocal]);
+  }, [groupAccountsLocal, activeStandardKey]);
 
 const defaultPlMapping = pgcPlMapping ?? danishPlMapping ?? spIfrsEsPlMapping;
   const defaultBsMapping = pgcBsMapping ?? danishBsMapping ?? spIfrsEsBsMapping;
@@ -4717,7 +5006,7 @@ title={T("clear_mapping_title")}
           </div>
         </div>
 ) : (
-<PivotTab data={rawData} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroups={selGroups} selDims={selDims} onSelGroupsChange={setSelGroups} onSelDimsChange={setSelDims} dimGroups={dimGroups}compareMode={compareMode} statementType={statementType} externalViewMode={statementType === "bs" ? "ytd" : (ytdOnly ? "ytd" : "monthly")} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} kpiList={kpiList} ccTagToCodes={ccTagToCodes} resolveCcTag={resolveCcTag}plMapping={plMapping} bsMapping={bsMapping}
+<PivotTab data={rawData} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroups={selGroups} selDims={selDims} onSelGroupsChange={setSelGroups} onSelDimsChange={setSelDims} dimGroups={dimGroups}compareMode={compareMode} statementType={statementType} externalViewMode={statementType === "bs" ? "ytd" : (ytdOnly ? "ytd" : "monthly")} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} kpiList={kpiList} ccTagToCodes={ccTagToCodes} resolveCcTag={resolveCcTag}plMapping={plMapping} bsMapping={bsMapping} activeStandardKey={activeStandardKey}
 plLiteral={activeMapping?.plLiteral ?? null}
 bsLiteral={activeMapping?.bsLiteral ?? null}
 exportRef={pivotExportRef} hasCustomMapping={!!activeMapping}

@@ -1045,7 +1045,7 @@ const cmpDrillMap = useMemo(() => {
 /* ═══════════════════════════════════════════════════════════════════════
    MAIN
    ═══════════════════════════════════════════════════════════════════════ */
-export default function IndividualCashFlowPage({ token, onNavigate }) {
+export default function IndividualCashFlowPage({ token, onNavigate, activeStandardKey = null }) {
 const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
   const subbody1Style = useTypo("subbody1");
@@ -1061,9 +1061,10 @@ const { access: resourceAccess } = useCurrentUserResourceAccess();
   const [cfMapping,      setCfMapping]      = useState([]);
   const [cfNameDict,     setCfNameDict]     = useState({});
 
-  const [pgcCfMapping,           setPgcCfMapping]           = useState(null);
+const [pgcCfMapping,           setPgcCfMapping]           = useState(null);
   const [danishIfrsCfMapping,    setDanishIfrsCfMapping]    = useState(null);
   const [spanishIfrsEsCfMapping, setSpanishIfrsEsCfMapping] = useState(null);
+  const [customCfMapping,        setCustomCfMapping]        = useState(null);
 
   const [year,      setYear]      = useState("");
   const [month,     setMonth]     = useState("");
@@ -1134,10 +1135,16 @@ fetch(`${BASE}/mapped-cashflow-accounts`, { headers: h }).then(r => r.json()).th
     return null;
   }, [cfMapping]);
 
-  const loadCfStandardMapping = (table_rows, table_sections, setter) => {
+const loadCfStandardMapping = (table_rows, table_sections, setter) => {
     const SB_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
     const SB_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
-    const sb = { apikey: SB_APIKEY, Authorization: `Bearer ${SB_APIKEY}` };
+    let sbToken = SB_APIKEY;
+    try {
+      const key = Object.keys(localStorage).find(k => k.includes("auth-token"));
+      const parsed = key ? JSON.parse(localStorage.getItem(key)) : null;
+      sbToken = parsed?.access_token ?? parsed?.data?.session?.access_token ?? SB_APIKEY;
+    } catch { /* fall back to publishable */ }
+    const sb = { apikey: SB_APIKEY, Authorization: `Bearer ${sbToken}` };
     Promise.all([
       fetch(`${SB_URL}/${table_rows}?select=*&order=sort_order.asc`,    { headers: sb }).then(r => r.json()),
       fetch(`${SB_URL}/${table_sections}?select=*&order=sort_order.asc`, { headers: sb }).then(r => r.json()),
@@ -1154,22 +1161,59 @@ fetch(`${BASE}/mapped-cashflow-accounts`, { headers: h }).then(r => r.json()).th
     }).catch(() => setter(null));
   };
 
+  // Loader for CUSTOM standards — uses the unified standard_statement_*
+  // tables filtered by (standard_key, statement=CF).
+  const loadCustomCfMapping = (standardKey, setter) => {
+    const SB_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
+    const SB_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
+    let sbToken = SB_APIKEY;
+    try {
+      const key = Object.keys(localStorage).find(k => k.includes("auth-token"));
+      const parsed = key ? JSON.parse(localStorage.getItem(key)) : null;
+      sbToken = parsed?.access_token ?? parsed?.data?.session?.access_token ?? SB_APIKEY;
+    } catch { /* fall back to publishable */ }
+    const sb = { apikey: SB_APIKEY, Authorization: `Bearer ${sbToken}` };
+    Promise.all([
+      fetch(`${SB_URL}/standard_statement_rows?select=*&standard_key=eq.${encodeURIComponent(standardKey)}&statement=eq.CF&order=sort_order.asc`, { headers: sb }).then(r => r.json()),
+      fetch(`${SB_URL}/standard_statement_sections?select=*&standard_key=eq.${encodeURIComponent(standardKey)}&statement=eq.CF&order=sort_order.asc`, { headers: sb }).then(r => r.json()),
+    ]).then(([rowsArr, secsArr]) => {
+      if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
+      const rows = new Map();
+      rowsArr.forEach(r => rows.set(String(r.account_code), {
+        section: String(r.section_code), sortOrder: Number(r.sort_order),
+        isSum: !!r.is_sum, showInSummary: !!r.show_in_summary, level: Number(r.level ?? 0),
+        parent_code: r.parent_code ? String(r.parent_code) : "",
+        account_name: r.account_name ?? "",
+      }));
+      const sections = new Map();
+      secsArr.forEach(s => sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) }));
+      setter({ rows, sections });
+    }).catch(() => setter(null));
+  };
+
+// When a CUSTOM standard is bound, it takes priority. Legacy sniff (cfStandard)
+  // still runs as fallback for clients on PGC / DanishIFRS / SpanishIFRS-ES.
+  const isCustomStandard = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+
+useEffect(() => {
+    if (!isCustomStandard) { setCustomCfMapping(null); return; }
+    loadCustomCfMapping(activeStandardKey, setCustomCfMapping);
+  }, [activeStandardKey, isCustomStandard]);
   useEffect(() => {
-    if (cfStandard !== "pgc")            { setPgcCfMapping(null); return; }
+    if (isCustomStandard || cfStandard !== "pgc") { setPgcCfMapping(null); return; }
     loadCfStandardMapping("pgc_cf_rows", "pgc_cf_sections", setPgcCfMapping);
-  }, [cfStandard]);
-
+  }, [cfStandard, isCustomStandard]);
   useEffect(() => {
-    if (cfStandard !== "danish_ifrs")    { setDanishIfrsCfMapping(null); return; }
+    if (isCustomStandard || cfStandard !== "danish_ifrs") { setDanishIfrsCfMapping(null); return; }
     loadCfStandardMapping("danish_ifrs_cf_rows", "danish_ifrs_cf_sections", setDanishIfrsCfMapping);
-  }, [cfStandard]);
-
+  }, [cfStandard, isCustomStandard]);
   useEffect(() => {
-    if (cfStandard !== "spanish_ifrs_es") { setSpanishIfrsEsCfMapping(null); return; }
+    if (isCustomStandard || cfStandard !== "spanish_ifrs_es") { setSpanishIfrsEsCfMapping(null); return; }
     loadCfStandardMapping("spanish_ifrs_es_cf_rows", "spanish_ifrs_es_cf_sections", setSpanishIfrsEsCfMapping);
-  }, [cfStandard]);
+  }, [cfStandard, isCustomStandard]);
 
-  const activeCfMapping = pgcCfMapping ?? danishIfrsCfMapping ?? spanishIfrsEsCfMapping;
+  // CUSTOM wins; then sniffed built-in.
+  const activeCfMapping = customCfMapping ?? pgcCfMapping ?? danishIfrsCfMapping ?? spanishIfrsEsCfMapping;
 
 // Probe removed — the data fetch itself walks back if it returns empty.
 

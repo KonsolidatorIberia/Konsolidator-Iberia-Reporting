@@ -6406,7 +6406,7 @@ const subbody2Style = useTypo("subbody2");
 const expandedMap = useMemo(() => externalExpandedMap ?? {}, [externalExpandedMap]);
 const setExpandedMap = externalSetExpandedMap ?? (() => {});
 const [hoveredDimRow, setHoveredDimRow] = useState(null);
-const [summaryMode, setSummaryMode] = useState(true);
+const [summaryMode, setSummaryMode] = useState(false);
 const [searchActive, setSearchActive] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const debouncedQuery = useDeferredValue(searchQuery);
@@ -9280,36 +9280,7 @@ style={{ color: !ytdOnly ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary
         {t("pl_ytd")}
       </button>
     </div>
-    <div className="relative flex items-center p-1 rounded-xl" style={{ backgroundColor: "rgba(255,255,255,0.1)" }}
-      ref={el => {
-        if (!el) return;
-        const btns = el.querySelectorAll("button");
-        const active = btns[summaryMode ? 1 : 0];
-        const pill = el.querySelector(".pl-pill-sum");
-        if (active && pill) {
-          pill.style.left = active.offsetLeft + "px";
-          pill.style.width = active.offsetWidth + "px";
-        }
-      }}>
-      <span className="pl-pill-sum" style={{
-        position: "absolute",
-        top: 4, bottom: 4,
-        backgroundColor: colors.quaternary ?? "#F59E0B",
-        borderRadius: 8,
-        transition: "left 0.25s cubic-bezier(0.4,0,0.2,1), width 0.25s cubic-bezier(0.4,0,0.2,1)",
-        pointerEvents: "none",
-      }} />
-      <button onClick={() => setSummaryMode(false)}
-        className="relative z-10 px-3 py-1.5 rounded-lg text-xs font-black transition-colors duration-200"
-style={{ color: !summaryMode ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}80` }}>
-        {t("pl_detailed")}
-      </button>
-      <button onClick={() => setSummaryMode(true)}
-        className="relative z-10 px-3 py-1.5 rounded-lg text-xs font-black transition-colors duration-200"
-        style={{ color: summaryMode ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary ?? "#F59E0B")}80` }}>
-        {t("pl_summary")}
-      </button>
-    </div>
+{/* PL Summary/Detailed toggle removed — always Detailed */}
   </div>
 </div>
 
@@ -9426,39 +9397,7 @@ style={{ color: !summaryMode ? (colors.primary ?? "#1a2f8a") : `${(colors.quater
           }
         </span>
       </button>
-<div className="relative flex items-center"
-        ref={el => {
-          if (!el) return;
-          const tabs = el.querySelectorAll("[data-pl-tab]");
-          const idx = summaryMode ? 0 : 1;
-          const active = tabs[idx];
-          const indicator = el.querySelector(".pl-view-indicator");
-          if (active && indicator) {
-            indicator.style.left = active.offsetLeft + "px";
-            indicator.style.width = active.offsetWidth + "px";
-          }
-        }}>
-        <span className="pl-view-indicator" style={{
-          position: "absolute", bottom: -4, height: 2,
-          background: colors.primary, borderRadius: 1,
-          transition: "left 320ms cubic-bezier(0.34, 1.56, 0.64, 1), width 320ms cubic-bezier(0.34, 1.56, 0.64, 1)",
-          pointerEvents: "none",
-        }} />
-{[["summary","Summary"],["detailed","Detailed"]].map(([v, label]) => {
-          const active = (v === "summary" && summaryMode) || (v === "detailed" && !summaryMode);
-          return (
-            <button key={v} data-pl-tab onClick={() => setSummaryMode(v === "summary")}
-              className="px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] whitespace-nowrap"
-              style={{
-                background: "transparent",
-                color: active ? colors.primary : "#94a3b8",
-                transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)",
-              }}>
-              {label}
-            </button>
-          );
-        })}
-      </div>
+{/* PL Summary/Detailed toggle removed — always Detailed */}
       {compareMode && (
         <>
           <div style={{ width: 1, height: 18, background: "#e5e7eb", flexShrink: 0 }} />
@@ -10310,12 +10249,15 @@ const PL_HIGHLIGHTED_CODES = new Set([
    nodes + "breaker" section dividers) and flattens it into the
    shape PLStatement / BalanceSheet already expect for pgcMapping.
 ═══════════════════════════════════════════════════════════════ */
-function normalizeBSSectionCode(label) {
-  const lc = String(label || "").toLowerCase();
-  if (/(activo|asset)/.test(lc))            return "ACTIVO";
-  if (/(pasivo|liabilit)/.test(lc))         return "PASIVO";
-  if (/(patrimonio|equity|net\s*worth)/.test(lc)) return "PATRIMONIO";
-  return null;
+// Normalize BS section codes — CUSTOM standards use NCA/CA/EQ/NCL/CL,
+// legacy PGC uses ACTIVO/PASIVO/PATRIMONIO. Returns a canonical family
+// ("assets" | "liab_equity") so filter logic works regardless of which
+// naming convention the current mapping uses.
+function bsSectionFamily(sectionCode) {
+  const s = String(sectionCode || "").toUpperCase();
+  if (s === "ACTIVO" || s === "NCA" || s === "CA") return "assets";
+  if (s === "PASIVO" || s === "PATRIMONIO" || s === "EQ" || s === "NCL" || s === "CL") return "liab_equity";
+  return "unknown";
 }
 
 // Standard-mapping converter (code-keyed). Kept untouched for the
@@ -10924,7 +10866,7 @@ const getBsValForCompany = useCallback((code, company) => {
   const raw = sumNode(node);
   if (pgcBsMapping?.rows) {
     const m = pgcBsMapping.rows.get(String(code));
-    if (m && (m.section === "PASIVO" || m.section === "PATRIMONIO")) return -raw;
+    if (m && bsSectionFamily(m.section) === "liab_equity") return -raw;
     return raw;
   }
   return Number(code) >= 599999 ? -raw : raw;
@@ -11621,9 +11563,9 @@ function renderBSRows(nodes) {
 const flatNodes = bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes;
     if (!flatNodes) return rows;
 
-    const isPGC_BS = (code) => {
+const isPGC_BS = (code) => {
       const m = pgcBsMapping.rows.get(String(code));
-      return m && (m.section === "PASIVO" || m.section === "PATRIMONIO");
+      return m && bsSectionFamily(m.section) === "liab_equity";
     };
 
     const flatByCode = new Map(flatNodes.map(n => [String(n.code), n]));
@@ -11944,11 +11886,12 @@ const getBSHistVal = useCallback((h, code) => {
 }, []);
 
 // PGC mapping: ordered list of nodes — filtered by active tab (summary/assets/equity)
-  const sectionFilterForView = useCallback((info) => {
-    if (bsView === "assets") return info.section === "ACTIVO";
-    if (bsView === "equity") return info.section === "PATRIMONIO" || info.section === "PASIVO";
+const sectionFilterForView = useCallback((info) => {
+    const fam = bsSectionFamily(info.section);
+    if (bsView === "assets") return fam === "assets";
+    if (bsView === "equity") return fam === "liab_equity";
     return true; // summary tab: no section filter (uses showInSummary instead)
-  }, [bsView]);
+}, [bsView]);
 
   const bsPgcSummaryNodes = useMemo(() => {
     if (!pgcBsMapping?.rows) return null;
@@ -12194,6 +12137,53 @@ const effectiveBreakersBs = useMemo(() => {
   };
   rootsInFlat.forEach(walk);
 
+// In Summary view, group top-level roll-ups by BS FAMILY (assets vs
+  // liab+equity) — this handles CUSTOM standards where grand totals have
+  // section_code=null. Section-specific breakers only make sense in the
+  // Assets and Equity+Liabilities sub-views, where all rows share one family.
+  if (bsView === "summary") {
+    const seenFam = new Set();
+    const out = {};
+    const familyLabel = (fam) => fam === "assets"
+      ? (t?.("bs_family_assets") || "ACTIVOS")
+      : fam === "liab_equity"
+        ? (t?.("bs_family_liab_equity") || "PATRIMONIO Y PASIVO")
+        : null;
+    // Compute the family of a node: use its own section if set, else infer
+    // from its descendant leaves (in the flat list) via bsSectionFamily().
+    const familyOfNode = (node) => {
+      const m = pgcBsMapping.rows.get(String(node.code));
+      const fam = bsSectionFamily(m?.section);
+      if (fam !== "unknown") return fam;
+      // Node has section_code=null (grand total) — infer from first
+      // descendant-in-flat that has a known family.
+      const stack = [...(childrenInFlat.get(String(node.code)) || [])];
+      while (stack.length) {
+        const child = stack.shift();
+        const cm = pgcBsMapping.rows.get(String(child.code));
+        const cf = bsSectionFamily(cm?.section);
+        if (cf !== "unknown") return cf;
+        stack.push(...(childrenInFlat.get(String(child.code)) || []));
+      }
+      return "unknown";
+    };
+    let i = 0;
+    for (const node of renderOrder) {
+      const fam = familyOfNode(node);
+      if (fam === "unknown") continue;
+      if (seenFam.has(fam)) continue;
+      seenFam.add(fam);
+      const label = familyLabel(fam);
+      if (label) {
+        out[String(node.code)] = { label, color: palette[i] ?? colors.primary };
+        i++;
+      }
+    }
+    return out;
+  }
+
+  // Non-summary views (Assets, Equity+Liabilities): breakers per section
+  // as before — since sectionFilterForView already restricts to one family.
   const seenSec = new Set();
   const out = {};
   let i = 0;
@@ -12209,7 +12199,7 @@ const effectiveBreakersBs = useMemo(() => {
     }
   }
   return out;
-}, [pgcBsMapping, breakers, bsView, bsPgcSummaryNodes, bsPgcAllSumNodes, groupAccounts, colors]);
+}, [pgcBsMapping, breakers, bsView, bsPgcSummaryNodes, bsPgcAllSumNodes, groupAccounts, colors, t]);
 
 const getNodeValue = (tree, code) => {
     const find = (nodes) => {
@@ -12232,9 +12222,9 @@ function renderBSCompareRows(nodes, cmpTree, cmp2Tree, cmp3Tree) {
       const flatNodes = bsView === "summary" ? bsPgcSummaryNodes : bsPgcAllSumNodes;
       if (!flatNodes) return rows;
 
-      const isPGC_BS = (code) => {
+const isPGC_BS = (code) => {
         const m = pgcBsMapping.rows.get(String(code));
-        return m && (m.section === "PASIVO" || m.section === "PATRIMONIO");
+        return m && bsSectionFamily(m.section) === "liab_equity";
       };
 
       const flatByCode = new Map(flatNodes.map(n => [String(n.code), n]));
@@ -13960,7 +13950,7 @@ function useAnimatedNumber(target, duration = 800) {
   return display;
 }
 
-const AccountsDashboard = React.memo(function AccountsDashboard({ token, onNavigate, sources = [], structures = [], companies = [], dimensions = [] }) {
+const AccountsDashboard = React.memo(function AccountsDashboard({ token, onNavigate, sources = [], structures = [], companies = [], dimensions = [], activeStandardKey = null }) {
 const { colors } = useSettings();
 const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();
 const TABS = useTabs();
@@ -14206,15 +14196,10 @@ const isDanish      = !isPGC && !isSpanishIFRS && !isSpanishIfrsEs && grpData.so
 .catch(() => { breakersFetchedRef.current = false; });
 }, [grpData]);
 
-// ── PGC: load the new 3-section mapping (pgc_pl_rows + pgc_pl_sections) ──
+// ── Load PL section mapping: unified standard_statement_rows for CUSTOM
+// standards; legacy pgc_pl_rows fallback for anything else (sniffed).
 useEffect(() => {
   if (!grpData.length) { setPgcMapping(null); return; }
-
-  const isPGC = grpData.some(n => {
-    const c = String(n.accountCode ?? n.AccountCode ?? "");
-    return /[a-zA-Z]/.test(c) && c.endsWith(".S");
-  });
-  if (!isPGC) { setPgcMapping(null); return; }
 
   const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
   const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
@@ -14223,13 +14208,34 @@ useEffect(() => {
     Authorization: `Bearer ${SUPABASE_APIKEY}`,
   };
 
+  const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+
+  // Fall back to the old PGC-sniff when there's no bound custom standard.
+  // (KPI resolver in HomePage already handles the full built-in matrix;
+  // this loader only needs to feed section labels/colors, which are
+  // identical across PGC/DanishIFRS/SpanishIFRS-ES in the legacy tables.)
+  if (!isCustom) {
+    const isPGC = grpData.some(n => {
+      const c = String(n.accountCode ?? n.AccountCode ?? "");
+      return /[a-zA-Z]/.test(c) && c.endsWith(".S");
+    });
+    if (!isPGC) { setPgcMapping(null); return; }
+  }
+
+  const rowsUrl = isCustom
+    ? `${SUPABASE_URL}/standard_statement_rows?select=*&standard_key=eq.${encodeURIComponent(activeStandardKey)}&statement=eq.PL&order=sort_order.asc`
+    : `${SUPABASE_URL}/pgc_pl_rows?select=*&order=sort_order.asc`;
+  const secsUrl = isCustom
+    ? `${SUPABASE_URL}/standard_statement_sections?select=*&standard_key=eq.${encodeURIComponent(activeStandardKey)}&statement=eq.PL&order=sort_order.asc`
+    : `${SUPABASE_URL}/pgc_pl_sections?select=*&order=sort_order.asc`;
+
   Promise.all([
-    fetch(`${SUPABASE_URL}/pgc_pl_rows?select=*&order=sort_order.asc`,    { headers: sbHeaders }).then(r => r.json()),
-    fetch(`${SUPABASE_URL}/pgc_pl_sections?select=*&order=sort_order.asc`, { headers: sbHeaders }).then(r => r.json()),
+    fetch(rowsUrl, { headers: sbHeaders }).then(r => r.json()),
+    fetch(secsUrl, { headers: sbHeaders }).then(r => r.json()),
   ])
-.then(([rowsArr, secsArr]) => {
+    .then(([rowsArr, secsArr]) => {
       if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
-const rows = new Map();
+      const rows = new Map();
       const names = new Map();
       rowsArr.forEach(r => {
         rows.set(String(r.account_code), {
@@ -14238,27 +14244,22 @@ const rows = new Map();
           isSum:         !!r.is_sum,
           showInSummary: !!r.show_in_summary,
         });
-       const localizedName = r[`account_name_${locale}`] || r.account_name;
+        const localizedName = r[`account_name_${locale}`] || r.account_name;
         if (localizedName) names.set(String(r.account_code), String(localizedName));
       });
       const sections = new Map();
       secsArr.forEach(s => {
         sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) });
       });
-setPgcMapping({ rows, sections, names });
+      setPgcMapping({ rows, sections, names });
     })
     .catch(() => setPgcMapping(null));
-}, [grpData, locale]);
+}, [grpData, locale, activeStandardKey]);
 
-// ── PGC: load the new 3-section BALANCE SHEET mapping(pgc_bs_rows + pgc_bs_sections) ──
+// ── Load BS section mapping: unified standard_statement_rows for CUSTOM,
+// legacy pgc_bs_rows fallback for anything else (sniffed).
 useEffect(() => {
   if (!grpData.length) { setPgcBsMapping(null); return; }
-
-  const isPGC = grpData.some(n => {
-    const c = String(n.accountCode ?? n.AccountCode ?? "");
-    return /[a-zA-Z]/.test(c) && c.endsWith(".S");
-  });
-  if (!isPGC) { setPgcBsMapping(null); return; }
 
   const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
   const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
@@ -14267,13 +14268,30 @@ useEffect(() => {
     Authorization: `Bearer ${SUPABASE_APIKEY}`,
   };
 
+  const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+
+  if (!isCustom) {
+    const isPGC = grpData.some(n => {
+      const c = String(n.accountCode ?? n.AccountCode ?? "");
+      return /[a-zA-Z]/.test(c) && c.endsWith(".S");
+    });
+    if (!isPGC) { setPgcBsMapping(null); return; }
+  }
+
+  const rowsUrl = isCustom
+    ? `${SUPABASE_URL}/standard_statement_rows?select=*&standard_key=eq.${encodeURIComponent(activeStandardKey)}&statement=eq.BS&order=sort_order.asc`
+    : `${SUPABASE_URL}/pgc_bs_rows?select=*&order=sort_order.asc`;
+  const secsUrl = isCustom
+    ? `${SUPABASE_URL}/standard_statement_sections?select=*&standard_key=eq.${encodeURIComponent(activeStandardKey)}&statement=eq.BS&order=sort_order.asc`
+    : `${SUPABASE_URL}/pgc_bs_sections?select=*&order=sort_order.asc`;
+
   Promise.all([
-    fetch(`${SUPABASE_URL}/pgc_bs_rows?select=*&order=sort_order.asc`,    { headers: sbHeaders }).then(r => r.json()),
-    fetch(`${SUPABASE_URL}/pgc_bs_sections?select=*&order=sort_order.asc`, { headers: sbHeaders }).then(r => r.json()),
+    fetch(rowsUrl, { headers: sbHeaders }).then(r => r.json()),
+    fetch(secsUrl, { headers: sbHeaders }).then(r => r.json()),
   ])
     .then(([rowsArr, secsArr]) => {
       if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
-const rows = new Map();
+      const rows = new Map();
       const names = new Map();
       rowsArr.forEach(r => {
         rows.set(String(r.account_code), {
@@ -14284,16 +14302,29 @@ const rows = new Map();
           level:         Number(r.level ?? 0),
         });
         const localizedName = r[`account_name_${locale}`] || r.account_name;
-if (localizedName) names.set(String(r.account_code), String(localizedName));
+        if (localizedName) names.set(String(r.account_code), String(localizedName));
       });
       const sections = new Map();
       secsArr.forEach(s => {
         sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) });
       });
-setPgcBsMapping({ rows, sections, names });
+      setPgcBsMapping({ rows, sections, names });
     })
-    .catch(() => setPgcBsMapping(null));
-}, [grpData, locale]);
+.catch(() => setPgcBsMapping(null));
+}, [grpData, locale, activeStandardKey]);
+
+// Normalize BS section codes — CUSTOM standards use NCA/CA/EQ/NCL/CL,
+// legacy PGC uses ACTIVO/PASIVO/PATRIMONIO. This helper returns a
+// canonical family ("assets" | "liab_equity") so filter logic works
+// regardless of which naming convention the current mapping uses.
+const bsSectionFamily = useCallback((sectionCode) => {
+  const s = String(sectionCode || "").toUpperCase();
+  // Assets side
+  if (s === "ACTIVO" || s === "NCA" || s === "CA") return "assets";
+  // Liabilities + Equity side
+  if (s === "PASIVO" || s === "PATRIMONIO" || s === "EQ" || s === "NCL" || s === "CL") return "liab_equity";
+  return "unknown";
+}, []);
 
 // ── Danish IFRS: load PL mapping(danish_ifrs_pl_rows + danish_ifrs_pl_sections) ──
 useEffect(() => {

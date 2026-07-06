@@ -30,13 +30,68 @@ const BASE_URL = "";
 const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
 const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
 
-const SB_HEADERS = {
-  apikey:        SUPABASE_APIKEY,
-  Authorization: `Bearer ${SUPABASE_APIKEY}`,
-};
-const sbGet = (path) =>
-  fetch(`${SUPABASE_URL}/${path}`, { headers: SB_HEADERS }).then(r => r.json());
+// Grab the user's live JWT so RLS policies see auth.uid() correctly.
+// Falls back to the publishable key when no session (safe for public tables).
+function getSbAuthToken() {
+  try {
+    const key = Object.keys(localStorage).find(k => k.includes("auth-token"));
+    if (!key) return null;
+    const parsed = JSON.parse(localStorage.getItem(key));
+    return parsed?.access_token ?? parsed?.data?.session?.access_token ?? null;
+  } catch { return null; }
+}
 
+// Paginated fetch — PostgREST caps individual responses at 1000 rows
+// regardless of Range header. Standard tables can exceed this (Konsolidator
+// alone has 1169). Fetch in 1000-row pages and concatenate.
+const sbGet = async (path) => {
+  const token = getSbAuthToken();
+  const baseHeaders = {
+    apikey: SUPABASE_APIKEY,
+    Authorization: `Bearer ${token ?? SUPABASE_APIKEY}`,
+    // Ask PostgREST for exact total count so pagination termination works
+    // even with wildcard content-range responses.
+    Prefer: "count=exact",
+  };
+
+  const PAGE = 1000;
+  const all = [];
+  let offset = 0;
+
+  for (let safety = 0; safety < 20; safety++) {
+    const rangeEnd = offset + PAGE - 1;
+    const res = await fetch(`${SUPABASE_URL}/${path}`, {
+      headers: { ...baseHeaders, Range: `${offset}-${rangeEnd}` },
+    });
+    const chunk = await res.json();
+    if (!Array.isArray(chunk)) return chunk;
+    all.push(...chunk);
+    // Fallback: if we got less than PAGE rows, we're done regardless of headers.
+    if (chunk.length < PAGE) break;
+    const cr = res.headers.get("content-range");
+    if (!cr) break;
+    const parts = cr.split("/");
+    const total = parseInt(parts[1], 10);
+    if (!isNaN(total) && all.length >= total) break;
+    offset += PAGE;
+  }
+
+  return all;
+};
+
+// Basic headers helper for one-off fetches that don't use sbGet's pagination
+// (e.g. limit=1 queries where a single row is expected). Uses the same auth
+// pattern as sbGet so RLS policies see the user's JWT.
+const sbHeaders = () => {
+  const token = getSbAuthToken();
+  return {
+    apikey: SUPABASE_APIKEY,
+    Authorization: `Bearer ${token ?? SUPABASE_APIKEY}`,
+  };
+};
+
+// Code-pattern sniff — used as fallback when company_active_standard has
+// no row bound to the current company. Kept exported for legacy callers.
 function detectStandard(groupAccounts) {
   if (!groupAccounts?.length) return null;
   const codes = [];
@@ -58,41 +113,33 @@ function detectStandard(groupAccounts) {
   return null;
 }
 
-const STANDARD_TO_PL_TABLE = {
-  PGC: "pgc_pl_rows",
-  DanishIFRS: "danish_ifrs_pl_rows",
-  "SpanishIFRS-ES": "spanish_ifrs_es_pl_rows",
-};
-const STANDARD_TO_BS_TABLE = {
-  PGC: "pgc_bs_rows",
-  DanishIFRS: "danish_ifrs_bs_rows",
-  "SpanishIFRS-ES": "spanish_ifrs_es_bs_rows",
-};
-const STANDARD_TO_SECTION_TABLE = {
-  PGC: "pgc_pl_sections",
-  DanishIFRS: "danish_ifrs_pl_sections",
-  "SpanishIFRS-ES": "spanish_ifrs_es_pl_sections",
-};
+// The old per-standard tables (pgc_pl_rows, danish_ifrs_pl_rows, ...)
+// have been unified into public.standard_statement_rows +
+// public.standard_statement_sections. loadStandardMapping() now queries
+// those directly, keyed by (standard_key, statement).
 
-async function loadStandardMapping(standard, groupAccounts) {
-  const plTable = STANDARD_TO_PL_TABLE[standard];
-  const bsTable = STANDARD_TO_BS_TABLE[standard];
-if (!plTable) return null;
+async function loadStandardMapping(standard, groupAccounts, skipCache = false) {
+  if (!standard) return null;
 
-  const cacheKey = `resolver_mapping_${standard}_${(groupAccounts || []).length}`;
-  try {
-    const cached = sessionStorage.getItem(cacheKey);
-    if (cached) {
-      const { cc, sc } = JSON.parse(cached);
-      return { ccTagToCodes: new Map(cc), sectionCodes: new Map(sc) };
-    }
-  } catch { /* re-fetch */ }
+  const cacheKey = `resolver_mapping_v2_${standard}_${(groupAccounts || []).length}`;
+  if (!skipCache) {
+    try {
+      const cached = sessionStorage.getItem(cacheKey);
+      if (cached) {
+        const { cc, sc } = JSON.parse(cached);
+        return { ccTagToCodes: new Map(cc), sectionCodes: new Map(sc) };
+      }
+    } catch { /* re-fetch */ }
+  }
 
-  const [plRows, bsRows] = await Promise.all([
-    sbGet(`${plTable}?select=account_code,account_name,section_code,parent_code,is_sum,cc_tag`),
-    sbGet(`${bsTable}?select=account_code,account_name,section_code,parent_code,is_sum,cc_tag`).catch(() => []),
-  ]);
-  const allRows = [...(Array.isArray(plRows) ? plRows : []), ...(Array.isArray(bsRows) ? bsRows : [])];
+  // Unified schema: one table, filter by standard_key + statement.
+  // PL and BS both carry cc_tag / section_code / parent_code needed here.
+  const rows = await sbGet(
+    `standard_statement_rows?select=account_code,account_name,section_code,parent_code,is_sum,cc_tag` +
+    `&standard_key=eq.${encodeURIComponent(standard)}` +
+    `&statement=in.(PL,BS)`
+  );
+  const allRows = Array.isArray(rows) ? rows : [];
 
   const codeCcTag = new Map();
   const codeSection = new Map();
@@ -142,38 +189,64 @@ if (foundTag) {
   }
 
 
-try {
-    sessionStorage.setItem(cacheKey, JSON.stringify({
-      cc: [...ccTagToCodes.entries()],
-      sc: [...sectionCodes.entries()],
-    }));
-  } catch { /* storage full or unavailable */ }
+if (!skipCache) {
+    try {
+      sessionStorage.setItem(cacheKey, JSON.stringify({
+        cc: [...ccTagToCodes.entries()],
+        sc: [...sectionCodes.entries()],
+      }));
+    } catch { /* storage full or unavailable */ }
+  }
   return { ccTagToCodes, sectionCodes };
 }
 
 async function loadKpiLibrary(standard, companyId) {
-  const cacheKey = `resolver_library_${standard}_${companyId ?? "none"}`;
+  // Don't cache when companyId is null — that's a transient first-render
+  // state that would otherwise poison the cache for the whole session.
+  if (!companyId) {
+    const [defs, standardOverrides] = await Promise.all([
+      sbGet("kpi_definitions?select=*&order=sort_order.asc"),
+      standard
+        ? sbGet(`kpi_definitions_override?select=*&standard=eq.${encodeURIComponent(standard)}&company_id=is.null`)
+        : Promise.resolve([]),
+    ]);
+    if (!Array.isArray(defs)) return [];
+    const overrideByKpi = new Map();
+    if (Array.isArray(standardOverrides)) standardOverrides.forEach(o => overrideByKpi.set(o.kpi_id, o.formula));
+    return defs.map(d => ({
+      id: d.id, label: d.label, description: d.description ?? "",
+      category: d.category ?? "", format: d.format ?? "currency",
+      tag: d.tag ?? "", benchmark: d.benchmark ?? null,
+      formula: overrideByKpi.get(d.id) ?? d.formula, isCustom: false,
+    }));
+  }
+
+  const cacheKey = `resolver_library_v2_${standard}_${companyId}`;
   try {
     const cached = sessionStorage.getItem(cacheKey);
     if (cached) return JSON.parse(cached);
   } catch { /* re-fetch */ }
 
-  const [defs, overrides, custom] = await Promise.all([
+  // Pull: base defs, standard-level overrides, per-company overrides, custom KPIs
+  const [defs, standardOverrides, companyOverrides, custom] = await Promise.all([
     sbGet("kpi_definitions?select=*&order=sort_order.asc"),
     standard
-      ? sbGet(`kpi_definitions_override?select=*&standard=eq.${encodeURIComponent(standard)}`)
+      ? sbGet(`kpi_definitions_override?select=*&standard=eq.${encodeURIComponent(standard)}&company_id=is.null`)
+      : Promise.resolve([]),
+    companyId
+      ? sbGet(`kpi_definitions_override?select=*&company_id=eq.${encodeURIComponent(companyId)}`)
       : Promise.resolve([]),
     companyId
       ? sbGet(`company_kpis?select=*&company_id=eq.${encodeURIComponent(companyId)}&is_archived=eq.false`)
       : Promise.resolve([]),
   ]);
 
-if (!Array.isArray(defs)) return [];
+  if (!Array.isArray(defs)) return [];
 
+  // Resolution order: per-company override > standard override > base
   const overrideByKpi = new Map();
-  if (Array.isArray(overrides)) {
-    overrides.forEach(o => overrideByKpi.set(o.kpi_id, o.formula));
-  }
+  if (Array.isArray(standardOverrides)) standardOverrides.forEach(o => overrideByKpi.set(o.kpi_id, o.formula));
+  if (Array.isArray(companyOverrides))  companyOverrides .forEach(o => overrideByKpi.set(o.kpi_id, o.formula));
 
   const standardKpis = defs.map(d => ({
     id:          d.id,
@@ -211,9 +284,30 @@ const result = [...standardKpis, ...customKpis];
   return result;
 }
 
-function useResolvedKpiList(groupAccounts, companyId) {
-  const standard = useMemo(() => detectStandard(groupAccounts), [groupAccounts]);
+// Async standard resolver:
+//   1. If the company has an entry in public.company_active_standard,
+//      use that standard_key (works for custom clients like 'ACME-<uuid>').
+//   2. Otherwise fall back to the code-pattern sniff (built-in standards).
+// Resolve the standard for a company:
+//   1. If companyId is known → check binding. If found, return it. If not found, sniff.
+//   2. If companyId is null (settings still loading) → return null so the resolver waits
+//      instead of falling to sniff (which would poison the cache for the session).
+async function resolveStandardKey(companyId, groupAccounts, preResolvedKey) {
+  // If EpicLoader already fetched the binding, use it (no roundtrip).
+  if (preResolvedKey) return preResolvedKey;
+  if (companyId) {
+    try {
+      const rows = await sbGet(
+        `company_active_standard?select=standard_key&company_id=eq.${companyId}`
+      );
+      const boundKey = Array.isArray(rows) && rows[0]?.standard_key;
+      if (boundKey) return boundKey;
+    } catch { /* fall through to sniff */ }
+  }
+  return detectStandard(groupAccounts);
+}
 
+function useResolvedKpiList(groupAccounts, companyId, preResolvedStandardKey) {
   const [state, setState] = useState({
     kpiList:      [],
     ccTagToCodes: new Map(),
@@ -225,32 +319,44 @@ function useResolvedKpiList(groupAccounts, companyId) {
 
   useEffect(() => {
     let cancelled = false;
-if (!standard) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setState(s => ({ ...s, ready: true, kpiList: [], standard: null }));
-      return;
-    }
-setState(s => ({ ...s, ready: false, error: null }));
+    setState(s => ({ ...s, ready: false, error: null }));
 
-    Promise.all([loadStandardMapping(standard, groupAccounts), loadKpiLibrary(standard, companyId)])
-      .then(([{ ccTagToCodes, sectionCodes }, fullKpiList]) => {
+(async () => {
+const standard = await resolveStandardKey(companyId, groupAccounts, preResolvedStandardKey);
+      if (cancelled) return;
+
+      if (!standard) {
+        setState(s => ({ ...s, ready: true, kpiList: [], standard: null }));
+        return;
+      }
+
+      // Only allow caching when we know for sure which tenant we're serving.
+      // Pass `skipCache=true` when companyId is null so the fallback-sniff
+      // result doesn't poison the cache for the whole session.
+      const skipCache = !companyId;
+      try {
+        const [mapping, fullKpiList] = await Promise.all([
+          loadStandardMapping(standard, groupAccounts, skipCache),
+          loadKpiLibrary(standard, companyId),
+        ]);
         if (cancelled) return;
+        const { ccTagToCodes, sectionCodes } = mapping ?? { ccTagToCodes: new Map(), sectionCodes: new Map() };
         setState({
-          kpiList:       fullKpiList,    // FULL list — HomePage picks heros by id
+          kpiList:       fullKpiList,
           ccTagToCodes,
           sectionCodes,
           standard,
           ready:         true,
           error:         null,
         });
-      })
-.catch(e => {
+      } catch (e) {
         if (cancelled) return;
         setState(s => ({ ...s, ready: true, error: String(e?.message ?? e) }));
-      });
+      }
+    })();
 
 return () => { cancelled = true; };
-  }, [standard, groupAccounts, companyId]);
+  }, [groupAccounts, companyId, preResolvedStandardKey]);
 
   return state;
 }
@@ -1770,7 +1876,11 @@ const { data: rows } = await supabase
 const {
     kpiList: kpiListSystem, ccTagToCodes, sectionCodes, standard: detectedStandard,
     ready: resolverReady,
-  } = useResolvedKpiList(groupAccounts, settingsCompanyId);
+  } = useResolvedKpiList(groupAccounts, settingsCompanyId, initialData?.activeStandardKey);
+
+  // viewScope must be declared before any effect that reads it.
+  const [viewScope, setViewScope] = useState("consolidated"); // "consolidated" | "individual"
+
 const [companyKpis, setCompanyKpis] = useState([]);
   useEffect(() => {
     (async () => {
@@ -1785,12 +1895,18 @@ const [companyKpis, setCompanyKpis] = useState([]);
         const companyId = await getActiveCompanyId(uid);
         if (!companyId) return;
 
-const res = await fetch(
-          `${SUPABASE_URL}/company_kpis?company_id=eq.${companyId}&is_archived=eq.false&kpi_type=eq.custom&select=*`,
+        // Scope-aware fetch: individual view → individual+shared,
+        // consolidated view → consolidated+shared.
+        const scopeFilter = viewScope === "consolidated"
+          ? "scope=in.(consolidated,shared)"
+          : "scope=in.(individual,shared)";
+
+        const res = await fetch(
+          `${SUPABASE_URL}/company_kpis?company_id=eq.${companyId}&is_archived=eq.false&kpi_type=eq.custom&${scopeFilter}&select=*`,
           { headers: { apikey: SUPABASE_APIKEY, Authorization: `Bearer ${jwt}` } }
         );
         const rows = await res.json();
-        if (!Array.isArray(rows) || !rows.length) return;
+        if (!Array.isArray(rows) || !rows.length) { setCompanyKpis([]); return; }
         setCompanyKpis(rows.map(d => {
           let formula = d.formula;
           if (typeof formula === "string") { try { formula = JSON.parse(formula); } catch { formula = null; } }
@@ -1808,7 +1924,7 @@ const res = await fetch(
         }).filter(k => k.id && k.label));
       } catch { /* non-critical */ }
     })();
-  }, [userId]);
+  }, [userId, viewScope]);
 
   // Merge — shadow kpiList so every existing reference picks up custom KPIs
   const kpiList = useMemo(() => {
@@ -1818,9 +1934,14 @@ const res = await fetch(
 
 const { setDetectedLocale } = useSettingsControls();
 
-  // ── KPI slot configuration ───────────────────────────────────────
+// ── KPI slot configuration ───────────────────────────────────────
   const DEFAULT_SLOTS = ["revenue", "ebitda", "ebit", "net_result"];
-  const [kpiSlots, setKpiSlots]     = useState(DEFAULT_SLOTS);
+  // Keep BOTH scope slot lists in state so switching is instant and each
+  // scope remembers its own last selection independently.
+  const [slotsIndividual,   setSlotsIndividual]   = useState(DEFAULT_SLOTS);
+  const [slotsConsolidated, setSlotsConsolidated] = useState(DEFAULT_SLOTS);
+  const kpiSlots    = viewScope === "consolidated" ? slotsConsolidated : slotsIndividual;
+  const setKpiSlots = viewScope === "consolidated" ? setSlotsConsolidated : setSlotsIndividual;
  const [editingSlot, setEditingSlot]     = useState(null);   // 0-3 | null
   const [trendWindow, setTrendWindow]     = useState(24);      // 12 | 24 | 36 | 48 months
   const [trendInterval, setTrendInterval] = useState("monthly"); // monthly | 6months | yearly
@@ -1838,7 +1959,9 @@ const { setDetectedLocale } = useSettingsControls();
     return () => document.removeEventListener("mousedown", handler);
   }, [trendChipOpen]);
 
-  // Load saved slots from user_settings.preferences
+// Load saved slots from user_settings.preferences (per scope).
+  // Back-compat: if the legacy `home_kpi_slots` key exists, seed BOTH
+  // scopes from it, then rely on scope-specific keys going forward.
   useEffect(() => {
     if (!userId) return;
     (async () => {
@@ -1847,13 +1970,19 @@ const { setDetectedLocale } = useSettingsControls();
         .select("preferences")
         .eq("user_id", userId)
         .single();
-      if (data?.preferences?.home_kpi_slots?.length === 4) {
-        setKpiSlots(data.preferences.home_kpi_slots);
-      }
+      const prefs = data?.preferences ?? {};
+      const legacy = Array.isArray(prefs.home_kpi_slots) && prefs.home_kpi_slots.length === 4
+        ? prefs.home_kpi_slots : null;
+      const ind = Array.isArray(prefs.home_kpi_slots_individual)   && prefs.home_kpi_slots_individual.length   === 4
+        ? prefs.home_kpi_slots_individual   : (legacy ?? DEFAULT_SLOTS);
+      const con = Array.isArray(prefs.home_kpi_slots_consolidated) && prefs.home_kpi_slots_consolidated.length === 4
+        ? prefs.home_kpi_slots_consolidated : (legacy ?? DEFAULT_SLOTS);
+      setSlotsIndividual(ind);
+      setSlotsConsolidated(con);
     })();
   }, [userId]);
 
-  const saveKpiSlots = useCallback(async (slots) => {
+const saveKpiSlots = useCallback(async (slots, scope) => {
     if (!userId) return;
     const { data } = await supabase
       .from("user_settings")
@@ -1861,9 +1990,10 @@ const { setDetectedLocale } = useSettingsControls();
       .eq("user_id", userId)
       .single();
     const current = data?.preferences ?? {};
+    const key = scope === "consolidated" ? "home_kpi_slots_consolidated" : "home_kpi_slots_individual";
     await supabase.from("user_settings").upsert({
       user_id: userId,
-      preferences: { ...current, home_kpi_slots: slots },
+      preferences: { ...current, [key]: slots },
       updated_at: new Date().toISOString(),
     });
   }, [userId]);
@@ -1872,9 +2002,25 @@ const { setDetectedLocale } = useSettingsControls();
     const next = [...kpiSlots];
     next[slotIdx] = kpiId;
     setKpiSlots(next);
-    saveKpiSlots(next);
+    saveKpiSlots(next, viewScope);
     setEditingSlot(null);
-  }, [kpiSlots, saveKpiSlots]);
+  }, [kpiSlots, setKpiSlots, saveKpiSlots, viewScope]);
+
+// When scope changes, any slot ID that isn't present in the (new)
+  // kpiList — because it was a custom KPI scoped to the other view —
+  // falls back to a default so cards never render empty.
+  useEffect(() => {
+    if (!resolverReady || kpiList.length === 0) return;
+    const validIds = new Set(kpiList.map(k => k.id));
+    const patched = kpiSlots.map((id, i) =>
+      validIds.has(id) ? id : (DEFAULT_SLOTS[i] ?? DEFAULT_SLOTS[0])
+    );
+    if (patched.some((id, i) => id !== kpiSlots[i])) {
+      setKpiSlots(patched);
+      saveKpiSlots(patched, viewScope);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewScope, kpiList, resolverReady]);
 
   // Visual config per slot (colours stay fixed, icons stay fixed)
   const SLOT_COLORS = useMemo(() => [
@@ -1904,7 +2050,7 @@ const { setDetectedLocale } = useSettingsControls();
         const { data } = await supabase.from("user_settings").select("preferences").eq("user_id", userId).single();
         const mid = data?.preferences?.standard_mapping_id;
         if (!mid) return;
-        const res = await fetch(`${SUPABASE_URL}/mappings?mapping_id=eq.${mid}&select=*&limit=1`, { headers: SB_HEADERS });
+        const res = await fetch(`${SUPABASE_URL}/mappings?mapping_id=eq.${mid}&select=*&limit=1`, { headers: sbHeaders() });
         const rows = await res.json();
         if (Array.isArray(rows) && rows[0]) setStandardMappingData(rows[0]);
       } catch { /* non-critical */ }
@@ -1935,9 +2081,10 @@ useEffect(() => {
           .single();
         if (settingsData?.preferences?.standard_mapping_id) return;
         // Fetch PL and BS separately — exactly as the mapper does per statement
+const H = sbHeaders();
         const [plRes, bsRes] = await Promise.all([
-          fetch(`${SUPABASE_URL}/template_rows?select=account_code&standard=eq.${templateStd}&statement=eq.PL`, { headers: SB_HEADERS }),
-          fetch(`${SUPABASE_URL}/template_rows?select=account_code&standard=eq.${templateStd}&statement=eq.BS`, { headers: SB_HEADERS }),
+          fetch(`${SUPABASE_URL}/template_rows?select=account_code&standard=eq.${templateStd}&statement=eq.PL`, { headers: H }),
+          fetch(`${SUPABASE_URL}/template_rows?select=account_code&standard=eq.${templateStd}&statement=eq.BS`, { headers: H }),
         ]);
         const [plRows, bsRows] = await Promise.all([plRes.json(), bsRes.json()]);
 
@@ -1987,7 +2134,6 @@ return {
 
 const [year, setYear]     = useState(prefetch?.year  ? String(prefetch.year)  : "");
   const [month, setMonth]   = useState(prefetch?.month ? String(prefetch.month) : "");
-  const [viewScope, setViewScope]           = useState("consolidated"); // "consolidated" | "individual"
   const [valueMode, setValueMode]           = useState("monthly"); // "monthly" | "ytd"
   const [pickerOpen, setPickerOpen]         = useState(false);
   const pickerRef = useRef(null);
@@ -2487,19 +2633,50 @@ const trendFromYear = useMemo(() => {
     return Number(year) - Math.ceil(trendWindow / 12) + 1;
   }, [year, trendWindow]);
 
-  const trendSeriesDisplay = useMemo(() => {
+const trendSeriesDisplay = useMemo(() => {
     if (!trendSeries.length) return [];
-    const windowed = trendSeries.slice(-trendWindow);
-    if (trendInterval === "6months")
-      return windowed.filter((t, i) =>
-        t._month === 1 || t._month === 7 || i === windowed.length - 1
-      );
-    if (trendInterval === "yearly")
-      return windowed.filter((t, i) =>
-        t._month === 12 || i === windowed.length - 1
-      );
-    return windowed; // monthly — all points
-  }, [trendSeries, trendWindow, trendInterval]);
+
+    // Slice by CALENDAR YEAR (matches the "From Jan YYYY" label), not by count.
+    const yearsBack = Math.ceil(trendWindow / 12);
+    const startY = Number(year) - yearsBack + 1;
+    const windowed = trendSeries.filter(t => t._year >= startY);
+
+    if (trendInterval === "monthly") return windowed;
+
+    const bucketSize = trendInterval === "6months" ? 6 : 12;
+    const out = [];
+
+    for (let i = 0; i < windowed.length; i += bucketSize) {
+      const bucket = windowed.slice(i, i + bucketSize);
+      if (!bucket.length) continue;
+      const first = bucket[0];
+      const last  = bucket[bucket.length - 1];
+
+      const entry = {
+        _year:  last._year,
+        _month: last._month,
+        idx:    out.length,
+        label: bucketSize === 12
+          ? `${last._year}`
+          : `${MONTHS_ABBR[first._month - 1]}–${MONTHS_ABBR[last._month - 1]} ${String(last._year).slice(-2)}`,
+        fullLabel: bucketSize === 12
+          ? `FY ${last._year}`
+          : `${MONTHS_ABBR[first._month - 1]}–${MONTHS_ABBR[last._month - 1]} ${last._year}`,
+      };
+
+      // In monthly mode, sum months within the bucket.
+      // In YTD mode, take the LAST entry's YTD (already cumulative).
+      kpiSlots.forEach((_, si) => {
+        if (valueMode === "ytd") {
+          entry[`slot${si}`] = last[`slot${si}`] ?? 0;
+        } else {
+          entry[`slot${si}`] = bucket.reduce((s, b) => s + (b[`slot${si}`] ?? 0), 0);
+        }
+      });
+      out.push(entry);
+    }
+    return out;
+  }, [trendSeries, trendWindow, trendInterval, valueMode, kpiSlots, year, MONTHS_ABBR]);
 
   const sparklines = useMemo(() => {
     const last12 = trendSeries.slice(-12);
@@ -3951,12 +4128,7 @@ const maxAbs = Math.max(...drillAccountBreakdown.map(r => Math.abs(r.value)));
 <XAxis dataKey="label"
                       tick={{ fontSize: 11, fill: "#6b7280", fontWeight: 700 }}
                       axisLine={false} tickLine={false}
-                      interval={(() => {
-                        if (trendWindow <= 12) return 0;   // every month
-                        if (trendWindow <= 24) return 2;   // every 3 months
-                        if (trendWindow <= 36) return 3;   // every 4 months
-                        return 5;                          // every 6 months
-                      })()} />
+interval={trendSeriesDisplay.length <= 12 ? 0 : Math.floor(trendSeriesDisplay.length / 12)} />
 <YAxis
                       tick={{ fontSize: 10, fill: "#9ca3af", fontWeight: 600, dx: 30 }}
                       axisLine={false} tickLine={false}

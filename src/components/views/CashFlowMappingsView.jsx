@@ -19,7 +19,7 @@ import {
 } from "../../lib/cashflowReportMappingsApi";
 import { supabase } from "../../lib/supabaseClient";
 import { useCurrentUserResourceAccess } from "../../lib/userPermissionsApi";
-import { useT } from "../layout/SettingsContext";
+import { useT, useSettings } from "../layout/SettingsContext";
 
 // ─── Constants ───────────────────────────────────────────────
 const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
@@ -273,6 +273,7 @@ export default function CashFlowMappingsView({
   token, mappingKind = "structure",
   initialView = "list", initialStandard = null,
   pendingEdit = null, onPendingEditConsumed,
+  activeStandardKey = null,
 }) {
 const t = useT();
   const api = useMemo(() => (
@@ -581,7 +582,10 @@ setCfNameRows(json.value ?? (Array.isArray(json) ? json : []));
   }, [token, filterYear, filterMonth, filterSource, filterStructure]);
 
   const kindLabel = mappingKind === "report" ? t("cfm_list_title_report") : t("cfm_list_title_structure");
-  const activeAccent = (selectedStandard && STANDARD_META[selectedStandard]?.accent) || colors?.primary || "#0891b2";
+const isCustomSelected = selectedStandard && selectedStandard.startsWith("CUSTOM-");
+  const activeAccent = isCustomSelected
+    ? (colors?.primary ?? "#7c3aed")
+    : ((selectedStandard && STANDARD_META[selectedStandard]?.accent) || colors?.primary || "#0891b2");
 const handleMapperBack = () => {
     if (mapperDirty) setShowBackConfirm(true);
     else { setEditingMapping(null); setSelectedStandard(null); setView("list"); }
@@ -590,7 +594,7 @@ const handleMapperBack = () => {
 list: { title: kindLabel, back: onBack },
     create: { title: t("cfm_create_title"), back: () => setView("list") },
     selectStandard: { title: t("cfm_select_standard_title"), back: () => setView("create") },
-    mapper: { title: selectedStandard ? `${t("cfm_mapper_title_prefix")} · ${STANDARD_META[selectedStandard]?.label}` : t("cfm_mapper_title_default"), back: initialView === "mapper" ? null : handleMapperBack },
+   mapper: { title: selectedStandard ? `${t("cfm_mapper_title_prefix")} · ${STANDARD_META[selectedStandard]?.label ?? selectedStandard.replace(/^CUSTOM-/, "").toUpperCase()}` : t("cfm_mapper_title_default"), back: initialView === "mapper" ? null : handleMapperBack },
   };
   const cfg = headerConfig[view] ?? headerConfig.list;
 
@@ -714,7 +718,7 @@ headerSearch={view === "list" ? { value: search, onChange: setSearch, placeholde
           />
         )}
         {view === "selectStandard" && (
-          <SelectStandardView onPick={std => { setSelectedStandard(std); setView("mapper"); }} />
+        <SelectStandardView activeStandardKey={activeStandardKey} onPick={std => { setSelectedStandard(std); setView("mapper"); }} />
         )}
         {view === "mapper" && selectedStandard && (
 <CashFlowMapperView
@@ -924,11 +928,27 @@ function CreateView({ onScratch, onExisting }) {
 }
 
 // ─── SelectStandardView ───────────────────────────────────────
-function SelectStandardView({ onPick }) {
+function SelectStandardView({ activeStandardKey, onPick }) {
+  const t = useT();
+  const { colors } = useSettings();
   const standards = ["PGC", "DanishIFRS", "SpanishIFRSEs"];
+  const hasCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
   return (
     <div className="flex-1 flex flex-col min-h-0 p-5">
-      <div className="grid grid-cols-3 gap-5 flex-1 min-h-0">
+      <div className={`grid ${hasCustom ? "grid-cols-4" : "grid-cols-3"} gap-5 flex-1 min-h-0`}>
+        {hasCustom && (
+          <StandardCard
+            key={activeStandardKey}
+            meta={{
+              accent:      colors?.primary ?? "#7c3aed",
+              accentBg:    `${colors?.primary ?? "#7c3aed"}12`,
+              label:       activeStandardKey.replace(/^CUSTOM-/, "").toUpperCase(),
+              full:        t("cfm_std_custom_full", "Custom standard"),
+              description: t("cfm_std_custom_desc", "The onboarding standard tailored specifically for your organization"),
+            }}
+            onClick={() => onPick(activeStandardKey)}
+          />
+        )}
         {standards.map(std => <StandardCard key={std} meta={STANDARD_META[std]} onClick={() => onPick(std)} />)}
       </div>
     </div>
@@ -968,8 +988,13 @@ function CashFlowMapperView({
   editingMapping, existingMappings = [], onSaved,
   saveRef, resetRef, onDirtyChange, api, mappingKind = "structure",
 }) {
-  const t = useT();
-  const meta = STANDARD_META[standard];
+const t = useT();
+  const { colors } = useSettings();
+  const meta = STANDARD_META[standard] ?? (
+    standard?.startsWith("CUSTOM-")
+      ? { accent: (colors?.primary ?? "#7c3aed"), accentBg: `${colors?.primary ?? "#7c3aed"}12`, label: standard.replace(/^CUSTOM-/, "").toUpperCase() }
+      : { accent: "#0891b2", accentBg: "#e0f2fe", label: standard ?? "" }
+  );
 
 // CF account meta (name + parent code) from consolidated CF/CFS rows
 // Build CF tree: chart of accounts (primary) + consolidated names (secondary) + mappings (tertiary)
@@ -1156,14 +1181,25 @@ const undoRef = useRef(undo);
       setTplRows([]); setTplSections([]); setTplLoading(false);
       return;
     }
+// CUSTOM-* standards live in the unified standard_statement_* tables.
+    // Built-in ones still come from the legacy per-standard cf_ tables.
+    const isCustom = standard?.startsWith("CUSTOM-");
     const cfTable = STANDARD_META[standard]?.cfTable;
-    if (!cfTable) return;
+    if (!isCustom && !cfTable) return;
     setTplLoading(true); setTplRows([]); setTplSections([]);
+
+    const rowsUrl = isCustom
+      ? `${SUPABASE_URL}/standard_statement_rows?select=*&standard_key=eq.${encodeURIComponent(standard)}&statement=eq.CF&order=sort_order.asc`
+      : `${SUPABASE_URL}/${cfTable}_rows?select=*&order=sort_order.asc`;
+    const secsUrl = isCustom
+      ? `${SUPABASE_URL}/standard_statement_sections?select=*&standard_key=eq.${encodeURIComponent(standard)}&statement=eq.CF&order=sort_order.asc`
+      : `${SUPABASE_URL}/${cfTable}_sections?select=*&order=sort_order.asc`;
+
     (async () => {
       try {
         const [rowsRes, secsRes] = await Promise.all([
-          fetch(`${SUPABASE_URL}/${cfTable}_rows?select=*&order=sort_order.asc`, { headers: sbHeaders, signal: ac.signal }),
-          fetch(`${SUPABASE_URL}/${cfTable}_sections?select=*&order=sort_order.asc`, { headers: sbHeaders, signal: ac.signal }),
+          fetch(rowsUrl, { headers: sbHeaders, signal: ac.signal }),
+          fetch(secsUrl, { headers: sbHeaders, signal: ac.signal }),
         ]);
         const rows = await rowsRes.json(), secs = await secsRes.json();
         if (ac.signal.aborted) return;

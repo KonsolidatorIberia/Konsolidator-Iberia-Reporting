@@ -17,6 +17,7 @@ const ConsolidatedKpiPage         = lazy(() => import("../components/layout/Cons
 const MappingsPage                = lazy(() => import("../components/layout/MappingsPage.jsx"));
 const StatisticalPartiesPage = lazy(() => import("../components/layout/StatisticalPartiesPage.jsx"));
 const CashFlowMappingsView        = lazy(() => import("../components/views/CashFlowMappingsView.jsx"));
+const AdminOnboardingPage         = lazy(() => import("../components/pages/AdminOnboardingPage.jsx"));
 import { useMemo } from "react";
 import { useCurrentUserPermissions, useCurrentUserResourceAccess } from "../lib/userPermissionsApi";
 function AccessDenied() {
@@ -94,11 +95,14 @@ if (activePage === "individual-data") return (
       structures={rawData.structures ?? []}
       companies={rawData.companies ?? []}
       dimensions={rawData.dimensions ?? []}
+      activeStandardKey={rawData?.activeStandardKey ?? null}
     />
   );
 
 if (activePage === "individual-contributive") return (
-    <ContributivePage token={token} onNavigate={onNavigate} />
+    <ContributivePage token={token} 
+      activeStandardKey={rawData?.activeStandardKey ?? null}
+    onNavigate={onNavigate} />
   );
 
   if (activePage === "structure") return (
@@ -114,6 +118,7 @@ if (activePage === "individual-dimensiones") return (
       token={token}
       onNavigate={onNavigate}
       sources={sharedData.sources ?? []}
+      activeStandardKey={rawData?.activeStandardKey ?? null}
       structures={sharedData.structures ?? []}
       companies={sharedData.companies ?? []}
       dimensions={sharedData.dimensions ?? []}
@@ -129,6 +134,7 @@ if (activePage === "consolidated-sheet") return (
     <KpiIndividualesPage
       token={token}
       sources={sharedData.sources ?? []}
+        activeStandardKey={rawData?.activeStandardKey ?? null}
       structures={sharedData.structures ?? []}
       companies={sharedData.companies ?? []}
       dimensions={sharedData.dimensions ?? []}
@@ -139,7 +145,9 @@ if (activePage === "consolidated-cashflow") return (
   );
 
 if (activePage === "individual-cashflow") return (
-    <IndividualCashFlowPage token={token} onNavigate={onNavigate} />
+    <IndividualCashFlowPage token={token} 
+      activeStandardKey={rawData?.activeStandardKey ?? null}
+    onNavigate={onNavigate} />
   );
 
 if (activePage === "cashflow-mappings") {
@@ -195,6 +203,8 @@ if (activePage === "statistical-parties") return (
     />
   );
 if (activePage === "settings") return <SettingsPage token={token} preloadedData={rawData} />;
+
+if (activePage === "admin-onboarding") return <AdminOnboardingPage token={token} />;
 if (activePage === "mappings") {
     let pendingEdit = null;
     try {
@@ -202,9 +212,10 @@ if (activePage === "mappings") {
       if (raw) pendingEdit = JSON.parse(raw);
     } catch { /* ignore */ }
     return (
-      <MappingsPage
+<MappingsPage
         token={token}
         preloadedData={sharedData}
+        activeStandardKey={rawData?.activeStandardKey ?? null}
         onNavigate={onNavigate}
         pendingEdit={pendingEdit}
         onPendingEditConsumed={() => {
