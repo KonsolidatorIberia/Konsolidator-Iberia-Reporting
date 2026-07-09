@@ -482,38 +482,63 @@ function literal(node, depth, visited = new WeakSet()) {
 function convertSavedMappingTree(tree) {
   if (!Array.isArray(tree) || tree.length === 0) return null;
   const rows = new Map();
+  const instances = [];
   const sections = new Map();
   let sortCounter = 0;
   let defaultSecCounter = 0;
-  function walk(nodes, depth, parentSection) {
-    for (const node of nodes) {
+  let synthIdCounter = 0;
+
+  // Walker handles BOTH styles: recursive (breakers own code children) and
+  // linear/sibling (breakers and codes at same level; breaker sets running
+  // section for subsequent siblings).
+  function walk(nodes, depth, initialParentSection) {
+    let currentSection = initialParentSection;
+    for (const node of nodes || []) {
       if (!node) continue;
       if (node.kind === "breaker") {
         const secCode = node.sectionCode || `section_${defaultSecCounter++}`;
-        sections.set(secCode, {
-          label: String(node.name ?? "Section"),
-          color: node.color || "#1a2f8a",
-        });
-        walk(node.children || [], depth, secCode);
+        if (!sections.has(secCode)) {
+          sections.set(secCode, {
+            label: String(node.name ?? "Section"),
+            color: node.color || "#1a2f8a",
+          });
+        }
+        currentSection = secCode;
+        if (Array.isArray(node.children) && node.children.length > 0) {
+          walk(node.children, depth, secCode);
+        }
       } else {
         const code = String(node.code ?? "");
         if (!code) continue;
-        const sec = parentSection || "_default";
+        const sec = currentSection || "_default";
         if (!sections.has(sec)) sections.set(sec, { label: "", color: "#1a2f8a" });
-        rows.set(code, {
+        const instanceId = String(node.id ?? `synth-${code}-${synthIdCounter++}`);
+        const dims = Array.isArray(node.dims) ? node.dims.map(String).filter(Boolean) : [];
+        const info = {
           section: sec,
           sortOrder: sortCounter++,
           isSum: true,
           showInSummary: !!node.showInSummary,
           level: depth,
+          parent_code: node.parent_code ?? node.SumAccountCode ?? null,
+        };
+        if (!rows.has(code)) rows.set(code, info);
+        instances.push({
+          instanceId,
+          code,
+          name: node.name ?? "",
+          dims,
+          ...info,
         });
-        walk(node.children || [], depth + 1, sec);
+        if (Array.isArray(node.children) && node.children.length > 0) {
+          walk(node.children, depth + 1, sec);
+        }
       }
     }
   }
   walk(tree, 0, null);
-  if (rows.size === 0) return null;
-  return { rows, sections };
+  if (rows.size === 0 && instances.length === 0) return null;
+  return { rows, sections, instances };
 }
 
 const MONTHS = [
@@ -1004,6 +1029,31 @@ function AccountsTab({ data }) {
 
 /* ── Pivot Tab ────────────────────────────────────────────── */
 function PivotTab({ data, dimensions, groupAccounts = [], selGroups = new Set(), selDims = new Set(), compareMode, statementType = "pl", externalViewMode = null, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterTopParent = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), drillPrevRows = [], onToggleDrillAccount = () => {} }) {
+
+// Shared: check if a literal-node's `dims` matches a dimension column key.
+// Mapping instances store dims as "Group:Name" but columns use codes ("1", etc.)
+// Resolves via the dimensions catalog when needed.
+const nodeDimMatchesKey = React.useCallback((nodeDims, dimKey) => {
+  if (!nodeDims || nodeDims.length === 0) return true;
+  const dkStr = String(dimKey);
+  return nodeDims.some(d => {
+    const s = String(d);
+    if (s === dkStr) return true;
+    const i = s.indexOf(":");
+    const nameOrValue = i === -1 ? s : s.slice(i + 1);
+    const groupHint   = i === -1 ? "" : s.slice(0, i);
+    if (String(nameOrValue) === dkStr) return true;
+    for (const dd of (dimensions || [])) {
+      const gg = String(dd.DimensionGroup ?? dd.dimensionGroup ?? "");
+      const nn = String(dd.DimensionName ?? dd.dimensionName ?? "");
+      const cc = String(dd.DimensionCode ?? dd.dimensionCode ?? "");
+      if (!cc) continue;
+      if (groupHint && groupHint !== gg) continue;
+      if (nn === nameOrValue && cc === dkStr) return true;
+    }
+    return false;
+  });
+}, [dimensions]);
 
 const header2Style = useTypo("header2");
   const body1Style = useTypo("body1");
@@ -1610,20 +1660,36 @@ if (isCustomMapping) {
           const code = String(a.AccountCode ?? a.accountCode ?? "");
           if (code) gaMap.set(code, a);
         });
-        return [...activeMapping.rows.entries()]
-          .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
-          .map(([code]) => {
-            // Prefer node from displayedTree (has children with dim data)
-            if (displayedTreeIndex.has(code)) return displayedTreeIndex.get(code);
-            if (treeIndex.has(code)) return treeIndex.get(code);
-            const ga = gaMap.get(code);
-            if (ga) return {
-              AccountCode: code,
-              AccountName: ga.AccountName ?? ga.accountName ?? code,
-              SumAccountCode: ga.SumAccountCode ?? ga.sumAccountCode ?? "",
-              children: [],
+        // Iterate INSTANCES so same code with different dims renders as
+        // separate rows. Falls back to rows Map if instances[] is absent.
+        const src = Array.isArray(activeMapping.instances) && activeMapping.instances.length > 0
+          ? activeMapping.instances
+          : [...activeMapping.rows.entries()]
+              .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+              .map(([code, info]) => ({ instanceId: code, code, dims: [], ...info }));
+        return src
+          .slice()
+          .sort((a, b) => a.sortOrder - b.sortOrder)
+          .map(inst => {
+            const code = inst.code;
+            let base;
+            if (displayedTreeIndex.has(code)) base = displayedTreeIndex.get(code);
+            else if (treeIndex.has(code)) base = treeIndex.get(code);
+            else {
+              const ga = gaMap.get(code);
+              if (ga) base = {
+                AccountCode: code,
+                AccountName: ga.AccountName ?? ga.accountName ?? code,
+                SumAccountCode: ga.SumAccountCode ?? ga.sumAccountCode ?? "",
+                children: [],
+              };
+            }
+            if (!base) return null;
+            return {
+              ...base,
+              _instanceId: inst.instanceId,
+              _dims: inst.dims || [],
             };
-            return null;
           })
           .filter(Boolean);
       }
@@ -1644,14 +1710,21 @@ const dividerMap = useMemo(() => {
     const seen = new Set();
     const out = {};
     let i = 0;
+    // Use instance-level section when available (mapping with dims support)
+    const instBySortOrder = new Map();
+    if (Array.isArray(activeMapping.instances)) {
+      activeMapping.instances.forEach(inst => instBySortOrder.set(inst.instanceId, inst));
+    }
     for (const node of orderedRows) {
-      const m = activeMapping.rows.get(String(node.AccountCode));
+      const instInfo = node._instanceId ? instBySortOrder.get(node._instanceId) : null;
+      const m = instInfo ?? activeMapping.rows.get(String(node.AccountCode));
       if (!m) continue;
       if (seen.has(m.section)) continue;
       seen.add(m.section);
       const sec = activeMapping.sections.get(m.section);
       if (sec) {
-        out[String(node.AccountCode)] = { label: sec.label, color: palette[i] ?? sec.color };
+        const key = String(node._instanceId ?? node.AccountCode);
+        out[key] = { label: sec.label, color: palette[i] ?? sec.color };
         i++;
       }
     }
@@ -2053,7 +2126,7 @@ const subLines = [];
       const sheetNameSuffix = viewLevel === "summary" ? " Summary" : viewLevel === "detailed" ? " Detailed" : "";
       const ws = wb.addWorksheet(`Dim ${stType.toUpperCase()}${sheetNameSuffix}`, {
         views: [{ state: "frozen", xSplit: 1, ySplit: 1 + subLines.length + 1 + (sheetCompare ? 2 : 1) }],
-        properties: { outlineLevelRow: 1, summaryBelow: false },
+       properties: { outlineLevelRow: 1, summaryBelow: true },
       });
 
 ws.mergeCells(1, 1, 1, totalCols);
@@ -2140,12 +2213,7 @@ const headers = [T("file_col_account"), ...visibleDims.map(d => d.name ?? d.code
 
 const leafVal = (n, dimKey) => {
         if (n.dims && n.dims.length > 0) {
-          const match = n.dims.some(d => {
-            const i = d.indexOf(":");
-            const v = i === -1 ? d : d.slice(i + 1);
-            return String(v) === String(dimKey);
-          });
-          if (!match) return 0;
+          if (!nodeDimMatchesKey(n.dims, dimKey)) return 0;
         }
         return valFor(n.code, dimKey);
       };
@@ -2156,14 +2224,9 @@ const leafVal = (n, dimKey) => {
         }
         return leafVal(n, dimKey);
       };
-      const leafCmpVal = (n, dimKey) => {
+const leafCmpVal = (n, dimKey) => {
         if (n.dims && n.dims.length > 0) {
-          const match = n.dims.some(d => {
-            const i = d.indexOf(":");
-            const v = i === -1 ? d : d.slice(i + 1);
-            return String(v) === String(dimKey);
-          });
-          if (!match) return 0;
+          if (!nodeDimMatchesKey(n.dims, dimKey)) return 0;
         }
         return cmpValFor(n.code, dimKey);
       };
@@ -2265,13 +2328,28 @@ const treeAsLit = (n, depth, visited = new WeakSet()) => {
         dataIdx = 0;
       };
 
-if (useLiteral && literal && literal.length > 0) {
+console.log('[export-xlsx-path]', { useLiteral, hasLiteral: !!literal, literalLen: literal?.length, stType, drilldown, showBreakers });
+      if (useLiteral && literal && literal.length > 0) {
         // Custom mapping literal mode — matches on-screen literal renderer
+        console.log('[export-xlsx-literal]', literal.map(s => ({ label: s.label, color: s.color, nodeCount: s.nodes.length })));
+// Palette matches in-app dividerMap
+        const inAppPaletteLit = [
+          toArgbHex(colors.primary),
+          toArgbHex(colors.secondary),
+          toArgbHex(colors.tertiary),
+        ];
+        let litSectionIdx = 0;
         literal.forEach(section => {
-          if (section.label && showBreakers) renderSectionBar(section.label, toArgbHex(section.color));
+          if (section.label && showBreakers) {
+            const barColor = inAppPaletteLit[litSectionIdx % inAppPaletteLit.length]
+              ?? toArgbHex(section.color);
+            renderSectionBar(section.label, barColor);
+            litSectionIdx++;
+          }
           section.nodes.forEach(n => renderRow(n, 0, "literal"));
         });
       } else {
+        console.log('[export-xlsx-nolit]', { mappingForStExists: !!(stType === "pl" ? plMapping : bsMapping) });
         // No-literal mode (Summary or Detailed view): rebuild a tree from groupAccounts
         // + the statement's mapping. Same logic as the on-screen Summary/Detailed toggle.
         const mappingForSt = stType === "pl" ? plMapping : bsMapping;
@@ -2332,24 +2410,50 @@ if (mappingForSt?.rows && mappingForSt?.sections) {
           const orderedEntries = [...mappingForSt.rows.entries()]
             .filter(([, info]) => filterFn(info))
             .sort(([, a], [, b]) => a.sortOrder - b.sortOrder);
-          // Set of codes that render as their own top-level row. Passed to
-          // renderRow so descendants matching these are skipped, mirroring
-          // the on-screen `excludeCodes` filter in DimensionRow.
-          const topLevelCodes = new Set(orderedEntries.map(([code]) => String(code)));
-          const palette = ["FF1A2F8A", "FFCF305D", "FF10B981", "FFD97706"];
-          const seenSections = new Set();
+
+          // Normalize levels: some standards are 1-based, others 0-based.
+          const minLevel = orderedEntries.reduce(
+            (m, [, info]) => Math.min(m, info.level ?? 0),
+            Infinity
+          );
+
+          // Palette matches in-app dividerMap (primary / secondary / tertiary)
+          const inAppPalette = [
+            toArgbHex(colors.primary),
+            toArgbHex(colors.secondary),
+            toArgbHex(colors.tertiary),
+          ];
+
+          // Emit one row per entry (no tree recursion) with outlineLevel set by
+          // its depth in the standard hierarchy. Insert a breaker whenever the
+          // section changes vs the previous emitted row.
+          let lastSection = null;
           let sectionIdx = 0;
           orderedEntries.forEach(([code, info]) => {
             if (!stCodes.has(code)) return;
-            if (!seenSections.has(info.section) && showBreakers) {
+            if (info.section && info.section !== "null" && info.section !== lastSection && showBreakers) {
               const sec = mappingForSt.sections.get(info.section);
               if (sec?.label) {
-                renderSectionBar(sec.label, palette[sectionIdx % palette.length]);
+                const barColor = inAppPalette[sectionIdx % inAppPalette.length]
+                  ?? toArgbHex(sec.color);
+                renderSectionBar(sec.label, barColor);
                 sectionIdx++;
               }
-              seenSections.add(info.section);
+              lastSection = info.section;
             }
-            renderRow(treeAsLit(buildTreeNode(code, 0), 0), 0, "tree", topLevelCodes);
+            // Build a single-node "tree" so renderRow emits exactly this row
+            // (no children) at the proper outlineLevel.
+            const ga = gaMap.get(code);
+            const singleNode = {
+              id: code,
+              code,
+              name: ga?.AccountName ?? code,
+              dims: null,
+              isSum: !!info.isSum,
+              children: [],
+            };
+            const depth = Math.max(0, (info.level ?? 0) - minLevel);
+            renderRow(singleNode, depth, "tree");
           });
         } else {
           // Truly nothing to lean on — just top-level codes
@@ -2363,7 +2467,7 @@ if (mappingForSt?.rows && mappingForSt?.sections) {
 
       if (drilldown) {
         ws.properties.outlineLevelRow = Math.min(7, Math.max(1, maxDepth));
-        ws.properties.summaryBelow = false;
+        ws.properties.summaryBelow = true;
       }
 
       ws.getColumn(1).width = 44;
@@ -2427,8 +2531,8 @@ if (wb.worksheets.length === 0) {
     }
 
 saveAs(new Blob([repaired], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
-      `Konsolidator_ConsDimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.xlsx`);
-  }, [T, data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterTopParent, selGroups, selDims, cmp2Source, cmp2Structure, cmp2Month, cmp2Year, cmp2TopParent, plMapping, bsMapping, groupAccounts]);
+`Konsolidator_ConsDimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.xlsx`);
+  }, [T, data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterTopParent, selGroups, selDims, cmp2Source, cmp2Structure, cmp2Month, cmp2Year, cmp2TopParent, plMapping, bsMapping, groupAccounts, nodeDimMatchesKey, colors]);
 
 const handleExportPdf = useCallback((opts = {}) => {
     const includePL = opts.statements?.pl ?? (statementType === "pl");
@@ -2436,10 +2540,24 @@ const handleExportPdf = useCallback((opts = {}) => {
 if (!includePL && !includeBS) { alert(T("export_select_statement_alert")); return; }
     const includeCompareOpt = (opts.includeCompare !== false) && cmpVisible;
 
-    // Palette
+// Palette
     const NAVY     = [26, 47, 138];
     const NAVYMID  = [40, 64, 168];
     const NAVYDK   = [10, 20, 70];
+    // Helper: "#1a2f8a" → [26, 47, 138]
+    const hexToRgb = (hex) => {
+      const h = String(hex ?? "").replace("#", "").padStart(6, "0");
+      return [
+        parseInt(h.slice(0, 2), 16),
+        parseInt(h.slice(2, 4), 16),
+        parseInt(h.slice(4, 6), 16),
+      ];
+    };
+    const INAPP_PALETTE = [
+      hexToRgb(colors.primary),
+      hexToRgb(colors.secondary),
+      hexToRgb(colors.tertiary),
+    ];
     const RED      = [207, 48, 93];
     const REDDK    = [160, 30, 65];
     const GRN      = [16, 185, 129];
@@ -2693,27 +2811,17 @@ doc.text(stType === "pl" ? T("file_dimensions_pl_upper") : T("file_dimensions_bs
           const cs = n.children.reduce((s, c) => s + sumTreeCmpForDim(c, dk, depth + 1), 0);
           if (cs !== 0) return cs;
         }
-        return flatCmpVal(n.code, dk);
+return flatCmpVal(n.code, dk);
       };
       const leafVal = (n, dimKey) => {
         if (n.dims && n.dims.length > 0) {
-          const match = n.dims.some(d => {
-            const i = d.indexOf(":");
-            const v = i === -1 ? d : d.slice(i + 1);
-            return String(v) === String(dimKey);
-          });
-          if (!match) return 0;
+          if (!nodeDimMatchesKey(n.dims, dimKey)) return 0;
         }
         return valFor(n.code, dimKey);
       };
       const leafCmpVal = (n, dimKey) => {
         if (n.dims && n.dims.length > 0) {
-          const match = n.dims.some(d => {
-            const i = d.indexOf(":");
-            const v = i === -1 ? d : d.slice(i + 1);
-            return String(v) === String(dimKey);
-          });
-          if (!match) return 0;
+          if (!nodeDimMatchesKey(n.dims, dimKey)) return 0;
         }
         return cmpValFor(n.code, dimKey);
       };
@@ -2763,7 +2871,7 @@ doc.text(stType === "pl" ? T("file_dimensions_pl_upper") : T("file_dimensions_bs
 
       if (useLiteral && literal && literal.length > 0) {
         literal.forEach(section => {
-          if (section.label && showBreakers) rows.push({ isBreaker: true, label: section.label });
+if (section.label && showBreakers) rows.push({ isBreaker: true, label: section.label, color: section.color, sectionIdx: rows.filter(r => r.isBreaker).length });
           section.nodes.forEach(n => renderRow(n, 0, "literal"));
         });
       } else {
@@ -2805,12 +2913,14 @@ doc.text(stType === "pl" ? T("file_dimensions_pl_upper") : T("file_dimensions_bs
             .filter(([, info]) => filterFn(info))
             .sort(([, a], [, b]) => a.sortOrder - b.sortOrder);
           const topLevelCodes = new Set(orderedEntries.map(([code]) => String(code)));
-          const seenSections = new Set();
+const seenSections = new Set();
+          let pdfSectionIdx = 0;
           orderedEntries.forEach(([code, info]) => {
             if (!stCodes.has(code)) return;
             if (!seenSections.has(info.section) && showBreakers) {
               const sec = mappingForSt.sections.get(info.section);
-              if (sec?.label) rows.push({ isBreaker: true, label: sec.label });
+              if (sec?.label) rows.push({ isBreaker: true, label: sec.label, sectionIdx: pdfSectionIdx });
+              pdfSectionIdx++;
               seenSections.add(info.section);
             }
             renderRow(treeAsLit(buildTreeNode(code, 0), 0), 0, "tree", topLevelCodes);
@@ -2856,11 +2966,13 @@ dimSlice.forEach(() => {
       }
 
       const body = rows.map(r => {
-        if (r.isBreaker) {
+if (r.isBreaker) {
+          const barColor = INAPP_PALETTE[(r.sectionIdx ?? 0) % INAPP_PALETTE.length]
+            ?? (r.color ? hexToRgb(r.color) : NAVYDK);
           return [{
             content: r.label.toUpperCase(),
             colSpan: totalColCount,
-            styles: { fillColor: NAVYDK, textColor: WHITE, fontStyle: "bold", halign: "left", fontSize: bodyFont + 0.5 },
+            styles: { fillColor: barColor, textColor: WHITE, fontStyle: "bold", halign: "left", fontSize: bodyFont + 0.5 },
           }];
         }
         const indent = "  ".repeat(Math.min(r.depth, 6));
@@ -3058,8 +3170,7 @@ doc.text(T("file_dimensions_report"), 10, H - 4.5);
     doc.text("1", W - 10, H - 4.5, { align: "right" });
 
 doc.save(`Konsolidator_ConsDimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.pdf`);
-}, [T, data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, plMapping, bsMapping, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterTopParent, selGroups, selDims, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2TopParent, groupAccounts]);
-
+}, [T, data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, plMapping, bsMapping, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterTopParent, selGroups, selDims, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2TopParent, groupAccounts, nodeDimMatchesKey, colors.primary, colors.secondary, colors.tertiary]);
 
   // Wire export functions to the ref so DimensionesPage FAB can call them
   useEffect(() => {
@@ -3330,16 +3441,11 @@ const literal = statementType === "pl" ? plLiteral : bsLiteral;
                   // - With getValWithDescendants → produces the parent row's value.
                   // - With a per-topParent getter → produces each drill sub-row's value.
                   // This guarantees the drill math is byte-identical to the parent's.
-                  const makeSumLit = (getValFn) => {
+const makeSumLit = (getValFn) => {
                     const cache = new Map();
                     const leaf = (n, dk) => {
                       if (n.dims && n.dims.length > 0) {
-                        const match = n.dims.some(d => {
-                          const i = d.indexOf(":");
-                          const v = i === -1 ? d : d.slice(i + 1);
-                          return String(v) === String(dk);
-                        });
-                        if (!match) return 0;
+                        if (!nodeDimMatchesKey(n.dims, dk)) return 0;
                       }
                       return getValFn(n.code, dk);
                     };
@@ -3665,11 +3771,11 @@ const perCompanyPivots = new Map();
 const levelByCode = (hasCustomMapping && activeMapping?.rows)
                   ? new Map([...activeMapping.rows.entries()].map(([code, info]) => [String(code), info.level ?? 0]))
                   : null;                         
-                return orderedRows.map((node, idx) => {
-                  const divider = dividerMap[String(node.AccountCode)];
+return orderedRows.map((node, idx) => {
+                  const divider = dividerMap[String(node._instanceId ?? node.AccountCode)];
                   const depth = levelByCode?.get(String(node.AccountCode)) ?? 0;
                   return (
-                    <React.Fragment key={node.AccountCode}>
+                    <React.Fragment key={node._instanceId ?? node.AccountCode}>
                       {divider && (
                         <tr>
                           <td className="sticky left-0 z-20 px-6 py-1.5" style={{ backgroundColor: divider.color }}>
@@ -3708,7 +3814,7 @@ drillExpanded={drillExpanded} drillCache={drillCache} drillLoadingSet={drillLoad
 
 /* ── Main ─────────────────────────────────────────────────── */
 /* ── Main ─────────────────────────────────────────────────── */
-export default function ConsolidatedDimensionesPage({ token, onNavigate, sources = [], structures = [], companies = [], dimensions = [] }) {
+export default function ConsolidatedDimensionesPage({ token, onNavigate, sources = [], structures = [], companies = [], dimensions = [], activeStandardKey = null }) {
 const { colors, locale } = useSettings();
 const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
 const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();
@@ -3985,7 +4091,8 @@ const [rawData, setRawData] = useState([]);
 
 const probedRef = useRef({ source: "", structure: "", topParent: "" });
 // Load group accounts hierarchy (needed for drill-down tree)
-const [groupAccountsLocal, setGroupAccountsLocal] = useState([]);
+const [rawGroupAccounts, setRawGroupAccounts] = useState([]);
+  const [customStdRows, setCustomStdRows] = useState([]); // Rows from standard_statement_rows for CUSTOM std
   useEffect(() => {
     if (!token) return;
     fetch(`${BASE_URL}/v2/group-accounts`, {
@@ -3994,11 +4101,80 @@ const [groupAccountsLocal, setGroupAccountsLocal] = useState([]);
       .then(r => r.ok ? r.json() : null)
       .then(d => {
         if (!d) return;
-const rows = d.value ?? (Array.isArray(d) ? d : []);
-        setGroupAccountsLocal(rows);
+        const rows = d.value ?? (Array.isArray(d) ? d : []);
+        setRawGroupAccounts(rows);
       })
       .catch(e => console.error("group-accounts fetch failed:", e));
   }, [token]);
+
+  // Fetch CUSTOM standard rows (paginated) when activeStandardKey is CUSTOM-*.
+  // The rows are then merged into groupAccounts derivatively via useMemo below.
+useEffect(() => {
+    const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+    if (!isCustom) return;
+    let cancelled = false;
+    const SUPABASE_URL = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
+    const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
+    const sbHeaders = { apikey: SUPABASE_APIKEY, Authorization: `Bearer ${SUPABASE_APIKEY}` };
+
+    const fetchAllRows = async () => {
+      const all = [];
+      const PAGE = 1000;
+      let offset = 0;
+      while (true) {
+        const url = `${SUPABASE_URL}/standard_statement_rows?select=account_code,parent_code,section_code,statement,account_name` +
+          `&standard_key=eq.${encodeURIComponent(activeStandardKey)}` +
+          `&statement=in.(PL,BS,CF)` +
+          `&order=sort_order.asc&limit=${PAGE}&offset=${offset}`;
+        const r = await fetch(url, { headers: sbHeaders });
+        if (!r.ok) break;
+        const batch = await r.json();
+        if (!Array.isArray(batch) || batch.length === 0) break;
+        all.push(...batch);
+        if (batch.length < PAGE) break;
+        offset += PAGE;
+        if (offset > 20000) break;
+      }
+      return all;
+    };
+
+    fetchAllRows()
+      .then(rows => { if (!cancelled) setCustomStdRows(rows); })
+      .catch(() => { if (!cancelled) setCustomStdRows([]); });
+
+    return () => { cancelled = true; };
+  }, [activeStandardKey]);
+
+  // Derive groupAccountsLocal from raw group accounts + optional CUSTOM std rows.
+  // No useState needed → no cascading render lint warning.
+  const groupAccountsLocal = useMemo(() => {
+    if (!rawGroupAccounts.length) return [];
+    const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+    if (!isCustom || customStdRows.length === 0) return rawGroupAccounts;
+
+    const parentByCode = new Map();
+    customStdRows.forEach(r => {
+      if (r.parent_code) parentByCode.set(String(r.account_code), String(r.parent_code));
+    });
+    const existingCodes = new Set(rawGroupAccounts.map(g => String(g.AccountCode ?? g.accountCode ?? "")));
+    const STMT_TO_TYPE = { PL: "P/L", BS: "B/S", CF: "C/F" };
+    const synth = customStdRows
+      .filter(r => !existingCodes.has(String(r.account_code)))
+      .map(r => ({
+        AccountCode: String(r.account_code),
+        AccountName: r.account_name ?? String(r.account_code),
+        AccountType: STMT_TO_TYPE[r.statement] ?? "P/L",
+        SumAccountCode: r.parent_code ?? "",
+        IsSumAccount: true,
+      }));
+    const overridden = rawGroupAccounts.map(g => {
+      const code = String(g.AccountCode ?? g.accountCode ?? "");
+      const stdParent = parentByCode.get(code);
+      if (stdParent) return { ...g, SumAccountCode: stdParent };
+      return g;
+    });
+    return [...overridden, ...synth];
+  }, [rawGroupAccounts, customStdRows, activeStandardKey]);
 
 // Resolve KPIs against the current accounting standard
   const {
@@ -4015,12 +4191,13 @@ const rows = d.value ?? (Array.isArray(d) ? d : []);
   const [spIfrsEsPlMapping, setSpIfrsEsPlMapping] = useState(null);
   const [spIfrsEsBsMapping, setSpIfrsEsBsMapping] = useState(null);
 
-  useEffect(() => {
+useEffect(() => {
     if (!groupAccountsLocal.length) return;
     const codes = groupAccountsLocal.map(g => String(g.AccountCode ?? g.accountCode ?? ""));
-    const isPGC = codes.some(c => /[a-zA-Z]/.test(c) && c.endsWith(".S"));
-    const isSpEs = !isPGC && codes.some(c => /\.PL$/.test(c));
-    const isDan = !isPGC && !isSpEs && codes.some(c => /^\d{5,6}$/.test(c));
+    const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+    const isPGC = !isCustom && codes.some(c => /[a-zA-Z]/.test(c) && c.endsWith(".S"));
+    const isSpEs = !isCustom && !isPGC && codes.some(c => /\.PL$/.test(c));
+    const isDan = !isCustom && !isPGC && !isSpEs && codes.some(c => /^\d{5,6}$/.test(c));
 
     const loadMapping = async (rowsTable, sectionsTable, setter) => {
       try {
@@ -4043,7 +4220,52 @@ const rows = d.value ?? (Array.isArray(d) ? d : []);
       } catch { setter(null); }
     };
 
-    if (isPGC) {
+    // Custom loader: unified standard_statement_rows + standard_statement_sections
+    // filtered by standard_key + statement. Paginated to handle 1000+ row limit.
+    const loadCustomMapping = async (statement, setter) => {
+      try {
+        const fetchAllRows = async (table, extraFilters) => {
+          const all = [];
+          const PAGE = 1000;
+          let offset = 0;
+          while (true) {
+            const url = `${table}?select=*&standard_key=eq.${encodeURIComponent(activeStandardKey)}` +
+              `&statement=eq.${statement}&order=sort_order.asc&limit=${PAGE}&offset=${offset}${extraFilters ?? ""}`;
+            const batch = await sbGet(url);
+            if (!Array.isArray(batch) || batch.length === 0) break;
+            all.push(...batch);
+            if (batch.length < PAGE) break;
+            offset += PAGE;
+            if (offset > 20000) break;
+          }
+          return all;
+        };
+        const [rowsArr, secsArr] = await Promise.all([
+          fetchAllRows("standard_statement_rows"),
+          fetchAllRows("standard_statement_sections"),
+        ]);
+        if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
+        const rows = new Map();
+        rowsArr.forEach(r => rows.set(String(r.account_code), {
+          section: String(r.section_code),
+          sortOrder: Number(r.sort_order),
+          isSum: !!r.is_sum,
+          showInSummary: !!r.show_in_summary,
+          level: Number(r.level ?? 0),
+          parent_code: r.parent_code ? String(r.parent_code) : "",
+          account_name: r.account_name ?? "",
+        }));
+        const sections = new Map();
+        secsArr.forEach(s => sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) }));
+        setter({ rows, sections });
+      } catch { setter(null); }
+    };
+
+    if (isCustom) {
+      // CUSTOM std populates pgc slot so downstream fallback (pgc → danish → spEs) picks it up.
+      loadCustomMapping("PL", setPgcPlMapping);
+      loadCustomMapping("BS", setPgcBsMapping);
+    } else if (isPGC) {
       loadMapping("pgc_pl_rows", "pgc_pl_sections", setPgcPlMapping);
       loadMapping("pgc_bs_rows", "pgc_bs_sections", setPgcBsMapping);
     } else if (isDan) {
@@ -4053,7 +4275,7 @@ const rows = d.value ?? (Array.isArray(d) ? d : []);
       loadMapping("spanish_ifrs_es_pl_rows", "spanish_ifrs_es_pl_sections", setSpIfrsEsPlMapping);
       loadMapping("spanish_ifrs_es_bs_rows", "spanish_ifrs_es_bs_sections", setSpIfrsEsBsMapping);
     }
-  }, [groupAccountsLocal]);
+  }, [groupAccountsLocal, activeStandardKey]);
 
 const defaultPlMapping = pgcPlMapping ?? danishPlMapping ?? spIfrsEsPlMapping;
   const defaultBsMapping = pgcBsMapping ?? danishBsMapping ?? spIfrsEsBsMapping;

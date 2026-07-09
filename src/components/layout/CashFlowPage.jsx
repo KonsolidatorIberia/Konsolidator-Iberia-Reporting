@@ -415,7 +415,7 @@ function CfLoadingSpinner({ colors, metaReady, T }) {
 
 
 /* ─── DrillGroupRow ─────────────────────────────────────────────────── */
-function DrillGroupRow({ groupCode, groupName, localRows, visibleCompanies, colors, body2Style, subbody1Style, compareMode, groupIndex = 0, cmpDrillMap = new Map(), searchQuery = "" }) {
+function DrillGroupRow({ groupCode, groupName, localRows = [], coAmounts = null, terminal = false, visibleCompanies, colors, body2Style, subbody1Style, compareMode, groupIndex = 0, cmpDrillMap = new Map(), searchQuery = "" }) {
   const [open, setOpen] = useState(false);
   const searchActive = !!searchQuery.trim();
   const q = searchQuery.trim().toLowerCase();
@@ -424,10 +424,12 @@ function DrillGroupRow({ groupCode, groupName, localRows, visibleCompanies, colo
   const amtByCompany = useMemo(() => {
     const m = {};
     visibleCompanies.forEach(c => {
-      m[c] = localRows.filter(r => r.co === c).reduce((s, r) => s + r.amt, 0);
+      m[c] = coAmounts
+        ? (coAmounts[c] ?? 0)
+        : localRows.filter(r => r.co === c).reduce((s, r) => s + r.amt, 0);
     });
     return m;
-  }, [localRows, visibleCompanies]);
+  }, [localRows, coAmounts, visibleCompanies]);
 
   const cmpAmtByCompany = useMemo(() => {
     const m = {};
@@ -439,14 +441,16 @@ function DrillGroupRow({ groupCode, groupName, localRows, visibleCompanies, colo
 
   return (
     <>
-<tr className="group/drill border-b cursor-pointer transition-colors"
+<tr className={`group/drill border-b transition-colors ${terminal ? "" : "cursor-pointer"}`}
         style={{ background: isMatchSelf ? "#fef3c7" : "#f4f6fb", animation: `drillSlideIn 280ms cubic-bezier(0.34,1.56,0.64,1) ${groupIndex * 40}ms both`, transformOrigin: "top center" }}
-        onClick={() => setOpen(o => !o)}>
+        onClick={terminal ? undefined : () => setOpen(o => !o)}>
         <td className="sticky left-0 z-10 py-2 pr-4 border-r border-gray-100 group-hover/drill:bg-[#e4e9f5]"
           style={{ paddingLeft: 32, minWidth: 260, width: 260, background: isMatchSelf ? "#fef3c7" : "#f4f6fb" }}>
           <div className="flex items-center gap-2">
-<ChevronDown size={10} className={`transition-transform duration-200 flex-shrink-0`}
-              style={{ color: colors.primary, transform: effectiveOpen ? "rotate(180deg)" : "rotate(-90deg)" }} />
+{terminal
+              ? <span className="flex-shrink-0" style={{ width: 10 }} />
+              : <ChevronDown size={10} className={`transition-transform duration-200 flex-shrink-0`}
+                  style={{ color: colors.primary, transform: effectiveOpen ? "rotate(180deg)" : "rotate(-90deg)" }} />}
 <span className="font-mono" style={subbody1Style}>{groupCode}</span>
             {groupName && <span className="truncate" style={body2Style}>{groupName}</span>}
           </div>
@@ -490,7 +494,7 @@ function DrillGroupRow({ groupCode, groupName, localRows, visibleCompanies, colo
           );
         })()}
       </tr>
-{effectiveOpen && localRows.map((r, i) => {
+{!terminal && effectiveOpen && localRows.map((r, i) => {
         const localMatch = q && ((r.localCode || "").toLowerCase().includes(q) || (r.localName || "").toLowerCase().includes(q));
         return (
         <tr key={i} className="group/local border-b hover:bg-[#eef1fb]" style={{ background: localMatch ? "#fef3c7" : "#f9fafd", animation: `drillSlideIn 220ms cubic-bezier(0.34,1.56,0.64,1) ${i * 25}ms both`, transformOrigin: "top center" }}>
@@ -609,82 +613,35 @@ function MappedSheetRow({
   // Sum nodes expand into their mapping children instead.
 const drillGroups = useMemo(() => {
     if (!effectiveExpanded || hasMappingChildren) return [];
+    // Consolidated CF terminal drill — the group accounts feeding this CF node,
+    // summed across all consolidated rows so the drill ties to the line total.
     const byGroup = new Map();
-    const ensureBucket = (groupCode, groupName) => {
-      if (!byGroup.has(groupCode)) {
-        byGroup.set(groupCode, { groupCode, groupName: groupName ?? "", rowMap: new Map() });
-      }
-      return byGroup.get(groupCode);
-    };
-
     uploadedData.forEach(r => {
       const groupCode = String(r.AccountCode ?? r.accountCode ?? "");
       const co = r.CompanyShortName ?? r.companyShortName ?? "";
+      if (!groupCode || !co) return;
       const cfs = groupToCf?.get(groupCode) ?? [];
       if (!cfs.includes(node.code)) return;
-      const origin = r.Origin ?? r.origin ?? "";
-      const rawLocalCode = r.LocalAccountCode ?? r.localAccountCode ?? "";
-      if (origin === "Journal" || !rawLocalCode) return;
-      const bucket = ensureBucket(groupCode, r.AccountName ?? r.accountName);
-      const key = `ERP::${rawLocalCode}::${co}`;
       const amt = Number(r.AmountYTD ?? r.amountYTD ?? 0);
-      if (!bucket.rowMap.has(key)) {
-        bucket.rowMap.set(key, {
-          localCode: rawLocalCode,
-          localName: r.LocalAccountName ?? r.localAccountName ?? "",
-          isJournal: false, co, amt: 0,
+      if (!byGroup.has(groupCode)) {
+        byGroup.set(groupCode, {
+          groupCode, groupName: String(r.AccountName ?? r.accountName ?? ""),
+          coAmounts: {}, localRows: [], terminal: true,
         });
       }
-      bucket.rowMap.get(key).amt += amt;
+      const b = byGroup.get(groupCode);
+      if (!b.groupName && (r.AccountName ?? r.accountName)) b.groupName = String(r.AccountName ?? r.accountName);
+      b.coAmounts[co] = (b.coAmounts[co] ?? 0) + amt;
     });
 
-    journalEntries.forEach(j => {
-      const groupCode = String(j.AccountCode ?? j.accountCode ?? "");
-      const co = j.CompanyShortName ?? j.companyShortName ?? "";
-      const cfs = groupToCf?.get(groupCode) ?? [];
-      if (!cfs.includes(node.code)) return;
-      const journalNumber = String(j.JournalNumber ?? j.journalNumber ?? "");
-      const journalHeader = j.JournalHeader ?? j.journalHeader ?? "";
-      const journalType = j.JournalType ?? j.journalType ?? "";
-      const bucket = ensureBucket(groupCode, j.AccountName ?? j.accountName);
-      const key = `JRN::${journalNumber}::${co}`;
-      const amt = Number(j.AmountYTD ?? j.amountYTD ?? 0);
-      if (!bucket.rowMap.has(key)) {
-        bucket.rowMap.set(key, {
-          localCode: journalNumber || "JRN",
-          localName: journalHeader || journalType || "Journal",
-          isJournal: true, co, amt: 0,
-        });
-      }
-      bucket.rowMap.get(key).amt += amt;
-    });
-
-let result = [...byGroup.values()]
-      .map(g => ({
-        ...g,
-        localRows: [...g.rowMap.values()].sort((a, b) => {
-          if (a.isJournal !== b.isJournal) return a.isJournal ? 1 : -1;
-          return (a.localCode || a.localName).localeCompare(b.localCode || b.localName);
-        }),
-      }))
-      .sort((a, b) => a.groupCode.localeCompare(b.groupCode));
+    let result = [...byGroup.values()].sort((a, b) => a.groupCode.localeCompare(b.groupCode));
 
     if (searchActive) {
-      result = result
-        .map(g => {
-          const gcMatch = g.groupCode.toLowerCase().includes(q) || (g.groupName || "").toLowerCase().includes(q);
-          const filteredLocals = g.localRows.filter(lr =>
-            gcMatch
-            || (lr.localCode || "").toLowerCase().includes(q)
-            || (lr.localName || "").toLowerCase().includes(q)
-          );
-          return { ...g, localRows: filteredLocals, _groupSelfMatch: gcMatch };
-        })
-        .filter(g => g._groupSelfMatch || g.localRows.length > 0);
+      result = result.filter(g =>
+        g.groupCode.toLowerCase().includes(q) || (g.groupName || "").toLowerCase().includes(q));
     }
-
     return result;
-  }, [effectiveExpanded, hasMappingChildren, uploadedData, journalEntries, groupToCf, node.code, searchActive, q]);
+  }, [effectiveExpanded, hasMappingChildren, uploadedData, groupToCf, node.code, searchActive, q]);
 
 const cmpDrillMap = useMemo(() => {
     if (!effectiveExpanded || hasMappingChildren || !compareMode) return new Map();
@@ -695,25 +652,11 @@ const cmpDrillMap = useMemo(() => {
       const co = r.CompanyShortName ?? r.companyShortName ?? "";
       const cfs = groupToCf?.get(gc) ?? [];
       if (!cfs.includes(node.code)) return;
-      const origin = r.Origin ?? r.origin ?? "";
-      const lc = r.LocalAccountCode ?? r.localAccountCode ?? "";
-      if (origin === "Journal" || !lc) return;
       const amt = Number(r.AmountYTD ?? r.amountYTD ?? 0);
       add(`GRP::${gc}::${co}`, amt);
-      add(`ERP::${gc}::${lc}::${co}`, amt);
-    });
-    cmpJournalEntries.forEach(j => {
-      const gc = String(j.AccountCode ?? j.accountCode ?? "");
-      const co = j.CompanyShortName ?? j.companyShortName ?? "";
-      const cfs = groupToCf?.get(gc) ?? [];
-      if (!cfs.includes(node.code)) return;
-      const jn = String(j.JournalNumber ?? j.journalNumber ?? "");
-      const amt = Number(j.AmountYTD ?? j.amountYTD ?? 0);
-      add(`GRP::${gc}::${co}`, amt);
-      add(`JRN::${gc}::${jn}::${co}`, amt);
     });
     return m;
-}, [effectiveExpanded, hasMappingChildren, compareMode, cmpUploadedData, cmpJournalEntries, groupToCf, node.code]);
+  }, [effectiveExpanded, hasMappingChildren, compareMode, cmpUploadedData, groupToCf, node.code]);
 
   const totalCols = 1 + visibleCompanies.length * (compareMode ? 4 : 1);
   const isExpandable = hasMappingChildren || true; // leaves can drill too
@@ -801,6 +744,7 @@ const cmpDrillMap = useMemo(() => {
 {effectiveExpanded && !hasMappingChildren && drillGroups.map((g, gi) => (
         <DrillGroupRow key={g.groupCode} groupIndex={gi}
           groupCode={g.groupCode} groupName={g.groupName} localRows={g.localRows}
+          coAmounts={g.coAmounts} terminal={g.terminal}
           visibleCompanies={visibleCompanies} colors={colors}
           body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style} compareMode={compareMode}
           cmpDrillMap={cmpDrillMap} searchQuery={searchQuery} />
@@ -814,8 +758,8 @@ function SheetRow({
   node, depth, pivot, visibleCompanies,
   body1Style, body2Style, subbody1Style,
   isSubtotal, compareMode = false, cmpPivot = new Map(), colors, rowIndex = 0,
-  uploadedData = [], journalEntries = [], groupToCf, T,
-  cmpUploadedData = [], cmpJournalEntries = [],
+uploadedData = [], groupToCf, T,
+  cmpUploadedData = [],
   expandAllVersion = 0, expandAllState = false,
   searchQuery = "",
 }) {
@@ -842,94 +786,37 @@ function SheetRow({
   // Level 1: group codes that map to this CF code, with their local rows
 const drillGroups = useMemo(() => {
     if (!effectiveExpanded) return [];
+    // Consolidated CF: rows carry group accounts (no local ERP codes). The
+    // meaningful "underlying" detail is the group accounts that feed this CF
+    // line — summed across ALL consolidated rows (every origin) per company so
+    // the drill ties exactly to the line total.
     const byGroup = new Map();
-
-    const ensureBucket = (groupCode, groupName) => {
-      if (!byGroup.has(groupCode)) {
-        byGroup.set(groupCode, { groupCode, groupName: groupName ?? "", rowMap: new Map() });
-      }
-      return byGroup.get(groupCode);
-    };
-
-    // ── ERP rows from uploaded-accounts (excluding journals) ──
     uploadedData.forEach(r => {
       const groupCode = String(r.AccountCode ?? r.accountCode ?? "");
       const co = r.CompanyShortName ?? r.companyShortName ?? "";
+      if (!groupCode || !co) return;
       const cfs = groupToCf?.get(groupCode) ?? [];
       if (!cfs.includes(node.AccountCode)) return;
-
-      const origin = r.Origin ?? r.origin ?? "";
-      const rawLocalCode = r.LocalAccountCode ?? r.localAccountCode ?? "";
-      if (origin === "Journal" || !rawLocalCode) return; // journals go through journalEntries below
-
-      const bucket = ensureBucket(groupCode, r.AccountName ?? r.accountName);
-      const key = `ERP::${rawLocalCode}::${co}`;
       const amt = Number(r.AmountYTD ?? r.amountYTD ?? 0);
-      if (!bucket.rowMap.has(key)) {
-        bucket.rowMap.set(key, {
-          localCode: rawLocalCode,
-          localName: r.LocalAccountName ?? r.localAccountName ?? "",
-          isJournal: false,
-          co,
-          amt: 0,
+      if (!byGroup.has(groupCode)) {
+        byGroup.set(groupCode, {
+          groupCode, groupName: String(r.AccountName ?? r.accountName ?? ""),
+          coAmounts: {}, localRows: [], terminal: true,
         });
       }
-      bucket.rowMap.get(key).amt += amt;
+      const b = byGroup.get(groupCode);
+      if (!b.groupName && (r.AccountName ?? r.accountName)) b.groupName = String(r.AccountName ?? r.accountName);
+      b.coAmounts[co] = (b.coAmounts[co] ?? 0) + amt;
     });
 
-    // ── Journal rows from journal-entries, grouped per JournalNumber ──
-    journalEntries.forEach(j => {
-      const groupCode = String(j.AccountCode ?? j.accountCode ?? "");
-      const co = j.CompanyShortName ?? j.companyShortName ?? "";
-      const cfs = groupToCf?.get(groupCode) ?? [];
-      if (!cfs.includes(node.AccountCode)) return;
+    let result = [...byGroup.values()].sort((a, b) => a.groupCode.localeCompare(b.groupCode));
 
-      const journalNumber = String(j.JournalNumber ?? j.journalNumber ?? "");
-      const journalHeader = j.JournalHeader ?? j.journalHeader ?? "";
-      const journalType   = j.JournalType   ?? j.journalType   ?? "";
-
-      const bucket = ensureBucket(groupCode, j.AccountName ?? j.accountName);
-      const key = `JRN::${journalNumber}::${co}`;
-      const amt = Number(j.AmountYTD ?? j.amountYTD ?? 0);
-      if (!bucket.rowMap.has(key)) {
-        bucket.rowMap.set(key, {
-          localCode: journalNumber || "JRN",
-          localName: journalHeader || journalType || "Journal",
-          isJournal: true,
-          co,
-          amt: 0,
-        });
-      }
-      bucket.rowMap.get(key).amt += amt;
-    });
-
-let result = [...byGroup.values()]
-      .map(g => ({
-        ...g,
-        localRows: [...g.rowMap.values()].sort((a, b) => {
-          if (a.isJournal !== b.isJournal) return a.isJournal ? 1 : -1;
-          return (a.localCode || a.localName).localeCompare(b.localCode || b.localName);
-        }),
-      }))
-      .sort((a, b) => a.groupCode.localeCompare(b.groupCode));
-
-    // If searching, filter to groups that have any matching content
     if (searchActive) {
-      result = result
-        .map(g => {
-          const gcMatch = g.groupCode.toLowerCase().includes(q) || (g.groupName || "").toLowerCase().includes(q);
-          const filteredLocals = g.localRows.filter(lr =>
-            gcMatch
-            || (lr.localCode || "").toLowerCase().includes(q)
-            || (lr.localName || "").toLowerCase().includes(q)
-          );
-          return { ...g, localRows: filteredLocals, _groupSelfMatch: gcMatch };
-        })
-        .filter(g => g._groupSelfMatch || g.localRows.length > 0);
+      result = result.filter(g =>
+        g.groupCode.toLowerCase().includes(q) || (g.groupName || "").toLowerCase().includes(q));
     }
-
     return result;
-  }, [effectiveExpanded, uploadedData, journalEntries, groupToCf, node.AccountCode, searchActive, q]);
+  }, [effectiveExpanded, uploadedData, groupToCf, node.AccountCode, searchActive, q]);
 
   // Map of comparison-period amounts keyed exactly like drill rows
   // group:    `GRP::${groupCode}::${co}`
@@ -944,25 +831,11 @@ const cmpDrillMap = useMemo(() => {
       const co = r.CompanyShortName ?? r.companyShortName ?? "";
       const cfs = groupToCf?.get(gc) ?? [];
       if (!cfs.includes(node.AccountCode)) return;
-      const origin = r.Origin ?? r.origin ?? "";
-      const lc = r.LocalAccountCode ?? r.localAccountCode ?? "";
-      if (origin === "Journal" || !lc) return;
       const amt = Number(r.AmountYTD ?? r.amountYTD ?? 0);
       add(`GRP::${gc}::${co}`, amt);
-      add(`ERP::${gc}::${lc}::${co}`, amt);
-    });
-    cmpJournalEntries.forEach(j => {
-      const gc = String(j.AccountCode ?? j.accountCode ?? "");
-      const co = j.CompanyShortName ?? j.companyShortName ?? "";
-      const cfs = groupToCf?.get(gc) ?? [];
-      if (!cfs.includes(node.AccountCode)) return;
-      const jn = String(j.JournalNumber ?? j.journalNumber ?? "");
-      const amt = Number(j.AmountYTD ?? j.amountYTD ?? 0);
-      add(`GRP::${gc}::${co}`, amt);
-      add(`JRN::${gc}::${jn}::${co}`, amt);
     });
     return m;
-}, [effectiveExpanded, compareMode, cmpUploadedData, cmpJournalEntries, groupToCf, node.AccountCode]);
+  }, [effectiveExpanded, compareMode, cmpUploadedData, groupToCf, node.AccountCode]);
 
   const totalCols = 1 + visibleCompanies.length * (compareMode ? 4 : 1);
 
@@ -1034,6 +907,7 @@ const cmpDrillMap = useMemo(() => {
 {effectiveExpanded && drillGroups.map((g, gi) => (
         <DrillGroupRow key={g.groupCode} groupIndex={gi}
           groupCode={g.groupCode} groupName={g.groupName} localRows={g.localRows}
+          coAmounts={g.coAmounts} terminal={g.terminal}
           visibleCompanies={visibleCompanies} colors={colors}
           body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style} compareMode={compareMode}
           cmpDrillMap={cmpDrillMap} searchQuery={searchQuery} />
@@ -1045,7 +919,7 @@ const cmpDrillMap = useMemo(() => {
 /* ═══════════════════════════════════════════════════════════════════════
    MAIN
    ═══════════════════════════════════════════════════════════════════════ */
-export default function ConsolidatedCashFlowPage({ token, onNavigate }) {
+export default function ConsolidatedCashFlowPage({ token, onNavigate, activeStandardKey = null }) {
 const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
   const subbody1Style = useTypo("subbody1");
@@ -1064,6 +938,7 @@ const { access: resourceAccess } = useCurrentUserResourceAccess();
   const [pgcCfMapping,           setPgcCfMapping]           = useState(null);
   const [danishIfrsCfMapping,    setDanishIfrsCfMapping]    = useState(null);
   const [spanishIfrsEsCfMapping, setSpanishIfrsEsCfMapping] = useState(null);
+  const [customCfMapping,        setCustomCfMapping]        = useState(null);
 
   const [year,      setYear]      = useState("");
   const [month,     setMonth]     = useState("");
@@ -1153,7 +1028,13 @@ fetch(`${BASE}/mapped-cashflow-accounts`, { headers: h }).then(r => r.json()).th
   const loadCfStandardMapping = (table_rows, table_sections, setter) => {
     const SB_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
     const SB_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
-    const sb = { apikey: SB_APIKEY, Authorization: `Bearer ${SB_APIKEY}` };
+    let sbToken = SB_APIKEY;
+    try {
+      const key = Object.keys(localStorage).find(k => k.includes("auth-token"));
+      const parsed = key ? JSON.parse(localStorage.getItem(key)) : null;
+      sbToken = parsed?.access_token ?? parsed?.data?.session?.access_token ?? SB_APIKEY;
+    } catch { /* fall back to publishable */ }
+    const sb = { apikey: SB_APIKEY, Authorization: `Bearer ${sbToken}` };
     Promise.all([
       fetch(`${SB_URL}/${table_rows}?select=*&order=sort_order.asc`,    { headers: sb }).then(r => r.json()),
       fetch(`${SB_URL}/${table_sections}?select=*&order=sort_order.asc`, { headers: sb }).then(r => r.json()),
@@ -1170,22 +1051,62 @@ fetch(`${BASE}/mapped-cashflow-accounts`, { headers: h }).then(r => r.json()).th
     }).catch(() => setter(null));
   };
 
+  // Loader for CUSTOM standards — uses the unified standard_statement_*
+  // tables filtered by (standard_key, statement=CF).
+  const loadCustomCfMapping = (standardKey, setter) => {
+    const SB_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
+    const SB_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
+    let sbToken = SB_APIKEY;
+    try {
+      const key = Object.keys(localStorage).find(k => k.includes("auth-token"));
+      const parsed = key ? JSON.parse(localStorage.getItem(key)) : null;
+      sbToken = parsed?.access_token ?? parsed?.data?.session?.access_token ?? SB_APIKEY;
+    } catch { /* fall back to publishable */ }
+    const sb = { apikey: SB_APIKEY, Authorization: `Bearer ${sbToken}` };
+    Promise.all([
+      fetch(`${SB_URL}/standard_statement_rows?select=*&standard_key=eq.${encodeURIComponent(standardKey)}&statement=eq.CF&order=sort_order.asc`, { headers: sb }).then(r => r.json()),
+      fetch(`${SB_URL}/standard_statement_sections?select=*&standard_key=eq.${encodeURIComponent(standardKey)}&statement=eq.CF&order=sort_order.asc`, { headers: sb }).then(r => r.json()),
+    ]).then(([rowsArr, secsArr]) => {
+      if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
+      const rows = new Map();
+      rowsArr.forEach(r => rows.set(String(r.account_code), {
+        section: String(r.section_code), sortOrder: Number(r.sort_order),
+        isSum: !!r.is_sum, showInSummary: !!r.show_in_summary, level: Number(r.level ?? 0),
+        parent_code: r.parent_code ? String(r.parent_code) : "",
+        account_name: r.account_name ?? "",
+      }));
+      const sections = new Map();
+      secsArr.forEach(s => sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) }));
+      setter({ rows, sections });
+    }).catch(() => setter(null));
+  };
+
+  // When a CUSTOM standard is bound, it takes priority. Legacy sniff (cfStandard)
+  // still runs as fallback for clients on PGC / DanishIFRS / SpanishIFRS-ES.
+  const isCustomStandard = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+
   useEffect(() => {
-    if (cfStandard !== "pgc")            { setPgcCfMapping(null); return; }
+    if (!isCustomStandard) { setCustomCfMapping(null); return; }
+    loadCustomCfMapping(activeStandardKey, setCustomCfMapping);
+  }, [activeStandardKey, isCustomStandard]);
+
+  useEffect(() => {
+    if (isCustomStandard || cfStandard !== "pgc") { setPgcCfMapping(null); return; }
     loadCfStandardMapping("pgc_cf_rows", "pgc_cf_sections", setPgcCfMapping);
-  }, [cfStandard]);
+  }, [cfStandard, isCustomStandard]);
 
   useEffect(() => {
-    if (cfStandard !== "danish_ifrs")    { setDanishIfrsCfMapping(null); return; }
+    if (isCustomStandard || cfStandard !== "danish_ifrs") { setDanishIfrsCfMapping(null); return; }
     loadCfStandardMapping("danish_ifrs_cf_rows", "danish_ifrs_cf_sections", setDanishIfrsCfMapping);
-  }, [cfStandard]);
+  }, [cfStandard, isCustomStandard]);
 
   useEffect(() => {
-    if (cfStandard !== "spanish_ifrs_es") { setSpanishIfrsEsCfMapping(null); return; }
+    if (isCustomStandard || cfStandard !== "spanish_ifrs_es") { setSpanishIfrsEsCfMapping(null); return; }
     loadCfStandardMapping("spanish_ifrs_es_cf_rows", "spanish_ifrs_es_cf_sections", setSpanishIfrsEsCfMapping);
-  }, [cfStandard]);
+  }, [cfStandard, isCustomStandard]);
 
-  const activeCfMapping = pgcCfMapping ?? danishIfrsCfMapping ?? spanishIfrsEsCfMapping;
+  // CUSTOM wins; then sniffed built-in.
+  const activeCfMapping = customCfMapping ?? pgcCfMapping ?? danishIfrsCfMapping ?? spanishIfrsEsCfMapping;
 
 // Probe removed — the data fetch itself walks back if it returns empty.
 
@@ -1464,8 +1385,14 @@ filteredUploadedData.forEach(r => {
   }, [cfMetadata]);
 
   const codesWithValue = useMemo(() => {
+    // With a CUSTOM standard bound, mirror Contributive: keep ONLY codes that
+    // exist in the standard's CF rows. Any code with value that isn't in the
+    // standard is dropped (integrity: the two views stay in sync). Built-in
+    // standards keep their prior behaviour (customRows stays null).
+    const customRows = isCustomStandard ? activeCfMapping?.rows : null;
     const out = [];
     pivot.forEach((byCo, code) => {
+      if (customRows && !customRows.has(String(code))) return;
       let total = 0;
       for (const co of Object.keys(byCo)) {
         for (const r of byCo[co] || []) total += Number(r._cfAmount ?? 0);
@@ -1473,7 +1400,7 @@ filteredUploadedData.forEach(r => {
       if (Math.round(total) !== 0) out.push(code);
     });
     return out;
-  }, [pivot]);
+  }, [pivot, isCustomStandard, activeCfMapping]);
 
   const sectionForCode = (code) => {
     const fromSb = activeCfMapping?.rows?.get(code);
@@ -1920,22 +1847,8 @@ const getCmpValAt = (code, co) => {
         const co = r.CompanyShortName ?? r.companyShortName ?? "";
         const cfs = groupToCf?.get(gc) ?? [];
         if (!cfs.includes(cfCode)) return;
-        const origin = r.Origin ?? r.origin ?? "";
-        const lc = r.LocalAccountCode ?? r.localAccountCode ?? "";
-        if (origin === "Journal" || !lc) return;
         const amt = Number(r.AmountYTD ?? r.amountYTD ?? 0);
         add(`GRP::${gc}::${co}`, amt);
-        add(`ERP::${gc}::${lc}::${co}`, amt);
-      });
-      cmpJournalEntries.forEach(j => {
-        const gc = String(j.AccountCode ?? j.accountCode ?? "");
-        const co = j.CompanyShortName ?? j.companyShortName ?? "";
-        const cfs = groupToCf?.get(gc) ?? [];
-        if (!cfs.includes(cfCode)) return;
-        const jn = String(j.JournalNumber ?? j.journalNumber ?? "");
-        const amt = Number(j.AmountYTD ?? j.amountYTD ?? 0);
-        add(`GRP::${gc}::${co}`, amt);
-        add(`JRN::${gc}::${jn}::${co}`, amt);
       });
       return m;
     };
@@ -1943,42 +1856,19 @@ const getCmpValAt = (code, co) => {
     // Build drill groups for a given CF code (same logic as SheetRow)
     const buildDrillGroups = (cfCode) => {
       const byGroup = new Map();
-      const ensure = (gc, gn) => {
-        if (!byGroup.has(gc)) byGroup.set(gc, { groupCode: gc, groupName: gn ?? "", rowMap: new Map() });
-        return byGroup.get(gc);
-      };
       filteredUploadedData.forEach(r => {
         const gc = String(r.AccountCode ?? r.accountCode ?? "");
         const co = r.CompanyShortName ?? r.companyShortName ?? "";
+        if (!gc || !co) return;
         const cfs = groupToCf?.get(gc) ?? [];
         if (!cfs.includes(cfCode)) return;
-        const origin = r.Origin ?? r.origin ?? "";
-        const lc = r.LocalAccountCode ?? r.localAccountCode ?? "";
-        if (origin === "Journal" || !lc) return;
-        const b = ensure(gc, r.AccountName ?? r.accountName);
-        const key = `ERP::${lc}::${co}`;
         const amt = Number(r.AmountYTD ?? r.amountYTD ?? 0);
-        if (!b.rowMap.has(key)) b.rowMap.set(key, { localCode: lc, localName: r.LocalAccountName ?? r.localAccountName ?? "", isJournal: false, co, amt: 0 });
-        b.rowMap.get(key).amt += amt;
+        if (!byGroup.has(gc)) byGroup.set(gc, { groupCode: gc, groupName: String(r.AccountName ?? r.accountName ?? ""), coAmounts: {}, localRows: [], terminal: true });
+        const b = byGroup.get(gc);
+        if (!b.groupName && (r.AccountName ?? r.accountName)) b.groupName = String(r.AccountName ?? r.accountName);
+        b.coAmounts[co] = (b.coAmounts[co] ?? 0) + amt;
       });
-      journalEntries.forEach(j => {
-        const gc = String(j.AccountCode ?? j.accountCode ?? "");
-        const co = j.CompanyShortName ?? j.companyShortName ?? "";
-        const cfs = groupToCf?.get(gc) ?? [];
-        if (!cfs.includes(cfCode)) return;
-        const jn = String(j.JournalNumber ?? j.journalNumber ?? "");
-        const jh = j.JournalHeader ?? j.journalHeader ?? "";
-        const jt = j.JournalType ?? j.journalType ?? "";
-        const b = ensure(gc, j.AccountName ?? j.accountName);
-        const key = `JRN::${jn}::${co}`;
-        const amt = Number(j.AmountYTD ?? j.amountYTD ?? 0);
-        if (!b.rowMap.has(key)) b.rowMap.set(key, { localCode: jn || "JRN", localName: jh || jt || "Journal", isJournal: true, co, amt: 0 });
-        b.rowMap.get(key).amt += amt;
-      });
-      return [...byGroup.values()].map(g => ({
-        ...g,
-        localRows: [...g.rowMap.values()].sort((a, b) => a.isJournal !== b.isJournal ? (a.isJournal ? 1 : -1) : (a.localCode || "").localeCompare(b.localCode || "")),
-      })).sort((a, b) => a.groupCode.localeCompare(b.groupCode));
+      return [...byGroup.values()].sort((a, b) => a.groupCode.localeCompare(b.groupCode));
     };
 
     let dataIdx = 0;
@@ -2033,7 +1923,7 @@ const writeAccountRow = ({ code, name, depth, isBold }) => {
       return rowTotal;
     };
 
-const writeDrillGroupRow = ({ groupCode, groupName, depth, localRows, cmpMap }) => {
+const writeDrillGroupRow = ({ groupCode, groupName, depth, localRows, coAmounts, cmpMap }) => {
       const labelCell = ws.getCell(curRow, 1);
       labelCell.value = `${groupCode}  ${groupName ?? ""}`.trim();
       labelCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF4F6FB" } };
@@ -2041,11 +1931,15 @@ const writeDrillGroupRow = ({ groupCode, groupName, depth, localRows, cmpMap }) 
       labelCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 + Math.min(depth, 6) };
       labelCell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
 
-      // Sum local rows per company
+      // Prefer consolidated group totals; fall back to summing local rows.
       const amtByCo = {};
-      (localRows ?? []).forEach(lr => {
-        amtByCo[lr.co] = (amtByCo[lr.co] ?? 0) + lr.amt;
-      });
+      if (coAmounts) {
+        Object.assign(amtByCo, coAmounts);
+      } else {
+        (localRows ?? []).forEach(lr => {
+          amtByCo[lr.co] = (amtByCo[lr.co] ?? 0) + lr.amt;
+        });
+      }
 
       let rowTotal = 0;
       visCo.forEach((co, i) => {
@@ -2123,7 +2017,7 @@ const writeLeafWithDrill = (code, name, depth, isBold) => {
       const groups = buildDrillGroups(code);
       const cmpMap = sheetCompare ? buildCmpDrillMap(code) : null;
       groups.forEach(g => {
-        writeDrillGroupRow({ groupCode: g.groupCode, groupName: g.groupName, depth: depth + 1, localRows: g.localRows, cmpMap });
+        writeDrillGroupRow({ groupCode: g.groupCode, groupName: g.groupName, depth: depth + 1, localRows: g.localRows, coAmounts: g.coAmounts, cmpMap });
         g.localRows.forEach(lr => {
           writeLocalRow({
             localCode: lr.localCode, localName: lr.localName,
@@ -2247,42 +2141,19 @@ const monthLabel = month ? T(`month_${parseInt(month)}`) : "";
     // ─── Drill builder (same as XLSX) ────────────────────────────────
     const buildDrillForCode = (cfCode) => {
       const byGroup = new Map();
-      const ensure = (gc, gn) => {
-        if (!byGroup.has(gc)) byGroup.set(gc, { groupCode: gc, groupName: gn ?? "", rowMap: new Map() });
-        return byGroup.get(gc);
-      };
       filteredUploadedData.forEach(r => {
         const gc = String(r.AccountCode ?? r.accountCode ?? "");
         const co = r.CompanyShortName ?? r.companyShortName ?? "";
+        if (!gc || !co) return;
         const cfs = groupToCf?.get(gc) ?? [];
         if (!cfs.includes(cfCode)) return;
-        const origin = r.Origin ?? r.origin ?? "";
-        const lc = r.LocalAccountCode ?? r.localAccountCode ?? "";
-        if (origin === "Journal" || !lc) return;
-        const b = ensure(gc, r.AccountName ?? r.accountName);
-        const key = `ERP::${lc}::${co}`;
         const amt = Number(r.AmountYTD ?? r.amountYTD ?? 0);
-        if (!b.rowMap.has(key)) b.rowMap.set(key, { localCode: lc, localName: r.LocalAccountName ?? r.localAccountName ?? "", isJournal: false, co, amt: 0 });
-        b.rowMap.get(key).amt += amt;
+        if (!byGroup.has(gc)) byGroup.set(gc, { groupCode: gc, groupName: String(r.AccountName ?? r.accountName ?? ""), coAmounts: {}, localRows: [], terminal: true });
+        const b = byGroup.get(gc);
+        if (!b.groupName && (r.AccountName ?? r.accountName)) b.groupName = String(r.AccountName ?? r.accountName);
+        b.coAmounts[co] = (b.coAmounts[co] ?? 0) + amt;
       });
-      journalEntries.forEach(j => {
-        const gc = String(j.AccountCode ?? j.accountCode ?? "");
-        const co = j.CompanyShortName ?? j.companyShortName ?? "";
-        const cfs = groupToCf?.get(gc) ?? [];
-        if (!cfs.includes(cfCode)) return;
-        const jn = String(j.JournalNumber ?? j.journalNumber ?? "");
-        const jh = j.JournalHeader ?? j.journalHeader ?? "";
-        const jt = j.JournalType ?? j.journalType ?? "";
-        const b = ensure(gc, j.AccountName ?? j.accountName);
-        const key = `JRN::${jn}::${co}`;
-        const amt = Number(j.AmountYTD ?? j.amountYTD ?? 0);
-        if (!b.rowMap.has(key)) b.rowMap.set(key, { localCode: jn || "JRN", localName: jh || jt || "Journal", isJournal: true, co, amt: 0 });
-        b.rowMap.get(key).amt += amt;
-      });
-      return [...byGroup.values()].map(g => ({
-        ...g,
-        localRows: [...g.rowMap.values()].sort((a, b) => a.isJournal !== b.isJournal ? (a.isJournal ? 1 : -1) : (a.localCode || "").localeCompare(b.localCode || "")),
-      })).sort((a, b) => a.groupCode.localeCompare(b.groupCode));
+      return [...byGroup.values()].sort((a, b) => a.groupCode.localeCompare(b.groupCode));
     };
 
     const getValAt = (code, co) => {
@@ -2302,22 +2173,8 @@ const getCmpValAt = (code, co) => {
         const co = r.CompanyShortName ?? r.companyShortName ?? "";
         const cfs = groupToCf?.get(gc) ?? [];
         if (!cfs.includes(cfCode)) return;
-        const origin = r.Origin ?? r.origin ?? "";
-        const lc = r.LocalAccountCode ?? r.localAccountCode ?? "";
-        if (origin === "Journal" || !lc) return;
         const amt = Number(r.AmountYTD ?? r.amountYTD ?? 0);
         add(`GRP::${gc}::${co}`, amt);
-        add(`ERP::${gc}::${lc}::${co}`, amt);
-      });
-      cmpJournalEntries.forEach(j => {
-        const gc = String(j.AccountCode ?? j.accountCode ?? "");
-        const co = j.CompanyShortName ?? j.companyShortName ?? "";
-        const cfs = groupToCf?.get(gc) ?? [];
-        if (!cfs.includes(cfCode)) return;
-        const jn = String(j.JournalNumber ?? j.journalNumber ?? "");
-        const amt = Number(j.AmountYTD ?? j.amountYTD ?? 0);
-        add(`GRP::${gc}::${co}`, amt);
-        add(`JRN::${gc}::${jn}::${co}`, amt);
       });
       return m;
     };
@@ -2374,11 +2231,12 @@ const getCmpValAt = (code, co) => {
         rowTags.push({ cfCode: code, cfName: name });
       };
 
-const pushGroupRow = ({ groupCode, groupName, depth, localRows, cmpMap }) => {
+const pushGroupRow = ({ groupCode, groupName, depth, localRows, coAmounts, cmpMap }) => {
         const indent = "  ".repeat(Math.min(depth, 6));
         const label = `${indent}${groupCode}  ${groupName ?? ""}`.trim();
         const amtByCo = {};
-        (localRows ?? []).forEach(lr => { amtByCo[lr.co] = (amtByCo[lr.co] ?? 0) + lr.amt; });
+        if (coAmounts) { Object.assign(amtByCo, coAmounts); }
+        else { (localRows ?? []).forEach(lr => { amtByCo[lr.co] = (amtByCo[lr.co] ?? 0) + lr.amt; }); }
 
         const cells = [{ content: label, styles: { fontStyle: "italic", halign: "left", fillColor: SUBBG, textColor: NAVY } }];
         chunkCompanies.forEach(co => {
@@ -2452,7 +2310,7 @@ const pushLeafWithDrill = (code, name, depth, isBold) => {
         const groups = buildDrillForCode(code);
         const cmpMap = includeCompare ? buildCmpDrillForCode(code) : null;
         groups.forEach(g => {
-          pushGroupRow({ groupCode: g.groupCode, groupName: g.groupName, depth: depth + 1, localRows: g.localRows, cmpMap });
+          pushGroupRow({ groupCode: g.groupCode, groupName: g.groupName, depth: depth + 1, localRows: g.localRows, coAmounts: g.coAmounts, cmpMap });
           g.localRows.forEach(lr => {
             pushLocalRow({
               localCode: lr.localCode, localName: lr.localName,

@@ -4399,7 +4399,6 @@ const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
         ]);
         if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
 const rows = new Map();
-        console.log('[loadCustomMapping]', statement, 'first row:', JSON.stringify(rowsArr[0]));
         rowsArr.forEach(r => rows.set(String(r.account_code), {
           section: String(r.section_code),
           sortOrder: Number(r.sort_order),

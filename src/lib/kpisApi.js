@@ -82,6 +82,7 @@ export async function createCompanyKpi({
   scope = "individual",
   kpiType = "custom",
   sourceSystemKpiId = null,
+  variations = null,
 }) {
   const payload = {
     company_id:           companyId,
@@ -98,6 +99,7 @@ export async function createCompanyKpi({
     scope,
     kpi_type:             kpiType,
     source_system_kpi_id: sourceSystemKpiId,
+    variations,
   };
 
   const res = await fetch(`${SUPABASE_URL}/company_kpis`, {
@@ -121,6 +123,7 @@ export async function updateCompanyKpi({
   kpiId, userId,
   label, description, category, tag, format, formula, benchmark,
   kpiType, sourceSystemKpiId,
+  variations,
 }) {
   const payload = { updated_by: userId };
   if (label              !== undefined) payload.label                = label;
@@ -132,6 +135,7 @@ export async function updateCompanyKpi({
   if (benchmark          !== undefined) payload.benchmark            = benchmark;
   if (kpiType            !== undefined) payload.kpi_type             = kpiType;
   if (sourceSystemKpiId  !== undefined) payload.source_system_kpi_id = sourceSystemKpiId;
+  if (variations         !== undefined) payload.variations           = variations;
 
   const res = await fetch(
     `${SUPABASE_URL}/company_kpis?kpi_id=eq.${kpiId}`,
@@ -199,7 +203,7 @@ export async function importKpiToScope({ kpiId, targetScope, companyId, userId }
   const src = Array.isArray(rows) ? rows[0] : rows;
   if (!src) throw new Error("KPI not found");
 
-  // 2. Create a copy with the target scope
+// 2. Create a copy with the target scope
   return createCompanyKpi({
     companyId,
     userId,
@@ -210,6 +214,7 @@ export async function importKpiToScope({ kpiId, targetScope, companyId, userId }
     format:           src.format,
     formula:          src.formula,
     benchmark:        src.benchmark,
+    variations:       src.variations ?? null,
     contextMappingId: null,   // import starts without a mapping context
     scope:            targetScope,
   });

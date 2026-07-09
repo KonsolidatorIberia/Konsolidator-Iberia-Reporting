@@ -108,7 +108,6 @@ const sbGet = async (path) => {
 
 function detectStandard(groupAccounts) {
   if (!groupAccounts?.length) {
-    console.log("[KpiResolver] detectStandard: no groupAccounts");
     return null;
   }
 
@@ -144,13 +143,7 @@ function detectStandard(groupAccounts) {
   else if (isSpanishIFRS)   standard = "SpanishIFRS";
   else if (isDanishIFRS)    standard = "DanishIFRS";
 
-  console.log("[KpiResolver] detectStandard:", {
-    standard,
-    sampleCodes: codes.slice(0, 10),
-    flags: { isPGC, isSpanishIfrsEs, isSpanishIFRS, isDanishIFRS },
-  });
-
-  return standard;
+return standard;
 }
 
 const STANDARD_TO_TABLE = {
@@ -221,10 +214,7 @@ async function loadStandardMapping(standard, groupAccounts) {
   // STEP 3: invert into ccTagToCodes and sectionCodes
   const ccTagToCodes = new Map();
   const sectionCodes = new Map();
-  let taggedCount = 0;
-  const totalAccounts = (groupAccounts || []).length;
-
-  for (const ga of (groupAccounts || [])) {
+for (const ga of (groupAccounts || [])) {
     const code = String(ga.AccountCode);
     let cur = code;
     let hops = 0;
@@ -237,8 +227,7 @@ async function loadStandardMapping(standard, groupAccounts) {
       cur = parentOf.get(cur);
       hops++;
     }
-    if (foundTag) {
-      taggedCount++;
+if (foundTag) {
       if (!ccTagToCodes.has(foundTag)) ccTagToCodes.set(foundTag, []);
       ccTagToCodes.get(foundTag).push(code);
       if (foundSection) {
@@ -249,7 +238,6 @@ async function loadStandardMapping(standard, groupAccounts) {
     }
   }
 
-  console.log(`[KpiResolver] ${standard} mapping loaded: ${ccTagToCodes.size} cc_tags, ${sectionCodes.size} sections, ${taggedCount}/${totalAccounts} accounts tagged via inheritance`);
 
   return { ccTagToCodes, sectionCodes };
 }
@@ -279,7 +267,6 @@ const overrideByKpi = new Map();
     companyOverrides.forEach(o => overrideByKpi.set(o.kpi_id, o.formula));
   }
 
-  console.log(`[KpiResolver] loaded ${defs.length} KPI definitions`);
 
   return defs.map(d => ({
     id:          d.id,
@@ -374,6 +361,153 @@ function pivotSum(pivot, codes) {
   return total;
 }
 
+// ── Party cell formula resolver (ported from StatisticalPartiesPage.jsx) ──
+const PARTY_MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+const PARTY_COL_LETTERS = ["A","B","C","D","E","F","G","H","I","J","K","L"];
+const PARTY_COL_INDEX = Object.fromEntries(PARTY_COL_LETTERS.map((c, i) => [c, i]));
+function _partyParseRef(tok) {
+  const m = /^([A-La-l])(\d+)$/.exec(tok);
+  if (!m) return null;
+  const col = PARTY_COL_INDEX[m[1].toUpperCase()];
+  const row = Number(m[2]) - 1;
+  if (row < 0) return null;
+  return { row, col };
+}
+function _partyTokenize(src) {
+  const tokens = []; let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch === " " || ch === "\t") { i++; continue; }
+    if ("+-*/()%^:,".includes(ch)) { tokens.push({ t: ch }); i++; continue; }
+    if (/[0-9.]/.test(ch)) {
+      let j = i;
+      while (j < src.length && /[0-9.]/.test(src[j])) j++;
+      tokens.push({ t: "num", v: Number(src.slice(i, j)) });
+      i = j; continue;
+    }
+    if (/[A-Za-z]/.test(ch)) {
+      let j = i;
+      while (j < src.length && /[A-Za-z0-9]/.test(src[j])) j++;
+      const word = src.slice(i, j);
+      const asRef = _partyParseRef(word);
+      if (asRef) tokens.push({ t: "ref", v: asRef, raw: word });
+      else tokens.push({ t: "name", v: word.toUpperCase() });
+      i = j; continue;
+    }
+    return null;
+  }
+  return tokens;
+}
+function _partyEvalFormula(formulaStr, computed, dims, resolving) {
+  const src = formulaStr.trim().replace(/^=/, "");
+  const tokens = _partyTokenize(src);
+  if (!tokens) return NaN;
+  let pos = 0;
+  const peek = () => tokens[pos];
+  const eat = (t) => { const tok = tokens[pos]; if (tok && tok.t === t) { pos++; return tok; } return null; };
+  const resolveRef = (ref) => {
+    if (ref.row < 0 || ref.row >= dims.length) return 0;
+    const dimCode = dims[ref.row];
+    const month = ref.col + 1;
+    const key = `${dimCode}:${month}`;
+    if (resolving.has(key)) return 0;
+    const cached = computed[dimCode]?.[month];
+    if (cached != null) return cached;
+    return 0;
+  };
+  const parseExpr = () => {
+    let left = parseTerm();
+    while (peek() && (peek().t === "+" || peek().t === "-")) {
+      const op = tokens[pos++].t;
+      const right = parseTerm();
+      left = op === "+" ? left + right : left - right;
+    }
+    return left;
+  };
+  const parseTerm = () => {
+    let left = parseFactor();
+    while (peek() && (peek().t === "*" || peek().t === "/")) {
+      const op = tokens[pos++].t;
+      const right = parseFactor();
+      left = op === "*" ? left * right : left / right;
+    }
+    return left;
+  };
+  const parseFactor = () => {
+    let val = parseUnary();
+    if (peek() && peek().t === "%") { pos++; val = val / 100; }
+    if (peek() && peek().t === "^") { pos++; val = Math.pow(val, parseFactor()); }
+    return val;
+  };
+  const parseUnary = () => {
+    if (peek() && peek().t === "-") { pos++; return -parseUnary(); }
+    if (peek() && peek().t === "+") { pos++; return parseUnary(); }
+    return parsePrimary();
+  };
+  const parsePrimary = () => {
+    const tok = peek();
+    if (!tok) return 0;
+    if (tok.t === "num") { pos++; return tok.v; }
+    if (tok.t === "ref") { pos++; return resolveRef(tok.v); }
+    if (tok.t === "(") { pos++; const v = parseExpr(); eat(")"); return v; }
+    if (tok.t === "name") {
+      const name = tok.v; pos++;
+      if (!eat("(")) return 0;
+      const first = eat("ref");
+      if (first && eat(":")) {
+        const last = eat("ref");
+        eat(")");
+        if (!last) return 0;
+        const r0 = Math.min(first.v.row, last.v.row);
+        const r1 = Math.max(first.v.row, last.v.row);
+        const c0 = Math.min(first.v.col, last.v.col);
+        const c1 = Math.max(first.v.col, last.v.col);
+        const vals = [];
+        for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) vals.push(resolveRef({ row: r, col: c }));
+        if (name === "SUM") return vals.reduce((s, v) => s + v, 0);
+        if (name === "AVG" || name === "AVERAGE") return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+        if (name === "MIN") return vals.length ? Math.min(...vals) : 0;
+        if (name === "MAX") return vals.length ? Math.max(...vals) : 0;
+        return 0;
+      }
+      const v = parseExpr(); eat(")");
+      if (name === "ABS") return Math.abs(v);
+      return v;
+    }
+    return 0;
+  };
+  try { const r = parseExpr(); return Number.isFinite(r) ? r : NaN; } catch { return NaN; }
+}
+function evaluatePartyYear(yearVals, dims) {
+  const computed = {};
+  for (const dim of dims) {
+    computed[dim] = {};
+    const dimMap = yearVals[dim] ?? {};
+    for (const m of PARTY_MONTHS) {
+      const cell = dimMap[m];
+      if (!cell) continue;
+      if (cell.formula == null && cell.value != null) computed[dim][m] = cell.value;
+    }
+  }
+  for (let pass = 0; pass < 20; pass++) {
+    let changed = false;
+    for (const dim of dims) {
+      const dimMap = yearVals[dim] ?? {};
+      for (const m of PARTY_MONTHS) {
+        const cell = dimMap[m];
+        if (!cell?.formula) continue;
+        const key = `${dim}:${m}`;
+        const resolving = new Set([key]);
+        const v = _partyEvalFormula(cell.formula, computed, dims, resolving);
+        const prev = computed[dim][m];
+        if (Number.isFinite(v) && prev !== v) { computed[dim][m] = v; changed = true; }
+      }
+    }
+    if (!changed) break;
+  }
+  return computed;
+}
+
 function evalFormulaWithCcTags(node, pivot, cache, kpiList, ccTagToCodes, sectionCodes) {
   if (!node) return 0;
 
@@ -426,32 +560,28 @@ case "accountGroup": {
     }
 case "manual": return Number(node.value) || 0;
 case "party": {
-      // Statistical party lookup: sum party.values across the currently-
-      // selected dimensions for this pivot's company & period. Shape-aware:
-      //   shared:      values[year][dim][month]
-      //   per-company: values[company][year][dim][month]
       if (!pivot.__parties || !pivot.__partyContext) return 0;
       const party = pivot.__parties.get(node.partyId);
       if (!party) return 0;
       const ctx = pivot.__partyContext;
       if (ctx.company && party.companies?.length && !party.companies.includes(ctx.company)) return 0;
       const shared = party.sharedAcrossCompanies !== false;
-      const yearTree = shared
-        ? (party.values ?? {})
-        : (party.values?.[ctx.company] ?? {});
+      const yearTree = shared ? (party.values ?? {}) : (party.values?.[ctx.company] ?? {});
       const yearMap = yearTree[String(ctx.year)];
       if (!yearMap) return 0;
+      const cacheKey = `party:${node.partyId}:${ctx.company ?? "_"}:${ctx.year}`;
+      let computed = cache.get(cacheKey);
+      if (!computed) {
+        computed = evaluatePartyYear(yearMap, party.dims);
+        cache.set(cacheKey, computed);
+      }
       const selectedDims = ctx.selectedDims && ctx.selectedDims.size > 0
         ? party.dims.filter(d => ctx.selectedDims.has(d))
         : party.dims;
       const dimsToSum = node.dimCode ? [node.dimCode] : selectedDims;
       let total = 0;
       for (const dim of dimsToSum) {
-        const dimMap = yearMap[dim];
-        if (!dimMap) continue;
-        const cell = dimMap[ctx.month];
-        if (cell == null) continue;
-        const v = typeof cell === "object" ? cell.value : cell;
+        const v = computed[dim]?.[ctx.month];
         if (typeof v === "number") total += v;
       }
       return total;
@@ -481,12 +611,20 @@ case "party": {
       cache.set(node.kpiId, val);
       return val;
     }
-    case "text": {
+case "text": {
       if (!node.expression || !node.variables) return 0;
       try {
         let expr = node.expression;
+        const scope = pivot.__variationScope;
+        const variations = pivot.__currentKpiVariations;
         Object.entries(node.variables).forEach(([letter, varNode]) => {
-          const v = varNode ? evalFormulaWithCcTags(varNode, pivot, cache, kpiList, ccTagToCodes, sectionCodes) : 0;
+          let effectiveNode = varNode;
+          if (scope && variations) {
+            const map = scope.kind === "company" ? variations.byCompany : (scope.kind === "dimension" ? variations.byDimension : null);
+            const override = map?.[scope.key]?.[letter];
+            if (override) effectiveNode = override;
+          }
+          const v = effectiveNode ? evalFormulaWithCcTags(effectiveNode, pivot, cache, kpiList, ccTagToCodes, sectionCodes) : 0;
           expr = expr.replaceAll(letter, `(${v ?? 0})`);
         });
         return Function(`"use strict"; return (${expr})`)() ?? 0;
@@ -494,17 +632,8 @@ case "party": {
     }
 case "cc": {
       const codes = ccTagToCodes.get(node.tag);
-      if (!codes) {
-        if (node.tag?.startsWith("BS_")) {
-          console.log(`[evalFormula] cc tag NOT FOUND: ${node.tag}`);
-        }
-        return 0;
-      }
-      const result = -pivotSum(pivot, codes);
-      if (node.tag?.startsWith("BS_")) {
-        console.log(`[evalFormula] cc tag ${node.tag}: codes=${codes.length}, sum=${result}`);
-      }
-      return result;
+      if (!codes) return 0;
+      return -pivotSum(pivot, codes);
     }
     case "section": {
       const key = `${node.statement}::${node.section}`;
@@ -523,10 +652,13 @@ function computeAllKpisResolved(visibleKpis, pivot, ccTagToCodes, sectionCodes, 
   const cache = new Map();
   visibleKpis.forEach(kpi => {
     if (!cache.has(kpi.id)) {
+      // Inject the current KPI's variations so the "text" case can pick per-scope overrides.
+      pivot.__currentKpiVariations = kpi.variations ?? null;
       const val = evalFormulaWithCcTags(kpi.formula, pivot, cache, refList, ccTagToCodes, sectionCodes);
       cache.set(kpi.id, val);
     }
   });
+  pivot.__currentKpiVariations = null;
   return cache;
 }
 // ════════════════════════════════════════════════════════════════════════════
@@ -580,6 +712,15 @@ function PdfLogoIcon({ size = 20 }) {
 }
 
 const BASE_URL = "";
+
+// Module-scope cache of dimensions ever seen per company. Survives re-renders
+// without needing refs or state. Cleared implicitly on full page reload.
+const __ALL_DIMS_CACHE = new Map();
+function _getAllDimsCache(companyId) {
+  const key = companyId ?? "_default";
+  if (!__ALL_DIMS_CACHE.has(key)) __ALL_DIMS_CACHE.set(key, new Map());
+  return __ALL_DIMS_CACHE.get(key);
+}
 const MONTHS = [
   { value: 1, label: "January" }, { value: 2, label: "February" },
   { value: 3, label: "March" }, { value: 4, label: "April" },
@@ -1137,7 +1278,7 @@ kList.forEach((kpi, rowIdx) => {
         if (hasFormula) {
           // description row (if any) will sit right after the KPI row, then
           // one row per variable.
-          let base = dataRowNum + 1 + (kpi.description ? 1 : 0);
+   let base = dataRowNum + 1 + (sIdx === 0 && kpi.description ? 1 : 0);
           letters.forEach((L, i) => varRowByLetter.set(L, base + i));
         }
 
@@ -3294,8 +3435,8 @@ const updateExpr = (val) => {
         </div>
       )}
 
-      {/* SlotPicker popover for editing a variable */}
-{editingVar && (
+{/* SlotPicker popover for editing a variable */}
+{editingVar && createPortal(
 <SlotPicker
           onSelect={(node) => updateVar(editingVar, node)}
           onClose={() => setEditingVar(null)}
@@ -3311,7 +3452,7 @@ const updateExpr = (val) => {
           partyContext={partyContext}
           evalPartyValue={evalPartyValue}
         />
-      )}
+      , document.body)}
     </div>
   );
 }
@@ -3662,7 +3803,36 @@ function TagInput({ tag, setTag, allLocalKpis }) {
   );
 }
 
-function KpiEditorModal({ kpi, onSave, onClose, onReset, onEditLibraryKpi, onDeleteLibraryKpi, onDuplicate, allLocalKpis = [], systemKpis = [], accountCodes, localAccounts = [], groupAccountsList = [], accountCodeLabels = new Map(), builtInIds = new Set(), currentUserId, dimsByAccount = new Map(), localDimsByAccount = new Map(), parties = [], partyContext = null, evalPartyValue = null }) {
+function describeVariationNode(node, accountCodeLabels = new Map()) {
+  if (!node) return "";
+  const parseCodeWithDim = (raw) => {
+    if (typeof raw === "string" && raw.includes(":::")) {
+      const [code, dimGroup, dimCode] = raw.split(":::");
+      return { code, dimGroup, dimCode };
+    }
+    return { code: raw };
+  };
+  if (node.type === "accountGroup") {
+    const { code, dimGroup, dimCode } = parseCodeWithDim(node.prefix ?? node.groupCode);
+    const name = accountCodeLabels.get(code);
+    const base = name ? `${code} — ${name}` : `Grupo ${code}`;
+    return dimGroup ? `${base} → ${dimGroup}: ${dimCode}` : base;
+  }
+  if (node.type === "account") {
+    const { code, dimGroup, dimCode } = parseCodeWithDim(node.accountCode);
+    const name = accountCodeLabels.get(code);
+    const base = name ? `${code} — ${name}` : code;
+    return dimGroup ? `${base} → ${dimGroup}: ${dimCode}` : base;
+  }
+  if (node.type === "cc") return `${node.tag}`;
+  if (node.type === "section") return `${node.statement} · ${node.section}`;
+  if (node.type === "party") return `${node.partyName ?? "Partida"}${node.dimCode ? ` · ${node.dimCode}` : ""}`;
+  if (node.type === "ref") return `KPI ref`;
+  if (node.type === "manual") return `${node.value}`;
+  return node.type;
+}
+
+function KpiEditorModal({ kpi, onSave, onClose, onReset, onEditLibraryKpi, onDeleteLibraryKpi, onDuplicate, allLocalKpis = [], systemKpis = [], accountCodes, localAccounts = [], groupAccountsList = [], accountCodeLabels = new Map(), builtInIds = new Set(), currentUserId, dimsByAccount = new Map(), localDimsByAccount = new Map(), parties = [], partyContext = null, evalPartyValue = null, variationCompanies = [], companyLabelsMap = new Map(), variationDimensions = [] }) {
   const [mode, setMode] = useState(kpi ? "custom" : "library");
 
   const [label, setLabel] = useState(kpi?.label ?? "");
@@ -3724,6 +3894,62 @@ const [benchmark, setBenchmark] = useState(() => {
     };
   });
 const [tag, setTag] = useState(kpi?.tag ?? "");
+  const [variations, setVariations] = useState(() => {
+    const v = kpi?.variations ?? null;
+    return v && (v.byCompany || v.byDimension) ? { byCompany: v.byCompany ?? {}, byDimension: v.byDimension ?? {} } : { byCompany: {}, byDimension: {} };
+  });
+  const [variationOpen, setVariationOpen] = useState(false);
+  const [variationTab, setVariationTab] = useState("companies");
+  const [expandedCompany, setExpandedCompany] = useState(null);
+  const [expandedDimension, setExpandedDimension] = useState(null);
+  const [slotPickerContext, setSlotPickerContext] = useState(null);
+  const variationCount = () => {
+    let n = 0;
+    Object.values(variations.byCompany).forEach(m => n += Object.keys(m ?? {}).length);
+    Object.values(variations.byDimension).forEach(m => n += Object.keys(m ?? {}).length);
+    return n;
+  };
+  const setOverride = (scope, key, letter, node) => {
+    setVariations(prev => {
+      const bucket = scope === "company" ? "byCompany" : "byDimension";
+      const next = { ...prev, [bucket]: { ...prev[bucket] } };
+      const entry = { ...(next[bucket][key] ?? {}) };
+      if (node) entry[letter] = node;
+      else delete entry[letter];
+if (Object.keys(entry).length > 0) next[bucket][key] = entry;
+      else delete next[bucket][key];
+      return next;
+    });
+  };
+const formulaLetters = useMemo(() => {
+    if (!formula || formula.type !== "text") return [];
+    return Object.keys(formula.variables ?? {});
+  }, [formula]);
+  // Prune orphaned overrides when the formula's variables change (e.g. user
+  // deletes letter B from the builder — any per-company/per-dim override for B
+  // must go with it).
+  useEffect(() => {
+    const validLetters = new Set(formulaLetters);
+    setVariations(prev => {
+      let changed = false;
+      const cleanBucket = (bucket) => {
+        const next = {};
+        Object.entries(bucket).forEach(([key, letters]) => {
+          const filtered = {};
+          Object.entries(letters).forEach(([l, node]) => {
+            if (validLetters.has(l)) filtered[l] = node;
+            else changed = true;
+          });
+          if (Object.keys(filtered).length > 0) next[key] = filtered;
+          else if (Object.keys(letters).length > 0) changed = true;
+        });
+        return next;
+      };
+      const nextByCompany = cleanBucket(prev.byCompany ?? {});
+      const nextByDimension = cleanBucket(prev.byDimension ?? {});
+      return changed ? { byCompany: nextByCompany, byDimension: nextByDimension } : prev;
+    });
+  }, [formulaLetters]);
 const [libSearch, setLibSearch] = useState("");
   const [libCatFilter, setLibCatFilter] = useState(null);
 const [libTagFilter, setLibTagFilter] = useState(null);
@@ -3776,7 +4002,10 @@ return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
 <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-hidden flex flex-col"
-        style={{ boxShadow: "0 32px 80px -16px rgba(26,47,138,0.25), 0 8px 24px -8px rgba(0,0,0,0.08)" }}>
+        style={{
+          boxShadow: "0 32px 80px -16px rgba(26,47,138,0.25), 0 8px 24px -8px rgba(0,0,0,0.08)",
+          ...(variationOpen ? { transform: "translateX(-22rem)", transition: "transform 460ms cubic-bezier(0.34,1.56,0.64,1)" } : {}),
+        }}>
 
 {dupeLabelWarning && (
   <div className="absolute inset-0 z-50 flex items-center justify-center rounded-3xl"
@@ -4222,10 +4451,11 @@ style={{
         )}
 
 
-        {/* Footer — only for custom mode */}
+{/* Footer — only for custom mode */}
 {mode === "custom" && (
         <div className="flex-shrink-0 px-6 py-4 border-t border-gray-100 flex flex-col gap-2"
           style={{ background: "rgba(248,249,255,0.8)" }}>
+          <div className="flex gap-2">
 <button onClick={() => {
             const allLabels = new Set([
               ...(allLocalKpis ?? []).map(k => k.label),
@@ -4243,13 +4473,27 @@ style={{
               setFormulaWarning(formulaErr);
               return;
             }
-            onSave({ label: finalLabel, description, format, tag, benchmark, category: category === "__custom__" ? customCategoryLabel || "Custom" : category, formula });
+            onSave({ label: finalLabel, description, format, tag, benchmark, category: category === "__custom__" ? customCategoryLabel || "Custom" : category, formula, variations });
           }}
             disabled={!label}
-            className="w-full py-3 rounded-xl text-xs font-black transition-all disabled:opacity-40 flex items-center justify-center gap-2"
+            className="flex-1 py-3 rounded-xl text-xs font-black transition-all disabled:opacity-40 flex items-center justify-center gap-2"
             style={{ background: "linear-gradient(135deg, #1a2f8a 0%, #3b54b8 100%)", color: "white", boxShadow: "0 4px 14px -4px rgba(26,47,138,0.5)" }}>
             <Check size={12} /> {kpi ? "Save Changes" : "Create KPI"}
           </button>
+          <button onClick={() => setVariationOpen(o => !o)}
+            disabled={formulaLetters.length === 0}
+            className="flex-shrink-0 py-3 px-4 rounded-xl text-xs font-black transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            style={{
+              background: variationOpen ? "linear-gradient(135deg, #ec4899 0%, #f472b6 100%)" : "#fff",
+              color: variationOpen ? "#fff" : "#ec4899",
+              border: `2px solid ${variationOpen ? "transparent" : "#ec4899"}`,
+              boxShadow: variationOpen ? "0 4px 14px -4px rgba(236,72,153,0.5)" : "none",
+            }}
+            title={formulaLetters.length === 0 ? "Añade una fórmula primero" : "Variación por empresa / dimensión"}>
+            <Sigma size={12} /> Variación
+            {variationCount() > 0 && <span className="text-[9px] px-1.5 py-0.5 rounded-md" style={{ background: variationOpen ? "rgba(255,255,255,0.25)" : "#ec489915" }}>{variationCount()}</span>}
+          </button>
+          </div>
           {kpi?._isOverridden && onReset && (
             <button onClick={() => { onReset(kpi.id); onClose(); }}
               className="w-full py-2 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 hover:opacity-80"
@@ -4257,9 +4501,203 @@ style={{
               ↺ Reset to factory defaults
             </button>
           )}
-        </div>
+</div>
         )}
       </div>
+
+      {/* ── Variation side panel — same height as modal, paired centered ── */}
+      <div className="absolute top-1/2 pointer-events-none"
+        style={{
+          left: "50%",
+          transform: `translateY(-50%) translateX(calc(1rem + ${variationOpen ? "0px" : "-40px"})) scale(${variationOpen ? 1 : 0.94})`,
+          transformOrigin: "left center",
+          opacity: variationOpen ? 1 : 0,
+          transition: "opacity 340ms cubic-bezier(0.4,0,0.2,1), transform 460ms cubic-bezier(0.34,1.56,0.64,1)",
+          maxHeight: "92vh",
+          width: "min(42rem, 45vw)",
+        }}>
+        <div className={`${variationOpen ? "pointer-events-auto" : "pointer-events-none"} rounded-3xl shadow-2xl overflow-hidden flex flex-col bg-white h-full`}
+          style={{ boxShadow: "0 32px 80px -16px rgba(236,72,153,0.30), 0 8px 24px -8px rgba(0,0,0,0.10)" }}
+          onClick={e => e.stopPropagation()}>
+
+          <div className="px-6 pt-6 pb-5 flex items-center justify-between flex-shrink-0 border-b border-gray-100">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl flex items-center justify-center flex-shrink-0"
+                style={{ background: "linear-gradient(135deg, #ec4899 0%, #f472b6 100%)", boxShadow: "0 6px 16px -4px rgba(236,72,153,0.5)" }}>
+                <Sigma size={16} className="text-white" />
+              </div>
+              <div>
+                <p className="font-black text-[15px] text-gray-900 leading-tight">Variación</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.15em] mt-0.5" style={{ color: "#ec4899" }}>✦ Overrides por empresa / dimensión</p>
+              </div>
+            </div>
+            <button onClick={() => setVariationOpen(false)}
+              className="w-8 h-8 rounded-xl flex items-center justify-center transition-all hover:scale-110"
+              style={{ background: "#f3f4f6", color: "#6b7280" }}><X size={13} /></button>
+          </div>
+
+          <div className="px-6 pt-4 pb-2 flex-shrink-0">
+            <div className="flex gap-1 p-1 rounded-xl" style={{ background: "#f8f9ff" }}>
+              <button onClick={() => setVariationTab("companies")}
+                className="flex-1 py-2 px-3 rounded-lg text-[10px] font-black uppercase tracking-[0.15em] transition-all flex items-center justify-center gap-2"
+                style={{
+                  background: variationTab === "companies" ? "#fff" : "transparent",
+                  color: variationTab === "companies" ? "#1a2f8a" : "#9ca3af",
+                  boxShadow: variationTab === "companies" ? "0 2px 8px -2px rgba(26,47,138,0.15)" : "none",
+                }}>
+                <Building2 size={11} /> Empresas
+                <span className="text-[9px] px-1.5 py-0.5 rounded-md"
+                  style={{ background: variationTab === "companies" ? "#eef1fb" : "transparent", color: variationTab === "companies" ? "#1a2f8a" : "#9ca3af" }}>{variationCompanies.length}</span>
+              </button>
+              <button onClick={() => setVariationTab("dimensions")}
+                className="flex-1 py-2 px-3 rounded-lg text-[10px] font-black uppercase tracking-[0.15em] transition-all flex items-center justify-center gap-2"
+                style={{
+                  background: variationTab === "dimensions" ? "#fff" : "transparent",
+                  color: variationTab === "dimensions" ? "#15803d" : "#9ca3af",
+                  boxShadow: variationTab === "dimensions" ? "0 2px 8px -2px rgba(22,163,74,0.15)" : "none",
+                }}>
+                <Layers size={11} /> Dimensiones
+                <span className="text-[9px] px-1.5 py-0.5 rounded-md"
+                  style={{ background: variationTab === "dimensions" ? "#dcfce7" : "transparent", color: variationTab === "dimensions" ? "#15803d" : "#9ca3af" }}>{variationDimensions.length}</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-y-auto flex-1 px-6 pb-6 pt-3" style={{ scrollbarWidth: "thin" }}>
+            {variationTab === "companies" && (
+              <div className="flex flex-col gap-1.5">
+                {variationCompanies.length === 0 && <p className="text-[11px] text-gray-300 text-center py-12 font-bold">No hay empresas disponibles</p>}
+                {variationCompanies.map(co => {
+                  const label = companyLabelsMap.get(co) ?? co;
+                  const overrides = variations.byCompany[co] ?? {};
+                  const overrideCount = Object.keys(overrides).length;
+                  const isExpanded = expandedCompany === co;
+                  return (
+                    <div key={co} className="rounded-2xl overflow-hidden transition-all"
+                      style={{ background: isExpanded ? "#f8f9ff" : "#fff", border: `1px solid ${isExpanded ? "rgba(26,47,138,0.15)" : "#eef1fb"}` }}>
+                      <button onClick={() => setExpandedCompany(isExpanded ? null : co)}
+                        className="w-full flex items-center justify-between px-4 py-3 text-left transition-all hover:bg-[#f8f9ff]">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+                            style={{ background: overrideCount > 0 ? "#ec489915" : "#eef1fb" }}>
+                            <Building2 size={11} style={{ color: overrideCount > 0 ? "#ec4899" : "#1a2f8a" }} />
+                          </div>
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-xs font-black text-gray-900 truncate">{label}</span>
+                            <span className="text-[9px] font-bold text-gray-400 uppercase tracking-[0.15em]">{co}</span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {overrideCount > 0 && <span className="text-[9px] font-black px-2 py-0.5 rounded-md text-white" style={{ background: "#ec4899" }}>{overrideCount}</span>}
+                          <ChevronDown size={11} className="text-gray-400" style={{ transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 280ms cubic-bezier(0.34,1.56,0.64,1)" }} />
+                        </div>
+                      </button>
+                      {isExpanded && (
+                        <div className="px-4 pb-4 pt-1 flex flex-col gap-2" style={{ animation: "plRowSlideIn 260ms ease-out" }}>
+                          {formulaLetters.length === 0 && <p className="text-[10px] text-gray-300 text-center py-3 font-bold">Sin variables en la fórmula</p>}
+                          {formulaLetters.map(letter => {
+                            const override = overrides[letter];
+                            return (
+                              <div key={letter} className="flex items-center gap-2">
+                                <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 text-xs font-black" style={{ background: "#1a2f8a", color: "#fff" }}>{letter}</div>
+                                <button onClick={() => setSlotPickerContext({ scope: "company", key: co, letter })}
+                                  className="flex-1 text-left px-3 py-2 rounded-xl text-[11px] font-bold transition-all hover:scale-[1.01]"
+                                  style={{ background: override ? "#ec489912" : "#fff", color: override ? "#ec4899" : "#9ca3af", border: `1.5px solid ${override ? "#ec489930" : "#e5e7eb"}` }}>
+                                  {override ? describeVariationNode(override, accountCodeLabels) : "— usar fórmula base —"}
+                                </button>
+                                {override && (
+                                  <button onClick={() => setOverride("company", co, letter, null)}
+                                    className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 hover:scale-110 transition-all"
+                                    style={{ background: "#fee2e2", color: "#dc2626" }}><X size={10} /></button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {variationTab === "dimensions" && (
+              <div className="flex flex-col gap-1.5">
+                {variationDimensions.length === 0 && <p className="text-[11px] text-gray-300 text-center py-12 font-bold">No hay dimensiones disponibles</p>}
+                {variationDimensions.map(d => {
+                  const code = d.code ?? d;
+                  const name = d.name ?? code;
+                  const group = d.group;
+                  const overrides = variations.byDimension[code] ?? {};
+                  const overrideCount = Object.keys(overrides).length;
+                  const isExpanded = expandedDimension === code;
+                  return (
+                    <div key={code} className="rounded-2xl overflow-hidden transition-all"
+                      style={{ background: isExpanded ? "#f0fdf4" : "#fff", border: `1px solid ${isExpanded ? "rgba(22,163,74,0.15)" : "#dcfce780"}` }}>
+                      <button onClick={() => setExpandedDimension(isExpanded ? null : code)}
+                        className="w-full flex items-center justify-between px-4 py-3 text-left transition-all hover:bg-[#f0fdf4]">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+                            style={{ background: overrideCount > 0 ? "#ec489915" : "#dcfce7" }}>
+                            <Layers size={11} style={{ color: overrideCount > 0 ? "#ec4899" : "#15803d" }} />
+                          </div>
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-xs font-black text-gray-900 truncate">{name}</span>
+                            {group && <span className="text-[9px] font-bold text-gray-400 uppercase tracking-[0.15em]">{group}</span>}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {overrideCount > 0 && <span className="text-[9px] font-black px-2 py-0.5 rounded-md text-white" style={{ background: "#ec4899" }}>{overrideCount}</span>}
+                          <ChevronDown size={11} className="text-gray-400" style={{ transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 280ms cubic-bezier(0.34,1.56,0.64,1)" }} />
+                        </div>
+                      </button>
+                      {isExpanded && (
+                        <div className="px-4 pb-4 pt-1 flex flex-col gap-2" style={{ animation: "plRowSlideIn 260ms ease-out" }}>
+                          {formulaLetters.length === 0 && <p className="text-[10px] text-gray-300 text-center py-3 font-bold">Sin variables en la fórmula</p>}
+                          {formulaLetters.map(letter => {
+                            const override = overrides[letter];
+                            return (
+                              <div key={letter} className="flex items-center gap-2">
+                                <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 text-xs font-black" style={{ background: "#15803d", color: "#fff" }}>{letter}</div>
+                                <button onClick={() => setSlotPickerContext({ scope: "dimension", key: code, letter })}
+                                  className="flex-1 text-left px-3 py-2 rounded-xl text-[11px] font-bold transition-all hover:scale-[1.01]"
+                                  style={{ background: override ? "#ec489912" : "#fff", color: override ? "#ec4899" : "#9ca3af", border: `1.5px solid ${override ? "#ec489930" : "#e5e7eb"}` }}>
+                                  {override ? describeVariationNode(override, accountCodeLabels) : "— usar fórmula base —"}
+                                </button>
+                                {override && (
+                                  <button onClick={() => setOverride("dimension", code, letter, null)}
+                                    className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 hover:scale-110 transition-all"
+                                    style={{ background: "#fee2e2", color: "#dc2626" }}><X size={10} /></button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {slotPickerContext && createPortal(
+        <SlotPicker
+          onSelect={(node) => { setOverride(slotPickerContext.scope, slotPickerContext.key, slotPickerContext.letter, node); setSlotPickerContext(null); }}
+          onClose={() => setSlotPickerContext(null)}
+          kpiList={allLocalKpis}
+          accountCodes={accountCodes}
+          accountCodeLabels={accountCodeLabels}
+          builtInIds={builtInIds}
+          dimsByAccount={dimsByAccount}
+          parties={parties}
+          partyContext={partyContext}
+          evalPartyValue={evalPartyValue}
+        />,
+        document.body
+      )}
     </div>
   );
 }
@@ -4558,7 +4996,7 @@ const barHasDim   = Array.isArray(bar.dim)      && bar.dim.length      > 0;
         endY: secEndYear, endM: secEndMonth,
         source: secSource, structure: secStructure,
         dimGroup: secDimGroup, dim: secDim,
-        mode: secMode, kpiIds: secKpiIds,
+mode: secMode, kpiIds: (console.log("[state-emit] kpiIds:", secKpiIds), secKpiIds),
         chartData,
         compareMode,
         cmpBars: activeBars,
@@ -5194,13 +5632,11 @@ export default function KpiIndividualesPage({ token, sources = [], structures = 
           headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
         });
         if (!res.ok) {
-          console.warn("[KpiPage] /v2/group-accounts failed:", res.status);
           return;
         }
         const json = await res.json();
         const arr = json.value ?? (Array.isArray(json) ? json : []);
         if (!cancelled) {
-          console.log("[KpiPage] auto-fetched groupAccounts:", arr.length);
           setGroupAccountsLocal(arr);
         }
       } catch (e) {
@@ -5240,7 +5676,8 @@ const tt = (k, fb) => t(locale, k, fb);
   const source = sourceOverride ?? defaultSource;
   const structure = structureOverride ?? defaultStructure;
   const [metaReady, setMetaReady] = useState(false);
-  const [loading, setLoading] = useState(false);
+const [loading, setLoading] = useState(false);
+  const [cmpLoading, setCmpLoading] = useState(false);
 const [companyData, setCompanyData] = useState(new Map());
 const [companyDataPrev, setCompanyDataPrev] = useState(new Map()); // previous month for monthly delta
 const [companyDataCmp, setCompanyDataCmp] = useState(new Map()); // current period in compare scenario
@@ -5250,9 +5687,6 @@ const {
   allKpis: resolvedAllKpis,
   ccTagToCodes: defaultCcTagToCodes,
   sectionCodes,
-  standard: detectedStandard,
-  ready:    kpiResolverReady,
-  error:    kpiResolverError,
 } = useResolvedKpiList(groupAccounts, settingsCompanyId, activeStandardKey);
 
 // activeMapping comes from the Views/Mappings modal. When set, we override
@@ -5295,20 +5729,6 @@ const { ccTagToCodes, mappingMatched, mappingUnmatched } = useMemo(() => {
   return { ccTagToCodes: override, mappingMatched: matched, mappingUnmatched: unmatched };
 }, [activeMapping, defaultCcTagToCodes]);
 
-// Diagnostic logging — easy way to see what's going on in console
-useEffect(() => {
-  if (!kpiResolverReady) return;
-  console.group("[KpiPage] KPI resolver ready");
-  console.log("standard:",     detectedStandard);
-  console.log("kpiList size:", resolvedKpiList.length);
-  console.log("cc tags:",      ccTagToCodes.size);
-  console.log("sections:",     sectionCodes.size);
-  if (kpiResolverError) console.error("error:", kpiResolverError);
-  if (resolvedKpiList.length === 0) {
-    console.warn("⚠️  No KPIs loaded — check Supabase 'kpi_definitions' table");
-  }
-  console.groupEnd();
-}, [kpiResolverReady, detectedStandard, resolvedKpiList.length, ccTagToCodes.size, sectionCodes.size, kpiResolverError]);
 
 // Auth + company resolved from Supabase session (mirrors Mappings pattern).
 const [authUserId, setAuthUserId] = useState(null);
@@ -5430,8 +5850,9 @@ const saveSystemOverride = useCallback(async (originalKpiId, overrideData) => {
         category:           overrideData.category ?? null,
         tag:               `${OVERRIDE_TAG_PREFIX}${originalKpiId}:${viewMode === "dimension" ? "dim" : "comp"}`,
         format:             overrideData.format ?? "currency",
-        formula:            overrideData.formula,
+formula:            overrideData.formula,
         benchmark:          overrideData.benchmark ?? null,
+        variations:         overrideData.variations ?? null,
         kpiType:            'system_override',
         sourceSystemKpiId:  originalKpiId,
       });
@@ -5447,6 +5868,7 @@ const saveSystemOverride = useCallback(async (originalKpiId, overrideData) => {
         format:             overrideData.format ?? "currency",
         formula:            overrideData.formula,
         benchmark:          overrideData.benchmark ?? null,
+        variations:         overrideData.variations ?? null,
         contextMappingId:   null,
         scope:              "individual",
         kpiType:            'system_override',
@@ -5480,8 +5902,9 @@ const localKpis = useMemo(() => companyKpis
     category:            k.category    ?? "",
     tag:                 k.tag         ?? "",
     format:              k.format,
-    formula:             k.formula,
+formula:             k.formula,
     benchmark:           k.benchmark,
+    variations:          k.variations ?? null,
     _contextMappingId:   k.context_mapping_id ?? null,
     _createdBy:          k.created_by,
     _updatedBy:          k.updated_by,
@@ -5528,7 +5951,7 @@ if (builtInKpiIds.has(id)) {
       const overrideMap = viewMode === "dimension" ? systemOverrides.dim : systemOverrides.comp;
       const override = overrideMap.get(id);
       if (override) {
-        return {
+return {
           ...base,
           label:       override.label       ?? base.label,
           description: override.description ?? base.description,
@@ -5536,6 +5959,7 @@ if (builtInKpiIds.has(id)) {
           format:      override.format      ?? base.format,
           formula:     override.formula     ?? base.formula,
           benchmark:   override.benchmark   ?? base.benchmark,
+          variations:  override.variations ?? null,
           tag:         override.tag?.startsWith("__override__:") ? base.tag : (override.tag ?? base.tag),
           _isOverridden:  true,
           _overrideKpiId: override.kpi_id,
@@ -5673,7 +6097,6 @@ useEffect(() => {
       // FAST PATH 1: React context cache
       const cached = getLatestPeriod(source, structure, co);
       if (cached) {
-        console.log("[KpiPage] CONTEXT CACHE HIT ✓", cached);
         if (cancelled) return;
         setYear(String(cached.year));
         setMonth(String(cached.month));
@@ -5688,7 +6111,6 @@ useEffect(() => {
         if (ssRaw) {
           const parsed = JSON.parse(ssRaw);
           if (parsed.year && parsed.month) {
-            console.log("[KpiPage] SESSION STORAGE HIT ✓", parsed);
             if (cancelled) return;
             setYear(String(parsed.year));
             setMonth(String(parsed.month));
@@ -5699,7 +6121,6 @@ useEffect(() => {
         }
       } catch { /* ignore */ }
 
-      console.log("[KpiPage] CACHE MISS - probing");
 
       // SLOW PATH: probe backwards from current month
       const now = new Date();
@@ -5760,11 +6181,38 @@ const { dimGroups, dimsByGroup } = useMemo(() => {
         }
       });
     });
-    return {
+return {
       dimGroups: [...groupSet].sort(),
       dimsByGroup: byGroup,
     };
   }, [companyData, dimensions]);
+
+// Global dim cache — persists across perimeter changes so the variation
+  // editor always sees every dim, not just the ones present in current data.
+  // We use a module-scope Map keyed by companyId to survive re-renders without
+  // ref/state so React doesn't complain about ref-in-render or setState-in-effect.
+  const allDimensionsFlat = useMemo(() => {
+    const cache = _getAllDimsCache(companyId);
+    let changed = false;
+    dimsByGroup.forEach((codeMap, group) => {
+      if (!cache.has(group)) { cache.set(group, new Map()); changed = true; }
+      const target = cache.get(group);
+      codeMap.forEach((name, code) => {
+        if (!target.has(code) || target.get(code) !== name) {
+          target.set(code, name);
+          changed = true;
+        }
+      });
+    });
+    // `changed` is unused; kept for future observers.
+    void changed;
+    const out = [];
+    const src = cache.size > 0 ? cache : dimsByGroup;
+    src.forEach((codeMap, group) => {
+      codeMap.forEach((name, code) => out.push({ code, name: name ?? code, group }));
+    });
+    return out.sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
+  }, [dimsByGroup, companyId]);
 
 const groupDimOptions = useMemo(() => {
     const groups = (selGroups && selGroups.length > 0) ? selGroups : [...dimsByGroup.keys()];
@@ -5812,76 +6260,72 @@ const groupDimCodes = useMemo(() => {
     return null;
   }, [cmpSelGroups, cmpSelDims, cmpGroupDimOptions]);
 
+// Shared helpers hoisted out of the effects
+const _fetchPeriod = useCallback(async (y, m, s, st) => {
+  const map = new Map();
+  await Promise.all(companyCodes.map(async co => {
+    try {
+      const filter = `Year eq ${y} and Month eq ${m} and Source eq '${s}' and GroupStructure eq '${st}' and CompanyShortName eq '${co}'`;
+      const res = await fetch(
+        `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
+        { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Cache-Control": "no-cache" } }
+      );
+      if (!res.ok) { map.set(co, []); return; }
+      const json = await res.json();
+      map.set(co, json.value ?? (Array.isArray(json) ? json : []));
+    } catch { map.set(co, []); }
+  }));
+  return map;
+}, [companyCodes, token]);
+
+const _prevOf = (y, m) => {
+  let pY = parseInt(y), pM = parseInt(m) - 1;
+  if (pM < 1) { pM = 12; pY -= 1; }
+  return { y: pY, m: pM };
+};
+
+// Fetch MAIN scenario. Independent from cmp — only re-runs when main filters change.
 useEffect(() => {
   let cancelled = false;
   (async () => {
     if (!metaReady || !year || !month || !source || !structure || companyCodes.length === 0) return;
     setLoading(true);
-
-    // Generic fetcher for one (year, month, source, structure) combination
-    const fetchPeriod = async (y, m, s, st) => {
-      const map = new Map();
-      await Promise.all(companyCodes.map(async co => {
-        try {
-          const filter = `Year eq ${y} and Month eq ${m} and Source eq '${s}' and GroupStructure eq '${st}' and CompanyShortName eq '${co}'`;
-          const res = await fetch(
-            `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
-            { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Cache-Control": "no-cache" } }
-          );
-          if (!res.ok) { map.set(co, []); return; }
-          const json = await res.json();
-          map.set(co, json.value ?? (Array.isArray(json) ? json : []));
-        } catch { map.set(co, []); }
-      }));
-      return map;
-    };
-
-    const prevOf = (y, m) => {
-      let pY = parseInt(y), pM = parseInt(m) - 1;
-      if (pM < 1) { pM = 12; pY -= 1; }
-      return { y: pY, m: pM };
-    };
-
-    // Fetch main scenario (current + prev for monthly)
-    const mainPrev = prevOf(year, month);
+    const mainPrev = _prevOf(year, month);
     const [curr, prev] = await Promise.all([
-      fetchPeriod(year, month, source, structure),
-      fetchPeriod(mainPrev.y, mainPrev.m, source, structure),
+      _fetchPeriod(year, month, source, structure),
+      _fetchPeriod(mainPrev.y, mainPrev.m, source, structure),
     ]);
     if (cancelled) return;
     setCompanyData(curr);
     setCompanyDataPrev(prev);
-
-    // Fetch comparison scenario only when compareMode is enabled and the
-    // compare filters are populated (no point fetching otherwise).
-    console.log("[KpiPage] compareMode check:", { compareMode, cmpSource, cmpStructure, cmpYear, cmpMonth });
-    if (compareMode && cmpSource && cmpStructure && cmpYear && cmpMonth) {
-      const cmpPrev = prevOf(cmpYear, cmpMonth);
-      console.log("[KpiPage] fetching cmp:", { cmpYear, cmpMonth, cmpPrev });
-      const [currC, prevC] = await Promise.all([
-        fetchPeriod(cmpYear, cmpMonth, cmpSource, cmpStructure),
-        fetchPeriod(cmpPrev.y, cmpPrev.m, cmpSource, cmpStructure),
-      ]);
-      if (cancelled) return;
-      console.log("[KpiPage] cmp data fetched:", { currCSize: currC.size, prevCSize: prevC.size });
-      const sampleCo = [...currC.keys()][0];
-      if (sampleCo) {
-        console.log(`[KpiPage] cmp ${sampleCo} rows:`, currC.get(sampleCo)?.length);
-      }
-      setCompanyDataCmp(currC);
-      setCompanyDataCmpPrev(prevC);
-    } else {
-      console.log("[KpiPage] skipping cmp fetch");
-      if (cancelled) return;
-      setCompanyDataCmp(new Map());
-      setCompanyDataCmpPrev(new Map());
-    }
-
     if (!cancelled) setLoading(false);
   })();
   return () => { cancelled = true; };
-}, [metaReady, year, month, source, structure, companyCodes, token,
-    compareMode, cmpSource, cmpStructure, cmpYear, cmpMonth]);
+}, [metaReady, year, month, source, structure, companyCodes, _fetchPeriod]);
+
+// Fetch CMP scenario. Independent from main — only re-runs when cmp filters or compareMode change.
+useEffect(() => {
+  let cancelled = false;
+  (async () => {
+    if (!metaReady || companyCodes.length === 0) return;
+    if (!compareMode || !cmpSource || !cmpStructure || !cmpYear || !cmpMonth) {
+      setCompanyDataCmp(new Map());
+      setCompanyDataCmpPrev(new Map());
+      return;
+    }
+    setCmpLoading(true);
+    const cmpPrev = _prevOf(cmpYear, cmpMonth);
+    const [currC, prevC] = await Promise.all([
+      _fetchPeriod(cmpYear, cmpMonth, cmpSource, cmpStructure),
+      _fetchPeriod(cmpPrev.y, cmpPrev.m, cmpSource, cmpStructure),
+    ]);
+    if (cancelled) return;
+    setCompanyDataCmp(currC);
+    setCompanyDataCmpPrev(prevC);
+    if (!cancelled) setCmpLoading(false);
+  })();
+  return () => { cancelled = true; };
+}, [metaReady, companyCodes, compareMode, cmpSource, cmpStructure, cmpYear, cmpMonth, _fetchPeriod]);
 
   // Build flat pivot per company (account code → YTD sum, P/L summary rows only)
 // Build a Set of sum account codes from groupAccounts so we can filter them
@@ -5896,7 +6340,6 @@ useEffect(() => {
         if (code) sums.add(code);
       }
     });
-console.log(`[KpiPage] identified ${sums.size} sum accounts to exclude from pivot`);
     return sums;
   }, [groupAccounts]);
 
@@ -6007,13 +6450,14 @@ const currPivot = buildPivot(rows);
       currPivot.__groupDescendants = groupDescendantsMap;
       // Attach party context so `party` node evaluation can find applicable
       // parties + resolve values for the current company/year/month/dim scope.
-      currPivot.__parties = partiesById;
+currPivot.__parties = partiesById;
       currPivot.__partyContext = {
         company: co,
         year: parseInt(year),
         month: parseInt(month),
         selectedDims: groupDimCodes ?? null,
       };
+      currPivot.__variationScope = { kind: "company", key: co };
 
       if (viewPeriod === "ytd") {
         pivots.set(co, currPivot);
@@ -6055,12 +6499,13 @@ monthlyPivot.__dimPivot = monthlyDimPivot;
 monthlyPivot.__localPivot = monthlyLocalPivot;
         monthlyPivot.__groupDescendants = groupDescendantsMap;
         monthlyPivot.__parties = partiesById;
-        monthlyPivot.__partyContext = {
+monthlyPivot.__partyContext = {
           company: co,
           year: parseInt(year),
           month: parseInt(month),
           selectedDims: groupDimCodes ?? null,
         };
+        monthlyPivot.__variationScope = { kind: "company", key: co };
         pivots.set(co, monthlyPivot);
       }
     });
@@ -6094,9 +6539,18 @@ if (Array.isArray(cmpSelDims)) {
       });
       return p;
     };
-    const pivots = new Map();
-    companyDataCmp.forEach((rows, co) => {
+const pivots = new Map();
+    const cmpPartyCtx = (co) => ({
+      company: co,
+      year: parseInt(cmpYear) || null,
+      month: parseInt(cmpMonth) || null,
+      selectedDims: (Array.isArray(cmpSelDims) && cmpSelDims.length > 0) ? new Set(cmpSelDims) : null,
+    });
+companyDataCmp.forEach((rows, co) => {
       const currPivot = buildPivot(rows);
+      currPivot.__parties = partiesById;
+      currPivot.__partyContext = cmpPartyCtx(co);
+      currPivot.__variationScope = { kind: "company", key: co };
       if (viewPeriod === "ytd") {
         pivots.set(co, currPivot);
       } else {
@@ -6123,11 +6577,14 @@ const monthlyPivot = new Map();
           });
           monthlyPivot.__dimPivot = monthlyDimPivot;
         }
+monthlyPivot.__parties = partiesById;
+        monthlyPivot.__partyContext = cmpPartyCtx(co);
+        monthlyPivot.__variationScope = { kind: "company", key: co };
         pivots.set(co, monthlyPivot);
       }
     });
     return pivots;
-}, [companyDataCmp, companyDataCmpPrev, viewPeriod, cmpMonth, cmpSelGroups, cmpSelDims, sumAccountCodes]);
+}, [companyDataCmp, companyDataCmpPrev, viewPeriod, cmpMonth, cmpYear, cmpSelGroups, cmpSelDims, sumAccountCodes, partiesById]);
 
 // Dimension-level pivots: one flat pivot per dimension code, aggregating across all companies
   const dimensionPivots = useMemo(() => {
@@ -6158,9 +6615,20 @@ if (groupDimCodes && !groupDimCodes.has(code)) continue;
             const key = code;
             const dimEntry = dimensions.find(d => (d.DimensionCode ?? d.dimensionCode ?? "") === code);
           const dimName = dimEntry?.DimensionName ?? dimEntry?.dimensionName ?? code;
-if (!pivots.has(key)) pivots.set(key, { name: dimName, group, pivot: new Map() });
+if (!pivots.has(key)) {
+              const p = new Map();
+              p.__dimPivot = new Map();
+              p.__groupDescendants = groupDescendantsMap;
+              pivots.set(key, { name: dimName, group, pivot: p });
+            }
             const entry = pivots.get(key);
             entry.pivot.set(ac, (entry.pivot.get(ac) ?? 0) + amt);
+            // Also index every (group, code) dim pair on this row so overrides
+            // like "A.05 · Territorio: DK" resolve within a dim column.
+            dimPairs.forEach(([g2, c2]) => {
+              const k = `${ac}:::${g2}:::${c2}`;
+              entry.pivot.__dimPivot.set(k, (entry.pivot.__dimPivot.get(k) ?? 0) + amt);
+            });
           }
         });
       });
@@ -6170,9 +6638,9 @@ if (!pivots.has(key)) pivots.set(key, { name: dimName, group, pivot: new Map() }
     // Attach the party context to every dim pivot so `case "party"` in the
     // evaluator can resolve parties in the dimension view/export too. The
     // context uses the first selected company as the party lookup key.
-    const attachPartyCtx = (pivots) => {
+const attachPartyCtx = (pivots) => {
       const co = selCompanies?.[0] ?? null;
-      pivots.forEach(entry => {
+      pivots.forEach((entry, key) => {
         entry.pivot.__parties = partiesById;
         entry.pivot.__partyContext = {
           company: co,
@@ -6180,6 +6648,7 @@ if (!pivots.has(key)) pivots.set(key, { name: dimName, group, pivot: new Map() }
           month: parseInt(month),
           selectedDims: groupDimCodes ?? null,
         };
+        entry.pivot.__variationScope = { kind: "dimension", key };
       });
       return pivots;
     };
@@ -6188,7 +6657,7 @@ if (!pivots.has(key)) pivots.set(key, { name: dimName, group, pivot: new Map() }
     if (viewPeriod === "ytd") return currPivots;
 
     // Monthly = curr YTD - prev YTD per dim
-    const prevPivots = buildDimPivots(companyDataPrev);
+const prevPivots = buildDimPivots(companyDataPrev);
     const isJanuary = parseInt(month) === 1;
     const result = new Map();
     const allKeys = new Set([...currPivots.keys(), ...prevPivots.keys()]);
@@ -6206,6 +6675,15 @@ if (!pivots.has(key)) pivots.set(key, { name: dimName, group, pivot: new Map() }
         const prevVal = isJanuary ? 0 : (prev?.pivot.get(ac) ?? 0);
         monthlyPivot.set(ac, currVal - prevVal);
       });
+      // Diff the per-dim sub-lookup too so overrides work in monthly mode
+      const mdp = new Map();
+      const cDP = curr?.pivot.__dimPivot ?? new Map();
+      const pDP = prev?.pivot.__dimPivot ?? new Map();
+      new Set([...cDP.keys(), ...pDP.keys()]).forEach(k => {
+        mdp.set(k, (cDP.get(k) ?? 0) - (isJanuary ? 0 : (pDP.get(k) ?? 0)));
+      });
+      monthlyPivot.__dimPivot = mdp;
+      monthlyPivot.__groupDescendants = groupDescendantsMap;
 result.set(key, { name: meta.name, group: meta.group, pivot: monthlyPivot });
     });
     return attachPartyCtx(result);
@@ -6246,14 +6724,15 @@ if (cmpGroupDimCodes && !cmpGroupDimCodes.has(code)) continue;
 
 const attachPartyCtx = (pivots) => {
     const co = selCompanies?.[0] ?? null;
-      pivots.forEach(entry => {
+      pivots.forEach((entry, key) => {
         entry.pivot.__parties = partiesById;
         entry.pivot.__partyContext = {
           company: co,
-          year: parseInt(year),
+          year: parseInt(cmpYear),
           month: parseInt(cmpMonth),
           selectedDims: cmpGroupDimCodes ?? null,
         };
+        entry.pivot.__variationScope = { kind: "dimension", key };
       });
       return pivots;
     };
@@ -6282,7 +6761,7 @@ const attachPartyCtx = (pivots) => {
 result.set(key, { name: meta.name, group: meta.group, pivot: monthlyPivot });
     });
     return attachPartyCtx(result);
-}, [companyDataCmp, companyDataCmpPrev, viewPeriod, cmpMonth, year, cmpGroupDimCodes, sumAccountCodes, cmpSelGroups, selCompanies, partiesById]);
+}, [companyDataCmp, companyDataCmpPrev, viewPeriod, cmpMonth, cmpYear, cmpGroupDimCodes, sumAccountCodes, cmpSelGroups, selCompanies, partiesById]);
 
 const dimensionCodes = useMemo(() => [...dimensionPivots.keys()].sort(), [dimensionPivots]);
 
@@ -6413,12 +6892,8 @@ useEffect(() => { window.__debug_companyPivots = companyPivots; }, [companyPivot
 
 const companyResults = useMemo(() => {
     const results = new Map();
-    companyPivots.forEach((pivot, co) => {
-      const r = computeAllKpisResolved(kpiList, pivot, ccTagToCodes, sectionCodes, resolvedAllKpis);
-      results.set(co, r);
-      const rev = r.get("revenue");
-      const sampleAcc = pivot.size > 0 ? [...pivot.entries()].slice(0, 3) : [];
-      console.log(`[KpiPage] ${co}: pivot=${pivot.size} accounts, revenue=${rev}, sample=`, sampleAcc);
+companyPivots.forEach((pivot, co) => {
+      results.set(co, computeAllKpisResolved(kpiList, pivot, ccTagToCodes, sectionCodes, resolvedAllKpis));
     });
     return results;
   }, [companyPivots, kpiList, ccTagToCodes, sectionCodes, resolvedAllKpis]);
@@ -6480,7 +6955,7 @@ if (!labelChanged) {
           while (allLabels.has(`${baseLabel} ${n}`)) n++;
           const uniqueLabel = `${baseLabel} ${n}`;
           try {
-            const updated = await updateCompanyKpi({
+const updated = await updateCompanyKpi({
               kpiId:            editingKpi.id, userId: authUserId,
               label:            uniqueLabel,
               description:      data.description ?? null,
@@ -6489,6 +6964,7 @@ if (!labelChanged) {
               format:           data.format ?? editingKpi.format,
               formula:          data.formula ?? editingKpi.formula,
               benchmark:        data.benchmark ?? null,
+              variations:       data.variations ?? null,
               sourceSystemKpiId: null,
             });
             setCompanyKpis(prev => prev.map(k => k.kpi_id === updated.kpi_id ? updated : k));
@@ -6498,7 +6974,7 @@ if (!labelChanged) {
         } else {
           // Label changed → promote to full custom KPI, clear sourceSystemKpiId
           try {
-            const updated = await updateCompanyKpi({
+const updated = await updateCompanyKpi({
               kpiId: editingKpi.id, userId: authUserId,
               label:            data.label,
               description:      data.description ?? null,
@@ -6507,6 +6983,7 @@ if (!labelChanged) {
               format:           data.format ?? "currency",
               formula:          data.formula,
               benchmark:        data.benchmark ?? null,
+              variations:       data.variations ?? null,
               sourceSystemKpiId: null,
             });
             setCompanyKpis(prev => prev.map(k => k.kpi_id === updated.kpi_id ? updated : k));
@@ -6521,13 +6998,14 @@ if (!labelChanged) {
 
 if (isBuiltIn && !labelChanged) {
         // Any edit on built-in without label change → save as system override (shows 'edited')
-        await saveSystemOverride(editingKpi.id, {
+await saveSystemOverride(editingKpi.id, {
           label:       editingKpi.label,
           description: data.description,
           category:    data.category,
           format:      data.format ?? editingKpi.format,
           formula:     data.formula ?? editingKpi.formula,
           benchmark:   data.benchmark,
+          variations:  data.variations ?? null,
         });
         setEditingKpi(null);
         return;
@@ -6536,7 +7014,7 @@ if (isBuiltIn && !labelChanged) {
       if (!inLibrary && isBuiltIn && labelChanged) {
         // Promote built-in to full custom KPI
         try {
-          const created = await createCompanyKpi({
+const created = await createCompanyKpi({
             companyId, userId: authUserId,
             label:       data.label,
             description: data.description ?? null,
@@ -6545,6 +7023,7 @@ if (isBuiltIn && !labelChanged) {
             format:      data.format ?? "currency",
             formula:     data.formula ?? editingKpi.formula,
             benchmark:   data.benchmark ?? null,
+            variations:  data.variations ?? null,
             contextMappingId: null,
             scope: "individual",
           });
@@ -6557,7 +7036,6 @@ const next = prev.map(id => id === editingKpi.id ? created.kpi_id : id);
             (async () => {
               try {
                 await saveUserDashboard({ userId: authUserId, companyId, kpiIds: next, scope });
-                console.log("[KpiPage] dashboard persisted after promote ✓", next);
               } catch (e) {
                 console.error("[KpiPage] dashboard persist FAILED after promote:", e);
               }
@@ -6574,7 +7052,7 @@ const next = prev.map(id => id === editingKpi.id ? created.kpi_id : id);
         return;
       }
 try {
-        const updated = await updateCompanyKpi({
+const updated = await updateCompanyKpi({
           kpiId:            editingKpi.id, userId: authUserId,
           label:            data.label,
           description:      data.description ?? null,
@@ -6583,6 +7061,7 @@ try {
           format:           data.format      ?? "currency",
           formula:          data.formula,
           benchmark:        data.benchmark   ?? null,
+          variations:       data.variations  ?? null,
           sourceSystemKpiId: null,
         });
         setCompanyKpis(prev => prev.map(k => k.kpi_id === updated.kpi_id ? updated : k));
@@ -6613,7 +7092,7 @@ const activeOverrideMap = viewMode === "dimension" ? systemOverrides.dim : syste
         const base = resolvedAllKpis.find(k => k.id === systemId);
         if (base) {
           try {
-            const created = await createCompanyKpi({
+const created = await createCompanyKpi({
               companyId, userId: authUserId,
               label:            base.label,
               description:      base.description ?? null,
@@ -6622,6 +7101,7 @@ const activeOverrideMap = viewMode === "dimension" ? systemOverrides.dim : syste
               format:           base.format ?? "currency",
               formula:          base.formula,
               benchmark:        base.benchmark ?? null,
+              variations:       base.variations ?? null,
               contextMappingId: null,
               scope:            "individual",
               kpiType:          "custom",
@@ -6658,6 +7138,7 @@ const created = await createCompanyKpi({
         format:      data.format      ?? "currency",
         formula:     data.formula,
         benchmark:   data.benchmark   ?? null,
+        variations:  data.variations  ?? null,
         contextMappingId: activeMapping?.mapping_id ?? null,
         scope: "individual",
       });
@@ -6993,19 +7474,46 @@ out.__dimPivot      = diffSub(curr.__dimPivot, prev.__dimPivot);
 const resolveVarsFor = (kList, pivot) => {
       const out = new Map();
       const cache = new Map();
+      const scope = pivot.__variationScope;
       kList.forEach(kpi => {
         const flat = flattenFormulaToTextForm(kpi.formula);
         if (!flat || !flat.variables) return;
         const letterMap = new Map();
+        pivot.__currentKpiVariations = kpi.variations ?? null;
         Object.entries(flat.variables).forEach(([letter, node]) => {
           if (!node) return;
+          let effectiveNode = node;
+          if (scope && kpi.variations) {
+            const map = scope.kind === "company" ? kpi.variations.byCompany
+                      : scope.kind === "dimension" ? kpi.variations.byDimension
+                      : null;
+            const override = map?.[scope.key]?.[letter];
+            if (override) {
+              // Normalize :::-packed prefix / accountCode into fields
+              const norm = { ...override };
+              if (norm.type === "accountGroup" && typeof norm.prefix === "string" && norm.prefix.includes(":::")) {
+                const [gc, dg, dc] = norm.prefix.split(":::");
+                norm.prefix = gc; norm.groupCode = gc;
+                if (!norm.dimGroup) norm.dimGroup = dg || undefined;
+                if (!norm.dimCode)  norm.dimCode  = dc || undefined;
+              }
+              if (norm.type === "account" && typeof norm.accountCode === "string" && norm.accountCode.includes(":::")) {
+                const [ac, dg, dc] = norm.accountCode.split(":::");
+                norm.accountCode = ac;
+                if (!norm.dimGroup) norm.dimGroup = dg || undefined;
+                if (!norm.dimCode)  norm.dimCode  = dc || undefined;
+              }
+              effectiveNode = norm;
+            }
+          }
           try {
-            const v = evalFormulaWithCcTags(node, pivot, cache, resolvedAllKpis, ccTagToCodes, sectionCodes);
+            const v = evalFormulaWithCcTags(effectiveNode, pivot, cache, resolvedAllKpis, ccTagToCodes, sectionCodes);
             if (Number.isFinite(v)) letterMap.set(letter, v);
           } catch { /* ignore */ }
         });
         if (letterMap.size > 0) out.set(kpi.id, letterMap);
       });
+      pivot.__currentKpiVariations = null;
       return out;
     };
 
@@ -7412,9 +7920,19 @@ periodToggle={{
           value: viewPeriod,
           onChange: setViewPeriod,
         }}
-        compareToggle={{
+compareToggle={{
           active: compareMode,
-          onChange: setCompareMode,
+          onChange: (val) => {
+            if (val && !compareMode) {
+              // Seed the cmp overrides with the current pageheader values (prior year, same month/source/structure)
+              // so subsequent changes to the pageheader don't drag cmp along.
+              if (cmpYearOverride == null && year)      setCmpYear(String(parseInt(year) - 1));
+              if (cmpMonthOverride == null && month)    setCmpMonth(month);
+              if (cmpSourceOverride == null && source)  setCmpSource(source);
+              if (cmpStructureOverride == null && structure) setCmpStructure(structure);
+            }
+            setCompareMode(val);
+          },
         }}
 onExportPdf={handleExportPdf}
         onExportXlsx={handleExportXlsx}
@@ -7767,22 +8285,23 @@ if (compareVisible) {
                           const cmpRes = cmpResultsMap.get(col);
                           const cmpVal = cmpRes ? cmpRes.get(kpi.id) : null;
                           const cmpCellAnim = `${compareMode ? 'cmpCellIn' : 'cmpCellOut'} 420ms cubic-bezier(0.4,0,0.2,1) forwards`;
-                         const cmpLoading = compareMode && (loading || cmpResultsMap.size === 0);
+                    const cmpCellLoading = compareMode && (cmpLoading || cmpResultsMap.size === 0);
                           const cmpSpinner = (
                             <Loader2 size={11} className="animate-spin mx-auto" style={{ color: `${colors.primary}80` }} />
                           );
-                          if (kpi.id === "revenue" && ci === 0) {
-                            console.log(`[Cmp render] viewMode=${viewMode} col=${col} cmpResultsMap.size=${cmpResultsMap.size} cmpRes=${!!cmpRes} cmpVal=${cmpVal}`);
-                          }
-                          const cmpValid = cmpVal !== undefined && cmpVal !== null && !isNaN(cmpVal);
+const cmpValid = cmpVal !== undefined && cmpVal !== null && !isNaN(cmpVal);
 
                           // Delta amount + percent (skip percent for percent KPIs to avoid % of %)
-                          let delta = null;
+let delta = null;
                           let deltaPct = null;
                           if (cmpValid && val !== null) {
                             delta = val - cmpVal;
-                            if (kpi.format !== "percent" && Math.abs(cmpVal) > 1e-9) {
-                              deltaPct = ((val - cmpVal) / Math.abs(cmpVal)) * 100;
+                            if (kpi.format !== "percent") {
+                              if (Math.abs(cmpVal) > 1e-9) {
+                                deltaPct = ((val - cmpVal) / Math.abs(cmpVal)) * 100;
+                              } else if (Math.abs(val) > 1e-9) {
+                                deltaPct = val > 0 ? Infinity : -Infinity;
+                              }
                             }
                           }
 
@@ -7790,14 +8309,14 @@ out.push(
                             <td key={`${col}__cmp`}
                               className="px-4 py-3 text-center whitespace-nowrap bg-[#fafbff]"
                               style={{ animation: cmpCellAnim }}>
-                              {cmpLoading
+{cmpCellLoading
                                 ? cmpSpinner
                                 : <AnimatedCell value={cmpValid ? cmpVal : null} format={kpi.format} baseStyle={body1Style} />}
                             </td>,
                             <td key={`${col}__delta`}
                               className="px-4 py-3 text-center whitespace-nowrap bg-[#f5f7ff]"
                               style={{ animation: cmpCellAnim, animationDelay: '40ms' }}>
-                              {cmpLoading
+                              {cmpCellLoading
                                 ? cmpSpinner
                                 : delta === null
                                   ? <span style={{ ...body1Style, color: "#D1D5DB" }}>—</span>
@@ -7808,11 +8327,15 @@ out.push(
                               style={{ animation: cmpCellAnim, animationDelay: '80ms' }}>
                               {cmpLoading
                                 ? cmpSpinner
-                                : deltaPct === null
+: deltaPct === null
                                   ? <span style={{ ...body1Style, color: "#D1D5DB" }}>—</span>
-                                  : <span className="text-xs font-black" style={{ color: deltaPct < 0 ? "#EF4444" : "#059669" }}>
-                                      {deltaPct >= 0 ? "+" : ""}{deltaPct.toFixed(1)}%
-                                    </span>}
+                                  : !Number.isFinite(deltaPct)
+                                    ? <span className="text-xs font-black" style={{ color: deltaPct > 0 ? "#059669" : "#EF4444" }}>
+                                        {deltaPct > 0 ? "+∞%" : "-∞%"}
+                                      </span>
+                                    : <span className="text-xs font-black" style={{ color: deltaPct < 0 ? "#EF4444" : "#059669" }}>
+                                        {deltaPct >= 0 ? "+" : ""}{deltaPct.toFixed(1)}%
+                                      </span>}
                             </td>
                           );
                         }
@@ -7891,7 +8414,7 @@ onDeleteLibraryKpi={async (id) => {
             let n = 2;
             while (existing.some(k => k.label === `${base} ${n}`)) n++;
             try {
-              const created = await createCompanyKpi({
+const created = await createCompanyKpi({
                 companyId, userId: authUserId,
                 label:       `${base} ${n}`,
                 description: data.description ?? null,
@@ -7900,6 +8423,7 @@ onDeleteLibraryKpi={async (id) => {
                 format:      data.format ?? "currency",
                 formula:     data.formula,
                 benchmark:   data.benchmark ?? null,
+                variations:  data.variations ?? null,
                 contextMappingId: null,
                 scope: "individual",
               });
@@ -7933,18 +8457,25 @@ evalPartyValue={(partyId) => {
             const yearTree = shared ? (p.values ?? {}) : (p.values?.[co] ?? {});
             const yr = yearTree[String(year)];
             if (!yr) return null;
+            const computed = evaluatePartyYear(yr, p.dims);
             const dimsToSum = groupDimCodes && groupDimCodes.size > 0
               ? p.dims.filter(d => groupDimCodes.has(d))
               : p.dims;
             let total = 0;
+            const mo = parseInt(month);
             for (const dim of dimsToSum) {
-              const cell = yr[dim]?.[parseInt(month)];
-              if (cell == null) continue;
-              const v = typeof cell === "object" ? cell.value : cell;
-              if (typeof v === "number") total += v;
+              const v = computed[dim]?.[mo];
+if (typeof v === "number") total += v;
             }
             return total;
           }}
+          variationCompanies={companyCodes}
+          companyLabelsMap={(() => {
+            const m = new Map();
+            companyCodes.forEach(c => m.set(c, companyLegalName(c)));
+            return m;
+          })()}
+          variationDimensions={allDimensionsFlat}
         />
       )}
     </div>

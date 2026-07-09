@@ -801,6 +801,7 @@ export default function PageHeader({
   periodToggle,
   compareToggle,
 aiToggle,
+  scopeToggle,
   onBack,
   headerSearch,
   headerActions,
@@ -1137,7 +1138,24 @@ onMouseLeave={() => {
                   </span>
                 </button>
               )}
-{compareToggle && (
+{scopeToggle && (
+                <button
+                  onClick={() => scopeToggle.onChange(scopeToggle.value === "consolidated" ? "perspective" : "consolidated")}
+                  title={scopeToggle.value === "consolidated" ? "Consolidated — click for Perspective" : "Perspective — click for Consolidated"}
+                  className="flex items-center gap-1.5 px-3 h-9 rounded-full flex-shrink-0"
+                  style={{
+                    background: scopeToggle.value === "perspective" ? colors.primary : "rgba(26,47,138,0.06)",
+                    color: scopeToggle.value === "perspective" ? "#fff" : colors.primary,
+                    border: `1px solid ${scopeToggle.value === "perspective" ? colors.primary : "rgba(26,47,138,0.1)"}`,
+                    boxShadow: "0 1px 3px -1px rgba(26,47,138,0.1)",
+                    transition: `all 240ms ${SMOOTH}`,
+                  }}>
+                  <span className="text-[10px] font-black uppercase tracking-wider">
+                    {scopeToggle.value === "consolidated" ? "Consolidated" : "Perspective"}
+                  </span>
+                </button>
+              )}
+              {compareToggle && (
                 <button
 onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareToggle.active); }}
                   title={compareToggle.disabled ? t("disable_history_first") : compareToggle.active ? `${t("btn_compare")} ✕` : t("btn_compare_with")}
