@@ -389,7 +389,7 @@ onProgress?.("Clearing previous version of this standard…");
 // MAIN PAGE COMPONENT
 // ═══════════════════════════════════════════════════════════════════
 
-export default function AdminOnboardingPage({ token }) {
+export default function AdminOnboardingPage({ token, onNavigate }) {
   const { colors } = useSettings();
   const t = useT();
 
@@ -613,8 +613,7 @@ const handleFile = useCallback(async (file) => {
                   {stdLabel}
                 </span>
               </div>
-
-              <div className="flex items-center gap-2 flex-shrink-0">
+<div className="flex items-center gap-2 flex-shrink-0">
                 <button
                   onClick={() => handleExport(client)}
                   disabled={isExporting || !token}
@@ -629,6 +628,36 @@ const handleFile = useCallback(async (file) => {
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black transition-all text-white"
                   style={{ background: `linear-gradient(135deg, ${colors.primary} 0%, #3b54b8 100%)` }}>
                   <Upload size={11} /><span>Import</span>
+                </button>
+<button
+                  onClick={() => {
+                    try {
+                      sessionStorage.setItem("mappings:openForEdit", JSON.stringify({
+                        openCustom: true,
+                        standard: `CUSTOM-${client.slug}`,
+                      }));
+                    } catch { /* ignore */ }
+                    onNavigate?.("mappings");
+                  }}
+                  title="Edit PL/BS custom standard"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black transition-all"
+                  style={{ background: "#57aa7815", color: "#3d8c5c" }}>
+                  <span>PL/BS</span>
+                </button>
+                <button
+                  onClick={() => {
+                    try {
+                      sessionStorage.setItem("cashflow-mappings:openForEdit", JSON.stringify({
+                        openCustom: true,
+                        standard: `CUSTOM-${client.slug}`,
+                      }));
+                    } catch { /* ignore */ }
+                    onNavigate?.("cashflow-mappings");
+                  }}
+                  title="Edit Cash Flow custom standard"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black transition-all"
+                  style={{ background: "#0891b215", color: "#0891b2" }}>
+                  <span>CF</span>
                 </button>
               </div>
             </div>

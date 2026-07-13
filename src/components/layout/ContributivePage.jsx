@@ -1781,6 +1781,7 @@ function PivotRow({
   perspectiveMode, rowIndex = 0,
   breakers = {}, totalColSpan = 10, breakerSortOrder = new Map(),
   rowMatchesDims = null,
+  pivotPrev = null, ytdOnly = true,
 }) {
   const code        = node.AccountCode;
   if (node._instanceId && node._dims?.length) {
@@ -1792,21 +1793,31 @@ function PivotRow({
   const rowStyle    = depth === 0 ? body1Style : body2Style;
   const isMatch     = rowMatchesSelf(node);
 
-const getVal   = co => {
-    const cell = pivot.get(code)?.[co];
+const getValFrom = (piv, co) => {
+    if (!piv) return 0;
+    if (hasChildren) {
+      let total = 0;
+      const walk = (n) => {
+        if (n.children && n.children.length > 0) {
+          n.children.forEach(walk);
+          return;
+        }
+        const c = piv.get(n.AccountCode)?.[co];
+        if (!c) return;
+        const nDims = n._dims;
+        if (Array.isArray(nDims) && nDims.length > 0 && Array.isArray(c.rows) && typeof rowMatchesDims === "function") {
+          c.rows.forEach(r => { if (rowMatchesDims(r, nDims)) total += Number(r._amt ?? 0); });
+        } else {
+          total += Number(c.total ?? 0);
+        }
+      };
+      walk(node);
+      return total;
+    }
+    const cell = piv.get(code)?.[co];
     if (!cell) return 0;
     const nodeDims = node._dims;
-    if (code === "600000" && co === "CAP" && nodeDims?.length > 0) {
-      console.log('[dim-debug]', {
-        code, co, nodeDims,
-        cellRowsLen: cell.rows?.length,
-        firstRowDims: cell.rows?.[0]?.Dimensions,
-        rowMatchesDimsFn: typeof rowMatchesDims,
-        sample: cell.rows?.slice(0, 3).map(r => ({ dims: r.Dimensions, amt: r._amt, role: r.CompanyRole })),
-      });
-    }
     if (Array.isArray(nodeDims) && nodeDims.length > 0 && Array.isArray(cell.rows) && typeof rowMatchesDims === "function") {
-      // Sum only rows matching this instance's dims
       let total = 0;
       cell.rows.forEach(r => {
         if (!rowMatchesDims(r, nodeDims)) return;
@@ -1815,6 +1826,15 @@ const getVal   = co => {
       return total;
     }
     return Number(cell.total ?? 0);
+  };
+const getVal = co => {
+    const curr = getValFrom(pivot, co);
+    if (ytdOnly || !pivotPrev) return curr;
+    const nodeType = node.AccountType ?? node.accountType ?? "";
+    // Balance sheet accounts are always YTD (never monthly delta)
+    if (nodeType === "B/S") return curr;
+    const prev = getValFrom(pivotPrev, co);
+    return curr - prev;
   };
   const getJp    = co => journalPivot?.get(code)?.[co] ?? {};
   const getSaldo = co => getVal(co);
@@ -1998,8 +2018,29 @@ const subTds = SUB_COLS.map((sc, idx) => {
               ...inMapping.sort((a, b) => (breakerSortOrder.get(a.AccountCode) ?? 9999) - (breakerSortOrder.get(b.AccountCode) ?? 9999)),
             ]
           : node.children;
-        return sorted.map((child, ci) => {
-        const breaker = breakers[child.AccountCode] ?? null;
+return sorted.map((child, ci) => {
+        const anchorBreaker = child._sectionAnchor && child._sectionInfo
+          ? { label: child._sectionInfo.label, color: child._sectionInfo.color }
+          : null;
+        const breaker = anchorBreaker ?? breakers[child.AccountCode] ?? null;
+        if (child._sectionAnchor) {
+          // Empty section: show only the breaker header, no row.
+          return (
+            <React.Fragment key={child.AccountCode}>
+              {breaker && (
+                <tr style={{ animation: `rowExpandIn 280ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(ci, 15) * 25}ms both`, transformOrigin: "top center" }}>
+                  <td className="sticky left-0 z-10 px-5 py-1.5"
+                    style={{ paddingLeft: `${16 + (depth + 1) * INDENT}px`, backgroundColor: breaker.color }}>
+                    <span className="text-[9px] font-black uppercase tracking-[0.18em]" style={{ color: "#fff", opacity: 0.92 }}>
+                      {breaker.label}
+                    </span>
+                  </td>
+                  <td colSpan={totalColSpan - 1} style={{ backgroundColor: breaker.color, opacity: 0.85 }} />
+                </tr>
+              )}
+            </React.Fragment>
+          );
+        }
         return (
           <React.Fragment key={child.AccountCode}>
             {breaker && (
@@ -2022,7 +2063,8 @@ const subTds = SUB_COLS.map((sc, idx) => {
               compareMode={compareMode} cmpPivot={cmpPivot}
               body1Style={body1Style} body2Style={body2Style} colors={colors}
               perspectiveMode={perspectiveMode} rowIndex={ci}
-              breakers={breakers}
+breakers={breakers}
+              pivotPrev={pivotPrev} ytdOnly={ytdOnly}
             breakerSortOrder={breakerSortOrder} totalColSpan={totalColSpan} breakerSortOrder={breakerSortOrder}
             />
 </React.Fragment>
@@ -2273,7 +2315,8 @@ compareMode, cmpPivot,
   dimIdx = null, journalDimIdx = null, cptyDimIdx = null, cmpDimIdx = null,
 activeStandardKey = null,
   codeToSectionInfo = new Map(),
-  rowMatchesDims = null,
+rowMatchesDims = null,
+  pivotPrev = null, ytdOnly = true,
 }) {
 const [dragCol, setDragCol] = useState(null);
   const [dragOverCol, setDragOverCol] = useState(null);
@@ -2761,7 +2804,25 @@ const effectiveBreakers = { ...breakers };
       finalKeys: Object.keys(effectiveBreakers),
       treeLen: tree.length,
     });
-    return tree.map((node, i) => {
+return tree.map((node, i) => {
+            // Empty custom section anchor: render only the breaker header, no
+            // row, no divider — it exists solely to surface the section label.
+            if (node._sectionAnchor && node._sectionInfo) {
+              const br = { label: node._sectionInfo.label, color: node._sectionInfo.color };
+              return (
+                <tr key={`anchor-${node.AccountCode}`}
+                  style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(i, 25) * 35}ms both`, height: 28 }}>
+                  <td colSpan={totalColSpan}
+                    style={{ backgroundColor: br.color, padding: 0, height: 28 }}>
+                    <div className="sticky left-0 px-5 py-1.5" style={{ width: "fit-content" }}>
+                      <span style={{ ...header3Style, textTransform: "uppercase", color: "#fff" }}>
+                        {br.label}
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+              );
+            }
             const type = node.AccountType ?? node.accountType ?? "";
             const prevType = i > 0 ? (tree[i-1].AccountType ?? tree[i-1].accountType ?? "") : null;
             const showDivider = type !== prevType;
@@ -2827,8 +2888,9 @@ const TYPE_LABELS = {
                   compareMode={compareMode} cmpPivot={cmpPivot}
                   body1Style={body1Style} body2Style={body2Style} colors={colors}
                   perspectiveMode={perspectiveMode} rowIndex={i}
-                  breakers={breakers}
+breakers={breakers}
                   rowMatchesDims={rowMatchesDims}
+                  pivotPrev={pivotPrev} ytdOnly={ytdOnly}
                   breakerSortOrder={breakerSortOrder} totalColSpan={totalColSpan}
                 />
               </>
@@ -3605,7 +3667,16 @@ const [typeFilter, setTypeFilter] = useState("");
   // NEW: perspective filter — "" means none/all (default), or a parent shortName
 const [perspective, setPerspective] = useState("");
 
-  const [rawData,      setRawData]      = useState([]);
+const [rawData,      setRawData]      = useState([]);
+const [rawDataPrev,  setRawDataPrev]  = useState([]);
+const [ytdOnly,      setYtdOnly]      = useState(false);
+const [customStandardVersion, setCustomStandardVersion] = useState(0);
+  const [allCfSections, setAllCfSections] = useState([]);
+  useEffect(() => {
+    const handler = () => setCustomStandardVersion(v => v + 1);
+    window.addEventListener("custom-standard-updated", handler);
+    return () => window.removeEventListener("custom-standard-updated", handler);
+  }, []);
   const [journalData,  setJournalData]  = useState([]);
   const [showJournals, setShowJournals] = useState(false);
   const [loading,      setLoading]      = useState(false);
@@ -3634,6 +3705,7 @@ const [expandedSet,setExpandedSet]= useState(new Set());
   const [cmpSource, setCmpSource] = useState("");
   const [cmpStructure, setCmpStructure] = useState("");
 const [cfUploadedData, setCfUploadedData] = useState([]);
+const [cfUploadedDataPrev, setCfUploadedDataPrev] = useState([]);
   const [cfMapping, setCfMapping] = useState([]);
   const [cfMetadata, setCfMetadata] = useState(new Map());
   const [cfGroupToCf, setCfGroupToCf] = useState(new Map());
@@ -3799,6 +3871,40 @@ const clearActiveMapping = useCallback(() => {
     if (!mappingTab) return;
     setActiveMappings(prev => ({ ...prev, [mappingTab]: null }));
   }, [mappingTab]);
+
+  // Auto-apply hidden override mapping for CUSTOM standards. It carries
+  // pl_tree, bs_tree AND cf_tree — we apply the tree that matches the current tab.
+  const [hiddenOverride, setHiddenOverride] = useState(null);
+  useEffect(() => {
+    const isCustom = activeStandardKey && String(activeStandardKey).startsWith("CUSTOM-");
+    if (!isCustom) { setHiddenOverride(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { supabase } = await import("../../lib/supabaseClient");
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) return;
+        const { getActiveCompanyId, getHiddenOverrideMapping } = await import("../../lib/mappingsApi");
+        const cid = await getActiveCompanyId(uid);
+        if (!cid) return;
+        const hidden = await getHiddenOverrideMapping({ companyId: cid, standard: activeStandardKey });
+        if (!cancelled) setHiddenOverride(hidden ?? null);
+      } catch (e) { console.warn("[Contributive] hidden override load failed:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, [activeStandardKey, customStandardVersion]);
+
+  // Apply the appropriate tree from the hidden override whenever mappingTab changes.
+  useEffect(() => {
+    if (!hiddenOverride || !mappingTab) return;
+    const treeField = mappingTab === "pl" ? "pl_tree" : mappingTab === "bs" ? "bs_tree" : "cf_tree";
+    const tree = hiddenOverride?.[treeField];
+    if (!Array.isArray(tree) || tree.length === 0) return;
+    // Skip if already applied
+    if (activeMappings[mappingTab]?.mapping_id === hiddenOverride.mapping_id) return;
+    handleApplyMapping(hiddenOverride, "structure");
+  }, [hiddenOverride, mappingTab, activeMappings, handleApplyMapping]);
 
   // Dynamically pick which API to use based on mappingTab + viewsMode.
   // pl & bs → mappingsApi / reportMappingsApi (the ones from Individuales)
@@ -4052,9 +4158,15 @@ if (isCustom) {
           `&order=sort_order.asc`,
           { headers: sbHeaders }
         ).then(r => r.json()),
-      ]).then(([rowsArr, secsArr]) => {
+]).then(([rowsArr, secsArr]) => {
         if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
-        const secByCode = new Map(secsArr.map(s => [s.section_code, { label: s.label, color: s.color }]));
+        const secByCode = new Map(secsArr.map(s => [s.section_code, { label: s.label, color: s.color, statement: s.statement, sort_order: s.sort_order }]));
+        // Save all CF sections (in order) so consumers can render empty custom breakers.
+        const allCfSections = secsArr
+          .filter(s => s.statement === "CF")
+          .sort((a, b) => Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0))
+          .map(s => ({ section_code: s.section_code, label: s.label, color: s.color, sort_order: s.sort_order }));
+        setAllCfSections(allCfSections);
         const seen = new Set();
         const out = {};
 const codeSecMap = new Map();
@@ -4138,7 +4250,7 @@ setCodeToParentFromStd(parentMap);
         setBreakers(grouped);
       })
       .catch(e => console.error("BREAKERS FETCH ERROR:", e));
-  }, [rawData, activeStandardKey]);
+}, [rawData, activeStandardKey, customStandardVersion]);
   /* ── Fetch consolidated-accounts ────────────────────────── */
   useEffect(() => {
     if (!metaReady || !year || !month || !source || !structure) return;
@@ -4150,17 +4262,23 @@ setCodeToParentFromStd(parentMap);
     setExpandedColsMap({});
 
     const h = headers();
-    const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+    const prevYear = month === 1 ? year - 1 : year;
+    const prevMonth = month === 1 ? 12 : month - 1;
+    const prevFilter = `Year eq ${prevYear} and Month eq ${prevMonth} and Source eq '${source}' and GroupStructure eq '${structure}'`;
 
     Promise.all([
       fetch(`${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h })
         .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
       fetch(`${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(filter)}`, { headers: h })
         .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
-    ]).then(([consolidated, journals]) => {
+      fetch(`${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(prevFilter)}`, { headers: h })
+        .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
+    ]).then(([consolidated, journals, prevConsolidated]) => {
 
 setRawData(consolidated);
       setJournalData(journals);
+      setRawDataPrev(prevConsolidated);
       // Extract CF/CFS names from consolidated rows — accumulate across periods.
       setCfNameDict(prev => {
         const next = { ...prev };
@@ -4259,12 +4377,20 @@ setRawData(consolidated);
     if (!token || !metaReady || !year || !month || !source || !structure) return;
     setCfLoading(true);
     const h = headers();
-    const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}'`;
-    fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h })
-      .then(r => r.json()).then(d => {
-        setCfUploadedData(d.value ?? (Array.isArray(d) ? d : []));
-        setCfLoading(false);
-      }).catch(() => setCfLoading(false));
+const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+    const prevYear = month === 1 ? year - 1 : year;
+    const prevMonth = month === 1 ? 12 : month - 1;
+    const prevFilter = `Year eq ${prevYear} and Month eq ${prevMonth} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+    Promise.all([
+      fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h })
+        .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
+      fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(prevFilter)}`, { headers: h })
+        .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
+    ]).then(([curr, prev]) => {
+      setCfUploadedData(curr);
+      setCfUploadedDataPrev(prev);
+      setCfLoading(false);
+    }).catch(() => setCfLoading(false));
   }, [token, metaReady, year, month, source, structure, headers]);
   
 const [cmpCfUploadedData, setCmpCfUploadedData] = useState([]);
@@ -4417,7 +4543,7 @@ const mappingDerived = useMemo(() => {
     return { instances, sortOrder, codeSection, breakers, mappedCodes };
   }, [activeMapping]);
 
-const { accountMap, pivot, tree, cols, journalPivot, counterpartyPivot, cmpPivot, dimIdx, journalDimIdx, cptyDimIdx, cmpDimIdx, rowMatchesDims } = useMemo(() => {
+const { accountMap, pivot, pivotPrev, tree, cols, journalPivot, counterpartyPivot, cmpPivot, dimIdx, journalDimIdx, cptyDimIdx, cmpDimIdx, rowMatchesDims } = useMemo(() => {
     if (!rawData.length) return { accountMap: new Map(), pivot: new Map(), tree: [], cols: [], journalPivot: new Map(), cmpPivot: new Map() };
 
     const accountMap = new Map();
@@ -4607,7 +4733,7 @@ if (isCustomStd && codeToSectionInfo && codeToSectionInfo.size > 0) {
             AccountCode: code,
             AccountName: fromMap?.AccountName ?? codeToNameFromStd.get(code) ?? code,
             AccountType: accountType,
-            SumAccountCode: fromMap?.SumAccountCode ?? codeToParentFromStd.get(code) ?? "",
+           SumAccountCode: (isCustomStd ? codeToParentFromStd.get(code) : null) ?? fromMap?.SumAccountCode ?? codeToParentFromStd.get(code) ?? "",
             children: [],
           });
         }
@@ -4886,11 +5012,29 @@ console.log('[tree.debug]', {
   mappingDerived: !!mappingDerived,
   isCustomStd_atLog: activeStandardKey,
 });
-return { accountMap, pivot, tree, cols, journalPivot: rolled, counterpartyPivot: rolledCpty, cmpPivot, dimIdx, journalDimIdx, cptyDimIdx, cmpDimIdx, rowMatchesDims };
-}, [rawData, journalData, typeFilter, cmpRawData, perspectiveMode, childrenOfPerspective, breakerSortOrder, currencyMode, mappingDerived, dimensionsMeta, activeStandardKey, codeToSectionInfo, codeToNameFromStd, codeToParentFromStd, codeToStatementFromStd, upDimGroups, upDimensions]);
+const pivotPrev = new Map();
+rawDataPrev.forEach(r => {
+  const role = r.CompanyRole ?? r.companyRole ?? "";
+  if (role !== "Contribution") return;
+  const code = r.AccountCode ?? r.accountCode ?? "";
+  const co   = r.CompanyShortName ?? r.companyShortName ?? "";
+  if (!code || !co) return;
+  if (!pivotPrev.has(code)) pivotPrev.set(code, {});
+  const c = pivotPrev.get(code);
+  if (!c[co]) c[co] = { total: 0, rows: [] };
+  const reportingAmtP = Number(r.ReportingAmountYTD ?? r.reportingAmountYTD);
+  const localAmtP     = Number(r.AmountYTD ?? r.amountYTD);
+  const amtP = currencyMode === "local"
+    ? (Number.isFinite(localAmtP) ? localAmtP : 0)
+    : (Number.isFinite(reportingAmtP) ? reportingAmtP : (Number.isFinite(localAmtP) ? localAmtP : 0));
+  c[co].total += amtP;
+  c[co].rows.push({ ...r, _amt: amtP });
+});
+return { accountMap, pivot, pivotPrev, tree, cols, journalPivot: rolled, counterpartyPivot: rolledCpty, cmpPivot, dimIdx, journalDimIdx, cptyDimIdx, cmpDimIdx, rowMatchesDims };
+}, [rawData, rawDataPrev, journalData, typeFilter, cmpRawData, perspectiveMode, childrenOfPerspective, breakerSortOrder, currencyMode, mappingDerived, dimensionsMeta, activeStandardKey, codeToSectionInfo, codeToNameFromStd, codeToParentFromStd, codeToStatementFromStd, upDimGroups, upDimensions, allCfSections]);
 
 // CF-specific pivot from uploaded data
- const { cfTree, cfPivot, cfCols, cmpCfPivot } = useMemo(() => {
+ const { cfTree, cfPivot, cfPivotPrev, cfCols, cmpCfPivot } = useMemo(() => {
 // Compute for "C/F" tab AND "Todos" view (typeFilter is null/empty).
 // In Todos, the Cash Flow sheet still needs cfTree/cfPivot to render.
 const shouldComputeCf = (typeFilter === "C/F" || !typeFilter);
@@ -5052,10 +5196,28 @@ let cfTree;
           return sA - sB;
         })
         .map(n => ({ ...n, children: [] }));
-    } else if (isCustomCf && breakerSortOrder.size > 0) {
+} else if (isCustomCf && breakerSortOrder.size > 0) {
       // CUSTOM standard has CF entries in breakerSortOrder (loaded from
       // standard_statement_rows statement=CF). Apply narrative sort so
       // section breakers show correctly.
+      // Include ALL CF codes from the standard even if they have no data
+      // (user-created sums like "1", "2", or orphans like 7999, 8200 that
+      // may not receive postings). This way the full custom structure renders.
+      const cfStdCodesInStatement = new Set();
+      codeToStatementFromStd.forEach((stmt, code) => {
+        if (stmt === "CF") cfStdCodesInStatement.add(String(code));
+      });
+      cfStdCodesInStatement.forEach(code => {
+        if (cfAccountMap.has(code)) return;
+        const name = codeToNameFromStd.get(code) ?? code;
+        const parent = codeToParentFromStd.get(code) ?? "";
+        cfAccountMap.set(code, {
+          AccountCode: code,
+          AccountName: name,
+          AccountType: "C/F",
+          SumAccountCode: parent,
+        });
+      });
       const fullTree = buildTree([...cfAccountMap.values()]);
       const treeIndex = new Map();
       const walk = (nodes) => nodes.forEach(n => {
@@ -5088,8 +5250,32 @@ let cfTree;
         return false;
       };
       cfTree = flatOrdered.filter(n => !hasAncestorInFlat(n.AccountCode));
-    } else {
+} else {
       cfTree = buildTree([...cfAccountMap.values()]);
+    }
+    // Append synthetic anchor nodes for CUSTOM CF sections that have no rows
+    // — otherwise their breakers would never surface in the render.
+    if (isCustomCf && Array.isArray(allCfSections) && allCfSections.length > 0) {
+      const sectionsUsed = new Set();
+      const walkForSections = (nodes) => (nodes || []).forEach(n => {
+        const info = codeToSectionInfo.get(String(n.AccountCode));
+        if (info?.section) sectionsUsed.add(info.section);
+        walkForSections(n.children);
+      });
+      walkForSections(cfTree);
+      allCfSections.forEach(s => {
+        if (sectionsUsed.has(s.section_code)) return;
+        const anchorCode = `__empty_section__${s.section_code}`;
+        cfTree.push({
+          AccountCode: anchorCode,
+          AccountName: "",
+          AccountType: "C/F",
+          SumAccountCode: "",
+          _sectionAnchor: true,
+          _sectionInfo: { section: s.section_code, label: s.label, color: s.color },
+          children: [],
+        });
+      });
     }
     const cfCols = [...new Set(filteredUploaded.map(r => r.CompanyShortName ?? r.companyShortName ?? "").filter(Boolean))].sort();
 
@@ -5132,8 +5318,28 @@ let cfTree;
       }
     });
 
-return { cfTree, cfPivot: piv, cfCols, cmpCfPivot: cmpPivCf };
-}, [typeFilter, cfUploadedData, cfMetadata, cfGroupToCf, perspectiveMode, childrenOfPerspective, cmpCfUploadedData, mappingDerived, mappingTab, cfNameDict, cfMapping, activeStandardKey, breakerSortOrder]);
+// Build previous-period cf pivot with same logic (for monthly toggle)
+    const cfPivPrev = new Map();
+    const filteredUploadedPrev = perspectiveMode
+      ? cfUploadedDataPrev.filter(r => childrenOfPerspective.includes(r.CompanyShortName ?? r.companyShortName ?? ""))
+      : cfUploadedDataPrev;
+    filteredUploadedPrev.forEach(r => {
+      const groupCode = String(r.AccountCode ?? r.accountCode ?? "");
+      const co = r.CompanyShortName ?? r.companyShortName ?? "";
+      if (!groupCode || !co) return;
+      const cfs = cfGroupToCf.get(groupCode);
+      if (!cfs) return;
+      const amt = Number(r.AmountYTD ?? r.amountYTD ?? 0);
+      cfs.forEach(cfCode => {
+        if (!cfPivPrev.has(cfCode)) cfPivPrev.set(cfCode, {});
+        const c = cfPivPrev.get(cfCode);
+        if (!c[co]) c[co] = { total: 0, rows: [] };
+        c[co].total += amt;
+        c[co].rows.push(r);
+      });
+    });
+return { cfTree, cfPivot: piv, cfPivotPrev: cfPivPrev, cfCols, cmpCfPivot: cmpPivCf };
+}, [typeFilter, cfUploadedData, cfUploadedDataPrev, cfMetadata, cfGroupToCf, perspectiveMode, childrenOfPerspective, cmpCfUploadedData, mappingDerived, mappingTab, cfNameDict, cfMapping, activeStandardKey, breakerSortOrder]);
 
 
 
@@ -5351,6 +5557,10 @@ tabs={viewsMode ? [] : [
               }]
             : []),
         ]}
+periodToggle={!viewsMode && typeFilter !== "B/S" ? {
+          value: ytdOnly ? "ytd" : "monthly",
+          onChange: (next) => setYtdOnly(next === "ytd"),
+        } : null}
 compareToggle={viewsMode ? null : {
           active: compareMode,
           onChange: (newVal) => {
@@ -5445,7 +5655,7 @@ companies, groupStructure,
         }}
       />
 
-{activeMapping && !viewsMode && (
+{activeMapping && activeMapping.name !== "__custom_override__" && !viewsMode && (
         <div className="flex items-center gap-3 px-5 py-3 rounded-2xl border flex-shrink-0"
           style={{
             background: "linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%)",
@@ -5713,7 +5923,9 @@ companies, groupStructure,
             T={T}
 activeStandardKey={activeStandardKey}
             codeToSectionInfo={codeToSectionInfo}
-            rowMatchesDims={rowMatchesDims}
+rowMatchesDims={rowMatchesDims}
+         pivotPrev={typeFilter === "C/F" ? cfPivotPrev : (!typeFilter ? new Map([...(pivotPrev || new Map()), ...(cfPivotPrev || new Map())]) : pivotPrev)}
+            ytdOnly={ytdOnly}
             cols={typeFilter === "C/F" ? cfCols : effectiveCols}
             tree={typeFilter === "C/F" ? cfTree : (!typeFilter ? [...tree, ...cfTree] : tree)}
             pivot={typeFilter === "C/F" ? cfPivot : undefined}

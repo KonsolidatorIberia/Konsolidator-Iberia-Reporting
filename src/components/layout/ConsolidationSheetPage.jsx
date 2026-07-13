@@ -190,6 +190,8 @@ const SheetRow = React.memo(function SheetRow({
   cmpColsExiting = false, cmpColsVisible = false,
   rowIndex = 0,
   rowMatchesDims = null,
+  pivotPrev = null, ytdOnly = true,
+  getRowAmount = (r) => Number(r?.AmountYTD ?? 0),
 }) {
 const hasChildren = node.children?.length > 0;
   const rowKey = node._instanceId ?? node.AccountCode;
@@ -209,29 +211,55 @@ const hasChildren = node.children?.length > 0;
     return rowMatchesDims(r, nodeDims);
   };
 
-  const byCompany = pivot.get(node.AccountCode) || {};
+const byCompany = pivot.get(node.AccountCode) || {};
 
-const consTotal = (byCompany[topParent] ?? [])
-    .filter(r => r.CompanyRole === "Group")
-    .filter(r => !r.OriginCompanyShortName?.trim() && !r.CounterpartyShortName?.trim())
-    .filter(dimFilter)
-    .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
+  // Collect all descendant leaf codes for rollup on sum nodes
+  const collectLeafCodes = (n) => {
+    if (n.children && n.children.length > 0) {
+      const out = [];
+      n.children.forEach(c => { out.push(...collectLeafCodes(c)); });
+      return out;
+    }
+    return [n.AccountCode];
+  };
+  const rollupCodes = hasChildren ? collectLeafCodes(node) : [node.AccountCode];
 
-const getContrib = (company) => {
-    const role = company === topParent ? "Parent" : "Contribution";
-    return (byCompany[company] ?? [])
-      .filter(r => r.CompanyRole === role)
+const consTotalFrom = (piv) => rollupCodes.reduce((acc, leafCode) => {
+    const bc = piv?.get(leafCode);
+    if (!bc) return acc;
+    return acc + (bc[topParent] ?? [])
+      .filter(r => r.CompanyRole === "Group")
+      .filter(r => !r.OriginCompanyShortName?.trim() && !r.CounterpartyShortName?.trim())
       .filter(dimFilter)
-      .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
+      .reduce((s, r) => s + -getRowAmount(r), 0);
+  }, 0);
+
+  const getContribFrom = (piv, company) => {
+    const role = company === topParent ? "Parent" : "Contribution";
+    return rollupCodes.reduce((acc, leafCode) => {
+      const bc = piv?.get(leafCode);
+      if (!bc) return acc;
+      return acc + (bc[company] ?? [])
+        .filter(r => r.CompanyRole === role)
+        .filter(dimFilter)
+        .reduce((s, r) => s + -getRowAmount(r), 0);
+    }, 0);
+  };
+
+const nodeAccountType = node.AccountType ?? node.accountType ?? "";
+  const applyDelta = !ytdOnly && pivotPrev && (nodeAccountType === "P/L" || nodeAccountType === "DIS");
+
+  const consTotalCurr = consTotalFrom(pivot);
+  const consTotal = applyDelta ? consTotalCurr - consTotalFrom(pivotPrev) : consTotalCurr;
+
+  const getContrib = (company) => {
+    const currV = getContribFrom(pivot, company);
+    if (!applyDelta) return currV;
+    return currV - getContribFrom(pivotPrev, company);
   };
 
   const contribSum = contributionCompanies.reduce((s, c) => s + getContrib(c), 0);
-
-  // Eliminations derived, not read from EJEs: Consolidation total minus the
-  // sum of individual company contributions. Works uniformly for root view
-  // and subgroup views — and for subgroups like Tizon, EJEs live in the
-  // parent's run (BIRD), not the subgroup's, so we can't read them directly.
-const elimTotal = consTotal - contribSum;
+  const elimTotal = consTotal - contribSum;
 
   // ── Compare-period totals (mirrors current-period derivation) ──
   const cmpByCompany = cmpPivot?.get(node.AccountCode) || {};
@@ -239,13 +267,13 @@ const elimTotal = consTotal - contribSum;
   const cmpConsTotal = (cmpByCompany[topParent] ?? [])
     .filter(r => r.CompanyRole === "Group")
     .filter(r => !r.OriginCompanyShortName?.trim() && !r.CounterpartyShortName?.trim())
-    .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
+    .reduce((s, r) => s + -getRowAmount(r), 0);
 
   const cmpGetContrib = (company) => {
     const role = company === topParent ? "Parent" : "Contribution";
     return (cmpByCompany[company] ?? [])
       .filter(r => r.CompanyRole === role)
-      .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
+      .reduce((s, r) => s + -getRowAmount(r), 0);
   };
 
   const cmpContribSum = contributionCompanies.reduce((s, c) => s + cmpGetContrib(c), 0);
@@ -366,6 +394,8 @@ const [isHovered, setIsHovered] = useState(false);
     rowIndex={ci}
     expanded={expanded} onToggle={onToggle}
     pivot={pivot} uploadedPivot={uploadedPivot} elimPivot={elimPivot}
+pivotPrev={pivotPrev} ytdOnly={ytdOnly}
+    getRowAmount={getRowAmount}
     contributionCompanies={contributionCompanies}
     topParent={topParent}
     elimExpanded={elimExpanded} elimHeaders={elimHeaders}
@@ -538,14 +568,14 @@ const ws = wb.addWorksheet(sheetName);
     return (byCo[topParent] ?? [])
       .filter(r => r.CompanyRole === "Group")
       .filter(r => !r.OriginCompanyShortName?.trim() && !r.CounterpartyShortName?.trim())
-      .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
+     .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
   };
   const getContrib = (code, company, p) => {
     const byCo = p?.get(code) || {};
     const role = company === topParent ? "Parent" : "Contribution";
     return (byCo[company] ?? [])
       .filter(r => r.CompanyRole === role)
-      .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
+     .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
   };
   const getContribSum = (code, p) =>
     effectiveCompanies.reduce((s, c) => s + getContrib(code, c, p), 0);
@@ -1006,14 +1036,14 @@ async function generateSheetPdf({
     return (byCo[topParent] ?? [])
       .filter(r => r.CompanyRole === "Group")
       .filter(r => !r.OriginCompanyShortName?.trim() && !r.CounterpartyShortName?.trim())
-      .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
+    .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
   };
   const getContrib = (code, company, p) => {
     const byCo = p?.get(code) || {};
     const role = company === topParent ? "Parent" : "Contribution";
     return (byCo[company] ?? [])
       .filter(r => r.CompanyRole === role)
-      .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
+    .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
   };
   const getContribSum = (code, p) =>
     effectiveCompanies.reduce((s, c) => s + getContrib(code, c, p), 0);
@@ -1704,7 +1734,10 @@ const [dimensions,     setDimensions]     = useState([]);
   const [structure,          setStructure]          = useState("DefaultStructure");
   const [perspectiveCompany, setPerspectiveCompany] = useState("");
 
-  const [rawData,      setRawData]      = useState([]);
+const [rawData,      setRawData]      = useState([]);
+  const [rawDataPrev,  setRawDataPrev]  = useState([]);
+const [ytdOnly,      setYtdOnly]      = useState(false);
+const [selectedCurrency, setSelectedCurrency] = useState(null); // null = default (topParent's)
   const [uploadedData, setUploadedData] = useState([]);
   const [journalData,  setJournalData]  = useState([]);
 const [loading,      setLoading]      = useState(false);
@@ -2143,7 +2176,43 @@ if (!source || !structure || !year || !month) return;
     };
   }, [groupStructure, structure, consolidations, year, month, source, companies, perspectiveCompany]);
 
-  const isRootView = topParent === rootParent;
+const isRootView = topParent === rootParent;
+
+  // Parse ReportingCurrencies from a row: "EUR:X:Y||USD:X:Y||GBP:X:Y"
+  const parseReportingCurrencies = (str) => {
+    if (!str || typeof str !== "string") return {};
+    const out = {};
+    str.split("||").forEach(part => {
+      const [cur, period, ytd] = part.split(":");
+      if (cur) out[cur] = { period: Number(period ?? 0), ytd: Number(ytd ?? 0) };
+    });
+    return out;
+  };
+  // Available currencies inferred from data + the default (topParent's).
+  const availableCurrencies = useMemo(() => {
+    const set = new Set();
+    if (displayCurrency) set.add(displayCurrency);
+    for (const r of rawData) {
+      const p = parseReportingCurrencies(r.ReportingCurrencies);
+      Object.keys(p).forEach(c => set.add(c));
+      if (set.size >= 5) break;
+    }
+    return Array.from(set);
+  }, [rawData, displayCurrency]);
+  // Effective currency: user's choice, or group default.
+  const effectiveCurrency = selectedCurrency || displayCurrency;
+
+  const getRowAmount = useCallback((r, field = "ytd") => {
+    if (!r) return 0;
+    // Default (group's) currency → use AmountYTD/AmountPeriod as-is (backend already reporting).
+    if (!selectedCurrency || selectedCurrency === displayCurrency) {
+      return field === "period" ? Number(r.AmountPeriod ?? 0) : Number(r.AmountYTD ?? 0);
+    }
+    const parsed = parseReportingCurrencies(r.ReportingCurrencies);
+    const bucket = parsed[selectedCurrency];
+    if (!bucket) return field === "period" ? Number(r.AmountPeriod ?? 0) : Number(r.AmountYTD ?? 0);
+    return field === "period" ? bucket.period : bucket.ytd;
+  }, [selectedCurrency, displayCurrency]);
 
   // ── Load consolidated accounts + journals — scoped to the perspective ─────
   // The `GroupShortName eq '${topParent}'` filter is what makes currency work:
@@ -2157,6 +2226,9 @@ if (!metaReady || !year || !month || !source || !structure || !topParent) return
     });
 const consFilter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and GroupShortName eq '${topParent}'`;
     const baseFilter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+    const prevYear = month === 1 ? year - 1 : year;
+    const prevMonth = month === 1 ? 12 : month - 1;
+    const prevConsFilter = `Year eq ${prevYear} and Month eq ${prevMonth} and Source eq '${source}' and GroupStructure eq '${structure}' and GroupShortName eq '${topParent}'`;
 
     Promise.all([
       fetch(`${BASE}/reports/consolidated-accounts?$filter=${encodeURIComponent(consFilter)}`, {
@@ -2168,14 +2240,21 @@ const consFilter = `Year eq ${year} and Month eq ${month} and Source eq '${sourc
       fetch(`${BASE}/journal-entries?$filter=${encodeURIComponent(baseFilter)}`, {
         headers: { Authorization: `Bearer ${token}` }
       }).then(r => r.json()).then(d => d.value || []),
+      fetch(`${BASE}/reports/consolidated-accounts?$filter=${encodeURIComponent(prevConsFilter)}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      }).then(r => r.json()).then(d => d.value || []),
 ])
-.then(([cons, uploaded, journals]) => {
+.then(([cons, uploaded, journals, consPrev]) => {
+        console.log("[SAMPLE consolidated row]", cons[0]);
+        console.log("[SAMPLE consolidated keys]", cons[0] ? Object.keys(cons[0]) : "empty");
         setRawData([]);
         setUploadedData([]);
         setJournalData([]);
+        setRawDataPrev([]);
         setRawData(cons);
         setUploadedData(uploaded);
         setJournalData(journals);
+        setRawDataPrev(consPrev);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -2385,7 +2464,7 @@ const dimGroups = useMemo(() => {
     return true;
   }, [upDimGroups, upDimensions]);
 
-  const pivot = useMemo(() => {
+const pivot = useMemo(() => {
     const m = new Map();
     rawData.forEach(r => {
       if (!passesDimFilter(r)) return;
@@ -2396,6 +2475,18 @@ const dimGroups = useMemo(() => {
     });
     return m;
   }, [rawData, passesDimFilter]);
+
+  const pivotPrev = useMemo(() => {
+    const m = new Map();
+    rawDataPrev.forEach(r => {
+      if (!passesDimFilter(r)) return;
+      if (!m.has(r.AccountCode)) m.set(r.AccountCode, {});
+      const c = m.get(r.AccountCode);
+      if (!c[r.CompanyShortName]) c[r.CompanyShortName] = [];
+      c[r.CompanyShortName].push(r);
+    });
+    return m;
+  }, [rawDataPrev, passesDimFilter]);
 
   // Compare-period pivot: { code → { company → consTotal, contribByCo } }
 const cmpPivot = useMemo(() => {
@@ -2607,7 +2698,7 @@ if (mappingDerived && mappingDerived.instances && mappingDerived.instances.lengt
           AccountCode: code,
           AccountName: fromMap?.AccountName ?? codeToNameFromStd.get(code) ?? code,
           AccountType: accountType,
-          SumAccountCode: fromMap?.SumAccountCode ?? codeToParentFromStd.get(code) ?? "",
+         SumAccountCode: (isCustomStd ? codeToParentFromStd.get(code) : null) ?? fromMap?.SumAccountCode ?? codeToParentFromStd.get(code) ?? "",
           children: [],
         });
       }
@@ -3011,6 +3102,18 @@ tabs={viewsMode ? [] : [
               }]
             : []),
         ]}
+currencyToggle={availableCurrencies.length > 1 ? {
+          value: effectiveCurrency,
+          options: availableCurrencies.map(c => ({
+            value: c,
+            label: c === displayCurrency ? `${c} (grupo)` : c
+          })),
+          onChange: (next) => setSelectedCurrency(next === displayCurrency ? null : next),
+        } : null}
+periodToggle={!viewsMode && typeFilter !== "B/S" ? {
+          value: ytdOnly ? "ytd" : "monthly",
+          onChange: (next) => setYtdOnly(next === "ytd"),
+        } : null}
 compareToggle={viewsMode ? null : {
           active: compareMode,
           onChange: (newVal) => {
@@ -3544,6 +3647,8 @@ const totalCols = 1 // account col
         rowIndex={i}
         expanded={expanded} onToggle={toggleExpand}
         pivot={pivot} uploadedPivot={uploadedPivot} elimPivot={elimPivot}
+pivotPrev={pivotPrev} ytdOnly={ytdOnly}
+        getRowAmount={getRowAmount}
         contributionCompanies={effectiveCompanies}
         topParent={topParent}
         elimExpanded={elimColsVisible} elimHeaders={elimHeaders}

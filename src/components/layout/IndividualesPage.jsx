@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, useDeferredValue } from "react";
-import { useCurrentUserResourceAccess } from "../../lib/userPermissionsApi";
+import { useCurrentUserResourceAccess, useCanSeeAdminTabs } from "../../lib/userPermissionsApi";
 import {
   FileText, Search, Loader2, AlertCircle, Filter,
   ChevronDown, ChevronRight, Hash, Download, Calendar, Database, Network,
@@ -61,7 +61,7 @@ function formatCellValue(val) {
     return <span className="text-gray-300 italic text-xs">—</span>;
   if (typeof val === "boolean")
     return val
-      ? <span className="text-emerald-600 font-semibold text-xs">Yes</span>
+? <span className="text-emerald-600 font-semibold text-xs">Yes</span>
       : <span className="text-gray-400 text-xs">No</span>;
   if (typeof val === "number")
     return <span className="font-mono text-xs">{val.toLocaleString()}</span>;
@@ -183,8 +183,8 @@ function DataTable({
   </div>
 </div>
       {filtered.length > 0 ? (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-         <div className="scrollbar-hide" style={{ height: 'calc(100vh - 160px)', overflowY: 'auto' }}>
+<div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+         <div className="scrollbar-hide" style={{ height: 'calc(100vh - 160px)', overflowY: 'auto', overflowX: 'auto' }}>
           <table className="w-full k-sticky-table">
 <thead>
   <tr className="border-b border-gray-100 bg-[#1a2f8a]/5">
@@ -501,25 +501,25 @@ const gac    = String(getField(row, "accountCode") ?? "");
   return roots.map(makeNode).filter(Boolean);
 }
 
+const _sumNodeCache = new WeakMap();
 function sumNode(node) {
+  if (node == null) return 0;
   if (node.type === "localAccount" || node.type === "dimension" || node.type === "plain")
     return node.amount ?? 0;
 
+  const cached = _sumNodeCache.get(node);
+  if (cached !== undefined) return cached;
+
   // A group account is one of two things:
-  //  (a) Has children: it's a sum-account whose total is the rolled-up sum
-  //      of its descendants. We IGNORE its own uploadLeaves here, because
-  //      either they are duplicate postings (same amounts already attached
-  //      to descendants), or they will be picked up as we recurse — but in
-  //      this codebase the bug is the former. Trust the children.
-  //  (b) Has no children: it's a leaf group account, and its total IS its
-  //      own uploadLeaves sum.
-  if (node.children && node.children.length > 0) {
-    let s = 0;
-    node.children.forEach(c => { s += sumNode(c); });
-    return s;
-  }
+  //  (a) Has children: rolled-up sum of descendants (ignore own uploadLeaves).
+  //  (b) No children: total IS its own uploadLeaves sum.
   let s = 0;
-  node.uploadLeaves?.forEach(l => { s += sumNode(l); });
+  if (node.children && node.children.length > 0) {
+    node.children.forEach(c => { s += sumNode(c); });
+  } else {
+    node.uploadLeaves?.forEach(l => { s += sumNode(l); });
+  }
+  _sumNodeCache.set(node, s);
   return s;
 }
 
@@ -651,13 +651,25 @@ const total = sumNode(node);
   );
 }
 
+// Global gate: count-up animation only runs during the initial page load
+// window. After that, useCountUp returns the target value directly so that
+// expanding rows is instant. Reset from IndividualesPage on mount.
+let _countUpAnimationsAllowed = true;
+function unlockCountUpForInitialLoad(ms = 1500) {
+  _countUpAnimationsAllowed = true;
+  clearTimeout(unlockCountUpForInitialLoad._t);
+  unlockCountUpForInitialLoad._t = setTimeout(() => { _countUpAnimationsAllowed = false; }, ms);
+}
+
 function useCountUp(target, duration = 2000) {
+const shouldAnimate = _countUpAnimationsAllowed;
   const [display, setDisplay] = useState(target);
   const fromRef = useRef(target);
   const startRef = useRef(null);
   const rafRef = useRef(null);
 
   useEffect(() => {
+    if (!shouldAnimate) return;
     cancelAnimationFrame(rafRef.current);
     fromRef.current = display;
     startRef.current = null;
@@ -676,9 +688,9 @@ function useCountUp(target, duration = 2000) {
     rafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafRef.current);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target, duration]);
+  }, [target, duration, shouldAnimate]);
 
-  return display;
+return shouldAnimate ? display : target;
 }
 
 function PLAmountCell({ value, divider, typoStyle, centered = true }) {
@@ -1061,7 +1073,7 @@ const monthLabel  = MONTHS_T.find(m => String(m.value) === String(month))?.label
       return d === 0 ? "—" : d < 0 ? `(${fmtN(Math.abs(d))})` : fmtN(d);
     };
 
-    const buildRowData = node => {
+const buildRowData = node => {
       const ytdV      = -sumNode(node);
       const prevV     = -getPrev(prevMap, node.code, month);
       const monV      = ytdV - prevV;
@@ -1570,7 +1582,6 @@ let hasHistoryPL = !compareMode && plHist.length > 0;
     const _selectedCo = (typeof selectedCompanies !== 'undefined' && Array.isArray(selectedCompanies)) ? selectedCompanies : [];
     const _ytdOnly = typeof ytdOnly === 'boolean' ? ytdOnly : false;
 const hasMultiCo = _selectedCo.length > 1;
-    console.log('[Export] multi-co check', { selectedCompanies, _selectedCo, hasMultiCo, ytdOnly: _ytdOnly });
     const getCoF = r => String(getField(r, 'companyShortName', 'CompanyShortName') ?? '');
     const perCoMaps = hasMultiCo ? _selectedCo.map(co => {
       const f = (uploadedAccounts || []).filter(r => getCoF(r) === co);
@@ -1581,14 +1592,6 @@ const hasMultiCo = _selectedCo.length > 1;
       })();
       return { co, legal, map: nodeMap(buildTree(groupAccounts, f)), prevMap: nodeMap(buildTree(groupAccounts, pf)) };
     }) : [];
-    console.log('[Export] history check', {
-      plHistoryMonthsArg: plHistoryMonths,
-      bsHistoryMonthsArg: bsHistoryMonths,
-      plHistLength: plHist.length,
-      bsHistLength: bsHist.length,
-      compareMode, bsCompareMode,
-      hasHistoryPL, hasHistoryBS
-    });
 
 if (hasMultiCo) { hasHistoryPL = false; hasHistoryBS = false; }
     const hasB  = compareMode && !hasMultiCo;
@@ -1664,6 +1667,35 @@ const setC = (row, ci, val, fmt, fontColor, bold, fill, align='right') => {
       c.fill = mkFill(fill);
       c.alignment = { horizontal: align, vertical: 'middle' };
       c.border = mkBorder();
+    };
+
+// Frame each compare group (B/C/D) with a thicker left border so the eye can
+    // visually separate the base filter, YTD block, and each compare-period column set.
+    const frameCompareGroups = (ws, profile) => {
+      const boundaries = [];
+      if (profile === PL) {
+        if (PL.monB) boundaries.push(PL.monB);
+        if (PL.monC) boundaries.push(PL.monC);
+        if (PL.monD) boundaries.push(PL.monD);
+        if (PL.ytdA) boundaries.push(PL.ytdA); // separator between the monthly and YTD sections
+        if (PL.ytdB) boundaries.push(PL.ytdB);
+        if (PL.ytdC) boundaries.push(PL.ytdC);
+        if (PL.ytdD) boundaries.push(PL.ytdD);
+      } else if (profile === BS) {
+        if (BS.cmp)  boundaries.push(BS.cmp);
+        if (BS.cmp2) boundaries.push(BS.cmp2);
+        if (BS.cmp3) boundaries.push(BS.cmp3);
+      }
+      if (boundaries.length === 0) return;
+      const borderStyle = { style: 'medium', color: { argb: 'FF6B7280' } };
+      const lastRow = ws.lastRow?.number ?? 0;
+      for (let r = 1; r <= lastRow; r++) {
+        const row = ws.getRow(r);
+        boundaries.forEach(colIdx => {
+          const cell = row.getCell(colIdx);
+          cell.border = { ...(cell.border || {}), left: borderStyle };
+        });
+      }
     };
 
     const wb = new ExcelJS.Workbook();
@@ -2090,8 +2122,11 @@ const plHistLeafIdx = hasHistoryPL ? plHist.map(h => ({
         dr.outlineLevel = Math.min(ol, 7);
         dr.hidden = true;
 
-        const nc = dr.getCell(PL.name);
-        nc.value = `${leaf.code || ''} ${leaf.name || ''}`.trim();
+const nc = dr.getCell(PL.name);
+        const dimSuffix = Array.isArray(leaf.children) && leaf.children.length > 0
+          ? ` (${leaf.children.map(d => d.name || d.code).filter(Boolean).join(', ')})`
+          : '';
+        nc.value = `${leaf.code || ''} ${leaf.name || ''}${dimSuffix}`.trim();
         nc.font = mkFont(false, TEXT_MUT, 9, true);
         nc.fill = mkFill(bg);
         nc.alignment = { horizontal: 'left', vertical: 'middle', indent: depth + 1 };
@@ -2176,7 +2211,7 @@ const perCoPrevLeafDimIdx = hasMultiCo ? _selectedCo.map(co =>
         prev: buildLeafDimIdx(h.prevData || []),
       })) : [];
 
-      const writeDimRow = (dim, depth, ol, parentLac) => {
+     const _writeDimRow = (dim, depth, ol, parentLac) => {
         const bg = DIM_BG;
         ws.addRow([]);
         const dr = ws.lastRow;
@@ -2414,10 +2449,10 @@ if (hasHistoryPL) {
             writeSummaryDrill(child, depth + 1, ol + 1);
           });
 
-          (parentNode.uploadLeaves || []).forEach(leaf => {
+(parentNode.uploadLeaves || []).forEach(leaf => {
             if (leaf.type === 'plain') return;
             writeLeafRow(leaf, depth, ol);
-            (leaf.children || []).forEach(dim => writeDimRow(dim, depth + 1, ol + 1, leaf.code));
+            // Dims are folded into the leaf's name cell — no separate dim row.
           });
 
 const jrns = jrnByCode.get(String(parentNode.code)) || [];
@@ -2438,7 +2473,7 @@ const jrns = jrnByCode.get(String(parentNode.code)) || [];
         return;
       }
 
-      // DETAILED MODE
+// DETAILED MODE
       const allSumRows = [];
       const walkSum = node => {
         if (!hasData(node) || !['P/L', 'DIS'].includes(node.accountType)) return;
@@ -2446,27 +2481,41 @@ const jrns = jrnByCode.get(String(parentNode.code)) || [];
         (node.children || []).forEach(walkSum);
       };
       tree.filter(n => ['P/L', 'DIS'].includes(n.accountType)).forEach(walkSum);
-      allSumRows.sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
 
-      // Drill-down for a detailed row: show non-sum children + local accounts + dimensions + journal
+      // Sums that appear as descendants of another sum should NOT sit at top level;
+      // they get nested via writeDrillChildren instead, mirroring the on-screen hierarchy.
+      const nestedSumCodes = new Set();
+      const collectNested = (node) => {
+        (node.children || []).forEach(child => {
+          if (!hasData(child) || !['P/L', 'DIS'].includes(child.accountType)) return;
+          if (child.isSumAccount) nestedSumCodes.add(String(child.code));
+          collectNested(child);
+        });
+      };
+      allSumRows.forEach(collectNested);
+
+      const topLevelSums = allSumRows
+        .filter(n => !nestedSumCodes.has(String(n.code)))
+        .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
+
+      // Drill-down for a detailed row: recurse through ALL group children (sum + non-sum),
+      // then local accounts (with dims folded into their name cell), then journals.
       const writeDrillChildren = (parentNode, depth, ol) => {
-        // Non-sum group account children (the sum ones are already top-level)
         const grpChildren = (parentNode.children || []).filter(c =>
-          hasData(c) && ['P/L', 'DIS'].includes(c.accountType) && !c.isSumAccount
+          hasData(c) && ['P/L', 'DIS'].includes(c.accountType)
         );
         grpChildren.forEach(child => {
           writeDataRow(child, depth, ol, { hidden: true });
           writeDrillChildren(child, depth + 1, ol + 1);
         });
 
-        // Local account leaves
+        // Local account leaves — dims are folded into the leaf's name cell, no separate dim row.
         (parentNode.uploadLeaves || []).forEach(leaf => {
           if (leaf.type === 'plain') return;
           writeLeafRow(leaf, depth, ol);
-          (leaf.children || []).forEach(dim => writeDimRow(dim, depth + 1, ol + 1, leaf.code));
         });
 
-// Journal entries
+        // Journal entries
         const jrns = jrnByCode.get(String(parentNode.code)) || [];
         if (jrns.length > 0) {
           writeJrnHeaderRow(jrns.length, depth, ol);
@@ -2475,7 +2524,7 @@ const jrns = jrnByCode.get(String(parentNode.code)) || [];
         }
       };
 
-      allSumRows.forEach((node, i) => {
+      topLevelSums.forEach((node, i) => {
         const div = DETAIL_DIV_BEFORE[String(node.code)];
         if (div) writeDivider(div);
         if (i === 0 && !div) {
@@ -2744,9 +2793,13 @@ const dLeafIdxOnce = hasD ? buildLeafIdxOnce(cmp3UploadedAccounts) : new Map();
     const valColor = hl ? NAVY : TEXT_DK;
     const bold = hl || depth === 0;
 
-    ws.addRow([]);
+ws.addRow([]);
     const dr = ws.lastRow;
     dr.height = hl ? 19 : 17;
+    // Set outline level so Excel nests the row correctly under its literal parent.
+    dr.outlineLevel = Math.min(depth, 7);
+    // Rows deeper than the top section level start collapsed (user can expand).
+    if (depth > 0) dr.hidden = true;
 
     const nc = dr.getCell(PL.name);
     const txt = depth === 0 ? (node.name || '').toUpperCase() : (node.name || '');
@@ -2836,6 +2889,8 @@ if (hasMultiCo) perCoTrees.forEach((cot, i) => {
     });
 
 // ── Drill-down: uploadLeaves (local accounts) + dimensions ──
+    // Skip all drill (leaves, dims, journals) when the user turned drill-down off in the modal.
+    if (opts && opts.drillDown === false) return;
     const gaNode = aTree.get(String(node.code));
     let leaves = (gaNode?.uploadLeaves || []).filter(l => l.type !== 'plain');
 
@@ -2881,7 +2936,7 @@ if (hasMultiCo) perCoTrees.forEach((cot, i) => {
       dr2.outlineLevel = Math.min(depth + 1, 7);
       dr2.hidden = true;
 
-      const lnc = dr2.getCell(PL.name);
+const lnc = dr2.getCell(PL.name);
       lnc.value = `${leaf.code || ''}  ${leaf.name || ''}`.trim();
       lnc.font = mkFont(false, TEXT_MUT, 9, true);
       lnc.fill = mkFill(LEAF_BG);
@@ -2947,8 +3002,43 @@ if (hasHistoryPL && leaf.code) {
         });
       }
 
-      // Dimension sub-rows
-      let dimChildren = leaf.children || [];
+// Dimension sub-rows — prefer native buildTree dims, fall back to raw Dimensions field
+      // (resolves names via dimensions metadata so we don't show raw codes).
+      let dimChildren = (leaf.children && leaf.children.length > 0) ? leaf.children : [];
+      if (dimChildren.length === 0 && leaf.code) {
+        if (!ws._savedLeafDimsRawFull) {
+          const nameLookup = new Map();
+          (dimensions || []).forEach(dd => {
+            const g = String(dd.dimensionGroup ?? dd.DimensionGroup ?? dd.groupName ?? dd.GroupName ?? '').trim();
+            const c = String(dd.dimensionCode ?? dd.DimensionCode ?? dd.code ?? dd.Code ?? '').trim();
+            const n = String(dd.dimensionName ?? dd.DimensionName ?? dd.name ?? dd.Name ?? '').trim();
+            if (g && c && n) nameLookup.set(`${g}:${c}`, n);
+          });
+          const mm = new Map();
+          (uploadedAccounts || []).forEach(r => {
+            const rl = String(getField(r, 'localAccountCode') ?? '');
+            if (!rl) return;
+            const dimStr = String(getField(r, 'Dimensions', 'dimensions') ?? '');
+            if (!dimStr || dimStr === '—') return;
+            const amtR = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+            dimStr.split('||').map(s => s.trim()).filter(Boolean).forEach(pair => {
+              const i = pair.indexOf(':'); if (i === -1) return;
+              const g = pair.slice(0, i).trim();
+              const v = pair.slice(i + 1).trim();
+              if (!v) return;
+              if (!mm.has(rl)) mm.set(rl, new Map());
+              const inner = mm.get(rl);
+              const key = `${g}:${v}`;
+              if (!inner.has(key)) inner.set(key, { code: v, name: nameLookup.get(key) || v, group: g, amount: 0 });
+              inner.get(key).amount += amtR;
+            });
+          });
+          const out = new Map();
+          mm.forEach((inner, lac) => out.set(lac, [...inner.values()]));
+          ws._savedLeafDimsRawFull = out;
+        }
+        dimChildren = ws._savedLeafDimsRawFull.get(String(leaf.code)) || [];
+      }
       if (node.dims && node.dims.length > 0) {
         const accepted = new Set(node.dims.map(d => String(d)));
         dimChildren = dimChildren.filter(dim => {
@@ -2962,14 +3052,22 @@ if (hasHistoryPL && leaf.code) {
       }
 // Build per-leaf+dim indexes once for saved-mapping export
       if (!ws._savedLeafDimIdx) {
-        const buildLDI = (rows) => {
+const buildLDI = (rows) => {
           const m = new Map();
           (rows || []).forEach(r => {
             const l = String(getField(r, 'localAccountCode') ?? '');
-            const dcd = String(getField(r, 'dimensionCode') ?? '');
-            if (!l || !dcd || dcd === 'null') return;
+            if (!l) return;
             const a = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
-            m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+            const dcd = String(getField(r, 'dimensionCode') ?? '');
+            if (dcd && dcd !== 'null') m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+            const dimStr = String(getField(r, 'Dimensions', 'dimensions') ?? '');
+            if (dimStr && dimStr !== '—') {
+              dimStr.split('||').map(s => s.trim()).filter(Boolean).forEach(pair => {
+                const i = pair.indexOf(':'); if (i === -1) return;
+                const v = pair.slice(i + 1).trim(); if (!v) return;
+                m.set(`${l}|${v}`, (m.get(`${l}|${v}`) ?? 0) + a);
+              });
+            }
           });
           return m;
         };
@@ -3205,14 +3303,7 @@ setC(jr, PL.monA, -amt, NUM_FMT, INDIGO, false, JRN_BG);
     (node.children || []).forEach(child => writeNode(child, depth + 1));
   };
 
-  // ── Render sections exactly as savedPlLiteral describes them ──
-console.log('[Export] savedPlLiteral sections', savedPlLiteral?.map(s => ({
-    keys: Object.keys(s || {}),
-    label: s?.label, name: s?.name, title: s?.title, breaker: s?.breaker, breakerLabel: s?.breakerLabel,
-    color: s?.color, colour: s?.colour, bg: s?.bg, background: s?.background,
-    nodes: s?.nodes?.length,
-  })));
-
+// ── Render sections exactly as savedPlLiteral describes them ──
   savedPlLiteral.forEach((section) => {
     const lbl = section.label ?? section.name ?? section.title ?? section.breaker ?? section.breakerLabel ?? section.heading;
     const col = section.color ?? section.colour ?? section.bg ?? section.background ?? section.fill;
@@ -3412,9 +3503,12 @@ const aBs = buildBsAccIdx(uploadedAccounts);
     const valColor = hl ? NAVY : TEXT_DK;
     const bold = hl || depth === 0;
 
-    ws.addRow([]);
+ws.addRow([]);
     const dr = ws.lastRow;
     dr.height = hl ? 19 : 17;
+    // Set outline level so Excel nests the row correctly under its literal parent.
+    dr.outlineLevel = Math.min(depth, 7);
+    if (depth > 0) dr.hidden = true;
 
     const nc = dr.getCell(BS.name);
     const txt = depth === 0 ? (node.name || '').toUpperCase() : (node.name || '');
@@ -3468,6 +3562,7 @@ if (hasMultiCo) perCoBsTrees.forEach((cot, i) => {
     });
 
 // ── Drill-down: uploadLeaves + dimensions ──
+    if (opts && opts.drillDown === false) return;
     const gaNodeB = bsTreeByCodeOnce.get(String(node.code));
     let leavesB = (gaNodeB?.uploadLeaves || []).filter(l => l.type !== 'plain');
 
@@ -3501,7 +3596,7 @@ if (hasMultiCo) perCoBsTrees.forEach((cot, i) => {
       dr2.outlineLevel = Math.min(depth + 1, 7);
       dr2.hidden = true;
 
-      const lnc = dr2.getCell(BS.name);
+const lnc = dr2.getCell(BS.name);
       lnc.value = `${leaf.code || ''}  ${leaf.name || ''}`.trim();
       lnc.font = mkFont(false, TEXT_MUT, 9, true);
       lnc.fill = mkFill(LEAF_BG);
@@ -3527,7 +3622,41 @@ if (bsHasD && leaf.code) {
         setC(dr2, BS.cmp3P, dP(amt, dV), PCT_FMT, devColor(d), false, LEAF_BG);
       }
 
-      let dimChildrenB = leaf.children || [];
+let dimChildrenB = (leaf.children && leaf.children.length > 0) ? leaf.children : [];
+      if (dimChildrenB.length === 0 && leaf.code) {
+        if (!ws._savedBsLeafDimsRawFull) {
+          const nameLookup = new Map();
+        (dimensions || []).forEach(dd => {
+            const g = String(dd.dimensionGroup ?? dd.DimensionGroup ?? dd.groupName ?? dd.GroupName ?? '').trim();
+            const c = String(dd.dimensionCode ?? dd.DimensionCode ?? dd.code ?? dd.Code ?? '').trim();
+            const n = String(dd.dimensionName ?? dd.DimensionName ?? dd.name ?? dd.Name ?? '').trim();
+            if (g && c && n) nameLookup.set(`${g}:${c}`, n);
+          });
+          const mm = new Map();
+          (uploadedAccounts || []).forEach(r => {
+            const rl = String(getField(r, 'localAccountCode') ?? '');
+            if (!rl) return;
+            const dimStr = String(getField(r, 'Dimensions', 'dimensions') ?? '');
+            if (!dimStr || dimStr === '—') return;
+            const amtR = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+            dimStr.split('||').map(s => s.trim()).filter(Boolean).forEach(pair => {
+              const i = pair.indexOf(':'); if (i === -1) return;
+              const g = pair.slice(0, i).trim();
+              const v = pair.slice(i + 1).trim();
+              if (!v) return;
+              if (!mm.has(rl)) mm.set(rl, new Map());
+              const inner = mm.get(rl);
+              const key = `${g}:${v}`;
+              if (!inner.has(key)) inner.set(key, { code: v, name: nameLookup.get(key) || v, group: g, amount: 0 });
+              inner.get(key).amount += amtR;
+            });
+          });
+          const out = new Map();
+          mm.forEach((inner, lac) => out.set(lac, [...inner.values()]));
+          ws._savedBsLeafDimsRawFull = out;
+        }
+        dimChildrenB = ws._savedBsLeafDimsRawFull.get(String(leaf.code)) || [];
+      }
       if (node.dims && node.dims.length > 0) {
         const accepted = new Set(node.dims.map(d => String(d)));
         dimChildrenB = dimChildrenB.filter(dim => {
@@ -3540,14 +3669,22 @@ if (bsHasD && leaf.code) {
         });
       }
 if (!ws._savedBsLeafDimIdx) {
-        const buildBDI = (rows) => {
+const buildBDI = (rows) => {
           const m = new Map();
           (rows || []).forEach(r => {
             const l = String(getField(r, 'localAccountCode') ?? '');
-            const dcd = String(getField(r, 'dimensionCode') ?? '');
-            if (!l || !dcd || dcd === 'null') return;
+            if (!l) return;
             const a = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
-            m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+            const dcd = String(getField(r, 'dimensionCode') ?? '');
+            if (dcd && dcd !== 'null') m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+            const dimStr = String(getField(r, 'Dimensions', 'dimensions') ?? '');
+            if (dimStr && dimStr !== '—') {
+              dimStr.split('||').map(s => s.trim()).filter(Boolean).forEach(pair => {
+                const i = pair.indexOf(':'); if (i === -1) return;
+                const v = pair.slice(i + 1).trim(); if (!v) return;
+                m.set(`${l}|${v}`, (m.get(`${l}|${v}`) ?? 0) + a);
+              });
+            }
           });
           return m;
         };
@@ -3740,13 +3877,6 @@ if (bsHasB || bsHasC || bsHasD) {
 
     (node.children || []).forEach(child => writeBsNode(child, depth + 1));
   };
-
-console.log('[Export] savedBsLiteral sections', savedBsLiteral?.map(s => ({
-    keys: Object.keys(s || {}),
-    label: s?.label, name: s?.name, title: s?.title, breaker: s?.breaker, breakerLabel: s?.breakerLabel,
-    color: s?.color, colour: s?.colour, bg: s?.bg, background: s?.background,
-    nodes: s?.nodes?.length,
-  })));
 
   savedBsLiteral.forEach((section) => {
     const lbl = section.label ?? section.name ?? section.title ?? section.breaker ?? section.breakerLabel ?? section.heading;
@@ -4348,18 +4478,18 @@ const hasSavedLiteral = Array.isArray(savedPlLiteral) && savedPlLiteral.length >
 const hasSavedBsLiteral = Array.isArray(savedBsLiteral) && savedBsLiteral.length > 0;
 
 if (hasSavedLiteral) {
-  if (opts.plSaved !== false) buildSavedPLSheet(wb.addWorksheet('Profit & Loss'));
+if (opts.plSaved !== false) { const _wsPl = wb.addWorksheet('Profit & Loss'); buildSavedPLSheet(_wsPl); frameCompareGroups(_wsPl, PL); }
 } else {
-  if (opts.plSummary !== false) buildPLSheet(wb.addWorksheet('P&L Summary'), true);
-  if (opts.plDetailed !== false) buildPLSheet(wb.addWorksheet('P&L Detailed'), false);
+if (opts.plSummary !== false) { const _wsPlSum = wb.addWorksheet('P&L Summary'); buildPLSheet(_wsPlSum, true); frameCompareGroups(_wsPlSum, PL); }
+  if (opts.plDetailed !== false) { const _wsPlDet = wb.addWorksheet('P&L Detailed'); buildPLSheet(_wsPlDet, false); frameCompareGroups(_wsPlDet, PL); }
 }
 
 if (hasSavedBsLiteral) {
-  if (opts.bsSaved !== false) buildSavedBSSheet(wb.addWorksheet('Balance Sheet'));
+if (opts.bsSaved !== false) { const _wsBs = wb.addWorksheet('Balance Sheet'); buildSavedBSSheet(_wsBs); frameCompareGroups(_wsBs, BS); }
 } else {
-  if (opts.bsSummary !== false) buildBSSheet(wb.addWorksheet('BS Summary'), 'Summary', null);
-  if (opts.bsAssets !== false) buildBSSheet(wb.addWorksheet('BS Assets'), 'Assets', n => isAssetsRoot(n));
-  if (opts.bsEquity !== false) buildBSSheet(wb.addWorksheet('BS Equity & Liab'), 'Equity & Liabilities', n => !isAssetsRoot(n));
+if (opts.bsSummary !== false) { const _wsBsSum = wb.addWorksheet('BS Summary'); buildBSSheet(_wsBsSum, 'Summary', null); frameCompareGroups(_wsBsSum, BS); }
+  if (opts.bsAssets !== false)  { const _wsBsAss = wb.addWorksheet('BS Assets');  buildBSSheet(_wsBsAss, 'Assets', n => isAssetsRoot(n)); frameCompareGroups(_wsBsAss, BS); }
+  if (opts.bsEquity !== false)  { const _wsBsEq  = wb.addWorksheet('BS Equity & Liab'); buildBSSheet(_wsBsEq, 'Equity & Liabilities', n => !isAssetsRoot(n)); frameCompareGroups(_wsBsEq, BS); }
 }
 
     // ═══════════════════════════════════════════════════════════
@@ -5266,14 +5396,22 @@ const buildSavedPlRowsLit = () => {
       if (!Array.isArray(savedPlLiteral) || savedPlLiteral.length === 0) return [];
 
       // Per-leaf+dim indexes for compare periods (saved-mapping)
-      const buildSavedLDI = (rowsArg) => {
+const buildSavedLDI = (rowsArg) => {
         const m = new Map();
         (rowsArg || []).forEach(r => {
           const l = String(getField(r, 'localAccountCode') ?? '');
-          const dcd = String(getField(r, 'dimensionCode') ?? '');
-          if (!l || !dcd || dcd === 'null') return;
+          if (!l) return;
           const a = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
-          m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+          const dcd = String(getField(r, 'dimensionCode') ?? '');
+          if (dcd && dcd !== 'null') m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+          const dimStr = String(getField(r, 'Dimensions', 'dimensions') ?? '');
+          if (dimStr && dimStr !== '—') {
+            dimStr.split('||').map(s => s.trim()).filter(Boolean).forEach(pair => {
+              const i = pair.indexOf(':'); if (i === -1) return;
+              const v = pair.slice(i + 1).trim(); if (!v) return;
+              m.set(`${l}|${v}`, (m.get(`${l}|${v}`) ?? 0) + a);
+            });
+          }
         });
         return m;
       };
@@ -5437,8 +5575,7 @@ perCoTreesLit = cos.map(co => {
             };
           });
         }
-      } catch (err) {
-        console.error('[Export] perCoTreesLit build failed', err);
+} catch {
         perCoTreesLit = [];
       }
 
@@ -5466,8 +5603,7 @@ perCoTreesLit = cos.map(co => {
             }
             return ytdOnly ? ytdC : (ytdC - prevC);
           });
-        } catch (err) {
-          console.error('[Export] coValFor failed for node', node?.code, err);
+} catch {
           return perCoTreesLit.map(() => 0);
         }
       };
@@ -5492,8 +5628,49 @@ const nodeHistVals = hasHistoryPL ? plHistTreeMaps.map(h => sumLitWithKids(node,
           isBold: hl || depth === 0, isHighlighted: hl || depth === 0, depth,
         });
 
+if (opts && opts.drillDown === false) return;
         const gaNode = aTree.get(String(node.code));
-        const leaves = (gaNode?.uploadLeaves || []).filter(l => l.type !== 'plain');
+        let leaves = (gaNode?.uploadLeaves || []).filter(l => l.type !== 'plain');
+        // Filter leaves by node.dims when the saved mapping row has a dim restriction
+        // (same logic as app / Excel — otherwise all leaves show under every dim-filtered section).
+        if (node.dims && node.dims.length > 0 && leaves.length > 0) {
+          if (!plPdfRowsByLac) {
+            plPdfRowsByLac = new Map();
+            (uploadedAccounts || []).forEach(r => {
+              const lac = String(getField(r, 'localAccountCode', 'LocalAccountCode') ?? '');
+              if (!lac) return;
+              if (!plPdfRowsByLac.has(lac)) plPdfRowsByLac.set(lac, []);
+              plPdfRowsByLac.get(lac).push(r);
+            });
+          }
+          const accepted = new Set(node.dims.map(d => String(d)));
+          const filtered = leaves.filter(leaf => {
+            const leafRows = plPdfRowsByLac.get(String(leaf.code ?? '')) || [];
+            return leafRows.some(r => {
+              const dimsStr = String(getField(r, 'Dimensions', 'dimensions') ?? '');
+              if (!dimsStr) return false;
+              return dimsStr.split('||').map(s => s.trim()).filter(Boolean).some(pair => {
+                const i = pair.indexOf(':'); if (i === -1) return false;
+                const g = pair.slice(0, i).trim();
+                const v = pair.slice(i + 1).trim();
+                if (accepted.has(`${g}:${v}`)) return true;
+                return [...accepted].some(sk => {
+                  const sc = sk.indexOf(':');
+                  const sv = sc === -1 ? sk : sk.slice(sc + 1);
+                  if (sv === v) return true;
+                  const dm = (dimensions || []).find(dd => {
+                    const dg = String(dd.dimensionGroup ?? dd.DimensionGroup ?? '').trim();
+                    const dn = String(dd.dimensionName ?? dd.DimensionName ?? '').trim();
+                    return dn === sv && (sc === -1 || dg === sk.slice(0, sc));
+                  });
+                  if (!dm) return false;
+                  return String(dm.dimensionCode ?? dm.DimensionCode ?? '').trim() === v;
+                });
+              });
+            });
+          });
+          if (filtered.length > 0) leaves = filtered;
+        }
         leaves.forEach(leaf => {
           const ytdA = -(leaf.amount ?? 0);
           const prevA = leaf.code && Number(month) !== 1 ? (aPrevLeafIdx.get(String(leaf.code)) ?? 0) : 0;
@@ -5524,7 +5701,41 @@ const leafHistVals = hasHistoryPL && leaf.code ? plHistTreeMaps.map(h => {
             }) : [],
             depth: depth + 1, isLeaf: true,
           });
-(leaf.children || []).forEach(dim => {
+((() => {
+            if (leaf.children && leaf.children.length > 0) return leaf.children;
+            if (!leaf.code) return [];
+            // Lazy: build once per PDF-render pass with resolved dim names.
+            if (!plPdfLeafDimsRawFull) {
+              plPdfLeafDimsRawFull = new Map();
+              const nameLookup = new Map();
+              (dimensions || []).forEach(dd => {
+                const g = String(dd.dimensionGroup ?? dd.DimensionGroup ?? dd.groupName ?? dd.GroupName ?? '').trim();
+                const cd = String(dd.dimensionCode ?? dd.DimensionCode ?? dd.code ?? dd.Code ?? '').trim();
+                const nm = String(dd.dimensionName ?? dd.DimensionName ?? dd.name ?? dd.Name ?? '').trim();
+                if (g && cd && nm) nameLookup.set(`${g}:${cd}`, nm);
+              });
+              (uploadedAccounts || []).forEach(r => {
+                const rl = String(getField(r, 'localAccountCode') ?? '');
+                if (!rl) return;
+                const dimStr = String(getField(r, 'Dimensions', 'dimensions') ?? '');
+                if (!dimStr || dimStr === '—') return;
+                const amtR = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+                dimStr.split('||').map(s => s.trim()).filter(Boolean).forEach(pair => {
+                  const i = pair.indexOf(':'); if (i === -1) return;
+                  const g = pair.slice(0, i).trim();
+                  const v = pair.slice(i + 1).trim();
+                  if (!v) return;
+                  if (!plPdfLeafDimsRawFull.has(rl)) plPdfLeafDimsRawFull.set(rl, new Map());
+                  const inner = plPdfLeafDimsRawFull.get(rl);
+                  const key = `${g}:${v}`;
+                  if (!inner.has(key)) inner.set(key, { code: v, name: nameLookup.get(key) || v, group: g, amount: 0 });
+                  inner.get(key).amount += amtR;
+                });
+              });
+              plPdfLeafDimsRawFull.forEach((inner, lac) => plPdfLeafDimsRawFull.set(lac, [...inner.values()]));
+            }
+            return plPdfLeafDimsRawFull.get(String(leaf.code)) || [];
+          })()).forEach(dim => {
             const lac = String(leaf.code ?? '');
             const dc  = String(dim.code ?? '');
             const key = lac && dc ? `${lac}|${dc}` : null;
@@ -5654,7 +5865,8 @@ if (hasB || hasC || hasD) {
 
         (node.children || []).forEach(child => pushNode(child, depth + 1));
       };
-
+let plPdfLeafDimsRawFull = null;
+let plPdfRowsByLac = null;
       savedPlLiteral.forEach((section) => {
         const lbl = section.label ?? section.name ?? section.title ?? section.breaker ?? section.breakerLabel ?? section.heading;
         const col = section.color ?? section.colour ?? section.bg ?? section.background ?? section.fill;
@@ -5674,14 +5886,22 @@ if (hasB || hasC || hasD) {
 const buildSavedBsRowsLit = () => {
       if (!Array.isArray(savedBsLiteral) || savedBsLiteral.length === 0) return [];
 
-      const buildSavedBsLDI = (rowsArg) => {
+const buildSavedBsLDI = (rowsArg) => {
         const m = new Map();
         (rowsArg || []).forEach(r => {
           const l = String(getField(r, 'localAccountCode') ?? '');
-          const dcd = String(getField(r, 'dimensionCode') ?? '');
-          if (!l || !dcd || dcd === 'null') return;
+          if (!l) return;
           const a = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
-          m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+          const dcd = String(getField(r, 'dimensionCode') ?? '');
+          if (dcd && dcd !== 'null') m.set(`${l}|${dcd}`, (m.get(`${l}|${dcd}`) ?? 0) + a);
+          const dimStr = String(getField(r, 'Dimensions', 'dimensions') ?? '');
+          if (dimStr && dimStr !== '—') {
+            dimStr.split('||').map(s => s.trim()).filter(Boolean).forEach(pair => {
+              const i = pair.indexOf(':'); if (i === -1) return;
+              const v = pair.slice(i + 1).trim(); if (!v) return;
+              m.set(`${l}|${v}`, (m.get(`${l}|${v}`) ?? 0) + a);
+            });
+          }
         });
         return m;
       };
@@ -5797,8 +6017,47 @@ const buildBsLDIcoPdf = (rows) => {
           isBold: hl || depth === 0, isHighlighted: hl || depth === 0, depth,
         });
 
+if (opts && opts.drillDown === false) return;
         const gaNode = aTreeBs.get(String(node.code));
-        const leaves = (gaNode?.uploadLeaves || []).filter(l => l.type !== 'plain');
+        let leaves = (gaNode?.uploadLeaves || []).filter(l => l.type !== 'plain');
+        if (node.dims && node.dims.length > 0 && leaves.length > 0) {
+          if (!bsPdfRowsByLac) {
+            bsPdfRowsByLac = new Map();
+            (uploadedAccounts || []).forEach(r => {
+              const lac = String(getField(r, 'localAccountCode', 'LocalAccountCode') ?? '');
+              if (!lac) return;
+              if (!bsPdfRowsByLac.has(lac)) bsPdfRowsByLac.set(lac, []);
+              bsPdfRowsByLac.get(lac).push(r);
+            });
+          }
+          const accepted = new Set(node.dims.map(d => String(d)));
+          const filtered = leaves.filter(leaf => {
+            const leafRows = bsPdfRowsByLac.get(String(leaf.code ?? '')) || [];
+            return leafRows.some(r => {
+              const dimsStr = String(getField(r, 'Dimensions', 'dimensions') ?? '');
+              if (!dimsStr) return false;
+              return dimsStr.split('||').map(s => s.trim()).filter(Boolean).some(pair => {
+                const i = pair.indexOf(':'); if (i === -1) return false;
+                const g = pair.slice(0, i).trim();
+                const v = pair.slice(i + 1).trim();
+                if (accepted.has(`${g}:${v}`)) return true;
+                return [...accepted].some(sk => {
+                  const sc = sk.indexOf(':');
+                  const sv = sc === -1 ? sk : sk.slice(sc + 1);
+                  if (sv === v) return true;
+                  const dm = (dimensions || []).find(dd => {
+                    const dg = String(dd.dimensionGroup ?? dd.DimensionGroup ?? '').trim();
+                    const dn = String(dd.dimensionName ?? dd.DimensionName ?? '').trim();
+                    return dn === sv && (sc === -1 || dg === sk.slice(0, sc));
+                  });
+                  if (!dm) return false;
+                  return String(dm.dimensionCode ?? dm.DimensionCode ?? '').trim() === v;
+                });
+              });
+            });
+          });
+          if (filtered.length > 0) leaves = filtered;
+        }
         leaves.forEach(leaf => {
 out.push({
             code: String(leaf.code || ''),
@@ -5810,7 +6069,40 @@ out.push({
             coVals: hasMultiCo && leaf.code ? perCoBsTreesLit.map(cot => cot.leafIdx.get(String(leaf.code)) ?? 0) : [],
             depth: depth + 1, isLeaf: true,
           });
-(leaf.children || []).forEach(dim => {
+((() => {
+            if (leaf.children && leaf.children.length > 0) return leaf.children;
+            if (!leaf.code) return [];
+            if (!bsPdfLeafDimsRawFull) {
+              bsPdfLeafDimsRawFull = new Map();
+              const nameLookup = new Map();
+              (dimensions || []).forEach(dd => {
+                const g = String(dd.dimensionGroup ?? dd.DimensionGroup ?? dd.groupName ?? dd.GroupName ?? '').trim();
+                const cd = String(dd.dimensionCode ?? dd.DimensionCode ?? dd.code ?? dd.Code ?? '').trim();
+                const nm = String(dd.dimensionName ?? dd.DimensionName ?? dd.name ?? dd.Name ?? '').trim();
+                if (g && cd && nm) nameLookup.set(`${g}:${cd}`, nm);
+              });
+              (uploadedAccounts || []).forEach(r => {
+                const rl = String(getField(r, 'localAccountCode') ?? '');
+                if (!rl) return;
+                const dimStr = String(getField(r, 'Dimensions', 'dimensions') ?? '');
+                if (!dimStr || dimStr === '—') return;
+                const amtR = parseAmt(getField(r, 'AmountYTD', 'amountYTD', 'AmountPeriod', 'amountPeriod'));
+                dimStr.split('||').map(s => s.trim()).filter(Boolean).forEach(pair => {
+                  const i = pair.indexOf(':'); if (i === -1) return;
+                  const g = pair.slice(0, i).trim();
+                  const v = pair.slice(i + 1).trim();
+                  if (!v) return;
+                  if (!bsPdfLeafDimsRawFull.has(rl)) bsPdfLeafDimsRawFull.set(rl, new Map());
+                  const inner = bsPdfLeafDimsRawFull.get(rl);
+                  const key = `${g}:${v}`;
+                  if (!inner.has(key)) inner.set(key, { code: v, name: nameLookup.get(key) || v, group: g, amount: 0 });
+                  inner.get(key).amount += amtR;
+                });
+              });
+              bsPdfLeafDimsRawFull.forEach((inner, lac) => bsPdfLeafDimsRawFull.set(lac, [...inner.values()]));
+            }
+            return bsPdfLeafDimsRawFull.get(String(leaf.code)) || [];
+          })()).forEach(dim => {
             const lac = String(leaf.code ?? '');
             const dc  = String(dim.code ?? '');
             const key = lac && dc ? `${lac}|${dc}` : null;
@@ -5898,7 +6190,8 @@ if (bsHasB || bsHasC || bsHasD) {
 
         (node.children || []).forEach(child => pushNode(child, depth + 1));
       };
-
+let bsPdfLeafDimsRawFull = null;
+let bsPdfRowsByLac = null;
       savedBsLiteral.forEach((section) => {
         const lbl = section.label ?? section.name ?? section.title ?? section.breaker ?? section.breakerLabel ?? section.heading;
         const col = section.color ?? section.colour ?? section.bg ?? section.background ?? section.fill;
@@ -6354,8 +6647,9 @@ breakers = { pl: {}, bs: {}, cf: {} },
   pgcMapping = null,
 savedPlLiteral = null,
   savedHighlightedIds = null,
-  ytdOnly = false,
+ytdOnly = false,
 }) {
+
 
 const { colors } = useSettings();
 const header3Style = useTypo("header3");
@@ -6406,7 +6700,7 @@ const subbody2Style = useTypo("subbody2");
 const expandedMap = useMemo(() => externalExpandedMap ?? {}, [externalExpandedMap]);
 const setExpandedMap = externalSetExpandedMap ?? (() => {});
 const [hoveredDimRow, setHoveredDimRow] = useState(null);
-const [summaryMode, setSummaryMode] = useState(false);
+const [summaryMode] = useState(false);
 const [searchActive, setSearchActive] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const debouncedQuery = useDeferredValue(searchQuery);
@@ -6508,12 +6802,10 @@ const fetchHistoryMonth = useCallback(async (y, mo) => {
         fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(buildFilter(y, mo))}`, { headers: h }),
         fetch(`${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(buildJrnFilter(y, mo))}`, { headers: h }),
       ]);
-      console.log('[JRN-FETCH]', y, mo, 'status:', resJ.status, 'url:', `${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(buildJrnFilter(y, mo))}`);
       const jsonA = resA.ok ? await resA.json() : { value: [] };
       const data = jsonA.value ?? (Array.isArray(jsonA) ? jsonA : []);
 const jsonJ = resJ.ok ? await resJ.json() : { value: [] };
       const journals = jsonJ.value ?? (Array.isArray(jsonJ) ? jsonJ : []);
-      console.log('[PL hist fetch]', y, mo, 'journals:', journals.length, 'resJStatus:', resJ.status, 'sample:', JSON.stringify(journals[0]));
       let prev = [];
       if (Number(mo) !== 1) {
         const resB = await fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(buildFilter(y, Number(mo) - 1))}`, { headers: h });
@@ -6572,9 +6864,12 @@ useEffect(() => {
 const [jrnPopup, setJrnPopup] = useState(null);
 const [dimPopup, setDimPopup] = useState(null);
   
+
   const tree = useMemo(() => buildTree(groupAccounts, uploadedAccounts, !dimensionActive), [groupAccounts, uploadedAccounts, dimensionActive]);
 
-  const toggle = (code) => setExpandedMap(prev => ({ ...prev, [code]: !isOpen(code) }));
+const toggle = (code) => {
+setExpandedMap(prev => ({ ...prev, [code]: !isOpen(code) }));
+  };
 
   // Collect all sum account nodes from P/L tree in ascending code order (post-order = leaves first)
 const allSumRows = useMemo(() => {
@@ -6976,26 +7271,45 @@ const getDimsForLocalCode = useCallback((localAccountCode) => {
   return dimsByLocalAccountCode.get(String(localAccountCode)) || [];
 }, [dimsByLocalAccountCode]);
 
-const hasDimsInSubtree = useCallback((node) => {
-  if (!node) return false;
-  if (codesWithDims.has(String(node.code))) return true;
-  if (Array.isArray(node.children)) {
-    for (const c of node.children) {
-      if (hasDimsInSubtree(c)) return true;
+const hasDimsInSubtree = useMemo(() => {
+  const cache = new WeakMap();
+  const fn = (node) => {
+    if (!node) return false;
+    const hit = cache.get(node);
+    if (hit !== undefined) return hit;
+    let res = false;
+    if (codesWithDims.has(String(node.code))) res = true;
+    if (!res && Array.isArray(node.uploadLeaves)) {
+      for (const leaf of node.uploadLeaves) {
+        if (leaf.type === "localAccount") {
+          if (Array.isArray(leaf.children) && leaf.children.length > 0) { res = true; break; }
+          if (leaf.code && getDimsForLocalCode(leaf.code).length > 0) { res = true; break; }
+        }
+      }
     }
-  }
-  return false;
-}, [codesWithDims]);
+    if (!res && Array.isArray(node.children)) {
+      for (const c of node.children) { if (fn(c)) { res = true; break; } }
+    }
+    cache.set(node, res);
+    return res;
+  };
+  return fn;
+}, [codesWithDims, getDimsForLocalCode]);
 
-const countJournalsInSubtree = useCallback((node) => {
-  if (!node) return 0;
-  let total = (journalByCode.get(String(node.code)) || []).length;
-  if (Array.isArray(node.children)) {
-    for (const c of node.children) {
-      total += countJournalsInSubtree(c);
+const countJournalsInSubtree = useMemo(() => {
+  const cache = new WeakMap();
+  const fn = (node) => {
+    if (!node) return 0;
+    const hit = cache.get(node);
+    if (hit !== undefined) return hit;
+    let total = (journalByCode.get(String(node.code)) || []).length;
+    if (Array.isArray(node.children)) {
+      for (const c of node.children) { total += fn(c); }
     }
-  }
-  return total;
+    cache.set(node, total);
+    return total;
+  };
+  return fn;
 }, [journalByCode]);
 
 const journalByCodeCmp = useMemo(() => {
@@ -7038,6 +7352,7 @@ const getPrevYtd = useCallback((code) => {
 }, [prevNodeByCode, month]);
 
 // ── Compare period trees ────────────────────────────────────
+
 const cmpTree = useMemo(
   () => compareMode ? buildTree(groupAccounts, cmpUploadedAccounts, !dimensionActive) : [],
   [groupAccounts, cmpUploadedAccounts, compareMode, dimensionActive]
@@ -7163,7 +7478,6 @@ const journalByCodeCmp3 = useMemo(() => {
 
 // History months: filter raw data by dims, build trees, build code lookups
 const historyMonthsProcessed = useMemo(() => {
-  console.log('[HIST-MONTHS-RAW]', historyMonths.length, historyMonths.map(h => ({ y: h.year, m: h.month, dataLen: h.data?.length, jrnLen: h.journals?.length })));
 return historyMonths.map(hRaw => {
     const h = {
       ...hRaw,
@@ -7171,7 +7485,6 @@ return historyMonths.map(hRaw => {
       prevData: (hRaw.prevData || []).filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions)),
       journals: (hRaw.journals || []).filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions)),
     };
-    console.log('[hist]', h.year, h.month, 'journals:', h.journals?.length ?? 0, 'sample:', JSON.stringify(h.journals?.[0]));
     const tree = buildTree(groupAccounts, h.data, !((upDimGroups?.length > 0) || (upDimensions?.length > 0)));
     const prevTree = buildTree(groupAccounts, h.prevData, !((upDimGroups?.length > 0) || (upDimensions?.length > 0)));
     const map = new Map();
@@ -7390,6 +7703,7 @@ const searchExpansionMap = useMemo(() => {
   // Saved-mapping literal path: keys are `saved-${secIdx}-${parentPath}-${node.id}` and `${rowKey}-leaf-${i}`
   if (savedPlLiteral) {
     // Build group-account lookup so we can inspect uploadLeaves for each literal node's code
+
 const treeByCode = new Map();
     (function indexTree(nodes) {
       nodes.forEach(n => { treeByCode.set(String(n.code), n); indexTree(n.children || []); });
@@ -7467,7 +7781,7 @@ return result;
     };
     walk(top, 0, top.code, true);
   });
-  return result;
+return result;
 }, [debouncedQuery, summaryMode, summaryRows, allSumRows, matchesSelf, savedPlLiteral, tree]);
 
 const isOpen = useCallback((key) => {
@@ -7586,20 +7900,95 @@ const handleExportXlsx = () => {
     </div>
   ) : null;
 
-if (loading) return (
-    <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
-      <Loader2 size={28} className="text-[#1a2f8a] animate-spin mx-auto mb-3" />
-     <p className="text-gray-400 text-sm">{t("loading_pl_data")}</p>
-    </div>
-  );
+const cmpTreeLitMemo = useMemo(() => buildTree(groupAccounts, cmpUploadedAccounts), [groupAccounts, cmpUploadedAccounts]);
+  const cmpPrevTreeLitMemo = useMemo(() => buildTree(groupAccounts, cmpPrevUploadedAccounts), [groupAccounts, cmpPrevUploadedAccounts]);
+  const cmp2TreeLitMemo = useMemo(() => buildTree(groupAccounts, cmp2UploadedAccounts), [groupAccounts, cmp2UploadedAccounts]);
+  const cmp2PrevTreeLitMemo = useMemo(() => buildTree(groupAccounts, cmp2PrevUploadedAccounts), [groupAccounts, cmp2PrevUploadedAccounts]);
+  const cmp3TreeLitMemo = useMemo(() => buildTree(groupAccounts, cmp3UploadedAccounts), [groupAccounts, cmp3UploadedAccounts]);
+  const cmp3PrevTreeLitMemo = useMemo(() => buildTree(groupAccounts, cmp3PrevUploadedAccounts), [groupAccounts, cmp3PrevUploadedAccounts]);
+  const cmpTreeByCodeMemo = useMemo(() => { const m = new Map(); (function walk(nodes) { nodes.forEach(n => { m.set(String(n.code), n); walk(n.children || []); }); })(cmpTreeLitMemo); return m; }, [cmpTreeLitMemo]);
+  const cmpPrevTreeByCodeMemo = useMemo(() => { const m = new Map(); (function walk(nodes) { nodes.forEach(n => { m.set(String(n.code), n); walk(n.children || []); }); })(cmpPrevTreeLitMemo); return m; }, [cmpPrevTreeLitMemo]);
+  const cmp2TreeByCodeMemo = useMemo(() => { const m = new Map(); (function walk(nodes) { nodes.forEach(n => { m.set(String(n.code), n); walk(n.children || []); }); })(cmp2TreeLitMemo); return m; }, [cmp2TreeLitMemo]);
+  const cmp2PrevTreeByCodeMemo = useMemo(() => { const m = new Map(); (function walk(nodes) { nodes.forEach(n => { m.set(String(n.code), n); walk(n.children || []); }); })(cmp2PrevTreeLitMemo); return m; }, [cmp2PrevTreeLitMemo]);
+  const cmp3TreeByCodeMemo = useMemo(() => { const m = new Map(); (function walk(nodes) { nodes.forEach(n => { m.set(String(n.code), n); walk(n.children || []); }); })(cmp3TreeLitMemo); return m; }, [cmp3TreeLitMemo]);
+const cmp3PrevTreeByCodeMemo = useMemo(() => { const m = new Map(); (function walk(nodes) { nodes.forEach(n => { m.set(String(n.code), n); walk(n.children || []); }); })(cmp3PrevTreeLitMemo); return m; }, [cmp3PrevTreeLitMemo]);
 
-  // ────────────────────────────────────────────────────────────
-  //  PRECOMPUTED INDEXES (memoized — heavy work runs only on data change)
-  // ────────────────────────────────────────────────────────────
-const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.value) === String(cmpFilters.month))?.label, cmpFilters.source, cmpFilters.dimension].filter(Boolean).join(" · ") || t("period_b") : "";
-  const cmp2Label = compareMode ? [cmp2Filters?.year, MONTHS.find(m => String(m.value) === String(cmp2Filters?.month))?.label, cmp2Filters?.source, cmp2Filters?.dimension].filter(Boolean).join(" · ") || t("period_c") : "";
+  const compareFiltersBlock = useMemo(() => {
+    if (!compareMode) return null;
+    return (
+      <div className="bg-white rounded-2xl shadow-xl border border-gray-100"
+        style={{
+          overflow: filtersOpen ? "visible" : "hidden",
+          position: "relative",
+          zIndex: 100,
+          marginBottom: filtersOpen ? 12 : 0,
+          flex: "0 0 auto",
+          maxHeight: filtersOpen ? 800 : 0,
+          opacity: filtersOpen ? 1 : 0,
+          transition: "max-height 360ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 240ms ease, margin-bottom 240ms ease",
+        }}>
+        <div className="px-5 py-3 flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-2 mr-2">
+            <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+              style={{ background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)", boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)" }}>
+              <span className="text-white text-[11px] font-black">B</span>
+            </div>
+            <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>{t("period_b")}</span>
+          </div>
+          <HeaderFilterPill label={t("filter_year")} value={cmpFilters.year} onChange={v => onCmpFilterChange("year", v)} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+          <HeaderFilterPill label={t("filter_month")} value={cmpFilters.month} onChange={v => onCmpFilterChange("month", v)} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+          <HeaderFilterPill label={t("filter_source")} value={cmpFilters.source} onChange={v => onCmpFilterChange("source", v)} options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+          <HeaderFilterPill label={t("filter_structure")} value={cmpFilters.structure} onChange={v => onCmpFilterChange("structure", v)} options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+          <HeaderFilterPill label={t("filter_company")} value={cmpFilters.company} onChange={v => onCmpFilterChange("company", v)} options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+          <HeaderMultiFilterPill label={t("filter_dim_group").toUpperCase()} values={cmpFilters.dimGroups} onChange={vs => onCmpFilterChange("dimGroups", vs)} options={dimGroups.map(g => ({ value: g, label: g }))} />
+          <HeaderMultiFilterPill label={t("filter_dims")} values={cmpFilters.dimensions} onChange={vs => onCmpFilterChange("dimensions", vs)} options={cmpFilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+          {!cmp2Enabled && <button onClick={() => onCmp2EnabledChange(true)} className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]" style={{ background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)", boxShadow: "0 4px 14px -4px rgba(87,170,120,0.5)" }}><span className="text-white text-[10px] font-black">{t("add_period_c")}</span></button>}
+        </div>
+        {cmp2Enabled && (
+          <div className="px-5 py-3 flex items-center gap-2 flex-wrap border-t border-gray-100">
+            <div className="flex items-center gap-2 mr-2">
+              <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)", boxShadow: "0 4px 12px -4px rgba(87,170,120,0.5)" }}>
+                <span className="text-white text-[11px] font-black">C</span>
+              </div>
+              <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>{t("period_c")}</span>
+            </div>
+            <HeaderFilterPill label={t("filter_year")} value={cmp2Filters?.year} onChange={v => onCmp2FilterChange("year", v)} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+            <HeaderFilterPill label={t("filter_month")} value={cmp2Filters?.month} onChange={v => onCmp2FilterChange("month", v)} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+            <HeaderFilterPill label={t("filter_source")} value={cmp2Filters?.source} onChange={v => onCmp2FilterChange("source", v)} options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+            <HeaderFilterPill label={t("filter_structure")} value={cmp2Filters?.structure} onChange={v => onCmp2FilterChange("structure", v)} options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+            <HeaderFilterPill label={t("filter_company")} value={cmp2Filters?.company} onChange={v => onCmp2FilterChange("company", v)} options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+            <HeaderMultiFilterPill label={t("filter_dim_group").toUpperCase()} values={cmp2Filters?.dimGroups} onChange={vs => onCmp2FilterChange("dimGroups", vs)} options={dimGroups.map(g => ({ value: g, label: g }))} />
+            <HeaderMultiFilterPill label={t("filter_dims")} values={cmp2Filters?.dimensions} onChange={vs => onCmp2FilterChange("dimensions", vs)} options={cmp2FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+            <button onClick={() => onCmp2EnabledChange(false)} className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all" style={{ background: "#fee2e2", color: "#dc2626" }} title={t("remove_period_c")}><X size={12} strokeWidth={2.5} /></button>
+            {!cmp3Enabled && (
+              <button onClick={() => onCmp3EnabledChange(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]" style={{ background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)", boxShadow: "0 4px 14px -4px rgba(168,85,247,0.5)" }}><span className="text-white text-[10px] font-black">{t("add_period_d")}</span></button>
+            )}
+          </div>
+        )}
+        {cmp2Enabled && cmp3Enabled && (
+          <div className="px-5 py-3 flex items-center gap-2 flex-wrap border-t border-gray-100">
+            <div className="flex items-center gap-2 mr-2">
+              <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)", boxShadow: "0 4px 12px -4px rgba(168,85,247,0.5)" }}>
+                <span className="text-white text-[11px] font-black">D</span>
+              </div>
+              <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>{t("period_d")}</span>
+            </div>
+            <HeaderFilterPill label={t("filter_year")} value={cmp3Filters?.year} onChange={v => onCmp3FilterChange("year", v)} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
+            <HeaderFilterPill label={t("filter_month")} value={cmp3Filters?.month} onChange={v => onCmp3FilterChange("month", v)} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
+            <HeaderFilterPill label={t("filter_source")} value={cmp3Filters?.source} onChange={v => onCmp3FilterChange("source", v)} options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
+            <HeaderFilterPill label={t("filter_structure")} value={cmp3Filters?.structure} onChange={v => onCmp3FilterChange("structure", v)} options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
+            <HeaderFilterPill label={t("filter_company")} value={cmp3Filters?.company} onChange={v => onCmp3FilterChange("company", v)} options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
+            <HeaderMultiFilterPill label={t("filter_dim_group").toUpperCase()} values={cmp3Filters?.dimGroups} onChange={vs => onCmp3FilterChange("dimGroups", vs)} options={dimGroups.map(g => ({ value: g, label: g }))} />
+            <HeaderMultiFilterPill label={t("filter_dims")} values={cmp3Filters?.dimensions} onChange={vs => onCmp3FilterChange("dimensions", vs)} options={cmp3FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
+            <button onClick={() => onCmp3EnabledChange(false)} className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all" style={{ background: "#fee2e2", color: "#dc2626" }} title={t("remove_period_d")}><X size={12} strokeWidth={2.5} /></button>
+          </div>
+        )}
+      </div>
+    );
+}, [compareMode, filtersOpen, cmpFilters, cmp2Filters, cmp3Filters, cmp2Enabled, cmp3Enabled, sources, structures, companies, dimGroups, cmpFilteredDims, cmp2FilteredDims, cmp3FilteredDims, t, onCmpFilterChange, onCmp2FilterChange, onCmp3FilterChange, onCmp2EnabledChange, onCmp3EnabledChange, MONTHS]);
 
-  if (savedPlLiteral && !loading) {
+  const spComputed = useMemo(() => {
+    if (!savedPlLiteral || loading) return null;
 // Build a lookup by code into the standard group-account tree.
 // Build a lookup by code into the standard group-account tree.
     // This way every node total (no-dim case) uses the SAME computation
@@ -7614,6 +8003,7 @@ const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.valu
     // dimValIdx:   `${code}|${value}`          → sum
     // We also walk down to descendant codes so a node mapped at a parent code
     // picks up dims on its children (matches sumNode's roll-up behavior).
+
 const dimFullIdx = new Map();
     const dimValIdx  = new Map();
     // name→code lookup built per row (DimensionCode + DimensionName flat columns)
@@ -7859,6 +8249,7 @@ dimFullIdx.set(`${code}|${g}:${v}`, (dimFullIdx.get(`${code}|${g}:${v}`) ?? 0) +
       });
     });
 
+
 const cmp2PrevAccIdx = new Map();
     const cmp2PrevDimFullIdx = new Map();
     const cmp2PrevDimValIdx = new Map();
@@ -7912,36 +8303,12 @@ mirrorIdx(cmpDimFullIdx, cmpDimValIdx);
       mirrorIdx(cmp3PrevDimFullIdx, cmp3PrevDimValIdx);
     }
 
-    const cmpTreeLit = buildTree(groupAccounts, cmpUploadedAccounts);
-    const cmpPrevTreeLit = buildTree(groupAccounts, cmpPrevUploadedAccounts);
-const cmp2TreeLit = buildTree(groupAccounts, cmp2UploadedAccounts);
-    const cmp2PrevTreeLit = buildTree(groupAccounts, cmp2PrevUploadedAccounts);
-    const cmp3TreeLit = buildTree(groupAccounts, cmp3UploadedAccounts);
-    const cmp3PrevTreeLit = buildTree(groupAccounts, cmp3PrevUploadedAccounts);
-    const cmpTreeByCode = new Map();
-    const cmpPrevTreeByCode = new Map();
-    const cmp2TreeByCode = new Map();
-    const cmp2PrevTreeByCode = new Map();
-    const cmp3TreeByCode = new Map();
-    const cmp3PrevTreeByCode = new Map();
-    (function indexCmpTree(nodes) {
-      nodes.forEach(n => { cmpTreeByCode.set(String(n.code), n); indexCmpTree(n.children || []); });
-    })(cmpTreeLit);
-    (function indexCmpPrevTree(nodes) {
-      nodes.forEach(n => { cmpPrevTreeByCode.set(String(n.code), n); indexCmpPrevTree(n.children || []); });
-    })(cmpPrevTreeLit);
-    (function indexCmp2Tree(nodes) {
-      nodes.forEach(n => { cmp2TreeByCode.set(String(n.code), n); indexCmp2Tree(n.children || []); });
-    })(cmp2TreeLit);
-    (function indexCmp2PrevTree(nodes) {
-      nodes.forEach(n => { cmp2PrevTreeByCode.set(String(n.code), n); indexCmp2PrevTree(n.children || []); });
-    })(cmp2PrevTreeLit);
-    (function indexCmp3Tree(nodes) {
-      nodes.forEach(n => { cmp3TreeByCode.set(String(n.code), n); indexCmp3Tree(n.children || []); });
-    })(cmp3TreeLit);
-    (function indexCmp3PrevTree(nodes) {
-      nodes.forEach(n => { cmp3PrevTreeByCode.set(String(n.code), n); indexCmp3PrevTree(n.children || []); });
-    })(cmp3PrevTreeLit);
+const cmpTreeByCode = cmpTreeByCodeMemo;
+    const cmpPrevTreeByCode = cmpPrevTreeByCodeMemo;
+    const cmp2TreeByCode = cmp2TreeByCodeMemo;
+    const cmp2PrevTreeByCode = cmp2PrevTreeByCodeMemo;
+    const cmp3TreeByCode = cmp3TreeByCodeMemo;
+    const cmp3PrevTreeByCode = cmp3PrevTreeByCodeMemo;
 
     const sumDimRecursiveGeneric = (gaNode, dimStr, fullIdx, valIdx) => {
       if (!gaNode) return 0;
@@ -7952,6 +8319,7 @@ const cmp2TreeLit = buildTree(groupAccounts, cmp2UploadedAccounts);
       (gaNode.children || []).forEach(c => { total += sumDimRecursiveGeneric(c, dimStr, fullIdx, valIdx); });
       return total;
     };
+
 
 const sumLiteralForPeriod = (node, treeByCodeMap, prevTreeByCodeMap, fullIdx, valIdx, prevFullIdx, prevValIdx, periodMonth) => {
       if (node.isSum && node.children && node.children.length > 0) {
@@ -7966,7 +8334,7 @@ const sumLiteralForPeriod = (node, treeByCodeMap, prevTreeByCodeMap, fullIdx, va
         const prevYtd = prevGa && Number(periodMonth) !== 1 ? -sumNode(prevGa) : 0;
         return ytd - prevYtd;
       }
-      let total = 0;
+let total = 0;
       node.dims.forEach(d => { total += sumDimRecursiveGeneric(gaNode, String(d), fullIdx, valIdx); });
       const ytd = -total;
       if (ytdOnly) return ytd;
@@ -8002,11 +8370,17 @@ const sumLiteralLeaf = (node) => {
         const ytd = -sumNode(gaNode);
         if (ytdOnly) return ytd;
         // Monthly = YTD - prev-month YTD (rolled up)
-        const sumPrev = (n) => {
+const sumPrev = (n) => {
           if (!n) return 0;
-          let t = prevAccIdx.get(String(n.code)) ?? 0;
-          (n.children || []).forEach(c => { t += sumPrev(c); });
-          return t;
+          // Mirror sumNode's semantics: if the node has children, sum ONLY the children
+          // (ignore the node's own accumulated value, which double-counts descendants).
+          // If it's a leaf, use its own value.
+          if (n.children && n.children.length > 0) {
+            let t = 0;
+            n.children.forEach(c => { t += sumPrev(c); });
+            return t;
+          }
+          return prevAccIdx.get(String(n.code)) ?? 0;
         };
         const prevYtd = -sumPrev(gaNode);
         return ytd - prevYtd;
@@ -8026,79 +8400,28 @@ const sumLiteralLeaf = (node) => {
       }
       return sumLiteralLeaf(node);
     };
+ return { treeByCode, sumDimRecursive, prevDimFullIdx, prevLeafIndexRaw, sumLiteralB, sumLiteralC, sumLiteralD, sumLiteral };
+  },[savedPlLiteral, loading, tree, uploadedAccounts, prevUploadedAccounts, prevUploadedAccountsRaw, cmpUploadedAccounts, cmpPrevUploadedAccounts, cmp2UploadedAccounts, cmp2PrevUploadedAccounts, cmp3UploadedAccounts, cmp3PrevUploadedAccounts, dimensions, cmpTreeByCodeMemo, cmpPrevTreeByCodeMemo, cmp2TreeByCodeMemo, cmp2PrevTreeByCodeMemo, cmp3TreeByCodeMemo, cmp3PrevTreeByCodeMemo, cmpFilters, cmp2Filters, cmp3Filters, ytdOnly]);
+
+if (loading) return (
+    <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
+      <Loader2 size={28} className="text-[#1a2f8a] animate-spin mx-auto mb-3" />
+     <p className="text-gray-400 text-sm">{t("loading_pl_data")}</p>
+    </div>
+  );
+  // ────────────────────────────────────────────────────────────
+  //  PRECOMPUTED INDEXES (memoized — heavy work runs only on data change)
+  // ────────────────────────────────────────────────────────────
+const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.value) === String(cmpFilters.month))?.label, cmpFilters.source, cmpFilters.dimension].filter(Boolean).join(" · ") || t("period_b") : "";
+const cmp2Label = compareMode ? [cmp2Filters?.year, MONTHS.find(m => String(m.value) === String(cmp2Filters?.month))?.label, cmp2Filters?.source, cmp2Filters?.dimension].filter(Boolean).join(" · ") || t("period_c") : "";
+
+  if (savedPlLiteral && !loading) {
+  const { treeByCode, sumDimRecursive, prevDimFullIdx, prevLeafIndexRaw, sumLiteralB, sumLiteralC, sumLiteralD, sumLiteral } = spComputed;
+
 
 return (
       <div className="space-y-3 flex flex-col" style={{ minHeight: 0, flex: 1, overflow: "visible" }}>
-{compareMode && (
-          <div className="bg-white rounded-2xl shadow-xl border border-gray-100"
-            style={{
-              overflow: filtersOpen ? "visible" : "hidden",
-              position: "relative",
-              zIndex: 100,
-              marginBottom: filtersOpen ? 12 : 0,
-              flex: "0 0 auto",
-              maxHeight: filtersOpen ? 800 : 0,
-              opacity: filtersOpen ? 1 : 0,
-              transition: "max-height 360ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 240ms ease, margin-bottom 240ms ease",
-            }}>
-            <div className="px-5 py-3 flex items-center gap-2 flex-wrap">
-              <div className="flex items-center gap-2 mr-2">
-                <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
-                  style={{ background: "linear-gradient(135deg, #CF305D 0%, #e0558d 100%)", boxShadow: "0 4px 12px -4px rgba(207,48,93,0.5)" }}>
-                  <span className="text-white text-[11px] font-black">B</span>
-                </div>
-               <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>{t("period_b")}</span>
-              </div>
-<HeaderFilterPill label={t("filter_year")} value={cmpFilters.year} onChange={v => onCmpFilterChange("year", v)} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-              <HeaderFilterPill label={t("filter_month")} value={cmpFilters.month} onChange={v => onCmpFilterChange("month", v)} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-              <HeaderFilterPill label={t("filter_source")} value={cmpFilters.source} onChange={v => onCmpFilterChange("source", v)} options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
-              <HeaderFilterPill label={t("filter_structure")} value={cmpFilters.structure} onChange={v => onCmpFilterChange("structure", v)} options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-              <HeaderFilterPill label={t("filter_company")} value={cmpFilters.company} onChange={v => onCmpFilterChange("company", v)} options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
-              <HeaderMultiFilterPill label={t("filter_dim_group").toUpperCase()} values={cmpFilters.dimGroups} onChange={vs => onCmpFilterChange("dimGroups", vs)} options={dimGroups.map(g => ({ value: g, label: g }))} />
-              <HeaderMultiFilterPill label={t("filter_dims")} values={cmpFilters.dimensions} onChange={vs => onCmpFilterChange("dimensions", vs)} options={cmpFilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
-            {!cmp2Enabled && <button onClick={() => onCmp2EnabledChange(true)} className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]" style={{ background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)", boxShadow: "0 4px 14px -4px rgba(87,170,120,0.5)" }}><span className="text-white text-[10px] font-black">{t("add_period_c")}</span></button>}
-            </div>
-            {cmp2Enabled && (
-              <div className="px-5 py-3 flex items-center gap-2 flex-wrap border-t border-gray-100">
-                <div className="flex items-center gap-2 mr-2">
-                  <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: "linear-gradient(135deg, #57aa78 0%, #7bc795 100%)", boxShadow: "0 4px 12px -4px rgba(87,170,120,0.5)" }}>
-                    <span className="text-white text-[11px] font-black">C</span>
-                  </div>
-                 <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>{t("period_c")}</span>
-                </div>
-<HeaderFilterPill label={t("filter_year")} value={cmp2Filters?.year} onChange={v => onCmp2FilterChange("year", v)} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-                <HeaderFilterPill label={t("filter_month")} value={cmp2Filters?.month} onChange={v => onCmp2FilterChange("month", v)} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-                <HeaderFilterPill label={t("filter_source")} value={cmp2Filters?.source} onChange={v => onCmp2FilterChange("source", v)} options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
-                <HeaderFilterPill label={t("filter_structure")} value={cmp2Filters?.structure} onChange={v => onCmp2FilterChange("structure", v)} options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-                <HeaderFilterPill label={t("filter_company")} value={cmp2Filters?.company} onChange={v => onCmp2FilterChange("company", v)} options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
-                <HeaderMultiFilterPill label={t("filter_dim_group").toUpperCase()} values={cmp2Filters?.dimGroups} onChange={vs => onCmp2FilterChange("dimGroups", vs)} options={dimGroups.map(g => ({ value: g, label: g }))} />
-                <HeaderMultiFilterPill label={t("filter_dims")} values={cmp2Filters?.dimensions} onChange={vs => onCmp2FilterChange("dimensions", vs)} options={cmp2FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
-<button onClick={() => onCmp2EnabledChange(false)} className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all" style={{ background: "#fee2e2", color: "#dc2626" }} title={t("remove_period_c")}><X size={12} strokeWidth={2.5} /></button>
-              {!cmp3Enabled && (
-                <button onClick={() => onCmp3EnabledChange(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.03]" style={{ background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)", boxShadow: "0 4px 14px -4px rgba(168,85,247,0.5)" }}><span className="text-white text-[10px] font-black">{t("add_period_d")}</span></button>
-              )}
-            </div>
-          )}
-          {cmp2Enabled && cmp3Enabled && (
-            <div className="px-5 py-3 flex items-center gap-2 flex-wrap border-t border-gray-100">
-              <div className="flex items-center gap-2 mr-2">
-                <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: "linear-gradient(135deg, #a855f7 0%, #c084fc 100%)", boxShadow: "0 4px 12px -4px rgba(168,85,247,0.5)" }}>
-                  <span className="text-white text-[11px] font-black">D</span>
-                </div>
-<span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>{t("period_d")}</span>
-              </div>
-              <HeaderFilterPill label={t("filter_year")} value={cmp3Filters?.year} onChange={v => onCmp3FilterChange("year", v)} options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
-              <HeaderFilterPill label={t("filter_month")} value={cmp3Filters?.month} onChange={v => onCmp3FilterChange("month", v)} options={MONTHS.map(m => ({ value: String(m.value), label: m.label }))} />
-              <HeaderFilterPill label={t("filter_source")} value={cmp3Filters?.source} onChange={v => onCmp3FilterChange("source", v)} options={sources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; })} />
-              <HeaderFilterPill label={t("filter_structure")} value={cmp3Filters?.structure} onChange={v => onCmp3FilterChange("structure", v)} options={structures.map(s => { const v = typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s); return { value: v, label: v }; })} />
-              <HeaderFilterPill label={t("filter_company")} value={cmp3Filters?.company} onChange={v => onCmp3FilterChange("company", v)} options={companies.map(c => { const v = typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? c.company ?? c.Company ?? "") : String(c); const l = typeof c === "object" ? (c.companyLegalName ?? c.CompanyLegalName ?? v) : String(c); return { value: v, label: l }; })} />
-              <HeaderMultiFilterPill label={t("filter_dim_group").toUpperCase()} values={cmp3Filters?.dimGroups} onChange={vs => onCmp3FilterChange("dimGroups", vs)} options={dimGroups.map(g => ({ value: g, label: g }))} />
-              <HeaderMultiFilterPill label={t("filter_dims")} values={cmp3Filters?.dimensions} onChange={vs => onCmp3FilterChange("dimensions", vs)} options={cmp3FilteredDims.map(d => { const v = typeof d === "object" ? (d.dimensionCode ?? d.DimensionCode ?? d.code ?? "") : String(d); const l = typeof d === "object" ? (d.dimensionName ?? d.DimensionName ?? d.name ?? v) : String(d); return { value: v, label: l }; })} />
-              <button onClick={() => onCmp3EnabledChange(false)} className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all" style={{ background: "#fee2e2", color: "#dc2626" }} title={t("remove_period_d")}><X size={12} strokeWidth={2.5} /></button>
-            </div>
-          )}
-        </div>
-      )}
+{compareFiltersBlock}
       <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col"
         style={{ maxHeight: "100%", minHeight: 0, boxShadow: "0 20px 40px -8px rgba(26, 47, 138, 0.15), 0 4px 12px -2px rgba(26, 47, 138, 0.08)" }}>
          <div className="overflow-auto k-scroll k-scroll-overlay" style={{ flex: 1, minHeight: 0, willChange: "scroll-position", transform: "translateZ(0)" }}>
@@ -8122,7 +8445,7 @@ return (
                   boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",
                 }}>
 <th className="text-left px-6 whitespace-nowrap k-sticky-acc-head" style={{ height: "64px" }}>
-                    <div className="k-acc-resize-handle" onMouseDown={startAccResize} title="Drag to resize column" />
+                    <div className="k-acc-resize-handle" onMouseDown={startAccResize} title={t("tooltip_resize_col")}/>
                     <div className="flex items-center gap-5">
                       <div className="flex items-center gap-2.5" style={{ animation: "kBadgesPop 0.45s cubic-bezier(0.34,1.56,0.64,1) 0.05s both" }}>
                         <button onClick={() => setSearchActive(a => !a)}
@@ -8362,19 +8685,6 @@ sectionRows.push(
                   // Walk the literal nodes recursively, respecting mapping hierarchy.
 const renderNode = (node, depth, parentPath) => {
 const displayVal = sumLiteral(node);
-if (node.code === 'A.03' || node.code === 'A.03.a' || node.code === 'A.01') {
-  historyMonthsProcessed.forEach(h => {
-    const histGaNode = h.map.get(String(node.code));
-    console.log('[HIST-RENDER]', node.code, h.year, h.month, {
-      sumNodeResult: histGaNode ? sumNode(histGaNode) : null,
-      uploadLeavesCount: histGaNode?.uploadLeaves?.length ?? 0,
-      uploadLeavesTotal: histGaNode?.uploadLeaves?.reduce((s,l) => s + (l.amount ?? 0), 0) ?? 0,
-      childrenCount: histGaNode?.children?.length ?? 0,
-      childrenSums: histGaNode?.children?.map(c => `${c.code}=${sumNode(c)}`).join(' | ') ?? '',
-      currentPeriodDisplay: displayVal,
-    });
-  });
-}
 // Unique key per literal node (preserves duplicates across sections)
                     const rowKey = `saved-${secIdx}-${parentPath}-${node.id}`;
               const expanded = isOpen(rowKey);
@@ -8471,6 +8781,14 @@ onClick={hasDrill ? (e) => { e.stopPropagation(); toggle(rowKey); } : undefined}
                                   {node.dims.length}
                                 </span>
                               </button>
+)}
+                            {node.code && hasDimsInSubtree({ code: node.code, children: node.children || [], uploadLeaves: (treeByCode.get(String(node.code))?.uploadLeaves) || [] }) && (
+                              <span className="ml-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full bg-amber-50/80 border border-amber-200/60">
+                                <span className="w-1 h-1 rounded-full bg-amber-400" />
+                                <span className="text-[8px] font-semibold text-amber-600/90 uppercase tracking-[0.15em]">
+                                  {t("label_dim") || "dim"}
+                                </span>
+                              </span>
                             )}
                             {(() => {
                               const jrnCount = countJournalsInSubtree({ code: node.code, children: node.children || [] });
@@ -8656,42 +8974,53 @@ const leafIsMatch = (() => {
 {multiCompany ? selectedCompanies.map(co => (
                               <PLAmountCell key={`mc-saved-leaf-${leaf.code ?? "noleaf"}-${co}-${i}`} value={leaf.code ? getLeafValForCompany(leaf.code, co, ytdOnly) : 0} typoStyle={subbody1Style} centered />
                             )) : (
-                              <>
+<>
                                 {(() => {
-                                  const ytdAmt = -amt;
+                                  // Compute base-period monthly/YTD once so compare cells can reuse it.
+                                  const ytdA = -amt;
                                   const prevAmt = leaf.code && Number(month) !== 1
                                     ? (prevLeafIndexRaw.get(String(leaf.code)) ?? 0)
                                     : 0;
-                                  const displayAmt = ytdOnly ? ytdAmt : -(amt - prevAmt);
-                                  return <PLAmountCell value={displayAmt} typoStyle={subbody1Style} />;
-                                })()}
-                                {compareMode && (() => {
-                                  const cmpAmt = leaf.code ? -(cmpLeafIndex.get(String(leaf.code)) ?? 0) : 0;
+                                  const displayA = ytdOnly ? ytdA : -(amt - prevAmt);
                                   return (
                                     <>
-                                      <PLAmountCell value={cmpAmt} typoStyle={subbody1Style} divider />
-                                      <DeviationCells a={-amt} b={cmpAmt} typoStyle={subbody1Style} />
+                                      <PLAmountCell value={displayA} typoStyle={subbody1Style} />
+                                      {compareMode && (() => {
+                                        const cmpYtd  = leaf.code ? -(cmpLeafIndex.get(String(leaf.code)) ?? 0) : 0;
+                                        const cmpPrev = leaf.code ? -(getCmpPrevLeafAmt(leaf.code)) : 0;
+                                        const cmpDisplay = ytdOnly ? cmpYtd : cmpYtd - cmpPrev;
+                                        return (
+                                          <>
+                                            <PLAmountCell value={cmpDisplay} typoStyle={subbody1Style} divider />
+                                            <DeviationCells a={displayA} b={cmpDisplay} typoStyle={subbody1Style} />
+                                          </>
+                                        );
+                                      })()}
+                                      {compareMode && cmp2Enabled && (() => {
+                                        const cmp2Ytd  = leaf.code ? -(cmp2LeafIndex.get(String(leaf.code)) ?? 0) : 0;
+                                        const cmp2Prev = leaf.code ? -(getCmp2PrevLeafAmt(leaf.code)) : 0;
+                                        const cmp2Display = ytdOnly ? cmp2Ytd : cmp2Ytd - cmp2Prev;
+                                        return (
+                                          <>
+                                            <PLAmountCell value={cmp2Display} typoStyle={subbody1Style} divider />
+                                            <DeviationCells a={displayA} b={cmp2Display} typoStyle={subbody1Style} />
+                                          </>
+                                        );
+                                      })()}
+                                      {compareMode && cmp2Enabled && cmp3Enabled && (() => {
+                                        const cmp3Ytd  = leaf.code ? -(cmp3LeafIndex.get(String(leaf.code)) ?? 0) : 0;
+                                        const cmp3Prev = leaf.code ? -(getCmp3PrevLeafAmt(leaf.code)) : 0;
+                                        const cmp3Display = ytdOnly ? cmp3Ytd : cmp3Ytd - cmp3Prev;
+                                        return (
+                                          <>
+                                            <PLAmountCell value={cmp3Display} typoStyle={subbody1Style} divider />
+                                            <DeviationCells a={displayA} b={cmp3Display} typoStyle={subbody1Style} />
+                                          </>
+                                        );
+                                      })()}
                                     </>
                                   );
                                 })()}
-{compareMode && cmp2Enabled && (() => {
-                              const cmp2Amt = leaf.code ? -(cmp2LeafIndex.get(String(leaf.code)) ?? 0) : 0;
-                              return (
-                                <>
-                                  <PLAmountCell value={cmp2Amt} typoStyle={subbody1Style} divider />
-                                  <DeviationCells a={-amt} b={cmp2Amt} typoStyle={subbody1Style} />
-                                </>
-                              );
-                            })()}
-                            {compareMode && cmp2Enabled && cmp3Enabled && (() => {
-                              const cmp3Amt = leaf.code ? -(cmp3LeafIndex.get(String(leaf.code)) ?? 0) : 0;
-                              return (
-                                <>
-                                  <PLAmountCell value={cmp3Amt} typoStyle={subbody1Style} divider />
-                                  <DeviationCells a={-amt} b={cmp3Amt} typoStyle={subbody1Style} />
-                                </>
-                              );
-                            })()}
                               </>
                             )}
 {historyExpanded && historyMonthsProcessed.map((h) => {
@@ -8797,7 +9126,6 @@ const dimIsMatch = (() => {
                     if (node.code) {
                       const nodeJrns = journalByCode.get(String(node.code)) || [];
                       const hasHistJrns = historyMonthsProcessed.some(h => (h.jrnByCode?.get(String(node.code)) || []).length > 0);
-                      console.log('[JRN-CHECK]', node.code, 'current:', nodeJrns.length, 'histAny:', hasHistJrns, 'histExp:', historyExpanded, 'histMonths:', historyMonthsProcessed.length, 'detail:', historyMonthsProcessed.map(h => ({ m: `${h.year}-${h.month}`, n: (h.jrnByCode?.get(String(node.code)) || []).length, mapSize: h.jrnByCode?.size })));
                       if (nodeJrns.length > 0 || hasHistJrns) {
                         const jrnKey = `${rowKey}-jrn`;
                         const jrnExpanded = isOpen(jrnKey);
@@ -9080,7 +9408,7 @@ return (
           }}>
           <span className="text-white text-[11px] font-black">B</span>
         </div>
-        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Period B</span>
+        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>{t("period_c")}</span>
       </div>
 
    <HeaderFilterPill label="Year" value={cmpFilters.year} onChange={v => onCmpFilterChange("year", v)}
@@ -9121,7 +9449,7 @@ return (
             }}>
             <span className="text-white text-[11px] font-black">C</span>
           </div>
-          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>Period C</span>
+          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>{t("period_c")}</span>
         </div>
 
 <HeaderFilterPill label="Year" value={cmp2Filters?.year} onChange={v => onCmp2FilterChange("year", v)}
@@ -9144,7 +9472,7 @@ return (
             background: "#fee2e2",
             color: "#dc2626",
           }}
-          title="Remove Period C">
+      title={t("tooltip_remove_period_c")}>
           <X size={12} strokeWidth={2.5} />
         </button>
         {!cmp3Enabled && (
@@ -9169,7 +9497,7 @@ return (
             }}>
             <span className="text-white text-[11px] font-black">D</span>
           </div>
-          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>Period D</span>
+          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>{t("period_d")}</span>
         </div>
         <HeaderFilterPill label="Year" value={cmp3Filters?.year} onChange={v => onCmp3FilterChange("year", v)}
           options={YEARS.map(y => ({ value: String(y), label: String(y) }))} />
@@ -9188,7 +9516,7 @@ return (
         <button onClick={() => onCmp3EnabledChange(false)}
           className="ml-auto flex items-center justify-center w-7 h-7 rounded-xl transition-all"
           style={{ background: "#fee2e2", color: "#dc2626" }}
-          title="Remove Period D">
+          title={t("tooltip_remove_period_d")}>
           <X size={12} strokeWidth={2.5} />
         </button>
       </div>
@@ -9458,7 +9786,7 @@ style={{ color: !ytdOnly ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary
     <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.26s both" }}>
       <div className="flex items-center gap-1.5">
         <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#CF305D" }} />
-        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>Period B</span>
+        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>{t("period_b")}</span>
       </div>
       <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{cmpLabel}</span>
     </div>
@@ -9467,7 +9795,7 @@ style={{ color: !ytdOnly ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary
     <div className="flex flex-col items-center" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.30s both" }}>
       <div className="flex items-center gap-1.5">
         <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#57aa78" }} />
-        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>Period C</span>
+        <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#57aa78" }}>{t("period_c")}</span>
       </div>
       <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{cmp2Label}</span>
     </div>
@@ -9478,7 +9806,7 @@ style={{ color: !ytdOnly ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary
       <div className="flex flex-col items-center">
         <div className="flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#a855f7" }} />
-          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>Period D</span>
+          <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#a855f7" }}>{t("period_d")}</span>
         </div>
         <span className="text-[11px] font-semibold tracking-tight mt-0.5" style={{ color: "#9ca3af" }}>{cmp3Label}</span>
       </div>
@@ -9488,28 +9816,12 @@ style={{ color: !ytdOnly ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary
 </tr>
 </thead>
             <tbody>
-{(summaryMode ? summaryRows : allSumRows).map((node, nodeIdx) => {
-
-
-const ytd      = -sumNode(node);
-const prevYtd  = -getPrevYtd(node.code);
-const cmpYtd = compareMode ? -getCmpYtd(node.code) : 0;
-const cmpMon = compareMode ? -getCmpYtd(node.code) - (-getCmpPrev(node.code)) : 0;
-const mon      = ytd - prevYtd;
-const isMatchSelf = (() => {
-  const q = searchQuery.trim().toLowerCase();
-  if (!q) return false;
-  return String(node.code ?? "").toLowerCase().includes(q) || String(localName(node) ?? "").toLowerCase().includes(q);
-})();
-const expanded = isOpen(node.code);
-const hasKids  = (node.children||[]).filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType)).length > 0
-                || (node.uploadLeaves || []).some(l => l.type !== "plain");
+{(() => {
 const SECTION_DIVIDERS_MAP = Object.keys(effectiveBreakersPl).length
   ? effectiveBreakersPl
   : summaryRows.some(n => /[a-zA-Z]/.test(String(n.code)))
     ? { "A.04.S": { label: t("pl_divider_revenue"), color: colors.primary }, "A.13.S": { label: t("pl_divider_opex"), color: colors.secondary }, "A.24.S": { label: t("pl_divider_result"), color: colors.tertiary } }
     : { "11999": { label: t("pl_divider_revenue"), color: colors.primary }, "53999": { label: t("pl_divider_opex"), color: colors.secondary }, "89999": { label: t("pl_divider_result"), color: colors.tertiary } };
-
 const DETAIL_DIVIDERS_BEFORE = (() => {
 const fallback = summaryRows.some(n => /[a-zA-Z]/.test(String(n.code)))
     ? { "A.04.S": { label: t("pl_divider_revenue"), color: colors.primary }, "A.13.S": { label: t("pl_divider_opex"), color: colors.secondary }, "A.24.S": { label: t("pl_divider_result"), color: colors.tertiary } }
@@ -9531,6 +9843,22 @@ const source = Object.keys(effectiveBreakersPl).length ? effectiveBreakersPl : f
   }
   return remapped;
 })();
+return (summaryMode ? summaryRows : allSumRows).map((node, nodeIdx) => {
+
+
+const ytd      = -sumNode(node);
+const prevYtd  = -getPrevYtd(node.code);
+const cmpYtd = compareMode ? -getCmpYtd(node.code) : 0;
+const cmpMon = compareMode ? cmpYtd - (-getCmpPrev(node.code)) : 0;
+const mon      = ytd - prevYtd;
+const isMatchSelf = (() => {
+  const q = searchQuery.trim().toLowerCase();
+  if (!q) return false;
+  return String(node.code ?? "").toLowerCase().includes(q) || String(localName(node) ?? "").toLowerCase().includes(q);
+})();
+const expanded = isOpen(node.code);
+const hasKids  = (node.children||[]).filter(c => hasData(c) && ["P/L","DIS"].includes(c.accountType)).length > 0
+                || (node.uploadLeaves || []).some(l => l.type !== "plain");
 
 const divider = !summaryMode
   ? (DETAIL_DIVIDERS_BEFORE[String(node.code)] ?? null)
@@ -9657,7 +9985,7 @@ const childExpanded = isOpen(`drill-${node.code}-${child.code}`);
 rows.push(
 <tr key={child.code}
     className={`group border-b border-[#1a2f8a]/5 ${isChildMatch ? "bg-[#fef3c7]" : "bg-white"} transition-colors ${hasMore ? "cursor-pointer hover:bg-[#eef1fb]/60" : "hover:bg-[#eef1fb]/20"}`}
-    onClick={hasMore ? (e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [`drill-${node.code}-${child.code}`]: !prev[`drill-${node.code}-${child.code}`] })); } : undefined}>
+onClick={hasMore ? (e) => { e.stopPropagation(); setExpandedMap(prev => ({ ...prev, [`drill-${node.code}-${child.code}`]: !prev[`drill-${node.code}-${child.code}`] })); } : undefined}>
 <td className="py-2 whitespace-nowrap k-sticky-acc" style={{ paddingLeft: `${24 + depth * 20}px` }}>
   <div className="flex items-center gap-2">
     {hasMore
@@ -10044,11 +10372,11 @@ if (leafExpanded) {
 }
   });
 
-  return rows;
+return rows;
 })(node.children || [], node.uploadLeaves || [], 0, node.code) : []),
 
-  ];
-})}
+];
+}); })()}
             </tbody>
           </table>
         </div>
@@ -10064,7 +10392,7 @@ function FinancialReport({ groupAccounts, uploadedAccounts, loading, error }) {
   const [typeFilter, setTypeFilter]   = useState("ALL");
   const [search, setSearch]           = useState("");
 
-  const dispatch = (key) => setExpandedMap(prev => ({ ...prev, [key]: !prev[key] }));
+const dispatch = (key) => setExpandedMap(prev => ({ ...prev, [key]: !prev[key] }));
 
   const tree = useMemo(
     () => buildTree(groupAccounts, uploadedAccounts),
@@ -10277,8 +10605,14 @@ function convertSavedMappingTree(tree, opts = {}) {
       if (!node) continue;
       if (node.kind === "breaker") {
         let secCode = node.sectionCode || `section_${defaultSecCounter++}`;
-        if (normalizeBS) {
-          const canon = normalizeBSSectionCode(node.name);
+if (normalizeBS) {
+          const nm = String(node.name ?? "").toLowerCase();
+          let canon = null;
+          if      (/no.?current.*asset|non.?corriente.*activ|activo.*no.?corriente/.test(nm)) canon = "NCA";
+          else if (/current.*asset|activo.*corriente/.test(nm))                                canon = "CA";
+          else if (/equity|patrimonio|capital/.test(nm))                                       canon = "EQ";
+          else if (/no.?current.*liab|non.?corriente.*pasiv|pasivo.*no.?corriente/.test(nm))   canon = "NCL";
+          else if (/current.*liab|pasivo.*corriente/.test(nm))                                 canon = "CL";
           if (canon) secCode = canon;
         }
 sections.set(secCode, {
@@ -10354,7 +10688,7 @@ current = {
 }
 
 function BSAmountCell({ value, divider, typoStyle, centered = true }) {
-  const animated = useCountUp(value ?? 0, 1000);
+const animated = useCountUp(value ?? 0, 1000);
   const isEmpty = value === 0;
   const isNeg = animated < 0;
   const semanticColor = isEmpty ? "#D1D5DB" : isNeg ? "#EF4444" : null;
@@ -10442,7 +10776,6 @@ try {
         fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h }),
         fetch(`${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(jrnFilter)}`, { headers: h }),
       ]);
-      console.log('[BS-JRN-FETCH]', y, mo, 'status:', resJ.status);
       const jsonA = resA.ok ? await resA.json() : { value: [] };
       const jsonJ = resJ.ok ? await resJ.json() : { value: [] };
       const data = jsonA.value ?? (Array.isArray(jsonA) ? jsonA : []);
@@ -10641,7 +10974,6 @@ const bsDrill = useCallback((key) => {
 const journalByCode = useMemo(() => {
   const idx = new Map();
   (journalEntries || []).forEach(row => {
-    if (idx.size === 0) console.log('[A]', JSON.stringify(row));
     const code = String(row.accountCode ?? row.AccountCode ?? "");
     if (!code) return;
     const jt = String(row.journalType ?? row.JournalType ?? "").toUpperCase();
@@ -10666,26 +10998,45 @@ const codesWithDims = useMemo(() => {
   return set;
 }, [uploadedAccounts]);
 
-const hasDimsInSubtree = useCallback((node) => {
-  if (!node) return false;
-  if (codesWithDims.has(String(node.code))) return true;
-  if (Array.isArray(node.children)) {
-    for (const c of node.children) {
-      if (hasDimsInSubtree(c)) return true;
+const hasDimsInSubtree = useMemo(() => {
+  const cache = new WeakMap();
+  const fn = (node) => {
+    if (!node) return false;
+    const hit = cache.get(node);
+    if (hit !== undefined) return hit;
+    let res = false;
+    if (codesWithDims.has(String(node.code))) res = true;
+    if (!res && Array.isArray(node.uploadLeaves)) {
+      for (const leaf of node.uploadLeaves) {
+        if (leaf && leaf.type === "localAccount" && Array.isArray(leaf.children) && leaf.children.length > 0) {
+          res = true;
+          break;
+        }
+      }
     }
-  }
-  return false;
+    if (!res && Array.isArray(node.children)) {
+      for (const c of node.children) { if (fn(c)) { res = true; break; } }
+    }
+    cache.set(node, res);
+    return res;
+  };
+  return fn;
 }, [codesWithDims]);
 
-const countJournalsInSubtree = useCallback((node) => {
-  if (!node) return 0;
-  let total = (journalByCode.get(String(node.code)) || []).length;
-  if (Array.isArray(node.children)) {
-    for (const c of node.children) {
-      total += countJournalsInSubtree(c);
+const countJournalsInSubtree = useMemo(() => {
+  const cache = new WeakMap();
+  const fn = (node) => {
+    if (!node) return 0;
+    const hit = cache.get(node);
+    if (hit !== undefined) return hit;
+    let total = (journalByCode.get(String(node.code)) || []).length;
+    if (Array.isArray(node.children)) {
+      for (const c of node.children) { total += fn(c); }
     }
-  }
-  return total;
+    cache.set(node, total);
+    return total;
+  };
+  return fn;
 }, [journalByCode]);
 
 // Full breakdown of dims per localAccountCode, gathered from RAW rows.
@@ -11573,16 +11924,22 @@ const isPGC_BS = (code) => {
     const childrenInFlat = new Map();
     const rootsInFlat = [];
 
-    flatNodes.forEach(n => {
+flatNodes.forEach(n => {
       let parentInFlat = null;
       const ga = gaByCode.get(String(n.code));
-      let curParent = ga ? String(ga.sumAccountCode ?? ga.SumAccountCode ?? "") : "";
+      const stdRow0 = pgcBsMapping.rows.get(String(n.code));
+      let curParent = ga
+        ? String(ga.sumAccountCode ?? ga.SumAccountCode ?? "")
+        : (stdRow0?.parentCode ? String(stdRow0.parentCode) : "");
       const seen = new Set([String(n.code)]);
       while (curParent && !seen.has(curParent)) {
         seen.add(curParent);
         if (flatByCode.has(curParent)) { parentInFlat = curParent; break; }
         const pa = gaByCode.get(curParent);
-        curParent = pa ? String(pa.sumAccountCode ?? pa.SumAccountCode ?? "") : "";
+        const stdParent = pgcBsMapping.rows.get(curParent);
+        curParent = pa
+          ? String(pa.sumAccountCode ?? pa.SumAccountCode ?? "")
+          : (stdParent?.parentCode ? String(stdParent.parentCode) : "");
       }
       if (parentInFlat) {
         if (!childrenInFlat.has(parentInFlat)) childrenInFlat.set(parentInFlat, []);
@@ -11833,7 +12190,6 @@ const bsHistoryProcessed = useMemo(() => {
     const filteredData = (h.data || []).filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions));
     const filteredJournals = (h.journals || []).filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions));
     h = { ...h, data: filteredData, journals: filteredJournals };
-    console.log('[hist]', h.year, h.month, JSON.stringify(h.journals?.[0]));
     const t = buildTree(groupAccounts, h.data, !dimensionActive);
     const map = new Map();
     const walk = (n) => { map.set(n.code, n); n.children?.forEach(walk); };
@@ -11851,7 +12207,6 @@ const bsHistoryProcessed = useMemo(() => {
       }
     });
 const jrnByCode = new Map();
-    console.log('[BS Hist]', h.year, h.month, 'journals count:', (h.journals || []).length);
     (h.journals || []).forEach(j => {
       const code = String(j.AccountCode ?? j.accountCode ?? "");
       const jt = String(j.JournalType ?? j.journalType ?? "").toUpperCase();
@@ -12448,15 +12803,47 @@ const sumLiteralLeaf = (node) => {
       return sumLiteralLeaf(node);
     };
 
-    // Per-leaf+dim indexes for BS saved-mapping compare periods
+// Per-leaf+dim indexes for BS saved-mapping compare periods.
+    // The render uses dim.code coming from parsing the `Dimensions` field ("Group:Value"),
+    // so we must key by that same "value" (which may be a code OR a name depending on the API).
+    // Also index by the row's dimensionCode as a fallback and per-name via dimensions metadata.
     const buildBsSavedLeafDimIdx = (rows) => {
       const m = new Map();
+      const setAmt = (k, amt) => { if (k) m.set(k, (m.get(k) ?? 0) + amt); };
+      // Build name→code / code→name lookups from dimensions metadata
+      const nameToCode = new Map();
+      const codeToName = new Map();
+     (effectiveDimensions || []).forEach(d => {
+        const group = String(d.dimensionGroup ?? d.DimensionGroup ?? d.groupName ?? d.GroupName ?? "").trim();
+        const code  = String(d.dimensionCode  ?? d.DimensionCode  ?? d.code      ?? d.Code      ?? "").trim();
+        const name  = String(d.dimensionName  ?? d.DimensionName  ?? d.name      ?? d.Name      ?? "").trim();
+        if (group && code && name) {
+          nameToCode.set(`${group}:${name}`, code);
+          codeToName.set(`${group}:${code}`, name);
+        }
+      });
       (rows || []).forEach(row => {
         const lac = String(getField(row, "localAccountCode") ?? "");
-        const dc  = String(getField(row, "dimensionCode") ?? "");
-        if (!lac || !dc || dc === "null") return;
+        if (!lac) return;
         const amt = parseAmt(getField(row, "AmountYTD", "amountYTD", "AmountPeriod", "amountPeriod"));
-        m.set(`${lac}|${dc}`, (m.get(`${lac}|${dc}`) ?? 0) + amt);
+        // 1) Parse the Dimensions composite field ("g:v || g2:v2") and index by v (the render uses this)
+        const dimStr = String(getField(row, "Dimensions", "dimensions") ?? "");
+        if (dimStr && dimStr !== "—") {
+          dimStr.split("||").map(s => s.trim()).filter(Boolean).forEach(pair => {
+            const i = pair.indexOf(":");
+            if (i === -1) return;
+            const g = pair.slice(0, i).trim();
+            const v = pair.slice(i + 1).trim();
+            if (!v) return;
+            setAmt(`${lac}|${v}`, amt);
+            // Mirror under the other representation so lookups by name or code both hit
+            const mirrored = nameToCode.get(`${g}:${v}`) ?? codeToName.get(`${g}:${v}`);
+            if (mirrored && mirrored !== v) setAmt(`${lac}|${mirrored}`, amt);
+          });
+        }
+        // 2) Fallback: also index the discrete dimensionCode field
+        const dc = String(getField(row, "dimensionCode") ?? "");
+        if (dc && dc !== "null") setAmt(`${lac}|${dc}`, amt);
       });
       return m;
     };
@@ -13071,22 +13458,43 @@ if (leafExpanded) {
 {multiCompany ? selectedCompanies.map(co => (
                                 <BSAmountCell key={`bsmc-saved-dim-${dim.code ?? "nocode"}-${co}-${j}`} value={leaf.code ? getBsDimValForCompany(leaf.code, dim.code, co) : 0} typoStyle={subbody2Style} centered />
                               )) : (
-                                <>
+<>
                                   <BSAmountCell value={dim.amount} typoStyle={subbody2Style} />
 {compareMode && (() => {
   const k = `${leaf.code}|${dim.code}`;
-  const v = bsBLeafDimIdxSaved.get(k) ?? 0;
-  return <><BSAmountCell value={v} typoStyle={subbody2Style} divider /><BSDeviationCells a={dim.amount} b={v} typoStyle={subbody2Style} /></>;
+  const raw = bsBLeafDimIdxSaved.get(k);
+  const hasCmp = raw !== undefined && raw !== 0;
+  const v = raw ?? 0;
+  return <>
+    <BSAmountCell value={v} typoStyle={subbody2Style} divider />
+    {hasCmp
+      ? <BSDeviationCells a={dim.amount} b={v} typoStyle={subbody2Style} />
+      : <><td className="pl-4 pr-6 py-2.5 text-right text-gray-300" style={{ width: "140px" }}>—</td><td className="pl-2 pr-6 py-2.5 text-right text-gray-300" style={{ width: "100px" }}>—</td></>}
+  </>;
 })()}
 {compareMode && cmp2Enabled && (() => {
   const k = `${leaf.code}|${dim.code}`;
-  const v = bsCLeafDimIdxSaved.get(k) ?? 0;
-  return <><BSAmountCell value={v} typoStyle={subbody2Style} divider /><BSDeviationCells a={dim.amount} b={v} typoStyle={subbody2Style} /></>;
+  const raw = bsCLeafDimIdxSaved.get(k);
+  const hasCmp = raw !== undefined && raw !== 0;
+  const v = raw ?? 0;
+  return <>
+    <BSAmountCell value={v} typoStyle={subbody2Style} divider />
+    {hasCmp
+      ? <BSDeviationCells a={dim.amount} b={v} typoStyle={subbody2Style} />
+      : <><td className="pl-4 pr-6 py-2.5 text-right text-gray-300" style={{ width: "140px" }}>—</td><td className="pl-2 pr-6 py-2.5 text-right text-gray-300" style={{ width: "100px" }}>—</td></>}
+  </>;
 })()}
 {compareMode && cmp2Enabled && cmp3Enabled && (() => {
   const k = `${leaf.code}|${dim.code}`;
-  const v = bsDLeafDimIdxSaved.get(k) ?? 0;
-  return <><BSAmountCell value={v} typoStyle={subbody2Style} divider /><BSDeviationCells a={dim.amount} b={v} typoStyle={subbody2Style} /></>;
+  const raw = bsDLeafDimIdxSaved.get(k);
+  const hasCmp = raw !== undefined && raw !== 0;
+  const v = raw ?? 0;
+  return <>
+    <BSAmountCell value={v} typoStyle={subbody2Style} divider />
+    {hasCmp
+      ? <BSDeviationCells a={dim.amount} b={v} typoStyle={subbody2Style} />
+      : <><td className="pl-4 pr-6 py-2.5 text-right text-gray-300" style={{ width: "140px" }}>—</td><td className="pl-2 pr-6 py-2.5 text-right text-gray-300" style={{ width: "100px" }}>—</td></>}
+  </>;
 })()}
                                   {historyExpanded && !compareMode && bsHistoryProcessed.map(h => (
                                     <td key={`bshist-saved-dim-${h.year}-${h.month}-${j}`} />
@@ -13953,12 +14361,19 @@ function useAnimatedNumber(target, duration = 800) {
 const AccountsDashboard = React.memo(function AccountsDashboard({ token, onNavigate, sources = [], structures = [], companies = [], dimensions = [], activeStandardKey = null }) {
 const { colors } = useSettings();
 const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();
-const TABS = useTabs();
+const rawTabs = useTabs();
+const canSeeAdminTabs = useCanSeeAdminTabs();
+// Hide the "uploaded" tab (raw uploaded/mapped/group accounts) unless super-admin or consultant.
+// While it's still loading (null) we hide by default — safer than flashing it.
+const TABS = canSeeAdminTabs === true ? rawTabs : rawTabs.filter(t => t.id !== "uploaded");
 const t = useT();
 const MONTHS = useMonths();
 const locale = useLocale();
 
 const [activeTab, setActiveTab]   = useState("pl");
+useEffect(() => {
+  if (canSeeAdminTabs === false && activeTab === "uploaded") setActiveTab("pl");
+}, [canSeeAdminTabs, activeTab]);
 const [prevTab, setPrevTab]       = useState(null);
 const [animKey, setAnimKey]       = useState(0);
   const [dataSubTab, setDataSubTab] = useState("uploaded");
@@ -14127,7 +14542,7 @@ const [upDimensions, setUpDimensions] = useState(null);
   const [mapFetched, setMapFetched] = useState(false);
   const [mapSearch, setMapSearch] = useState("");
 
-  const [grpData, setGrpData] = useState([]);
+const [grpData, setGrpData] = useState([]);
   const [grpLoading, setGrpLoading] = useState(false);
   const [grpError, setGrpError] = useState(null);
   const [grpFetched, setGrpFetched] = useState(false);
@@ -14143,6 +14558,58 @@ const [jrnCmp2Data, setJrnCmp2Data] = useState([]);
 const [breakers, setBreakers] = useState({ pl: {}, bs: {}, cf: {} });
 const [pgcMapping, setPgcMapping] = useState(null);
 const [pgcBsMapping, setPgcBsMapping] = useState(null);
+// Enrich grpData with CUSTOM-standard rows that are NOT in groupAccounts
+// (e.g. new sum rows created in the editor like 999, 888, 777). Without
+// this the hierarchy loops that iterate groupAccounts don't see them.
+const enrichedGrpData = useMemo(() => {
+  const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+  if (!isCustom) return grpData;
+  const combinedRows = new Map();
+  (pgcMapping?.rows || new Map()).forEach((info, code) => combinedRows.set(code, { info, statement: "PL" }));
+  (pgcBsMapping?.rows || new Map()).forEach((info, code) => combinedRows.set(code, { info, statement: "BS" }));
+  if (combinedRows.size === 0) return grpData;
+
+  // Override existing grpData entries when the standard has fresher parent/name data
+  const overridden = grpData.map(g => {
+    const code = String(g.accountCode ?? g.AccountCode ?? "");
+    const stdEntry = combinedRows.get(code);
+    if (!stdEntry) return g;
+    const stdName = (pgcMapping?.names?.get(code) ?? pgcBsMapping?.names?.get(code));
+    const newParent = stdEntry.info.parentCode ?? "";
+    return {
+      ...g,
+      sumAccountCode: newParent,
+      SumAccountCode: newParent,
+      ...(stdName ? { accountName: stdName, AccountName: stdName } : {}),
+    };
+  });
+
+  const existing = new Set(grpData.map(g => String(g.accountCode ?? g.AccountCode ?? "")));
+  const extra = [];
+  combinedRows.forEach(({ info, statement }, code) => {
+    if (existing.has(String(code))) return;
+    const name = (pgcMapping?.names?.get(String(code)) ?? pgcBsMapping?.names?.get(String(code))) || String(code);
+    extra.push({
+      accountCode:    String(code),
+      AccountCode:    String(code),
+      accountName:    String(name),
+      AccountName:    String(name),
+      sumAccountCode: info.parentCode ?? "",
+      SumAccountCode: info.parentCode ?? "",
+      accountType:    statement === "BS" ? "B/S" : "P/L",
+      AccountType:    statement === "BS" ? "B/S" : "P/L",
+      isSum:          !!info.isSum,
+      isVirtual:      true,
+    });
+  });
+  return [...overridden, ...extra];
+}, [grpData, activeStandardKey, pgcMapping, pgcBsMapping]);
+const [customStandardVersion, setCustomStandardVersion] = useState(0);
+useEffect(() => {
+  const handler = () => setCustomStandardVersion(v => v + 1);
+  window.addEventListener("custom-standard-updated", handler);
+  return () => window.removeEventListener("custom-standard-updated", handler);
+}, []);
 const [spanishIfrsEsPlMapping, setSpanishIfrsEsPlMapping] = useState(null);
 const [spanishIfrsEsBsMapping, setSpanishIfrsEsBsMapping] = useState(null);
 const [danishIfrsPlMapping, setDanishIfrsPlMapping] = useState(null);
@@ -14237,12 +14704,13 @@ useEffect(() => {
       if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
       const rows = new Map();
       const names = new Map();
-      rowsArr.forEach(r => {
+rowsArr.forEach(r => {
         rows.set(String(r.account_code), {
           section:       String(r.section_code),
           sortOrder:     Number(r.sort_order),
           isSum:         !!r.is_sum,
           showInSummary: !!r.show_in_summary,
+          parentCode:    r.parent_code ? String(r.parent_code) : null,
         });
         const localizedName = r[`account_name_${locale}`] || r.account_name;
         if (localizedName) names.set(String(r.account_code), String(localizedName));
@@ -14254,7 +14722,7 @@ useEffect(() => {
       setPgcMapping({ rows, sections, names });
     })
     .catch(() => setPgcMapping(null));
-}, [grpData, locale, activeStandardKey]);
+}, [grpData, locale, activeStandardKey, customStandardVersion]);
 
 // ── Load BS section mapping: unified standard_statement_rows for CUSTOM,
 // legacy pgc_bs_rows fallback for anything else (sniffed).
@@ -14295,11 +14763,12 @@ useEffect(() => {
       const names = new Map();
       rowsArr.forEach(r => {
         rows.set(String(r.account_code), {
-          section:       String(r.section_code),
+section:       String(r.section_code),
           sortOrder:     Number(r.sort_order),
           isSum:         !!r.is_sum,
           showInSummary: !!r.show_in_summary,
           level:         Number(r.level ?? 0),
+          parentCode:    r.parent_code ? String(r.parent_code) : null,
         });
         const localizedName = r[`account_name_${locale}`] || r.account_name;
         if (localizedName) names.set(String(r.account_code), String(localizedName));
@@ -14311,20 +14780,13 @@ useEffect(() => {
       setPgcBsMapping({ rows, sections, names });
     })
 .catch(() => setPgcBsMapping(null));
-}, [grpData, locale, activeStandardKey]);
+}, [grpData, locale, activeStandardKey, customStandardVersion]);
 
 // Normalize BS section codes — CUSTOM standards use NCA/CA/EQ/NCL/CL,
 // legacy PGC uses ACTIVO/PASIVO/PATRIMONIO. This helper returns a
 // canonical family ("assets" | "liab_equity") so filter logic works
 // regardless of which naming convention the current mapping uses.
-const bsSectionFamily = useCallback((sectionCode) => {
-  const s = String(sectionCode || "").toUpperCase();
-  // Assets side
-  if (s === "ACTIVO" || s === "NCA" || s === "CA") return "assets";
-  // Liabilities + Equity side
-  if (s === "PASIVO" || s === "PATRIMONIO" || s === "EQ" || s === "NCL" || s === "CL") return "liab_equity";
-  return "unknown";
-}, []);
+
 
 // ── Danish IFRS: load PL mapping(danish_ifrs_pl_rows + danish_ifrs_pl_sections) ──
 useEffect(() => {
@@ -14576,8 +15038,8 @@ useEffect(() => {
   if (viewsMode === "report") fetchReportMappings();
 }, [viewsMode, fetchReportMappings]);
 
-
-const [activeMapping, setActiveMapping] = useState(null);
+// undefined = never applied (use standard/hardcoded fallbacks); null = user explicitly cleared (no mapping)
+const [activeMapping, setActiveMapping] = useState(undefined);
 // activeMapping shape: { mapping_id, name, standard, plConverted, bsConverted } | null
 
 const handleApplyMapping = useCallback((m, kind = "structure") => {
@@ -14586,6 +15048,7 @@ const handleApplyMapping = useCallback((m, kind = "structure") => {
     kind,
     name: m.name,
     standard: m.standard,
+    is_hidden: !!m.is_hidden,
     plConverted: convertSavedMappingTree(m.pl_tree),
     bsConverted: convertSavedMappingTree(m.bs_tree, { normalizeBS: true }),
     plLiteral: buildSavedMappingLiteral(m.pl_tree),
@@ -14616,51 +15079,59 @@ useEffect(() => {
         ...(reportRows  || []).map(r => ({ id: r.mapping_id, name: r.name, kind: "report",    updated_at: r.updated_at, raw: r })),
       ];
       setRecentMappings(combined);
-    } catch (err) { console.error("[recent-mappings] error:", err); }
+} catch { /* ignore */ }
   })();
 }, []);
 
-// Auto-activate the user's saved standard mapping on mount (from AccountsDashboard preference)
+// Extracted so the "clear mapping" buttons can re-run this exact flow.
+// Reads the user's preferred standard mapping from Supabase and applies it.
+const applyPreferredMapping = useCallback(async () => {
+  try {
+    const { supabase } = await import("../../lib/supabaseClient");
+    const { data: { session } } = await supabase.auth.getSession();
+    const uid = session?.user?.id;
+    if (!uid) { setActiveMapping(null); return; }
+    const { data: settingsData } = await supabase
+      .from("user_settings")
+      .select("preferences")
+      .eq("user_id", uid)
+      .single();
+    const mid = settingsData?.preferences?.standard_mapping_id;
+    if (!mid) { setActiveMapping(null); return; }
+    const { listMappings, getActiveCompanyId } = await import("../../lib/mappingsApi");
+    const cid = await getActiveCompanyId(uid);
+    if (!cid) { setActiveMapping(null); return; }
+    const allMappings = await listMappings({ companyId: cid, includeHidden: true });
+    const match = (allMappings || []).find(m => String(m.mapping_id) === String(mid));
+    if (match) {
+      handleApplyMapping(match);
+    } else {
+      setActiveMapping(null);
+    }
+  } catch { /* ignore */ }
+}, [handleApplyMapping]);
+
+// If the user loses access to their currently-active mapping (e.g. permissions changed
+// mid-session), auto-clear it to avoid showing restricted data.
+useEffect(() => {
+  if (!activeMapping || !resourceAccess?.mapping) return;
+  const mid = String(activeMapping.mapping_id ?? activeMapping.id ?? "");
+  if (mid && !resourceAccess.mapping.has(mid)) {
+    setActiveMapping(null);
+  }
+}, [activeMapping, resourceAccess]);
 const autoMappingAppliedRef = useRef(false);
 useEffect(() => {
   if (autoMappingAppliedRef.current) return;
   autoMappingAppliedRef.current = true;
-(async () => {
-    try {
-      const { supabase } = await import("../../lib/supabaseClient");
-      const { data: { session } } = await supabase.auth.getSession();
-      const uid = session?.user?.id;
-      if (!uid) return;
-      const { data: settingsData } = await supabase
-        .from("user_settings")
-        .select("preferences")
-        .eq("user_id", uid)
-        .single();
-const mid = settingsData?.preferences?.standard_mapping_id;
-      console.log("[auto-mapping] settingsData:", settingsData, "mid:", mid);
-      if (!mid) return;
-      const SUPABASE_URL = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
-      const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
-const { listMappings, getActiveCompanyId } = await import("../../lib/mappingsApi");
-      const cid = await getActiveCompanyId(uid);
-      console.log("[auto-mapping] cid:", cid);
-      if (!cid) return;
-      const allMappings = await listMappings({ companyId: cid });
-      console.log("[auto-mapping] all mappings:", allMappings);
-      const match = (allMappings || []).find(m => String(m.mapping_id) === String(mid));
-      console.log("[auto-mapping] match:", match);
-      if (match) {
-        handleApplyMapping(match);
-      }
-    } catch (err) { console.error("[auto-mapping] error:", err); }
-})();
-}, [handleApplyMapping]);
+  applyPreferredMapping();
+}, [applyPreferredMapping]);
 
 const [exportOpts, setExportOpts] = useState({
   plSummary: true, plDetailed: true,
   bsSummary: true, bsAssets: true, bsEquity: true,
   plSaved: true, bsSaved: true,
-  drillDown: false,
+drillDown: true,
 });
 
   // ── Compare mode state ─────────────────────────────────────
@@ -14729,7 +15200,6 @@ const breakersFetchedRef = useRef(false);
       if (ssRaw) {
         const parsed = JSON.parse(ssRaw);
         if (parsed.year && parsed.month) {
-          console.log("[IndividualesPage] SESSION STORAGE HIT ✓", parsed);
           setUpYear(String(parsed.year));
           setUpMonth(String(parsed.month));
           setLatestPeriod(upSource, upStructure, upCompany, parsed.year, parsed.month);
@@ -14738,8 +15208,6 @@ const breakersFetchedRef = useRef(false);
         }
       }
    } catch { /* ignore */ }
-
-    console.log("[IndividualesPage] CACHE MISS - falling back to probe");
 
     // ── SLOW PATH: network probe (fallback) ───────────────
     setProbingPeriod(true);
@@ -14816,30 +15284,29 @@ const fetchPrev = useCallback(async (year, month, source, structure, companies) 
 
 const fetchCmp = useCallback(async (year, month, source, structure, company) => {
   if (!year || !month || !source || !structure || !company) return;
-setPlCmpLoading(true);
+  setPlCmpLoading(true);
   try {
-    // Current period
     const filterA = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
-    const resA = await fetch(
+    const promiseA = fetch(
       `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filterA)}`,
       { headers: headers() }
-    );
-    const jsonA = resA.ok ? await resA.json() : { value: [] };
-    setCmpData(jsonA.value ?? (Array.isArray(jsonA) ? jsonA : []));
+    ).then(r => r.ok ? r.json() : { value: [] }).catch(() => ({ value: [] }));
 
-    // Previous period (for monthly)
-    if (Number(month) === 1) { setCmpPrevData([]); }
-    else {
-      const filterB = `Year eq ${year} and Month eq ${Number(month) - 1} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
-      const resB = await fetch(
-        `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filterB)}`,
-        { headers: headers() }
-      );
-      const jsonB = resB.ok ? await resB.json() : { value: [] };
-      setCmpPrevData(jsonB.value ?? (Array.isArray(jsonB) ? jsonB : []));
-    }
+    const promiseB = Number(month) === 1
+      ? Promise.resolve({ value: [] })
+      : fetch(
+          `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(
+            `Year eq ${year} and Month eq ${Number(month) - 1} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`
+          )}`,
+          { headers: headers() }
+        ).then(r => r.ok ? r.json() : { value: [] }).catch(() => ({ value: [] }));
+
+    const [jsonA, jsonB] = await Promise.all([promiseA, promiseB]);
+
+    setCmpData(jsonA.value ?? (Array.isArray(jsonA) ? jsonA : []));
+    setCmpPrevData(jsonB.value ?? (Array.isArray(jsonB) ? jsonB : []));
   } catch { setCmpData([]); setCmpPrevData([]); }
-  finally { setCmpLoading(false); }
+  finally { setPlCmpLoading(false); }
 }, [headers]);
 
   const fetchMapped = useCallback(async () => {
@@ -14928,23 +15395,24 @@ const fetchCmp2 = useCallback(async (year, month, source, structure, company) =>
   setCmp2Loading(true);
   try {
     const filterA = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
-    const resA = await fetch(
+    const promiseA = fetch(
       `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filterA)}`,
       { headers: headers() }
-    );
-    const jsonA = resA.ok ? await resA.json() : { value: [] };
-    setCmp2Data(jsonA.value ?? (Array.isArray(jsonA) ? jsonA : []));
+    ).then(r => r.ok ? r.json() : { value: [] }).catch(() => ({ value: [] }));
 
-    if (Number(month) === 1) { setCmp2PrevData([]); }
-    else {
-      const filterB = `Year eq ${year} and Month eq ${Number(month) - 1} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
-      const resB = await fetch(
-        `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filterB)}`,
-        { headers: headers() }
-      );
-      const jsonB = resB.ok ? await resB.json() : { value: [] };
-      setCmp2PrevData(jsonB.value ?? (Array.isArray(jsonB) ? jsonB : []));
-    }
+    const promiseB = Number(month) === 1
+      ? Promise.resolve({ value: [] })
+      : fetch(
+          `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(
+            `Year eq ${year} and Month eq ${Number(month) - 1} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`
+          )}`,
+          { headers: headers() }
+        ).then(r => r.ok ? r.json() : { value: [] }).catch(() => ({ value: [] }));
+
+    const [jsonA, jsonB] = await Promise.all([promiseA, promiseB]);
+
+    setCmp2Data(jsonA.value ?? (Array.isArray(jsonA) ? jsonA : []));
+    setCmp2PrevData(jsonB.value ?? (Array.isArray(jsonB) ? jsonB : []));
   } catch { setCmp2Data([]); setCmp2PrevData([]); }
   finally { setCmp2Loading(false); }
 }, [headers]);
@@ -15001,7 +15469,6 @@ const [cmpDimGroups, setCmpDimGroups] = useState(null);
   const [cmpDimensions, setCmpDimensions] = useState(null);
 const [cmpData,     setCmpData]       = useState([]);
 const [cmpPrevData, setCmpPrevData]   = useState([]);
-const [, setCmpLoading]    = useState(false);
 
 // ── Compare period 2 ──────────────────────────────────────
 const [cmp2Year,      setCmp2Year]      = useState("");
@@ -15028,6 +15495,15 @@ const [cmp3PrevData,  setCmp3PrevData]  = useState([]);
 const [, setCmp3Loading]   = useState(false);
 const [plCmp3Enabled, setPlCmp3Enabled] = useState(true);
 const [jrnCmp3Data, setJrnCmp3Data]     = useState([]);
+useEffect(() => { unlockCountUpForInitialLoad(1500); }, []);
+  const cmpUploadedAccountsMemo = useMemo(() => cmpData.filter(r => rowMatchesDimMulti(r, cmpDimGroups, cmpDimensions)), [cmpData, cmpDimGroups, cmpDimensions]);
+  const cmpPrevUploadedAccountsMemo = useMemo(() => cmpPrevData.filter(r => rowMatchesDimMulti(r, cmpDimGroups, cmpDimensions)), [cmpPrevData, cmpDimGroups, cmpDimensions]);
+  const cmp2UploadedAccountsMemo = useMemo(() => cmp2Data.filter(r => rowMatchesDimMulti(r, cmp2DimGroups, cmp2Dimensions)), [cmp2Data, cmp2DimGroups, cmp2Dimensions]);
+  const cmp2PrevUploadedAccountsMemo = useMemo(() => cmp2PrevData.filter(r => rowMatchesDimMulti(r, cmp2DimGroups, cmp2Dimensions)), [cmp2PrevData, cmp2DimGroups, cmp2Dimensions]);
+  const cmp3UploadedAccountsMemo = useMemo(() => cmp3Data.filter(r => rowMatchesDimMulti(r, cmp3DimGroups, cmp3Dimensions)), [cmp3Data, cmp3DimGroups, cmp3Dimensions]);
+const cmp3PrevUploadedAccountsMemo = useMemo(() => cmp3PrevData.filter(r => rowMatchesDimMulti(r, cmp3DimGroups, cmp3Dimensions)), [cmp3PrevData, cmp3DimGroups, cmp3Dimensions]);
+  const upUploadedAccountsMemo = useMemo(() => upData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions)), [upData, upDimGroups, upDimensions]);
+  const upPrevUploadedAccountsMemo = useMemo(() => prevData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions)), [prevData, upDimGroups, upDimensions]);
   useEffect(() => {
   if (compareMode && cmpSource && cmpStructure && cmpYear && cmpMonth && cmpCompany) {
     fetchCmp(cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany);
@@ -15061,23 +15537,24 @@ const fetchCmp3 = useCallback(async (year, month, source, structure, company) =>
   setCmp3Loading(true);
   try {
     const filterA = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
-    const resA = await fetch(
+    const promiseA = fetch(
       `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filterA)}`,
       { headers: headers() }
-    );
-    const jsonA = resA.ok ? await resA.json() : { value: [] };
-    setCmp3Data(jsonA.value ?? (Array.isArray(jsonA) ? jsonA : []));
+    ).then(r => r.ok ? r.json() : { value: [] }).catch(() => ({ value: [] }));
 
-    if (Number(month) === 1) { setCmp3PrevData([]); }
-    else {
-      const filterB = `Year eq ${year} and Month eq ${Number(month) - 1} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`;
-      const resB = await fetch(
-        `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filterB)}`,
-        { headers: headers() }
-      );
-      const jsonB = resB.ok ? await resB.json() : { value: [] };
-      setCmp3PrevData(jsonB.value ?? (Array.isArray(jsonB) ? jsonB : []));
-    }
+    const promiseB = Number(month) === 1
+      ? Promise.resolve({ value: [] })
+      : fetch(
+          `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(
+            `Year eq ${year} and Month eq ${Number(month) - 1} and Source eq '${source}' and GroupStructure eq '${structure}' and CompanyShortName eq '${company}'`
+          )}`,
+          { headers: headers() }
+        ).then(r => r.ok ? r.json() : { value: [] }).catch(() => ({ value: [] }));
+
+    const [jsonA, jsonB] = await Promise.all([promiseA, promiseB]);
+
+    setCmp3Data(jsonA.value ?? (Array.isArray(jsonA) ? jsonA : []));
+    setCmp3PrevData(jsonB.value ?? (Array.isArray(jsonB) ? jsonB : []));
   } catch { setCmp3Data([]); setCmp3PrevData([]); }
   finally { setCmp3Loading(false); }
 }, [headers]);
@@ -15352,6 +15829,7 @@ const ExportModal = exportModal ? createPortal(
                 ["plSaved",    t("page_pl_full"),                                         colors.primary],
                 ["bsSaved",    t("page_bs_full"),                                         colors.primary],
                 ["dimJournal", t("export_dim_journal_title"),                             "#dc7533"],
+                ["drillDown",  t("export_drill_down") || "Drill-down",                    "#8b5cf6"],
               ] : [
                 ["plSummary",  `${t("page_pl")} ${t("view_summary")}`,                    colors.primary],
                 ["plDetailed", `${t("page_pl")} ${t("view_detailed")}`,                   colors.primary],
@@ -15359,12 +15837,13 @@ const ExportModal = exportModal ? createPortal(
                 ["bsAssets",   `${t("page_bs")} ${t("bs_assets")}`,                       colors.primary],
                 ["bsEquity",   `${t("page_bs")} ${t("bs_equity_liab")}`,                  colors.primary],
                 ["dimJournal", t("export_dim_journal_title"),                             "#dc7533"],
+                ["drillDown",  t("export_drill_down") || "Drill-down",                    "#8b5cf6"],
               ]).map(([k, label, accent]) => {
-                const checked = k === "dimJournal" ? exportOpts.dimJournal !== false : !!exportOpts[k];
+                const checked = (k === "dimJournal" || k === "drillDown") ? exportOpts[k] !== false : !!exportOpts[k];
                 return (
                   <label key={k} className="flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all hover:bg-gray-50"
                     style={{ borderColor: checked ? `${accent}40` : "#f3f4f6", background: checked ? `${accent}06` : "white" }}
-                    onClick={() => setExportOpts(o => ({ ...o, [k]: k === "dimJournal" ? (o.dimJournal === false) : !o[k] }))}>
+                    onClick={() => setExportOpts(o => ({ ...o, [k]: (k === "dimJournal" || k === "drillDown") ? (o[k] === false) : !o[k] }))}>
                     <div className="w-4 h-4 rounded border-2 flex items-center justify-center transition-all flex-shrink-0"
                       style={{ background: checked ? accent : "transparent", borderColor: checked ? accent : "#d1d5db" }}>
                       {checked && <svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg>}
@@ -15448,8 +15927,8 @@ selectedCompanies: upCompaniesDebounced,
                 dimensions: effectiveDimensions,
 dimGroups,
 breakers,
-                pgcMapping: activeMapping?.plConverted ?? pgcMapping ?? danishIfrsPlMapping ?? spanishIfrsEsPlMapping,
-                pgcBsMapping: activeMapping?.bsConverted ?? pgcBsMapping ?? danishIfrsBsMapping ?? spanishIfrsEsBsMapping,
+pgcMapping: activeMapping === null ? null : (activeMapping?.plConverted ?? pgcMapping ?? danishIfrsPlMapping ?? spanishIfrsEsPlMapping),
+                pgcBsMapping: activeMapping === null ? null : (activeMapping?.bsConverted ?? pgcBsMapping ?? danishIfrsBsMapping ?? spanishIfrsEsBsMapping),
                 colors,
 plHistoryMonths: plHistoryExpanded ? plHistoryMonths : [],
                 bsHistoryMonths: bsHistoryExpanded ? bsHistoryMonths : [],
@@ -15459,7 +15938,7 @@ plHistoryMonths: plHistoryExpanded ? plHistoryMonths : [],
                 savedHighlightedIds: activeMapping?.highlightedIds ?? null,
                 prevUploadedAccountsRaw: prevData,
                 summaryRows: (() => {
-                  const effectivePlMapping = activeMapping?.plConverted ?? pgcMapping ?? danishIfrsPlMapping ?? spanishIfrsEsPlMapping;
+const effectivePlMapping = activeMapping === null ? null : (activeMapping?.plConverted ?? pgcMapping ?? danishIfrsPlMapping ?? spanishIfrsEsPlMapping);
                   const localTree = buildTree(grpData, upData);
                   if (effectivePlMapping?.rows) {
                     const treeByCode = new Map();
@@ -15577,7 +16056,7 @@ return (
 .k-scroll-overlay { overflow: overlay; }
 @supports not (overflow: overlay) { .k-scroll-overlay { overflow: auto; } }
 /* Sticky requires the table to have border-collapse: separate */
-        .k-sticky-table { border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+        .k-sticky-table { border-collapse: separate; border-spacing: 0; }
        .k-sticky-table thead th { position: sticky; top: 0; z-index: 10; background: #ffffff !important; will-change: transform; }
         .k-sticky-table thead th.k-sticky-acc-head { position: sticky !important; top: 0; left: 0; z-index: 25; border-right: 1px solid rgba(0,0,0,0.06); }
 .k-sticky-table tbody td.k-sticky-acc,
@@ -15709,7 +16188,9 @@ setBsCmp2Year(String(upYear)); setBsCmp2Month(String(upMonth));
     } : null
   }
 onMappingsClick={viewsMode ? undefined : () => setViewsMode("landing")}
-mappingsQuickAccess={viewsMode ? [] : recentMappings}
+mappingsQuickAccess={viewsMode ? [] : (resourceAccess?.mapping
+          ? recentMappings.filter(m => resourceAccess.mapping.has(String(m.mapping_id ?? m.id ?? "")))
+          : recentMappings)}
 onQuickApplyMapping={(m) => handleApplyMapping(m.raw, m.kind)}
 onExportPdf={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
   ? () => { setExportOpts(o => ({ ...o, format: "pdf" })); setExportModal(true); }
@@ -15720,7 +16201,7 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
 />
 
 
-{activeMapping && (
+{activeMapping && !activeMapping.is_hidden && (
   <div className="flex items-center gap-2 mt-3 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm">
     <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
 <span className="text-xs text-emerald-700 font-medium">
@@ -15744,7 +16225,7 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
       {t("btn_edit") ?? "Edit"}
     </button>
     <button
-      onClick={() => setActiveMapping(null)}
+onClick={() => applyPreferredMapping()}
       className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
       title={t("clear_mapping_title")}
     >
@@ -15913,7 +16394,7 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
             <p className="font-black text-xs text-gray-700">{t("views_saved_report_mappings")}</p>
           </div>
           {activeMapping && (
-            <button onClick={() => { setActiveMapping(null); setViewsMode(null); }}
+           <button onClick={() => { applyPreferredMapping(); setViewsMode(null); }}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest text-red-500 hover:bg-red-50 transition-colors">
               <X size={10} /> {t("btn_clear_active")}
             </button>
@@ -15996,7 +16477,7 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
             <p className="font-black text-xs text-gray-700">{t("views_saved_mappings")}</p>
           </div>
           {activeMapping && (
-            <button onClick={() => { setActiveMapping(null); setViewsMode(null); }}
+    <button onClick={() => { applyPreferredMapping(); setViewsMode(null); }}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest text-red-500 hover:bg-red-50 transition-colors">
               <X size={10} /> {t("btn_clear_active")}
             </button>
@@ -16129,8 +16610,8 @@ onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}>
     );
   }
 
-  return (
-<div key={`pl-${animKey}`} className="tab-content" style={{ "--slide-from": TAB_ORDER.indexOf("pl") > TAB_ORDER.indexOf(prevTab ?? "pl") ? "30px" : "-30px" }}>
+return (
+<div key={`pl-${animKey}`} className="tab-content"style={{ "--slide-from": TAB_ORDER.indexOf("pl") > TAB_ORDER.indexOf(prevTab ?? "pl") ? "30px" : "-30px" }}>
 <PLStatement
   externalAccColWidth={accColWidth}
   onAccColWidthChange={setAccColWidth}
@@ -16148,11 +16629,10 @@ selectedCompanies={upCompaniesDebounced}
   onHistoryMonthsChange={setPlHistoryMonths}
   ytdOnly={ytdOnly}
   dimensionActive={(upDimGroups?.length > 0) || (upDimensions?.length > 0)}
-  groupAccounts={grpData}
+groupAccounts={enrichedGrpData}
   dimensions={effectiveDimensions}
-  dimensions={effectiveDimensions}
-uploadedAccounts={upData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions))}
-prevUploadedAccounts={prevData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions))}
+uploadedAccounts={upUploadedAccountsMemo}
+prevUploadedAccounts={upPrevUploadedAccountsMemo}
 prevUploadedAccountsRaw={prevData}
   compareMode={compareMode}
   onToggleCompare={() => {
@@ -16171,8 +16651,8 @@ setCmpCompany(upCompany);
     }
     setCompareMode(c => !c);
   }}
-cmpUploadedAccounts={cmpData.filter(r => rowMatchesDimMulti(r, cmpDimGroups, cmpDimensions))}
-  cmpPrevUploadedAccounts={cmpPrevData.filter(r => rowMatchesDimMulti(r, cmpDimGroups, cmpDimensions))}
+cmpUploadedAccounts={cmpUploadedAccountsMemo}
+cmpPrevUploadedAccounts={cmpPrevUploadedAccountsMemo}
 cmpFilters={{
     year: cmpYear,
     month: cmpMonth,
@@ -16197,8 +16677,8 @@ cmpFilters={{
    companies={effectiveCompanies}
   dimGroups={dimGroups}
   cmpFilteredDims={cmpFilteredDims}
-cmp2UploadedAccounts={cmp2Data.filter(r => rowMatchesDimMulti(r, cmp2DimGroups, cmp2Dimensions))}
-  cmp2PrevUploadedAccounts={cmp2PrevData.filter(r => rowMatchesDimMulti(r, cmp2DimGroups, cmp2Dimensions))}
+cmp2UploadedAccounts={cmp2UploadedAccountsMemo}
+cmp2PrevUploadedAccounts={cmp2PrevUploadedAccountsMemo}
   cmp2Filters={{
     year: cmp2Year, month: cmp2Month, source: cmp2Source,
     structure: cmp2Structure, company: cmp2Company,
@@ -16216,8 +16696,8 @@ cmp2UploadedAccounts={cmp2Data.filter(r => rowMatchesDimMulti(r, cmp2DimGroups, 
 cmp2FilteredDims={cmp2FilteredDims}
   cmp2Enabled={plCmp2Enabled}
   onCmp2EnabledChange={setPlCmp2Enabled}
-  cmp3UploadedAccounts={cmp3Data.filter(r => rowMatchesDimMulti(r, cmp3DimGroups, cmp3Dimensions))}
-  cmp3PrevUploadedAccounts={cmp3PrevData.filter(r => rowMatchesDimMulti(r, cmp3DimGroups, cmp3Dimensions))}
+cmp3UploadedAccounts={cmp3UploadedAccountsMemo}
+cmp3PrevUploadedAccounts={cmp3PrevUploadedAccountsMemo}
   cmp3Filters={{
     year: cmp3Year, month: cmp3Month, source: cmp3Source,
     structure: cmp3Structure, company: cmp3Company,
@@ -16253,7 +16733,7 @@ journalEntries={jrnData}
 journalEntriesCmp={jrnCmpData}
 journalEntriesCmp2={jrnCmp2Data}
   breakers={breakers}
-pgcMapping={activeMapping?.plConverted ?? pgcMapping ?? danishIfrsPlMapping ?? spanishIfrsEsPlMapping}
+pgcMapping={activeMapping === null ? null : (activeMapping?.plConverted ?? pgcMapping ?? danishIfrsPlMapping ?? spanishIfrsEsPlMapping)}
 savedPlLiteral={activeMapping?.plLiteral ?? null}
 savedHighlightedIds={activeMapping?.highlightedIds ?? null}
 />
@@ -16320,8 +16800,8 @@ externalAccColWidth={accColWidth}
 dimensionActive={(upDimGroups?.length > 0) || (upDimensions?.length > 0)}
 upDimensions={upDimensions}
 upDimGroups={upDimGroups}
-  filteredDims={filteredDims}
-  groupAccounts={grpData}
+filteredDims={filteredDims}
+  groupAccounts={enrichedGrpData}
   dimensions={effectiveDimensions}
   dimensions={effectiveDimensions}
 uploadedAccounts={upData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions))}
@@ -16383,7 +16863,7 @@ externalCmp2Enabled={bsCmp2Enabled}
   bsCmp2Dimensions={bsCmp2Dimensions} setBsCmp2Dimensions={setBsCmp2Dimensions}
   effectiveDimensions={effectiveDimensions}
 breakers={breakers}
-pgcBsMapping={activeMapping?.bsConverted ?? pgcBsMapping ?? danishIfrsBsMapping ?? spanishIfrsEsBsMapping}
+pgcBsMapping={activeMapping === null ? null : (activeMapping?.bsConverted ?? pgcBsMapping ?? danishIfrsBsMapping ?? spanishIfrsEsBsMapping)}
 savedBsLiteral={activeMapping?.bsLiteral ?? null}
 savedHighlightedIds={activeMapping?.highlightedIds ?? null}
 />
@@ -16457,8 +16937,8 @@ savedHighlightedIds={activeMapping?.highlightedIds ?? null}
     {dataSubTabSelector}
   </div>
   {dataSubTab === "report" && (
-    <FinancialReport
-      groupAccounts={grpData}
+<FinancialReport
+      groupAccounts={enrichedGrpData}
   dimensions={effectiveDimensions}
   dimensions={effectiveDimensions}
       uploadedAccounts={upData}

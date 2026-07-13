@@ -52,9 +52,10 @@ export async function getActiveCompanyId(userId) {
 // LIST: all non-archived mappings for the user's company
 // Optionally filter by standard
 // ════════════════════════════════════════════════════════════════
-export async function listMappings({ companyId, standard = null }) {
+export async function listMappings({ companyId, standard = null, includeHidden = false }) {
   if (!companyId) return [];
  let url = `${SUPABASE_URL}/mappings?select=*&company_id=eq.${companyId}&order=updated_at.desc`;
+  if (!includeHidden) url += `&is_hidden=eq.false`;
   if (standard) url += `&standard=eq.${standard}`;
   const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) {
@@ -190,4 +191,102 @@ export async function archiveMapping({ mappingId }) {
     throw new Error(err || "Delete failed");
   }
   return true;
+}
+// ════════════════════════════════════════════════════════════════
+// HIDDEN OVERRIDE mapping — one per company. Never appears in the
+// user-facing list. Backs the CUSTOM-editor flow: the account tree
+// with client nodes lives here, the standard structure edits live
+// in standard_statement_rows. Both together = a single logical
+// "custom mapping" that is transparently active.
+// ════════════════════════════════════════════════════════════════
+export async function getHiddenOverrideMapping({ companyId, standard }) {
+  if (!companyId || !standard) return null;
+  const url = `${SUPABASE_URL}/mappings?select=*&company_id=eq.${companyId}` +
+    `&standard=eq.${encodeURIComponent(standard)}&is_hidden=eq.true&limit=1`;
+  const res = await fetch(url, { headers: authHeaders() });
+  if (!res.ok) return null;
+  const rows = await res.json();
+  return Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+}
+
+export async function deleteHiddenOverrideMapping({ companyId, standard }) {
+  if (!companyId || !standard) return false;
+  const existing = await getHiddenOverrideMapping({ companyId, standard });
+  if (!existing) return true;
+  const res = await fetch(
+    `${SUPABASE_URL}/mappings?mapping_id=eq.${existing.mapping_id}`,
+    { method: "DELETE", headers: authHeaders() }
+  );
+  return res.ok;
+}
+
+export async function upsertHiddenOverrideMapping({
+  companyId, userId, standard,
+  plTree, bsTree, cfTree, highlightedIds = [],
+}) {
+  const existing = await getHiddenOverrideMapping({ companyId, standard });
+  const payload = {
+    highlighted_ids: highlightedIds,
+    updated_by: userId,
+  };
+  if (plTree !== undefined) payload.pl_tree = plTree;
+  if (bsTree !== undefined) payload.bs_tree = bsTree;
+  if (cfTree !== undefined) payload.cf_tree = cfTree;
+  if (existing) {
+    const res = await fetch(
+      `${SUPABASE_URL}/mappings?mapping_id=eq.${existing.mapping_id}`,
+      {
+        method: "PATCH",
+        headers: authHeaders({ Prefer: "return=representation" }),
+        body: JSON.stringify(payload),
+      }
+    );
+    if (!res.ok) throw new Error(await res.text());
+    const rows = await res.json();
+    return Array.isArray(rows) ? rows[0] : rows;
+  }
+const insertPayload = {
+    pl_tree: plTree ?? [],
+    bs_tree: bsTree ?? [],
+    cf_tree: cfTree ?? [],
+    ...payload,
+    company_id: companyId,
+    created_by: userId,
+    name: "__custom_override__",
+    description: "Auto-generated override for the company's CUSTOM standard. Not listed in the UI.",
+    standard,
+    is_hidden: true,
+  };
+  const res = await fetch(`${SUPABASE_URL}/mappings`, {
+    method: "POST",
+    headers: authHeaders({ Prefer: "return=representation" }),
+    body: JSON.stringify(insertPayload),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const rows = await res.json();
+  return Array.isArray(rows) ? rows[0] : rows;
+}
+
+// Set a mapping as the active one for the current user
+// (writes to user_settings.preferences.standard_mapping_id)
+export async function setActiveMappingSilently({ userId, mappingId }) {
+  if (!userId || !mappingId) return false;
+  // Read current preferences
+  const readRes = await fetch(
+    `${SUPABASE_URL}/user_settings?select=preferences&user_id=eq.${userId}`,
+    { headers: authHeaders() }
+  );
+  const rows = readRes.ok ? await readRes.json() : [];
+  const currentPref = (Array.isArray(rows) && rows.length > 0) ? (rows[0].preferences ?? {}) : {};
+  const nextPref = { ...currentPref, standard_mapping_id: mappingId };
+  // Upsert user_settings
+  const upsertRes = await fetch(
+    `${SUPABASE_URL}/user_settings?on_conflict=user_id`,
+    {
+      method: "POST",
+      headers: authHeaders({ Prefer: "return=minimal,resolution=merge-duplicates" }),
+      body: JSON.stringify({ user_id: userId, preferences: nextPref }),
+    }
+  );
+  return upsertRes.ok;
 }

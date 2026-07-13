@@ -61,10 +61,10 @@ export default function Sidebar({ activePage, onNavigate, user, height = "100vh"
   const t = useT();
 const { can, loaded: permsLoaded } = useCurrentUserPermissions();
 
-  // Async admin check — user has role='admin' on any user_companies row.
-  // We fetch once on mount and stash the result. Falsy until resolved so
-  // the nav item flashes in cleanly only for actual admins.
-  const [isAdmin, setIsAdmin] = useState(false);
+// Async consultant check — user has role='consultant' on any active
+  // user_companies row. Consultants are Konsolidator staff and get access
+  // to onboarding-only pages that clients (regular/admin) don't see.
+  const [isConsultant, setIsConsultant] = useState(false);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -75,16 +75,16 @@ const { can, loaded: permsLoaded } = useCurrentUserPermissions();
         if (!uid) return;
         const { data } = await supabase.schema("accounts").from("user_companies")
           .select("role").eq("user_id", uid).eq("is_active", true);
-        if (!cancelled) setIsAdmin((data ?? []).some(r => r.role === "admin"));
+        if (!cancelled) setIsConsultant((data ?? []).some(r => r.role === "consultant"));
       } catch { /* silent */ }
     })();
     return () => { cancelled = true; };
   }, []);
 
-  // Filter NAV based on permissions + admin flag for admin-only entries.
+// Filter NAV based on permissions + consultant flag for onboarding entries.
   const NAV = NAV_KEYS
     .map(item => {
-      if (item.adminOnly && !isAdmin) return null;
+      if (item.adminOnly && !isConsultant) return null;
       const label = t(item.labelKey, item.labelKey);
       if (!item.children?.length) {
         return can(item.key) ? { ...item, label } : null;
@@ -118,12 +118,12 @@ const { can, loaded: permsLoaded } = useCurrentUserPermissions();
 const handleNavigate = (key) => {
     // Block disallowed pages. "user" is the avatar-click target, always allowed.
     // Admin-only nav items bypass `can()` since they gate on isAdmin instead.
-    const adminOnlyKeys = new Set(NAV_KEYS.filter(n => n.adminOnly).map(n => n.key));
+const adminOnlyKeys = new Set(NAV_KEYS.filter(n => n.adminOnly).map(n => n.key));
     if (key !== "user") {
       if (key === "settings") {
         if (!canSettings) return;
       } else if (adminOnlyKeys.has(key)) {
-        if (!isAdmin) return;
+        if (!isConsultant) return;
       } else if (!can(key)) {
         return;
       }

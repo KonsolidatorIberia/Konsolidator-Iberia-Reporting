@@ -372,12 +372,26 @@ function evalFormulaWithCcTags(node, pivot, cache, kpiList, ccTagToCodes, sectio
   if (!node) return 0;
 
   switch (node.type) {
-    case "account": {
+case "account": {
+      // Dim-scoped account: look up in __dimPivot (keyed as "ac:::group:::code")
+      if (node.accountCode && (node.dimGroup || node.dimCode)) {
+        const key = `${node.accountCode}:::${node.dimGroup ?? ""}:::${node.dimCode ?? ""}`;
+        return -(pivot.__dimPivot?.get(key) ?? 0);
+      }
       let total = 0;
       pivot.forEach((val, ac) => { if (ac === node.accountCode) total += val; });
       return -total;
     }
-    case "accountGroup": {
+case "accountGroup": {
+      // Group + dim → use ONLY the group code itself (sum-row already carries aggregate)
+      if (node.groupCode && (node.dimGroup || node.dimCode)) {
+        const key = `${node.groupCode}:::${node.dimGroup ?? ""}:::${node.dimCode ?? ""}`;
+        return -(pivot.__dimPivot?.get(key) ?? 0);
+      }
+      // If the sum-row for this prefix exists directly in pivot (or __sumPivot), use it.
+      if (node.prefix && pivot.__sumPivot?.has(node.prefix)) {
+        return -pivot.__sumPivot.get(node.prefix);
+      }
       let total = 0;
       pivot.forEach((val, ac) => { if (node.prefix && ac.startsWith(node.prefix)) total += val; });
       return -total;
@@ -408,12 +422,37 @@ function evalFormulaWithCcTags(node, pivot, cache, kpiList, ccTagToCodes, sectio
       cache.set(node.kpiId, val);
       return val;
     }
-    case "text": {
+case "text": {
       if (!node.expression || !node.variables) return 0;
       try {
         let expr = node.expression;
+        const scope = pivot.__variationScope;
+        const variations = pivot.__currentKpiVariations;
         Object.entries(node.variables).forEach(([letter, varNode]) => {
-          const v = varNode ? evalFormulaWithCcTags(varNode, pivot, cache, kpiList, ccTagToCodes, sectionCodes) : 0;
+          let effectiveNode = varNode;
+          if (scope && variations) {
+            const map = scope.kind === "company" ? variations.byCompany
+                      : scope.kind === "dimension" ? variations.byDimension
+                      : null;
+            const override = map?.[scope.key]?.[letter];
+            if (override) {
+              const norm = { ...override };
+              if (norm.type === "accountGroup" && typeof norm.prefix === "string" && norm.prefix.includes(":::")) {
+                const [gc, dg, dc] = norm.prefix.split(":::");
+                norm.prefix = gc; norm.groupCode = gc;
+                if (!norm.dimGroup) norm.dimGroup = dg || undefined;
+                if (!norm.dimCode)  norm.dimCode  = dc || undefined;
+              }
+              if (norm.type === "account" && typeof norm.accountCode === "string" && norm.accountCode.includes(":::")) {
+                const [ac, dg, dc] = norm.accountCode.split(":::");
+                norm.accountCode = ac;
+                if (!norm.dimGroup) norm.dimGroup = dg || undefined;
+                if (!norm.dimCode)  norm.dimCode  = dc || undefined;
+              }
+              effectiveNode = norm;
+            }
+          }
+          const v = effectiveNode ? evalFormulaWithCcTags(effectiveNode, pivot, cache, kpiList, ccTagToCodes, sectionCodes) : 0;
           expr = expr.replaceAll(letter, `(${v ?? 0})`);
         });
         return Function(`"use strict"; return (${expr})`)() ?? 0;
@@ -438,11 +477,18 @@ function computeKpiById(id, pivot, kpiList, ccTagToCodes, sectionCodes, cache) {
   if (cache.has(id)) return cache.get(id);
   const kpi = kpiList.find(k => k.id === id);
   if (!kpi) { cache.set(id, 0); return 0; }
+  pivot.__currentKpiVariations = kpi.variations ?? null;
   const val = evalFormulaWithCcTags(kpi.formula, pivot, cache, kpiList, ccTagToCodes, sectionCodes);
+if (val === 0 && kpi.formula && pivot?.size > 0 && kpi.label === "KPI VARIACION") {
+    const keys = [...pivot.keys()];
+    const ipl = keys.filter(k => String(k).startsWith("I.PL"));
+    const ipl2 = keys.filter(k => String(k).toUpperCase().includes("PL"));
+    console.log("[home-zero-detail]", "keys sample:", keys.slice(0, 20), "startsWithIPL:", ipl, "hasPL:", ipl2.slice(0, 10));
+  }
+  pivot.__currentKpiVariations = null;
   cache.set(id, val);
   return val;
 }
-
 // ════════════════════════════════════════════════════════════════════════════
 // END KPI RESOLVER
 // ════════════════════════════════════════════════════════════════════════════
@@ -498,15 +544,39 @@ function detectReportingCurrency(rows) {
 //   - skip rows whose AccountCode is in sumAccountCodes (avoid double counting)
 //   - skip rows where AccountType is set and != "P/L"
 //   - sum AmountYTD (or amountYTD) into Map<accountCode, total>
+function parseDimensions(raw) {
+  if (!raw || typeof raw !== "string") return [];
+  return raw.split("||").map(s => s.trim()).filter(Boolean).map(pair => {
+    const idx = pair.indexOf(":");
+    if (idx === -1) return null;
+    return [pair.slice(0, idx).trim(), pair.slice(idx + 1).trim()];
+  }).filter(Boolean);
+}
+
 function buildPivotFromRows(rows, sumAccountCodes) {
   const p = new Map();
+  const dimP = new Map();
+  const sumP = new Map();
+  p.__dimPivot = dimP;
+  p.__sumPivot = sumP;
   if (!rows?.length) return p;
   rows.forEach(r => {
     const ac = r.AccountCode ?? r.accountCode ?? "";
     if (!ac) return;
-    if (sumAccountCodes && sumAccountCodes.has(ac)) return;
+    const isSum = sumAccountCodes && sumAccountCodes.has(ac);
+    const dimsRaw = r.Dimensions ?? r.dimensions ?? "";
+    const pairs = dimsRaw ? parseDimensions(dimsRaw) : [];
     const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
-    p.set(ac, (p.get(ac) ?? 0) + amt);
+    if (isSum) {
+      sumP.set(ac, (sumP.get(ac) ?? 0) + amt);
+    } else {
+      p.set(ac, (p.get(ac) ?? 0) + amt);
+    }
+    pairs.forEach(([g, c]) => {
+      if (!g || !c) return;
+      const k = `${ac}:::${g}:::${c}`;
+      dimP.set(k, (dimP.get(k) ?? 0) + amt);
+    });
   });
   return p;
 }
@@ -2487,36 +2557,45 @@ const anchorY = Number(year), anchorM = Number(month);
 
   // Pivot for the CURRENT anchor period. In YTD mode = raw YTD pivot. In
   // monthly mode = YTD(current) − YTD(month-1). For Jan, monthly = YTD.
-  const currentMonthlyPivot = useMemo(() => {
+const currentMonthlyPivot = useMemo(() => {
     if (valueMode === "ytd") return currentYtdPivot;
     const m = parseInt(month);
     if (m === 1) return currentYtdPivot;
-    if (!monthBeforeAnchorRows.length) {
-      // Fallback to trendRows if dedicated fetch hasn't returned yet
-      const beforeM = m - 1;
-      const beforeY = Number(year);
-      const found = trendRows.find(t => Number(t.year) === beforeY && Number(t.month) === beforeM);
-      if (!found) return currentYtdPivot;
-      const beforeYtd = buildPivotFromRows(found.rows, sumAccountCodes);
+    const diffWith = (beforeYtd) => {
       const out = new Map();
       const allCodes = new Set([...currentYtdPivot.keys(), ...beforeYtd.keys()]);
       allCodes.forEach(ac => {
         out.set(ac, (currentYtdPivot.get(ac) ?? 0) - (beforeYtd.get(ac) ?? 0));
       });
+      const mdp = new Map();
+      const cDP = currentYtdPivot.__dimPivot ?? new Map();
+      const pDP = beforeYtd.__dimPivot ?? new Map();
+      new Set([...cDP.keys(), ...pDP.keys()]).forEach(k => {
+        mdp.set(k, (cDP.get(k) ?? 0) - (pDP.get(k) ?? 0));
+      });
+      out.__dimPivot = mdp;
+      const msp = new Map();
+      const cSP = currentYtdPivot.__sumPivot ?? new Map();
+      const pSP = beforeYtd.__sumPivot ?? new Map();
+      new Set([...cSP.keys(), ...pSP.keys()]).forEach(k => {
+        msp.set(k, (cSP.get(k) ?? 0) - (pSP.get(k) ?? 0));
+      });
+      out.__sumPivot = msp;
       return out;
+    };
+    if (!monthBeforeAnchorRows.length) {
+      const beforeM = m - 1;
+      const beforeY = Number(year);
+      const found = trendRows.find(t => Number(t.year) === beforeY && Number(t.month) === beforeM);
+      if (!found) return currentYtdPivot;
+      return diffWith(buildPivotFromRows(found.rows, sumAccountCodes));
     }
-    const beforeYtd = buildPivotFromRows(monthBeforeAnchorRows, sumAccountCodes);
-    const out = new Map();
-    const allCodes = new Set([...currentYtdPivot.keys(), ...beforeYtd.keys()]);
-    allCodes.forEach(ac => {
-      out.set(ac, (currentYtdPivot.get(ac) ?? 0) - (beforeYtd.get(ac) ?? 0));
-    });
-    return out;
+    return diffWith(buildPivotFromRows(monthBeforeAnchorRows, sumAccountCodes));
   }, [currentYtdPivot, year, month, trendRows, monthBeforeAnchorRows, sumAccountCodes, valueMode]);
 
 // Pivot for the COMPARE period. In YTD mode = raw YTD. In monthly mode =
   // YTD(compare) − YTD(month-before-compare).
-  const prevMonthlyPivot = useMemo(() => {
+const prevMonthlyPivot = useMemo(() => {
     if (valueMode === "ytd") return prevYtdPivot;
     const cmpM = Number(compareMonth);
     const cmpY = Number(compareYear);
@@ -2532,6 +2611,20 @@ const anchorY = Number(year), anchorM = Number(month);
     allCodes.forEach(ac => {
       out.set(ac, (prevYtdPivot.get(ac) ?? 0) - (beforeYtd.get(ac) ?? 0));
     });
+    const mdp = new Map();
+    const cDP = prevYtdPivot.__dimPivot ?? new Map();
+    const pDP = beforeYtd.__dimPivot ?? new Map();
+    new Set([...cDP.keys(), ...pDP.keys()]).forEach(k => {
+      mdp.set(k, (cDP.get(k) ?? 0) - (pDP.get(k) ?? 0));
+    });
+    out.__dimPivot = mdp;
+    const msp = new Map();
+    const cSP = prevYtdPivot.__sumPivot ?? new Map();
+    const pSP = beforeYtd.__sumPivot ?? new Map();
+    new Set([...cSP.keys(), ...pSP.keys()]).forEach(k => {
+      msp.set(k, (cSP.get(k) ?? 0) - (pSP.get(k) ?? 0));
+    });
+    out.__sumPivot = msp;
     return out;
   }, [prevYtdPivot, compareYear, compareMonth, trendRows, sumAccountCodes, valueMode]);
 
@@ -2564,14 +2657,29 @@ const anchorY = Number(year), anchorM = Number(month);
   }, [prevRows, trendRows, compareYear, compareMonth, valueMode]);
 
 const kpiValues = useMemo(() => {
+    console.log("[home-kpiValues]", "slottedKpis:", slottedKpis?.map(k => k?.id), "kpiListLen:", kpiList.length, "viewScope:", viewScope, "company:", company);
     if (!slottedKpis || kpiList.length === 0) return null;
     const cacheCur = new Map();
     const cachePrev = new Map();
+    // Clone so we can attach variation metadata without mutating memoized upstream pivots
+const wrap = (src) => {
+      if (!src) return src;
+      const m = new Map(src);
+      m.__dimPivot = src.__dimPivot;
+      m.__sumPivot = src.__sumPivot;
+      m.__groupDescendants = src.__groupDescendants;
+      if (viewScope === "individual" && company) {
+        m.__variationScope = { kind: "company", key: company };
+      }
+      return m;
+    };
+    const curP = wrap(currentMonthlyPivot);
+    const prvP = wrap(prevMonthlyPivot);
     return slottedKpis.map(kpi => ({
-      current: kpi ? computeKpiById(kpi.id, currentMonthlyPivot, kpiList, ccTagToCodes, sectionCodes, cacheCur) : 0,
-      prev:    kpi ? computeKpiById(kpi.id, prevMonthlyPivot,    kpiList, ccTagToCodes, sectionCodes, cachePrev) : 0,
+      current: kpi ? computeKpiById(kpi.id, curP, kpiList, ccTagToCodes, sectionCodes, cacheCur) : 0,
+      prev:    kpi ? computeKpiById(kpi.id, prvP, kpiList, ccTagToCodes, sectionCodes, cachePrev) : 0,
     }));
-  }, [slottedKpis, currentMonthlyPivot, prevMonthlyPivot, kpiList, ccTagToCodes, sectionCodes]);
+}, [slottedKpis, currentMonthlyPivot, prevMonthlyPivot, kpiList, ccTagToCodes, sectionCodes, company, viewScope]);
   // Trend series — MONTHLY values, derived from YTD diffs.
   // For each month, monthly = YTD(month) - YTD(month-1) per account.
   // January: monthly = YTD (since previous month YTD belongs to a different fiscal year).
@@ -2609,7 +2717,28 @@ let monthlyPivot;
           allCodes.forEach(ac => {
             monthlyPivot.set(ac, (currP.get(ac) ?? 0) - (prevP.get(ac) ?? 0));
           });
+const mdp = new Map();
+          const cDP = currP.__dimPivot ?? new Map();
+          const pDP = prevP.__dimPivot ?? new Map();
+          new Set([...cDP.keys(), ...pDP.keys()]).forEach(k => {
+            mdp.set(k, (cDP.get(k) ?? 0) - (pDP.get(k) ?? 0));
+          });
+          monthlyPivot.__dimPivot = mdp;
+          const msp = new Map();
+          const cSP = currP.__sumPivot ?? new Map();
+          const pSP = prevP.__sumPivot ?? new Map();
+          new Set([...cSP.keys(), ...pSP.keys()]).forEach(k => {
+            msp.set(k, (cSP.get(k) ?? 0) - (pSP.get(k) ?? 0));
+          });
+          monthlyPivot.__sumPivot = msp;
         }
+      }
+      if (viewScope === "individual" && company) {
+        const wrapped = new Map(monthlyPivot);
+        wrapped.__dimPivot = monthlyPivot.__dimPivot;
+        wrapped.__sumPivot = monthlyPivot.__sumPivot;
+        wrapped.__variationScope = { kind: "company", key: company };
+        monthlyPivot = wrapped;
       }
 
 const cache = new Map();
@@ -2626,7 +2755,7 @@ const entry = {
       out.push(entry);
     }
     return out;
-}, [trendRows, kpiSlots, kpiList, ccTagToCodes, sectionCodes, sumAccountCodes, valueMode, MONTHS_ABBR, heroKpis]);
+}, [trendRows, kpiSlots, kpiList, ccTagToCodes, sectionCodes, sumAccountCodes, valueMode, MONTHS_ABBR, heroKpis, viewScope, company]);
 
 const trendFromYear = useMemo(() => {
     if (!year) return null;
@@ -2664,14 +2793,10 @@ const trendSeriesDisplay = useMemo(() => {
           : `${MONTHS_ABBR[first._month - 1]}–${MONTHS_ABBR[last._month - 1]} ${last._year}`,
       };
 
-      // In monthly mode, sum months within the bucket.
-      // In YTD mode, take the LAST entry's YTD (already cumulative).
+// Both modes: show the LAST entry's value.
+      // YTD → cumulative to that point. Monthly → that month's delta.
       kpiSlots.forEach((_, si) => {
-        if (valueMode === "ytd") {
-          entry[`slot${si}`] = last[`slot${si}`] ?? 0;
-        } else {
-          entry[`slot${si}`] = bucket.reduce((s, b) => s + (b[`slot${si}`] ?? 0), 0);
-        }
+        entry[`slot${si}`] = last[`slot${si}`] ?? 0;
       });
       out.push(entry);
     }
@@ -2775,7 +2900,7 @@ const trendSeriesDisplay = useMemo(() => {
 // SAME as hero: currentYtdPivot
       const curYtdPivot = buildPivotFromRows(data.curRows, sumAccountCodes);
 
-      // SAME as hero: currentMonthlyPivot
+// SAME as hero: currentMonthlyPivot
       let monthlyPivot;
       if (valueMode === "ytd") {
         monthlyPivot = curYtdPivot;
@@ -2788,6 +2913,27 @@ const trendSeriesDisplay = useMemo(() => {
         allCodes.forEach(ac => {
           monthlyPivot.set(ac, (curYtdPivot.get(ac) ?? 0) - (beforeYtd.get(ac) ?? 0));
         });
+        const mdp = new Map();
+        const cDP = curYtdPivot.__dimPivot ?? new Map();
+        const pDP = beforeYtd.__dimPivot ?? new Map();
+        new Set([...cDP.keys(), ...pDP.keys()]).forEach(k => {
+          mdp.set(k, (cDP.get(k) ?? 0) - (pDP.get(k) ?? 0));
+        });
+        monthlyPivot.__dimPivot = mdp;
+        const msp = new Map();
+        const cSP = curYtdPivot.__sumPivot ?? new Map();
+        const pSP = beforeYtd.__sumPivot ?? new Map();
+        new Set([...cSP.keys(), ...pSP.keys()]).forEach(k => {
+          msp.set(k, (cSP.get(k) ?? 0) - (pSP.get(k) ?? 0));
+        });
+        monthlyPivot.__sumPivot = msp;
+      }
+      if (viewScope === "individual" && company) {
+        const wrapped = new Map(monthlyPivot);
+        wrapped.__dimPivot = monthlyPivot.__dimPivot;
+        wrapped.__sumPivot = monthlyPivot.__sumPivot;
+        wrapped.__variationScope = { kind: "company", key: entity };
+        monthlyPivot = wrapped;
       }
 
 // SAME as hero: computeKpiById on monthlyPivot
@@ -2805,7 +2951,7 @@ const trendSeriesDisplay = useMemo(() => {
       out.push({ name: entity, value: v });
     });
     return out.sort((a, b) => b.value - a.value);
-}, [rankingEntities, rankingDataByEntity, kpiList, ccTagToCodes, sectionCodes, sumAccountCodes, month, valueMode, rankingKpiId]);
+}, [rankingEntities, rankingDataByEntity, kpiList, ccTagToCodes, sectionCodes, sumAccountCodes, month, valueMode, rankingKpiId, viewScope, company]);
 
   const periodLabel = useMemo(() => {
    if (!year || !month) return probing ? t("loading_searching") : "—";

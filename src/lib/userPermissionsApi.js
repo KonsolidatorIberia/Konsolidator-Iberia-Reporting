@@ -146,5 +146,34 @@ export function useCurrentUserResourceAccess() {
     return () => { cancelled = true; };
   }, []);
 
-  return { loaded: access !== null, access: access ?? {} };
+return { loaded: access !== null, access: access ?? {} };
+}
+
+// ─── Admin-tab visibility check ────────────────────────────────────
+// Returns null while loading, true if the current user is a super-admin
+// OR has role="consultant" in ANY of their active company links, false otherwise.
+// Use as a gate to hide admin-only UI (Uploaded/Mapped/Group accounts tab, etc).
+export function useCanSeeAdminTabs() {
+  const [canSee, setCanSee] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) { if (!cancelled) setCanSee(false); return; }
+        // Check super-admin first (short-circuit).
+        const { data: u } = await supabase.schema("accounts").from("users")
+          .select("is_super_admin").eq("id", uid).maybeSingle();
+        if (u?.is_super_admin) { if (!cancelled) setCanSee(true); return; }
+        // Otherwise check if any active company link marks the user as consultant.
+        const { data: links } = await supabase.schema("accounts").from("user_companies")
+          .select("role, is_active").eq("user_id", uid).eq("is_active", true);
+        const isConsultant = (links ?? []).some(l => String(l.role).toLowerCase() === "consultant");
+        if (!cancelled) setCanSee(!!isConsultant);
+      } catch { if (!cancelled) setCanSee(false); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  return canSee;
 }

@@ -532,14 +532,11 @@ case "account": {
     }
 case "accountGroup": {
       // Group + dim → look up in dimPivot (keyed as "code:::dimGroup:::dimCode")
+      // Use ONLY the group code itself, not descendants — the sum-row already
+      // carries the aggregate, and descendant rows would double-count.
       if (node.groupCode && (node.dimGroup || node.dimCode)) {
-        const descendants = pivot.__groupDescendants?.get(node.groupCode);
-        const codes = descendants && descendants.size > 0 ? [...descendants] : [node.groupCode];
-        let total = 0;
-        for (const c of codes) {
-          const key = `${c}:::${node.dimGroup ?? ""}:::${node.dimCode ?? ""}`;
-          total += (pivot.__dimPivot?.get(key) ?? 0);
-        }
+        const key = `${node.groupCode}:::${node.dimGroup ?? ""}:::${node.dimCode ?? ""}`;
+        const total = pivot.__dimPivot?.get(key) ?? 0;
         return -total;
       }
       // No dim → sum the group account + its descendants
@@ -617,12 +614,30 @@ case "text": {
         let expr = node.expression;
         const scope = pivot.__variationScope;
         const variations = pivot.__currentKpiVariations;
-        Object.entries(node.variables).forEach(([letter, varNode]) => {
+if (variations && (Object.keys(variations.byCompany ?? {}).length > 0 || Object.keys(variations.byDimension ?? {}).length > 0)) {
+          console.log("[text-eval]", "scope:", scope, "expr:", node.expression, "pivotSize:", pivot.size, "pivotDimPivotSize:", pivot.__dimPivot?.size, "hasGroupDescendants:", !!pivot.__groupDescendants, "keys:", Object.keys(pivot).slice(0,20));
+        }
+Object.entries(node.variables).forEach(([letter, varNode]) => {
           let effectiveNode = varNode;
           if (scope && variations) {
             const map = scope.kind === "company" ? variations.byCompany : (scope.kind === "dimension" ? variations.byDimension : null);
             const override = map?.[scope.key]?.[letter];
-            if (override) effectiveNode = override;
+            if (override) {
+              const norm = { ...override };
+              if (norm.type === "accountGroup" && typeof norm.prefix === "string" && norm.prefix.includes(":::")) {
+                const [gc, dg, dc] = norm.prefix.split(":::");
+                norm.prefix = gc; norm.groupCode = gc;
+                if (!norm.dimGroup) norm.dimGroup = dg || undefined;
+                if (!norm.dimCode)  norm.dimCode  = dc || undefined;
+              }
+              if (norm.type === "account" && typeof norm.accountCode === "string" && norm.accountCode.includes(":::")) {
+                const [ac, dg, dc] = norm.accountCode.split(":::");
+                norm.accountCode = ac;
+                if (!norm.dimGroup) norm.dimGroup = dg || undefined;
+                if (!norm.dimCode)  norm.dimCode  = dc || undefined;
+              }
+              effectiveNode = norm;
+            }
           }
           const v = effectiveNode ? evalFormulaWithCcTags(effectiveNode, pivot, cache, kpiList, ccTagToCodes, sectionCodes) : 0;
           expr = expr.replaceAll(letter, `(${v ?? 0})`);
@@ -1010,6 +1025,26 @@ function kpiFormulaSummary(kpi, kpiList, accountCodeLabels) {
   return { expression: flat.expression ?? "—", variables: vars };
 }
 
+function kpiVariationsSummary(kpi, kpiList, accountCodeLabels) {
+  const byCompany = [];
+  const byDimension = [];
+  const v = kpi?.variations;
+  if (!v) return { byCompany, byDimension };
+  Object.entries(v.byCompany ?? {}).forEach(([co, letterMap]) => {
+    Object.entries(letterMap ?? {}).forEach(([letter, node]) => {
+      const desc = node ? describeFormulaNode(node, kpiList, accountCodeLabels) : "—";
+      byCompany.push(`${co} · ${letter} = ${desc}`);
+    });
+  });
+  Object.entries(v.byDimension ?? {}).forEach(([dim, letterMap]) => {
+    Object.entries(letterMap ?? {}).forEach(([letter, node]) => {
+      const desc = node ? describeFormulaNode(node, kpiList, accountCodeLabels) : "—";
+      byDimension.push(`${dim} · ${letter} = ${desc}`);
+    });
+  });
+  return { byCompany, byDimension };
+}
+
 async function repairXlsxDimensions(buffer) {
   const zip = await JSZip.loadAsync(buffer);
   const sheets = Object.keys(zip.files).filter(f => /^xl\/worksheets\/sheet\d+\.xml$/.test(f));
@@ -1224,9 +1259,11 @@ lbl.fill = { type: "pattern", pattern: "solid", fgColor: { argb: sectBarBg } };
         });
         curRow++;
       }
-
-      // Data rows
+// Data rows
+      const kpiRowRanges = []; // [{ startRow, endRow }] per KPI, for outer borders
+      const dataStartRow = curRow;
 kList.forEach((kpi, rowIdx) => {
+        const kpiStartRow = curRow;
         const bandColor = rowIdx % 2 === 0 ? C.band1 : C.band2;
 
         // Per-variable values for this section (only for text-formula KPIs).
@@ -1470,8 +1507,34 @@ kList.forEach((kpi, rowIdx) => {
 } else if (fSum.expression) {
             // No text-formula variables — show the formula description on
             // every section so both YTD and Monthly get their own +/- toggle.
-            addTextTrailer("FORMULA", fSum.expression, C.primary);
+addTextTrailer("FORMULA", fSum.expression, C.primary);
           }
+        }
+        kpiRowRanges.push({ startRow: kpiStartRow, endRow: curRow - 1 });
+      });
+
+      // Apply outer borders per column-block (company/dim) and per KPI row-block
+      const dataEndRow = curRow - 1;
+      const borderStyle = { style: "medium", color: { argb: "FF9CA3AF" } };
+      // Per column-block: each col spans 4 cells if showCmp, otherwise 1
+      const colSpan = showCmp ? 4 : 1;
+      cols.forEach((_, i) => {
+        const startCol = 2 + i * colSpan;
+        const endCol = startCol + colSpan - 1;
+        for (let r = dataStartRow; r <= dataEndRow; r++) {
+          const leftCell = ws.getCell(r, startCol);
+          const rightCell = ws.getCell(r, endCol);
+          leftCell.border = { ...(leftCell.border ?? {}), left: borderStyle };
+          rightCell.border = { ...(rightCell.border ?? {}), right: borderStyle };
+        }
+      });
+      // Per KPI row-block: top border on first row, bottom border on last row
+      kpiRowRanges.forEach(({ startRow, endRow }) => {
+        for (let c = 1; c <= totalCols; c++) {
+          const topCell = ws.getCell(startRow, c);
+          const bottomCell = ws.getCell(endRow, c);
+          topCell.border = { ...(topCell.border ?? {}), top: borderStyle };
+          bottomCell.border = { ...(bottomCell.border ?? {}), bottom: borderStyle };
         }
       });
 
@@ -1989,24 +2052,24 @@ const renderChunk = (chunkCols, chunkLabels, sY) => {
       const benchVHIdx  = totalAvgIdx + 3;
 
       if (useCmp) {
-        const headSuper = [
-          { content: "KPI", rowSpan: 2, styles: { halign: "left", valign: "middle", fillColor: H.primary, textColor: H.white, fontStyle: "bold", fontSize: 7.5 } },
+const headSuper = [
+          { content: "KPI", rowSpan: 2, styles: { halign: "left", valign: "middle", fillColor: H.primary, textColor: H.white, fontStyle: "bold", fontSize: 9 } },
         ];
         chunkLabels.forEach(l => {
-          headSuper.push({ content: l, colSpan: 4, styles: { halign: "center", valign: "middle", fillColor: H.primary, textColor: H.white, fontStyle: "bold", fontSize: 7.5 } });
+          headSuper.push({ content: l, colSpan: 4, styles: { halign: "center", valign: "middle", fillColor: H.primary, textColor: H.white, fontStyle: "bold", fontSize: 9 } });
         });
-        headSuper.push({ content: "Total/Avg", rowSpan: 2, styles: { halign: "center", valign: "middle", fillColor: H.primary, textColor: H.white, fontStyle: "bold", fontSize: 7 } });
-        headSuper.push({ content: "Unhealthy", rowSpan: 2, styles: { halign: "center", valign: "middle", fillColor: H.benchUnHd, textColor: H.white, fontStyle: "bold", fontSize: 7 } });
-        headSuper.push({ content: "Healthy",   rowSpan: 2, styles: { halign: "center", valign: "middle", fillColor: H.benchHeHd, textColor: H.white, fontStyle: "bold", fontSize: 7 } });
-        headSuper.push({ content: "Excellent", rowSpan: 2, styles: { halign: "center", valign: "middle", fillColor: H.benchVHHd, textColor: H.white, fontStyle: "bold", fontSize: 7 } });
+        headSuper.push({ content: "Total/Avg", rowSpan: 2, styles: { halign: "center", valign: "middle", fillColor: H.primary, textColor: H.white, fontStyle: "bold", fontSize: 8.5 } });
+        headSuper.push({ content: "Unhealthy", rowSpan: 2, styles: { halign: "center", valign: "middle", fillColor: H.benchUnHd, textColor: H.white, fontStyle: "bold", fontSize: 8.5 } });
+        headSuper.push({ content: "Healthy",   rowSpan: 2, styles: { halign: "center", valign: "middle", fillColor: H.benchHeHd, textColor: H.white, fontStyle: "bold", fontSize: 8.5 } });
+        headSuper.push({ content: "Excellent", rowSpan: 2, styles: { halign: "center", valign: "middle", fillColor: H.benchVHHd, textColor: H.white, fontStyle: "bold", fontSize: 8.5 } });
 
         // Sub-row: A / Cmp / DIFF / DIFF % — no Greek (jsPDF helvetica can't render it)
         const headSub = [];
         chunkCols.forEach(() => {
-          headSub.push({ content: "A",       styles: { halign: "center", valign: "middle", fillColor: H.primary,   textColor: H.white, fontStyle: "bold", fontSize: 6.5 } });
-          headSub.push({ content: "Cmp",     styles: { halign: "center", valign: "middle", fillColor: H.compareB,  textColor: H.white, fontStyle: "bold", fontSize: 6.5 } });
-          headSub.push({ content: "DIFF",    styles: { halign: "center", valign: "middle", fillColor: H.primaryDk, textColor: H.white, fontStyle: "bold", fontSize: 6.5 } });
-          headSub.push({ content: "DIFF %",  styles: { halign: "center", valign: "middle", fillColor: H.primaryDk, textColor: H.white, fontStyle: "bold", fontSize: 6.5 } });
+          headSub.push({ content: "A",       styles: { halign: "center", valign: "middle", fillColor: H.primary,   textColor: H.white, fontStyle: "bold", fontSize: 8 } });
+          headSub.push({ content: "Cmp",     styles: { halign: "center", valign: "middle", fillColor: H.compareB,  textColor: H.white, fontStyle: "bold", fontSize: 8 } });
+          headSub.push({ content: "DIFF",    styles: { halign: "center", valign: "middle", fillColor: H.primaryDk, textColor: H.white, fontStyle: "bold", fontSize: 8 } });
+          headSub.push({ content: "DIFF %",  styles: { halign: "center", valign: "middle", fillColor: H.primaryDk, textColor: H.white, fontStyle: "bold", fontSize: 8 } });
         });
 
         head = [headSuper, headSub];
@@ -2113,11 +2176,12 @@ row.push(fmtBenchRange(kpi.benchmark?.healthy));
       colStyles[benchHeIdx]  = { cellWidth: useCmp ? 38 : 50, halign: "center" };
       colStyles[benchVHIdx]  = { cellWidth: useCmp ? 38 : 50, halign: "center" };
 
-      autoTable(doc, {
+autoTable(doc, {
         head, body, startY: sY,
         theme: "plain",
-        styles: { font: "helvetica", fontSize: useCmp ? 6.5 : 7.5, cellPadding: useCmp ? 2 : 3.5, textColor: H.primary, valign: "middle", overflow: "linebreak", lineColor: [235, 237, 244], lineWidth: 0.25 },
-        headStyles: { fillColor: H.primary, textColor: H.white, fontStyle: "bold", halign: "center", fontSize: useCmp ? 7 : 7, valign: "middle", lineColor: [255, 255, 255], lineWidth: 0.5 },
+        margin: { left: 20, right: 20 },
+        styles: { font: "helvetica", fontSize: useCmp ? 7.5 : 9, cellPadding: useCmp ? 3 : 4.5, textColor: H.primary, valign: "middle", overflow: "linebreak", lineColor: [200, 205, 215], lineWidth: 0.5 },
+        headStyles: { fillColor: H.primary, textColor: H.white, fontStyle: "bold", halign: "center", fontSize: useCmp ? 8 : 8.5, valign: "middle", lineColor: [255, 255, 255], lineWidth: 0.5 },
         columnStyles: colStyles,
         alternateRowStyles: { fillColor: H.band2 },
 didParseCell: (data) => {
@@ -2125,7 +2189,7 @@ didParseCell: (data) => {
             const rowRaw = data.row.raw;
             const isVarRow = rowRaw && rowRaw._isVarRow;
             if (isVarRow) {
-              data.cell.styles.fontSize = (useCmp ? 5.5 : 6.5);
+   data.cell.styles.fontSize = (useCmp ? 6.5 : 8);
               data.cell.styles.textColor = H.gray500;
               data.cell.styles.fontStyle = "normal";
               data.cell.styles.fillColor = [251, 252, 255];
@@ -2286,7 +2350,7 @@ renderViewSheet("KPI Dashboard — By Dimension", dimensionCodes, dimLabels, dim
     doc.addPage();
     drawTitleBar("KPI Definitions · Formulas · Benchmarks");
 
-    const defHead = [["KPI", "Category", "Format", "Formula · Variables", "Benchmark"]];
+const defHead = [["KPI", "Category", "Format", "Formula · Variables", "Variations", "Benchmark"]];
 // Union of both view lists so definitions cover every KPI that showed up.
     const _allKpisForDefs = (() => {
       const seen = new Set();
@@ -2304,11 +2368,24 @@ renderViewSheet("KPI Dashboard — By Dimension", dimensionCodes, dimLabels, dim
         fSum.variables.length > 0 ? fSum.variables.map(v => `${v.letter} = ${v.desc}`).join("\n") : null,
         kpi.description ? `Description: ${kpi.description}` : null,
       ].filter(Boolean).join("\n");
+      const varSum = kpiVariationsSummary(kpi, kListForRefs, accountCodeLabels);
+      const varLines = [];
+      if (varSum.byCompany.length > 0) {
+        varLines.push("By Company:");
+        varSum.byCompany.forEach(v => varLines.push(`  ${v}`));
+      }
+      if (varSum.byDimension.length > 0) {
+        if (varLines.length > 0) varLines.push("");
+        varLines.push("By Dimension:");
+        varSum.byDimension.forEach(v => varLines.push(`  ${v}`));
+      }
+      const variationsTxt = varLines.length > 0 ? varLines.join("\n") : "—";
       return [
         `${kpi.label}  [${kpiTypeBadge(kpi)}]`,
         kpi.category ?? "",
         kpi.format ?? "",
         formulaTxt || "—",
+        variationsTxt,
         bDesc ?? "—",
       ];
     });
@@ -2316,15 +2393,17 @@ renderViewSheet("KPI Dashboard — By Dimension", dimensionCodes, dimLabels, dim
     autoTable(doc, {
       head: defHead, body: defBody,
       startY: 44,
+      margin: { left: 20, right: 20 },
       theme: "plain",
-      styles: { font: "helvetica", fontSize: 7, cellPadding: 4, textColor: H.gray700, overflow: "linebreak", valign: "top" },
-      headStyles: { fillColor: H.primary, textColor: H.white, fontStyle: "bold", halign: "left" },
-      columnStyles: {
-        0: { fontStyle: "bold", textColor: H.primary, cellWidth: 140 },
-        1: { cellWidth: 80 },
-        2: { cellWidth: 60 },
-        3: { cellWidth: 320 },
-        4: { cellWidth: "auto" },
+      styles: { font: "helvetica", fontSize: 8.5, cellPadding: 5, textColor: H.gray700, overflow: "linebreak", valign: "top", lineColor: [200, 205, 215], lineWidth: 0.5 },
+      headStyles: { fillColor: H.primary, textColor: H.white, fontStyle: "bold", halign: "left", fontSize: 9 },
+columnStyles: {
+        0: { fontStyle: "bold", textColor: H.primary, cellWidth: 100 },
+        1: { cellWidth: 55 },
+        2: { cellWidth: 45 },
+        3: { cellWidth: 190, overflow: "linebreak" },
+        4: { cellWidth: 200, overflow: "linebreak" },
+        5: { cellWidth: 210, overflow: "linebreak" },
       },
       alternateRowStyles: { fillColor: H.band2 },
     });
@@ -4683,15 +4762,18 @@ style={{
         </div>
       </div>
 
-      {slotPickerContext && createPortal(
+{slotPickerContext && createPortal(
         <SlotPicker
           onSelect={(node) => { setOverride(slotPickerContext.scope, slotPickerContext.key, slotPickerContext.letter, node); setSlotPickerContext(null); }}
           onClose={() => setSlotPickerContext(null)}
           kpiList={allLocalKpis}
           accountCodes={accountCodes}
+          localAccounts={localAccounts}
+          groupAccountsList={groupAccountsList}
           accountCodeLabels={accountCodeLabels}
           builtInIds={builtInIds}
           dimsByAccount={dimsByAccount}
+          localDimsByAccount={localDimsByAccount}
           parties={parties}
           partyContext={partyContext}
           evalPartyValue={evalPartyValue}
@@ -4708,13 +4790,14 @@ function GraphSection({
   sectionId, token, source, structure, year, month,
   sourceOpts, structureOpts, companyCodes, dimensions,
   kpiList, allKpis,
-  ccTagToCodes, sectionCodes, sumAccountCodes,
+  ccTagToCodes, sectionCodes, sumAccountCodes, groupDescendantsMap,
   defaultCompany, defaultKpiIds,
   onStateChange,
   companyLegalName,
   viewPeriod,
   compareMode,
   colors,
+  initialState,
 }) {
   // Default: end = anchor year/month, start = 12 months earlier
   const anchorY = parseInt(year) || new Date().getFullYear();
@@ -4722,18 +4805,18 @@ function GraphSection({
   let startY = anchorY, startM = anchorM - 11;
   while (startM < 1) { startM += 12; startY -= 1; }
 
- const [secCompanies, setSecCompanies] = useState(defaultCompany ? [defaultCompany] : []);
-  const [secStartYear, setSecStartYear] = useState(String(startY));
-  const [secStartMonth, setSecStartMonth] = useState(String(startM));
-  const [secEndYear, setSecEndYear] = useState(String(anchorY));
-  const [secEndMonth, setSecEndMonth] = useState(String(anchorM));
-  const [secSource, setSecSource] = useState(source);
-  const [secStructure, setSecStructure] = useState(structure);
-const [secDimGroup, setSecDimGroup] = useState(null);
-  const [secDim, setSecDim] = useState(null);
+const [secCompanies, setSecCompanies] = useState(initialState?.secCompanies ?? (defaultCompany ? [defaultCompany] : []));
+  const [secStartYear, setSecStartYear] = useState(initialState?.secStartYear ?? String(startY));
+  const [secStartMonth, setSecStartMonth] = useState(initialState?.secStartMonth ?? String(startM));
+  const [secEndYear, setSecEndYear] = useState(initialState?.secEndYear ?? String(anchorY));
+  const [secEndMonth, setSecEndMonth] = useState(initialState?.secEndMonth ?? String(anchorM));
+  const [secSource, setSecSource] = useState(initialState?.secSource ?? source);
+  const [secStructure, setSecStructure] = useState(initialState?.secStructure ?? structure);
+const [secDimGroup, setSecDimGroup] = useState(initialState?.secDimGroup ?? null);
+  const [secDim, setSecDim] = useState(initialState?.secDim ?? null);
 const secMode = viewPeriod === "ytd" ? "ytd" : "monthly";
-const [secXAxis, setSecXAxis] = useState("month");
-const [cmpBars, setCmpBars] = useState([
+const [secXAxis, setSecXAxis] = useState(initialState?.secXAxis ?? "month");
+const [cmpBars, setCmpBars] = useState(initialState?.cmpBars ?? [
     { id: "B", companies: [], source, structure, dimGroup: null, dim: null },
     { id: "C", companies: [], source, structure, dimGroup: null, dim: null },
   ]);
@@ -4748,7 +4831,7 @@ const [cmpBars, setCmpBars] = useState([
   const updateCmpBar = (id, patch) => setCmpBars(prev => prev.map(b => b.id === id ? { ...b, ...patch } : b));
   const removeCmpBar = (id) => setCmpBars(prev => prev.filter(b => b.id !== id));
 
-const [secKpiIds, setSecKpiIds] = useState(defaultKpiIds || []);
+const [secKpiIds, setSecKpiIds] = useState(initialState?.secKpiIds ?? (defaultKpiIds || []));
   const activeCmpBars = useMemo(() => compareMode ? cmpBars.filter(b => (cmpChartData[b.id]?.length ?? 0) > 0 || b.companies.length > 0) : [], [compareMode, cmpBars, cmpChartData]);
 const [kpiPickerOpen, setKpiPickerOpen] = useState(false);
   const [kpiSearch, setKpiSearch] = useState("");
@@ -4834,21 +4917,22 @@ useEffect(() => {
             `/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
             { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }
           );
-          if (!res.ok) return { y, m, isPrior, pivot: new Map(), hasData: false };
+if (!res.ok) return { y, m, isPrior, pivot: new Map(), hasData: false };
           const json = await res.json();
           const rows = json.value ?? (Array.isArray(json) ? json : []);
           const p = new Map();
+          const dimP = new Map();
           rows.forEach(r => {
             const ac = r.AccountCode ?? r.accountCode ?? "";
             const acType = r.AccountType ?? r.accountType ?? "";
             if (!ac) return;
-            if (sumAccountCodes && sumAccountCodes.has(ac)) return;
             if (acType && acType !== "P/L") return;
+            const isSum = sumAccountCodes && sumAccountCodes.has(ac);
 
+            const dimPairs = parseDimensions(r.Dimensions);
             const hasDimFilter   = Array.isArray(secDim)      && secDim.length      > 0;
             const hasGroupFilter = Array.isArray(secDimGroup) && secDimGroup.length > 0;
             if (hasDimFilter || hasGroupFilter) {
-              const dimPairs = parseDimensions(r.Dimensions);
               if (hasDimFilter) {
                 const rowDimCodes = new Set(dimPairs.map(([, code]) => code));
                 if (!secDim.some(d => rowDimCodes.has(d))) return;
@@ -4858,8 +4942,15 @@ useEffect(() => {
               }
             }
             const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
-            p.set(ac, (p.get(ac) ?? 0) + amt);
+            if (!isSum) p.set(ac, (p.get(ac) ?? 0) + amt);
+            // index per (accountCode, group, code) so variation overrides resolve
+            dimPairs.forEach(([g, c]) => {
+              if (!g || !c) return;
+              const k = `${ac}:::${g}:::${c}`;
+              dimP.set(k, (dimP.get(k) ?? 0) + amt);
+            });
           });
+          p.__dimPivot = dimP;
           return { y, m, isPrior, pivot: p, hasData: rows.length > 0 };
         }));
 
@@ -4868,7 +4959,7 @@ useEffect(() => {
           const curr = results[i];
           if (curr.isPrior) continue;
 
-          let pivotForKpi;
+let pivotForKpi;
           if (secMode === "ytd") {
             pivotForKpi = curr.pivot;
           } else {
@@ -4880,7 +4971,19 @@ useEffect(() => {
               const prevYTD = curr.m === 1 ? 0 : (prev.pivot.get(ac) ?? 0);
               mp.set(ac, currYTD - prevYTD);
             });
+            // Also diff the dim sub-pivot so variations resolve in monthly mode
+            const mdp = new Map();
+            const cDP = curr.pivot.__dimPivot ?? new Map();
+            const pDP = prev.pivot.__dimPivot ?? new Map();
+            new Set([...cDP.keys(), ...pDP.keys()]).forEach(k => {
+              mdp.set(k, (cDP.get(k) ?? 0) - (curr.m === 1 ? 0 : (pDP.get(k) ?? 0)));
+            });
+            mp.__dimPivot = mdp;
             pivotForKpi = mp;
+          }
+          pivotForKpi.__groupDescendants = groupDescendantsMap;
+          if (secCompanies.length === 1) {
+            pivotForKpi.__variationScope = { kind: "company", key: secCompanies[0] };
           }
 
           const kpis = computeAllKpisResolved(kpiList, pivotForKpi, ccTagToCodes, sectionCodes, allKpis);
@@ -4933,15 +5036,17 @@ cmpBars.forEach(bar => {
             if (!res.ok) return { y, m, isPrior, pivot: new Map() };
             const json = await res.json();
             const rows = json.value ?? (Array.isArray(json) ? json : []);
-            const p = new Map();
+const p = new Map();
+            const dimP = new Map();
             rows.forEach(r => {
               const ac = r.AccountCode ?? r.accountCode ?? "";
               const acType = r.AccountType ?? r.accountType ?? "";
-              if (!ac || (sumAccountCodes && sumAccountCodes.has(ac)) || (acType && acType !== "P/L")) return;
-const barHasDim   = Array.isArray(bar.dim)      && bar.dim.length      > 0;
+              if (!ac || (acType && acType !== "P/L")) return;
+              const isSum = sumAccountCodes && sumAccountCodes.has(ac);
+              const pairs = parseDimensions(r.Dimensions);
+              const barHasDim   = Array.isArray(bar.dim)      && bar.dim.length      > 0;
               const barHasGroup = Array.isArray(bar.dimGroup) && bar.dimGroup.length > 0;
               if (barHasDim || barHasGroup) {
-                const pairs = parseDimensions(r.Dimensions);
                 if (barHasDim) {
                   const rowDimCodes = new Set(pairs.map(([, code]) => code));
                   if (!bar.dim.some(d => rowDimCodes.has(d))) return;
@@ -4949,12 +5054,19 @@ const barHasDim   = Array.isArray(bar.dim)      && bar.dim.length      > 0;
                   if (!bar.dimGroup.some(g => pairs.some(([rg]) => rg === g))) return;
                 }
               }
-              p.set(ac, (p.get(ac) ?? 0) + parseAmt(r.AmountYTD ?? r.amountYTD ?? 0));
+              const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+              if (!isSum) p.set(ac, (p.get(ac) ?? 0) + amt);
+              pairs.forEach(([g, c]) => {
+                if (!g || !c) return;
+                const k = `${ac}:::${g}:::${c}`;
+                dimP.set(k, (dimP.get(k) ?? 0) + amt);
+              });
             });
+            p.__dimPivot = dimP;
             return { y, m, isPrior, pivot: p };
           }));
           const series = [];
-          for (let i = 1; i < results.length; i++) {
+for (let i = 1; i < results.length; i++) {
             const curr = results[i];
             if (curr.isPrior) continue;
             let pivot;
@@ -4966,7 +5078,18 @@ const barHasDim   = Array.isArray(bar.dim)      && bar.dim.length      > 0;
               new Set([...curr.pivot.keys(), ...prev.pivot.keys()]).forEach(ac => {
                 mp.set(ac, (curr.pivot.get(ac) ?? 0) - (curr.m === 1 ? 0 : (prev.pivot.get(ac) ?? 0)));
               });
+              const mdp = new Map();
+              const cDP = curr.pivot.__dimPivot ?? new Map();
+              const pDP = prev.pivot.__dimPivot ?? new Map();
+              new Set([...cDP.keys(), ...pDP.keys()]).forEach(k => {
+                mdp.set(k, (cDP.get(k) ?? 0) - (curr.m === 1 ? 0 : (pDP.get(k) ?? 0)));
+              });
+              mp.__dimPivot = mdp;
               pivot = mp;
+            }
+            pivot.__groupDescendants = groupDescendantsMap;
+            if (bar.companies.length === 1) {
+              pivot.__variationScope = { kind: "company", key: bar.companies[0] };
             }
             const kpis = computeAllKpisResolved(kpiList, pivot, ccTagToCodes, sectionCodes, allKpis);
             const row = { period: `${String(curr.m).padStart(2, "0")}/${String(curr.y).slice(-2)}` };
@@ -4982,7 +5105,7 @@ const barHasDim   = Array.isArray(bar.dim)      && bar.dim.length      > 0;
 
 // Expose state up to parent for export
   useEffect(() => {
-    if (onStateChange) {
+if (onStateChange) {
       const activeBars = compareMode
         ? cmpBars
             .filter(b => Array.isArray(b.companies) && b.companies.length > 0)
@@ -4990,16 +5113,25 @@ const barHasDim   = Array.isArray(bar.dim)      && bar.dim.length      > 0;
         : [];
       onStateChange(sectionId, {
         sectionId,
+// Restore-friendly fields (match initialState prop names)
+        secCompanies: Array.isArray(secCompanies) ? [...secCompanies] : [],
+        secStartYear, secStartMonth, secEndYear, secEndMonth,
+        secSource, secStructure,
+        secDimGroup, secDim,
+        secXAxis,
+        secKpiIds: [...secKpiIds],
+        // Only emit cmpBars for export/persistence if compareMode is on AND they have companies
+        cmpBars: compareMode ? cmpBars.filter(b => Array.isArray(b.companies) && b.companies.length > 0) : [],
+        // Export-friendly fields (kept for backwards compat)
         company: Array.isArray(secCompanies) ? secCompanies.join(", ") : "",
         companies: Array.isArray(secCompanies) ? [...secCompanies] : [],
         startY: secStartYear, startM: secStartMonth,
         endY: secEndYear, endM: secEndMonth,
         source: secSource, structure: secStructure,
         dimGroup: secDimGroup, dim: secDim,
-mode: secMode, kpiIds: (console.log("[state-emit] kpiIds:", secKpiIds), secKpiIds),
+        mode: secMode, kpiIds: secKpiIds,
         chartData,
         compareMode,
-        cmpBars: activeBars,
         cmpChartData: compareMode ? cmpChartData : {},
         chartContainerRef,
       });
@@ -5054,8 +5186,8 @@ const graphFilters = [
     { label: "End Y", value: secEndYear, onChange: setSecEndYear, options: YEARS.map(y => ({ value: String(y), label: String(y) })) },
     ...(sourceOpts.length > 0 ? [{ label: "Source", value: secSource, onChange: setSecSource, options: sourceOpts }] : []),
     ...(structureOpts.length > 0 ? [{ label: "Structure", value: secStructure, onChange: setSecStructure, options: structureOpts }] : []),
-...(secDimGroups.length > 0 ? [{ label: "Dim Grp", values: secDimGroup, onChange: v => { setSecDimGroup(v); setSecDim(null); }, options: secDimGroups.map(g => ({ value: g, label: g })), multiselect: true }] : []),
-    ...(secGroupDimOptions.length > 0 ? [{ label: "Dims", values: secDim, onChange: setSecDim, options: secGroupDimOptions.map(d => ({ value: d.code, label: d.name || d.code })), multiselect: true }] : []),
+...(secDimGroups.length > 0 ? [{ label: "Dim Grp", values: secDimGroup, onChange: v => { setSecDimGroup(v); setSecDim(null); }, options: secDimGroups.map(g => ({ value: g, label: g })), multiselect: true, loading }] : []),
+    ...(secGroupDimOptions.length > 0 ? [{ label: "Dims", values: secDim, onChange: setSecDim, options: secGroupDimOptions.map(d => ({ value: d.code, label: d.name || d.code })), multiselect: true, loading }] : []),
 
   ];
 return (
@@ -5073,7 +5205,14 @@ return (
         </div>
 {graphFilters.map((f, i) =>
           f.multiselect ? (
-            <MultiFilterPill key={i} label={f.label} values={f.values} onChange={f.onChange} options={f.options} colors={colors} />
+            <div key={i} className="relative">
+              <MultiFilterPill label={f.label} values={f.values} onChange={f.onChange} options={f.options} colors={colors} />
+              {f.loading && (
+                <div className="absolute -right-1 -top-1">
+                  <Loader2 size={10} className="animate-spin" style={{ color: colors?.primary }} />
+                </div>
+              )}
+            </div>
           ) : (
             <HeaderFilterPill key={i} label={f.label} value={f.value} onChange={f.onChange} options={f.options} />
           )
@@ -6215,15 +6354,12 @@ return {
   }, [dimsByGroup, companyId]);
 
 const groupDimOptions = useMemo(() => {
-    const groups = (selGroups && selGroups.length > 0) ? selGroups : [...dimsByGroup.keys()];
     const seen = new Map();
-    groups.forEach(g => {
-      const m = dimsByGroup.get(g);
-      if (!m) return;
+    dimsByGroup.forEach(m => {
       [...m.entries()].forEach(([code, name]) => { if (!seen.has(code)) seen.set(code, name); });
     });
     return [...seen.entries()].map(([code, name]) => ({ code, name }));
-  }, [dimsByGroup, selGroups]);
+  }, [dimsByGroup]);
 
 const groupDimCodes = useMemo(() => {
     if (Array.isArray(selDims)) {
@@ -6237,16 +6373,13 @@ const groupDimCodes = useMemo(() => {
     return null;
   }, [selGroups, selDims, groupDimOptions]);
 
-  const cmpGroupDimOptions = useMemo(() => {
-    const groups = (cmpSelGroups && cmpSelGroups.length > 0) ? cmpSelGroups : [...dimsByGroup.keys()];
+const cmpGroupDimOptions = useMemo(() => {
     const seen = new Map();
-    groups.forEach(g => {
-      const m = dimsByGroup.get(g);
-      if (!m) return;
+    dimsByGroup.forEach(m => {
       [...m.entries()].forEach(([code, name]) => { if (!seen.has(code)) seen.set(code, name); });
     });
     return [...seen.entries()].map(([code, name]) => ({ code, name }));
-  }, [dimsByGroup, cmpSelGroups]);
+  }, [dimsByGroup]);
 
   const cmpGroupDimCodes = useMemo(() => {
     if (Array.isArray(cmpSelDims)) {
@@ -6378,15 +6511,27 @@ const partiesById = useMemo(() => {
 const companyPivots = useMemo(() => {
     // Build dimPivot from ALL rows (no AccountType filter, no sum filter)
     // because dimension tags live on sum/aggregate rows (A.02, A.PL etc), not posting rows
-    const buildDimPivotFromRaw = (rows) => {
+const buildDimPivotFromRaw = (rows) => {
       const dimPivot = new Map();
       rows.forEach(r => {
         const ac = r.AccountCode ?? r.accountCode ?? "";
         if (!ac) return;
         const dimsRaw = r.Dimensions ?? r.dimensions ?? "";
         if (!dimsRaw || dimsRaw === "—") return;
+        const pairs = parseDimensions(dimsRaw);
+        // Respect the same dim/group filter as the base pivot so overrides
+        // that reference a filtered-out dim resolve to 0.
+        if (Array.isArray(selDims)) {
+          if (selDims.length === 0) return;
+          const rowDimCodes = new Set(pairs.map(([, code]) => code));
+          if (!selDims.some(d => rowDimCodes.has(d))) return;
+        } else if (Array.isArray(selGroups)) {
+          if (selGroups.length === 0) return;
+          const rowGroups = new Set(pairs.map(([g]) => g));
+          if (!selGroups.some(g => rowGroups.has(g))) return;
+        }
         const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
-        parseDimensions(dimsRaw).forEach(([dGroup, dCode]) => {
+        pairs.forEach(([dGroup, dCode]) => {
           if (!dGroup || !dCode) return;
           const key = `${ac}:::${dGroup}:::${dCode}`;
           dimPivot.set(key, (dimPivot.get(key) ?? 0) + amt);
@@ -6515,6 +6660,33 @@ monthlyPivot.__partyContext = {
 // Compare-scenario company pivots — same logic as companyPivots but reading
   // from companyDataCmp / companyDataCmpPrev.
   const companyPivotsCmp = useMemo(() => {
+    // dimPivot built from ALL raw rows (dims live on sum rows) — mirrors primary
+const buildDimPivotFromRaw = (rows) => {
+      const dimPivot = new Map();
+      rows.forEach(r => {
+        const ac = r.AccountCode ?? r.accountCode ?? "";
+        if (!ac) return;
+        const dimsRaw = r.Dimensions ?? r.dimensions ?? "";
+        if (!dimsRaw || dimsRaw === "—") return;
+        const pairs = parseDimensions(dimsRaw);
+        if (Array.isArray(cmpSelDims)) {
+          if (cmpSelDims.length === 0) return;
+          const rowDimCodes = new Set(pairs.map(([, code]) => code));
+          if (!cmpSelDims.some(d => rowDimCodes.has(d))) return;
+        } else if (Array.isArray(cmpSelGroups)) {
+          if (cmpSelGroups.length === 0) return;
+          const rowGroups = new Set(pairs.map(([g]) => g));
+          if (!cmpSelGroups.some(g => rowGroups.has(g))) return;
+        }
+        const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+        pairs.forEach(([dGroup, dCode]) => {
+          if (!dGroup || !dCode) return;
+          const key = `${ac}:::${dGroup}:::${dCode}`;
+          dimPivot.set(key, (dimPivot.get(key) ?? 0) + amt);
+        });
+      });
+      return dimPivot;
+    };
     const buildPivot = (rows) => {
       const p = new Map();
       rows.forEach(r => {
@@ -6548,6 +6720,8 @@ const pivots = new Map();
     });
 companyDataCmp.forEach((rows, co) => {
       const currPivot = buildPivot(rows);
+      currPivot.__dimPivot = buildDimPivotFromRaw(rows);
+      currPivot.__groupDescendants = groupDescendantsMap;
       currPivot.__parties = partiesById;
       currPivot.__partyContext = cmpPartyCtx(co);
       currPivot.__variationScope = { kind: "company", key: co };
@@ -6564,19 +6738,17 @@ const monthlyPivot = new Map();
           const prevYTD = isJanuary ? 0 : (prevPivot.get(ac) ?? 0);
           monthlyPivot.set(ac, currYTD - prevYTD);
         });
-        if (currPivot.__dimPivot) {
-          const monthlyDimPivot = new Map();
-          const allDimKeys = new Set([
-            ...currPivot.__dimPivot.keys(),
-            ...(prevPivot.__dimPivot?.keys() ?? []),
-          ]);
-          allDimKeys.forEach(key => {
-            const currVal = currPivot.__dimPivot.get(key) ?? 0;
-            const prevVal = isJanuary ? 0 : (prevPivot.__dimPivot?.get(key) ?? 0);
-            monthlyDimPivot.set(key, currVal - prevVal);
-          });
-          monthlyPivot.__dimPivot = monthlyDimPivot;
-        }
+const currRawDimPivot = buildDimPivotFromRaw(rows);
+        const prevRawDimPivot = buildDimPivotFromRaw(companyDataCmpPrev.get(co) ?? []);
+        const monthlyDimPivot = new Map();
+        const allDimKeys = new Set([...currRawDimPivot.keys(), ...prevRawDimPivot.keys()]);
+        allDimKeys.forEach(key => {
+          const currVal = currRawDimPivot.get(key) ?? 0;
+          const prevVal = isJanuary ? 0 : (prevRawDimPivot.get(key) ?? 0);
+          monthlyDimPivot.set(key, currVal - prevVal);
+        });
+        monthlyPivot.__dimPivot = monthlyDimPivot;
+        monthlyPivot.__groupDescendants = groupDescendantsMap;
 monthlyPivot.__parties = partiesById;
         monthlyPivot.__partyContext = cmpPartyCtx(co);
         monthlyPivot.__variationScope = { kind: "company", key: co };
@@ -6584,7 +6756,7 @@ monthlyPivot.__parties = partiesById;
       }
     });
     return pivots;
-}, [companyDataCmp, companyDataCmpPrev, viewPeriod, cmpMonth, cmpYear, cmpSelGroups, cmpSelDims, sumAccountCodes, partiesById]);
+}, [companyDataCmp, companyDataCmpPrev, viewPeriod, cmpMonth, cmpYear, cmpSelGroups, cmpSelDims, sumAccountCodes, partiesById, groupDescendantsMap]);
 
 // Dimension-level pivots: one flat pivot per dimension code, aggregating across all companies
   const dimensionPivots = useMemo(() => {
@@ -6593,13 +6765,13 @@ monthlyPivot.__parties = partiesById;
 const buildDimPivots = (dataMap) => {
       const pivots = new Map();
       dataMap.forEach((rows, co) => {
-if (selCompanies && selCompanies.length > 0 && !selCompanies.includes(co)) return;
-        rows.forEach(r => {
+if (selCompanies && (selCompanies.length === 0 || !selCompanies.includes(co))) return;
+rows.forEach(r => {
           const ac = r.AccountCode ?? r.accountCode ?? "";
           const acType = r.AccountType ?? r.accountType ?? "";
           if (!ac) return;
-          if (sumAccountCodes.has(ac)) return;
           if (acType && acType !== "P/L") return;
+          const isSum = sumAccountCodes.has(ac);
 
           const dimPairs = parseDimensions(r.Dimensions);
           if (dimPairs.length === 0) return;
@@ -6622,9 +6794,9 @@ if (!pivots.has(key)) {
               pivots.set(key, { name: dimName, group, pivot: p });
             }
             const entry = pivots.get(key);
-            entry.pivot.set(ac, (entry.pivot.get(ac) ?? 0) + amt);
-            // Also index every (group, code) dim pair on this row so overrides
-            // like "A.05 · Territorio: DK" resolve within a dim column.
+            // Only add to main pivot for non-sum rows (sum rows would double-count)
+            if (!isSum) entry.pivot.set(ac, (entry.pivot.get(ac) ?? 0) + amt);
+            // Always index dim tags — sum rows are where dim tags live for A.01 etc.
             dimPairs.forEach(([g2, c2]) => {
               const k = `${ac}:::${g2}:::${c2}`;
               entry.pivot.__dimPivot.set(k, (entry.pivot.__dimPivot.get(k) ?? 0) + amt);
@@ -6650,10 +6822,30 @@ const attachPartyCtx = (pivots) => {
         };
         entry.pivot.__variationScope = { kind: "dimension", key };
       });
+return pivots;
+    };
+
+    // Backfill: ensure every dim in props (respecting group/dim filters) exists
+    // as an entry, even if empty, so dim columns stay visible when the current
+    // company selection yields no rows.
+    const backfillEmpty = (pivots) => {
+      dimensions.forEach(d => {
+        const code = d.DimensionCode ?? d.dimensionCode ?? "";
+        const group = d.DimensionGroup ?? d.dimensionGroup ?? "";
+        const name = d.DimensionName ?? d.dimensionName ?? code;
+        if (!code) return;
+        if (groupDimCodes && !groupDimCodes.has(code)) return;
+        if (Array.isArray(selGroups) && selGroups.length > 0 && !selGroups.includes(group)) return;
+        if (pivots.has(code)) return;
+        const p = new Map();
+        p.__dimPivot = new Map();
+        p.__groupDescendants = groupDescendantsMap;
+        pivots.set(code, { name, group, pivot: p });
+      });
       return pivots;
     };
 
-    const currPivots = attachPartyCtx(buildDimPivots(companyData));
+    const currPivots = attachPartyCtx(backfillEmpty(buildDimPivots(companyData)));
     if (viewPeriod === "ytd") return currPivots;
 
     // Monthly = curr YTD - prev YTD per dim
@@ -6686,14 +6878,15 @@ const prevPivots = buildDimPivots(companyDataPrev);
       monthlyPivot.__groupDescendants = groupDescendantsMap;
 result.set(key, { name: meta.name, group: meta.group, pivot: monthlyPivot });
     });
-    return attachPartyCtx(result);
-}, [companyData, companyDataPrev, viewPeriod, month, year, groupDimCodes, sumAccountCodes, selGroups, selCompanies, dimensions, partiesById]);
+    return attachPartyCtx(backfillEmpty(result));
+}, [companyData, companyDataPrev, viewPeriod, month, year, groupDimCodes, sumAccountCodes, selGroups, selCompanies, dimensions, partiesById, groupDescendantsMap]);
   // Compare-scenario dimension pivots — mirrors dimensionPivots but reads
   // from companyDataCmp / companyDataCmpPrev with cmpMonth as the period.
   const dimensionPivotsCmp = useMemo(() => {
-    const buildDimPivots = (dataMap) => {
+const buildDimPivots = (dataMap) => {
       const pivots = new Map();
-      dataMap.forEach(rows => {
+      dataMap.forEach((rows, co) => {
+        if (selCompanies && (selCompanies.length === 0 || !selCompanies.includes(co))) return;
         rows.forEach(r => {
           const ac = r.AccountCode ?? r.accountCode ?? "";
           const acType = r.AccountType ?? r.accountType ?? "";
@@ -6713,11 +6906,37 @@ if (cmpGroupDimCodes && !cmpGroupDimCodes.has(code)) continue;
 
             const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
             const key = code;
-            if (!pivots.has(key)) pivots.set(key, { name: code, group, pivot: new Map() });
+            if (!pivots.has(key)) {
+              const p = new Map();
+              p.__dimPivot = new Map();
+              p.__groupDescendants = groupDescendantsMap;
+              pivots.set(key, { name: code, group, pivot: p });
+            }
             const entry = pivots.get(key);
             entry.pivot.set(ac, (entry.pivot.get(ac) ?? 0) + amt);
+            dimPairs.forEach(([g2, c2]) => {
+              const k = `${ac}:::${g2}:::${c2}`;
+              entry.pivot.__dimPivot.set(k, (entry.pivot.__dimPivot.get(k) ?? 0) + amt);
+            });
           }
         });
+      });
+return pivots;
+    };
+
+    const backfillEmpty = (pivots) => {
+      dimensions.forEach(d => {
+        const code = d.DimensionCode ?? d.dimensionCode ?? "";
+        const group = d.DimensionGroup ?? d.dimensionGroup ?? "";
+        const name = d.DimensionName ?? d.dimensionName ?? code;
+        if (!code) return;
+        if (cmpGroupDimCodes && !cmpGroupDimCodes.has(code)) return;
+        if (Array.isArray(cmpSelGroups) && cmpSelGroups.length > 0 && !cmpSelGroups.includes(group)) return;
+        if (pivots.has(code)) return;
+        const p = new Map();
+        p.__dimPivot = new Map();
+        p.__groupDescendants = groupDescendantsMap;
+        pivots.set(code, { name, group, pivot: p });
       });
       return pivots;
     };
@@ -6737,7 +6956,7 @@ const attachPartyCtx = (pivots) => {
       return pivots;
     };
 
-    const currPivots = attachPartyCtx(buildDimPivots(companyDataCmp));
+    const currPivots = attachPartyCtx(backfillEmpty(buildDimPivots(companyDataCmp)));
     if (viewPeriod === "ytd") return currPivots;
 
     const prevPivots = buildDimPivots(companyDataCmpPrev);
@@ -6753,15 +6972,23 @@ const attachPartyCtx = (pivots) => {
         ...(curr?.pivot.keys() ?? []),
         ...(prev?.pivot.keys() ?? []),
       ]);
-      allCodes.forEach(ac => {
+allCodes.forEach(ac => {
         const currVal = curr?.pivot.get(ac) ?? 0;
         const prevVal = isJanuary ? 0 : (prev?.pivot.get(ac) ?? 0);
         monthlyPivot.set(ac, currVal - prevVal);
       });
+      const mdp = new Map();
+      const cDP = curr?.pivot.__dimPivot ?? new Map();
+      const pDP = prev?.pivot.__dimPivot ?? new Map();
+      new Set([...cDP.keys(), ...pDP.keys()]).forEach(k => {
+        mdp.set(k, (cDP.get(k) ?? 0) - (isJanuary ? 0 : (pDP.get(k) ?? 0)));
+      });
+      monthlyPivot.__dimPivot = mdp;
+      monthlyPivot.__groupDescendants = groupDescendantsMap;
 result.set(key, { name: meta.name, group: meta.group, pivot: monthlyPivot });
     });
-    return attachPartyCtx(result);
-}, [companyDataCmp, companyDataCmpPrev, viewPeriod, cmpMonth, cmpYear, cmpGroupDimCodes, sumAccountCodes, cmpSelGroups, selCompanies, partiesById]);
+    return attachPartyCtx(backfillEmpty(result));
+}, [companyDataCmp, companyDataCmpPrev, viewPeriod, cmpMonth, cmpYear, cmpGroupDimCodes, sumAccountCodes, cmpSelGroups, selCompanies, partiesById, groupDescendantsMap, dimensions]);
 
 const dimensionCodes = useMemo(() => [...dimensionPivots.keys()].sort(), [dimensionPivots]);
 
@@ -7191,18 +7418,18 @@ const cFilter = companies.map(c => `CompanyShortName eq '${c}'`).join(" or ");
         if (!res.ok) return { y, m, isPrior, pivot: new Map(), hasData: false };
         const json = await res.json();
         const rows = json.value ?? (Array.isArray(json) ? json : []);
-        const p = new Map();
-        // Same filter logic as on-screen GraphSection.fetchChartData
+const p = new Map();
+        const dimP = new Map();
         rows.forEach(r => {
           const ac = r.AccountCode ?? r.accountCode ?? "";
           const acType = r.AccountType ?? r.accountType ?? "";
           if (!ac) return;
-          if (sumAccountCodes && sumAccountCodes.has(ac)) return;
           if (acType && acType !== "P/L") return;
-const hasDim   = Array.isArray(dim)      ? dim.length      > 0 : !!dim;
+          const isSum = sumAccountCodes && sumAccountCodes.has(ac);
+          const dimPairs = parseDimensions(r.Dimensions);
+          const hasDim   = Array.isArray(dim)      ? dim.length      > 0 : !!dim;
           const hasGroup = Array.isArray(dimGroup) ? dimGroup.length > 0 : !!dimGroup;
           if (hasDim || hasGroup) {
-            const dimPairs = parseDimensions(r.Dimensions);
             if (hasDim) {
               const dimArr = Array.isArray(dim) ? dim : [dim];
               const rowDimCodes = new Set(dimPairs.map(([, code]) => code));
@@ -7213,8 +7440,14 @@ const hasDim   = Array.isArray(dim)      ? dim.length      > 0 : !!dim;
             }
           }
           const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
-          p.set(ac, (p.get(ac) ?? 0) + amt);
+          if (!isSum) p.set(ac, (p.get(ac) ?? 0) + amt);
+          dimPairs.forEach(([g, c]) => {
+            if (!g || !c) return;
+            const k = `${ac}:::${g}:::${c}`;
+            dimP.set(k, (dimP.get(k) ?? 0) + amt);
+          });
         });
+        p.__dimPivot = dimP;
         return { y, m, isPrior, pivot: p, hasData: rows.length > 0 };
       } catch {
         return { y, m, isPrior, pivot: new Map(), hasData: false };
@@ -7222,7 +7455,7 @@ const hasDim   = Array.isArray(dim)      ? dim.length      > 0 : !!dim;
     }));
 
     const series = [];
-    for (let i = 1; i < results.length; i++) {
+for (let i = 1; i < results.length; i++) {
       const curr = results[i];
       if (curr.isPrior) continue;
       let pivotForKpi;
@@ -7237,7 +7470,18 @@ const hasDim   = Array.isArray(dim)      ? dim.length      > 0 : !!dim;
           const prevYTD = curr.m === 1 ? 0 : (prev.pivot.get(ac) ?? 0);
           mp.set(ac, currYTD - prevYTD);
         });
+        const mdp = new Map();
+        const cDP = curr.pivot.__dimPivot ?? new Map();
+        const pDP = prev.pivot.__dimPivot ?? new Map();
+        new Set([...cDP.keys(), ...pDP.keys()]).forEach(k => {
+          mdp.set(k, (cDP.get(k) ?? 0) - (curr.m === 1 ? 0 : (pDP.get(k) ?? 0)));
+        });
+        mp.__dimPivot = mdp;
         pivotForKpi = mp;
+      }
+      pivotForKpi.__groupDescendants = groupDescendantsMap;
+      if (companies.length === 1) {
+        pivotForKpi.__variationScope = { kind: "company", key: companies[0] };
       }
 const kpis = computeAllKpisResolved(kpiList, pivotForKpi, ccTagToCodes, sectionCodes, resolvedAllKpis);
       const label = `${String(curr.m).padStart(2, "0")}/${String(curr.y).slice(-2)}`;
@@ -7249,7 +7493,7 @@ const kpis = computeAllKpisResolved(kpiList, pivotForKpi, ccTagToCodes, sectionC
       series.push(row);
     }
     return series;
-}, [token, kpiList, ccTagToCodes, sectionCodes, resolvedAllKpis, sumAccountCodes]);
+}, [token, kpiList, ccTagToCodes, sectionCodes, resolvedAllKpis, sumAccountCodes, groupDescendantsMap]);
 
 // Build graph sections — read live state (incl. compare bars), fetch both modes for primary + each cmp bar, merge into wide rows
 const buildGraphSections = useCallback(async () => {
@@ -7411,13 +7655,13 @@ const buildExportPayload = async () => {
       const localPivot = new Map();
       const localDimPivot = new Map();
       const dimPivot = new Map();
-      rows.forEach(r => {
+rows.forEach(r => {
         const ac = r.AccountCode ?? r.accountCode ?? "";
         const lac = String(r.LocalAccountCode ?? r.localAccountCode ?? "").trim();
         const acType = r.AccountType ?? r.accountType ?? "";
         if (!ac) return;
-        if (sumAccountCodes.has(ac)) return;
         if (acType && acType !== "P/L") return;
+        const isSum = sumAccountCodes.has(ac);
         const dimPairs = parseDimensions(r.Dimensions ?? r.dimensions ?? "");
         if (applyDimFilter) {
           if (Array.isArray(dFilter)) {
@@ -7431,8 +7675,10 @@ const buildExportPayload = async () => {
           }
         }
         const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
-        p.set(ac, (p.get(ac) ?? 0) + amt);
-        if (lac && lac !== "—") localPivot.set(lac, (localPivot.get(lac) ?? 0) + amt);
+        if (!isSum) {
+          p.set(ac, (p.get(ac) ?? 0) + amt);
+          if (lac && lac !== "—") localPivot.set(lac, (localPivot.get(lac) ?? 0) + amt);
+        }
         dimPairs.forEach(([dGroup, dCode]) => {
           if (!dGroup || !dCode) return;
           const key = `${ac}:::${dGroup}:::${dCode}`;
@@ -7470,7 +7716,6 @@ out.__dimPivot      = diffSub(curr.__dimPivot, prev.__dimPivot);
     };
 
 // Resolve every variable letter for every KPI against a pivot. Returns
-    // Map<kpiId, Map<letter, number>>. Only KPIs with a text-formula have vars.
 const resolveVarsFor = (kList, pivot) => {
       const out = new Map();
       const cache = new Map();
@@ -7489,7 +7734,6 @@ const resolveVarsFor = (kList, pivot) => {
                       : null;
             const override = map?.[scope.key]?.[letter];
             if (override) {
-              // Normalize :::-packed prefix / accountCode into fields
               const norm = { ...override };
               if (norm.type === "accountGroup" && typeof norm.prefix === "string" && norm.prefix.includes(":::")) {
                 const [gc, dg, dc] = norm.prefix.split(":::");
@@ -7523,7 +7767,8 @@ const resolveVarsFor = (kList, pivot) => {
       const monthlyResults = new Map();
       const ytdVars = new Map();       // Map<co, Map<kpiId, Map<letter, val>>>
       const monthlyVars = new Map();
-      dataMap.forEach((rows, co) => {
+dataMap.forEach((rows, co) => {
+        if (selCompanies && (selCompanies.length === 0 || !selCompanies.includes(co))) return;
         const curr = buildPivotOne(rows, true, gFilter, dFilter);
         const prev = buildPivotOne(prevMap.get(co) ?? [], true, gFilter, dFilter);
         const partyCtx = {
@@ -7532,11 +7777,14 @@ const resolveVarsFor = (kList, pivot) => {
           month: parseInt(monthNum),
           selectedDims: selectedDims ?? null,
         };
-        curr.__parties = partiesById;
+curr.__parties = partiesById;
         curr.__partyContext = partyCtx;
+        curr.__variationScope = { kind: "company", key: co };
         prev.__parties = partiesById;
         prev.__partyContext = partyCtx;
-        const monthly = diffPivots(curr, prev, isJan);
+        prev.__variationScope = { kind: "company", key: co };
+const monthly = diffPivots(curr, prev, isJan);
+        monthly.__variationScope = { kind: "company", key: co };
         ytdResults.set(co,     computeAllKpisResolved(kList, curr,    ccTagToCodes, sectionCodes, resolvedAllKpis));
         monthlyResults.set(co, computeAllKpisResolved(kList, monthly, ccTagToCodes, sectionCodes, resolvedAllKpis));
         ytdVars.set(co,      resolveVarsFor(kList, curr));
@@ -7551,32 +7799,58 @@ const resolveVarsFor = (kList, pivot) => {
 const buildDimResultsFor = (dataMap, prevMap, monthNum, selectedDims, kList) => {
       const isJan = parseInt(monthNum) === 1;
       const buildDim = (dMap) => {
+        // out: Map<dimCode, { pivot: Map<accountCode, amt>, __dimPivot: Map<"ac:::g:::c", amt> }>
         const out = new Map();
         dMap.forEach((rows, co) => {
-          if (selCompanies && selCompanies.length > 0 && !selCompanies.includes(co)) return;
+          if (selCompanies && (selCompanies.length === 0 || !selCompanies.includes(co))) return;
           rows.forEach(r => {
             const ac = r.AccountCode ?? r.accountCode ?? "";
             const acType = r.AccountType ?? r.accountType ?? "";
-            if (!ac || sumAccountCodes.has(ac) || (acType && acType !== "P/L")) return;
+            if (!ac || (acType && acType !== "P/L")) return;
+            const isSum = sumAccountCodes.has(ac);
             const pairs = parseDimensions(r.Dimensions);
             if (pairs.length === 0) return;
+            const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
             for (const [group, code] of pairs) {
               if (groupDimCodes && !groupDimCodes.has(code)) continue;
               if (Array.isArray(selGroups)) {
                 if (selGroups.length === 0) continue;
                 if (!selGroups.includes(group)) continue;
               }
-              const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
-              if (!out.has(code)) out.set(code, new Map());
+              if (!out.has(code)) {
+                const p = new Map();
+                p.__dimPivot = new Map();
+                out.set(code, p);
+              }
               const m = out.get(code);
-              m.set(ac, (m.get(ac) ?? 0) + amt);
+              if (!isSum) m.set(ac, (m.get(ac) ?? 0) + amt);
+              pairs.forEach(([g2, c2]) => {
+                if (!g2 || !c2) return;
+                const k = `${ac}:::${g2}:::${c2}`;
+                m.__dimPivot.set(k, (m.__dimPivot.get(k) ?? 0) + amt);
+              });
             }
           });
         });
         return out;
       };
-const currMap = buildDim(dataMap);
-      const prevMap2 = buildDim(prevMap);
+      // Backfill: every dim in props should show as a column, even empty
+      const backfill = (out) => {
+        (dimensions || []).forEach(d => {
+          const code = d.DimensionCode ?? d.dimensionCode ?? "";
+          const group = d.DimensionGroup ?? d.dimensionGroup ?? "";
+          if (!code) return;
+          if (groupDimCodes && !groupDimCodes.has(code)) return;
+          if (Array.isArray(selGroups) && selGroups.length > 0 && !selGroups.includes(group)) return;
+          if (out.has(code)) return;
+          const p = new Map();
+          p.__dimPivot = new Map();
+          out.set(code, p);
+        });
+        return out;
+      };
+      const currMap = backfill(buildDim(dataMap));
+      const prevMap2 = backfill(buildDim(prevMap));
       const ytdResults = new Map();
       const monthlyResults = new Map();
       const ytdVars = new Map();
@@ -7584,17 +7858,28 @@ const currMap = buildDim(dataMap);
       const allCodes = new Set([...currMap.keys(), ...prevMap2.keys()]);
       const co = selCompanies?.[0] ?? null;
       allCodes.forEach(code => {
-        const curr = currMap.get(code) ?? new Map();
-        const prev = prevMap2.get(code) ?? new Map();
+        const curr = currMap.get(code) ?? (() => { const p = new Map(); p.__dimPivot = new Map(); return p; })();
+        const prev = prevMap2.get(code) ?? (() => { const p = new Map(); p.__dimPivot = new Map(); return p; })();
         const monthly = new Map();
         new Set([...curr.keys(), ...prev.keys()]).forEach(ac => {
           monthly.set(ac, (curr.get(ac) ?? 0) - (isJan ? 0 : (prev.get(ac) ?? 0)));
         });
+        const mdp = new Map();
+        const cDP = curr.__dimPivot ?? new Map();
+        const pDP = prev.__dimPivot ?? new Map();
+        new Set([...cDP.keys(), ...pDP.keys()]).forEach(k => {
+          mdp.set(k, (cDP.get(k) ?? 0) - (isJan ? 0 : (pDP.get(k) ?? 0)));
+        });
+        monthly.__dimPivot = mdp;
         const partyCtx = { company: co, year: parseInt(year), month: parseInt(monthNum), selectedDims: selectedDims ?? null };
         curr.__parties = partiesById;
         curr.__partyContext = partyCtx;
+        curr.__variationScope = { kind: "dimension", key: code };
+        curr.__groupDescendants = groupDescendantsMap;
         monthly.__parties = partiesById;
         monthly.__partyContext = partyCtx;
+        monthly.__variationScope = { kind: "dimension", key: code };
+        monthly.__groupDescendants = groupDescendantsMap;
         ytdResults.set(code,     computeAllKpisResolved(kList, curr,    ccTagToCodes, sectionCodes, resolvedAllKpis));
         monthlyResults.set(code, computeAllKpisResolved(kList, monthly, ccTagToCodes, sectionCodes, resolvedAllKpis));
         ytdVars.set(code,      resolveVarsFor(kList, curr));
@@ -7699,8 +7984,10 @@ const scope = viewMode === "dimension" ? "individual_dimension" : "individual_co
 
 
 // React Compiler memoizes this automatically; manual useMemo here was blocking optimization.
-const filteredCompanyCodes = (!selCompanies || selCompanies.length === 0)
+const filteredCompanyCodes = !selCompanies
   ? companyCodes
+  : selCompanies.length === 0
+  ? []
   : companyCodes.filter(c => new Set(selCompanies).has(c));
 const activeCols = viewMode === "company" ? filteredCompanyCodes : dimensionCodes;
 const activeResults = viewMode === "company" ? companyResults : dimensionResults;
@@ -7901,7 +8188,17 @@ filters={viewMode === "graphs" ? [] : [
             ? [{
                 label: tt("filter_dim_group"),
                 values: selGroups,
-                onChange: v => { setSelGroups(v); setSelDims(null); },
+onChange: (v) => {
+                  setSelGroups(v);
+                  if (!v) { setSelDims(null); return; }
+                  if (v.length === 0) { setSelDims([]); return; }
+                  const activeDimCodes = new Set();
+                  v.forEach(g => {
+                    const m = dimsByGroup.get(g);
+                    if (m) m.forEach((_, code) => activeDimCodes.add(code));
+                  });
+                  setSelDims([...activeDimCodes]);
+                },
                 options: dimGroups.map(g => ({ value: g, label: g })),
                 multiselect: true,
               }]
@@ -7910,7 +8207,25 @@ filters={viewMode === "graphs" ? [] : [
             ? [{
                 label: tt("filter_dimension"),
                 values: selDims,
-                onChange: setSelDims,
+               onChange: (v) => {
+                  setSelDims(v);
+                  // Sync selGroups: derive from selected dims.
+                  // v = null → "all dims" → leave selGroups as-is.
+                  // v = [] → no dims → selGroups = [].
+                  // v = [some] → selGroups = groups that contain at least one selected dim.
+                  if (!v) return;
+                  if (v.length === 0) {
+                    setSelGroups([]);
+                    return;
+                  }
+                  const groupsWithSel = new Set();
+                  dimsByGroup.forEach((m, g) => {
+                    for (const code of m.keys()) {
+                      if (v.includes(code)) { groupsWithSel.add(g); break; }
+                    }
+                  });
+                  setSelGroups([...groupsWithSel]);
+                },
                 options: groupDimOptions.map(d => ({ value: d.code, label: d.name || d.code })),
                 multiselect: true,
               }]
@@ -8060,9 +8375,11 @@ onExportPdf={handleExportPdf}
     allKpis={resolvedAllKpis}
     ccTagToCodes={ccTagToCodes}
     sectionCodes={sectionCodes}
-    sumAccountCodes={sumAccountCodes}
-    defaultCompany={companyCodes[0] || ""}
+sumAccountCodes={sumAccountCodes}
+    groupDescendantsMap={groupDescendantsMap}
+defaultCompany={companyCodes[0] || ""}
 defaultKpiIds={["revenue", "gross_profit", "net_result"]}
+initialState={graphSectionsRef.current[1]}
 onStateChange={handleGraphSectionState}
 viewPeriod={viewPeriod}
     compareMode={compareMode}
@@ -8164,12 +8481,12 @@ if (compareVisible) {
                         </th>,
                         <th key={`${col}__delta`}
                           className="text-center px-4 py-3 whitespace-nowrap min-w-[100px]"
-                          style={{ background: "transparent", animation: cmpAnim, animationDelay: '40ms' }}>
+                         style={{ background: "transparent", animation: `${cmpAnim} 40ms` }}>
                           <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}50`, fontSize: 10 }}>{tt("col_delta_amt")}</span>
                         </th>,
                         <th key={`${col}__deltapct`}
                           className="text-center px-4 py-3 whitespace-nowrap min-w-[90px]"
-                          style={{ background: "transparent", animation: cmpAnim, animationDelay: '80ms' }}>
+                       style={{ background: "transparent", animation: `${cmpAnim} 80ms` }}>
                           <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}50`, fontSize: 10 }}>{tt("kpi_col_delta_pct")}</span>
                         </th>
                       );

@@ -291,9 +291,6 @@ const bump = () => {
 const handleVerify = async (overrideEmail, overridePassword) => {
     const emailToUse    = typeof overrideEmail    === "string" ? overrideEmail    : vEmail;
     const passwordToUse = typeof overridePassword === "string" ? overridePassword : vPassword;
-
-    console.log("[handleVerify] start", { emailToUse, hasPwd: !!passwordToUse });
-
     if (!emailToUse || !passwordToUse) {
       setVError("Please enter your Konsolidator email and password.");
       return;
@@ -327,8 +324,6 @@ const handleVerify = async (overrideEmail, overridePassword) => {
       } catch { b2cOk = false; }
     }
 
-console.log("[handleVerify] b2cOk =", b2cOk);
-
     if (!b2cOk) {
       setVLoading(false);
       setVError("Invalid Konsolidator credentials.");
@@ -338,22 +333,20 @@ console.log("[handleVerify] b2cOk =", b2cOk);
     // Block if company already exists
     const domainPart = emailToUse.split("@")[1] ?? "";
     const slug = domainPart.split(".")[0].toLowerCase().replace(/[^a-z0-9-]/g, "-");
-    console.log("[handleVerify] slug =", slug);
     if (slug) {
       try {
-        const { data: companyExists, error: rpcErr } = await supabase
+   const { data: companyExists } = await supabase
+
           .rpc("company_exists_by_slug", { p_slug: slug });
-        console.log("[handleVerify] companyExists =", companyExists, "error =", rpcErr);
         if (companyExists === true) {
           setVLoading(false);
           setVError("This company already exists. Please ask your admin for access.");
           return;
         }
-      } catch (e) {
-        console.error("[handleVerify] rpc threw:", e);
+} catch {
+        // company existence check failed; continue
       }
     }
-console.log("[handleVerify] writing token + creds + advancing to checkout");
     writeToken(emailToUse);
     writeCreds(emailToUse, passwordToUse);
     setCoEmail(emailToUse);
@@ -614,7 +607,6 @@ const handleConfirmAndPay = async (payIban, payHolder) => {
       sessionStorage.removeItem(STORAGE_KEY);
       navigate("/");
     } catch (e) {
-      console.error("[handleConfirmAndPay] failed:", e);
       setConfirmError(e.message ?? "Something went wrong. Please try again.");
       setConfirmLoading(false);
     }

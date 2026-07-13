@@ -1614,6 +1614,39 @@ setRecentMappings(combined);
 
 useEffect(() => { if (viewsMode === "structure") fetchSavedMappings(); }, [viewsMode]);
   useEffect(() => { if (viewsMode === "report") fetchReportMappings(); }, [viewsMode]);
+
+  // Auto-apply hidden override CF mapping when the active standard is CUSTOM.
+  useEffect(() => {
+    if (!isCustomStandard || !activeStandardKey) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { supabase } = await import("../../lib/supabaseClient");
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) return;
+        const { getActiveCompanyId, getHiddenOverrideMapping } = await import("../../lib/mappingsApi");
+        const cid = await getActiveCompanyId(uid);
+        if (!cid) return;
+        const hidden = await getHiddenOverrideMapping({ companyId: cid, standard: activeStandardKey });
+        if (cancelled || !hidden) return;
+        if (Array.isArray(hidden.cf_tree) && hidden.cf_tree.length > 0) {
+          handleApplyMapping(hidden, "structure");
+        }
+      } catch (e) { console.warn("[CashFlowPage] hidden override load failed:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, [isCustomStandard, activeStandardKey]);
+
+  useEffect(() => {
+    const handler = () => {
+      if (!isCustomStandard || !activeStandardKey) return;
+      setActiveMapping(null);
+      loadCustomCfMapping(activeStandardKey, setCustomCfMapping);
+    };
+    window.addEventListener("custom-standard-updated", handler);
+    return () => window.removeEventListener("custom-standard-updated", handler);
+  }, [isCustomStandard, activeStandardKey]);
 const [compareMode, setCompareMode] = useState(false);
   const [cmpVisible, setCmpVisible] = useState(false);
   const [cmpExiting, setCmpExiting] = useState(false);
@@ -2911,7 +2944,7 @@ handleApplyMapping(full ?? m.raw, m.kind);
         }}
       />
 
-{activeMapping && !viewsMode && (
+{activeMapping && !activeMapping.is_hidden && activeMapping.name !== "__custom_override__" && !viewsMode && (
         <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm flex-shrink-0">
           <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
 <span className="text-xs text-emerald-700 font-medium">

@@ -40,24 +40,32 @@ export default function Shell({ user, onRefresh, onLogout, children }) {
       const logo = cards[0].getBoundingClientRect();
       const nav  = cards[1].getBoundingClientRect();
       const usr  = cards[2].getBoundingClientRect();
-      setGeom({
+const next = {
         headerTop: logo.top,
         headerHeight: logo.height,
         bodyTop: nav.top,
         bodyHeight: usr.bottom - nav.top,
+      };
+      setGeom(prev => {
+        if (prev
+          && prev.headerTop === next.headerTop
+          && prev.headerHeight === next.headerHeight
+          && prev.bodyTop === next.bodyTop
+          && prev.bodyHeight === next.bodyHeight) return prev;
+        return next;
       });
     };
 measure();
     requestAnimationFrame(() => requestAnimationFrame(measure));
     if (document.fonts?.ready) document.fonts.ready.then(measure);
-    const ro = new ResizeObserver(measure);
-    if (asideWrapRef.current) ro.observe(asideWrapRef.current);
-    document.querySelectorAll("aside > div").forEach(card => ro.observe(card));
+const ro = new ResizeObserver(measure);
+    if (asideWrapRef.current) {
+      ro.observe(asideWrapRef.current);
+      asideWrapRef.current.querySelectorAll("aside > div").forEach(card => ro.observe(card));
+    }
     window.addEventListener("resize", measure);
     window.addEventListener("load", measure);
-    const t = setInterval(measure, 100);
-    setTimeout(() => clearInterval(t), 4000);
-    return () => { ro.disconnect(); window.removeEventListener("resize", measure); window.removeEventListener("load", measure); clearInterval(t); };
+    return () => { ro.disconnect(); window.removeEventListener("resize", measure); window.removeEventListener("load", measure); };
 }, []);
 
   const content = typeof children === "function"

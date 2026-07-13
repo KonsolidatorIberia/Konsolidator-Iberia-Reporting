@@ -20,6 +20,18 @@ import {
 import { supabase } from "../../lib/supabaseClient";
 import { useCurrentUserResourceAccess } from "../../lib/userPermissionsApi";
 import { useT, useSettings } from "../layout/SettingsContext";
+import {
+  loadCustomStandard,
+  saveCustomStandard,
+  restoreBaseline,
+  isOriginalRow,
+  isOriginalSection,
+} from "../../lib/standardMappingApi";
+import {
+  getHiddenOverrideMapping,
+  upsertHiddenOverrideMapping,
+  setActiveMappingSilently,
+} from "../../lib/mappingsApi";
 
 // ─── Constants ───────────────────────────────────────────────
 const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
@@ -105,16 +117,26 @@ function buildTemplateTree(rows, sections = []) {
       rowsBySection.get(r.section_code).push(r);
     } else rowsNoSection.push(r);
   });
-  const result = [];
-  sortedSections.forEach(s => result.push({
+// Interleave breakers with orphan (section=null) roots by sort_order,
+  // so a breaker placed AFTER orphans in the editor stays there on reload.
+  const breakerItems = sortedSections.map(s => ({
     kind: "breaker",
-    code: `__breaker__${s.section_code}`,
-    sectionCode: s.section_code,
-    name: s.label, color: s.color,
-    children: buildHierarchy(rowsBySection.get(s.section_code) || []),
+    sortOrder: Number(s.sort_order ?? 0),
+    node: {
+      kind: "breaker",
+      code: `__breaker__${s.section_code}`,
+      sectionCode: s.section_code,
+      name: s.label, color: s.color,
+      children: buildHierarchy(rowsBySection.get(s.section_code) || []),
+    },
   }));
-  if (rowsNoSection.length > 0) result.push(...buildHierarchy(rowsNoSection));
-  return result;
+  const orphanRoots = buildHierarchy(rowsNoSection).map(n => ({
+    kind: "orphan",
+    sortOrder: Number(n.sortOrder ?? 0),
+    node: n,
+  }));
+  const merged = [...breakerItems, ...orphanRoots].sort((a, b) => a.sortOrder - b.sortOrder);
+  return merged.map(it => it.node);
 }
 
 function normalizeName(s) { return String(s ?? "").trim().toLowerCase(); }
@@ -161,6 +183,122 @@ function filterTreeTpl(tree, q) { function walk(nodes) { return nodes.map(n => {
 // (this is what CashFlowPage does). mapped-cashflow-accounts is only used to:
 //   1) include CF codes the chart has but with no data anywhere (so they can still be mapped)
 //   2) collect the group→CF drill mapping
+// ─── CF-only diff computer ────────────────────────────────────
+// Walks the visible CF template tree and compares with liveRows + baseline
+// to produce a list of changes ready for saveCustomStandard.
+function diffCustomStandardCF({ cfTree, baseline, liveRows, liveSections }) {
+  const rowsAdded = [];
+  const rowsUpdated = [];
+  const rowsDeleted = [];
+  const sectionsAdded = [];
+  const sectionsUpdated = [];
+  const sectionsDeleted = [];
+
+  const liveByKey = new Map();
+  liveRows.forEach(r => {
+    if (r.statement === "CF") liveByKey.set(String(r.account_code), r);
+  });
+  const liveSectionByKey = new Map();
+  liveSections.forEach(s => {
+    if (s.statement === "CF") liveSectionByKey.set(String(s.section_code), s);
+  });
+
+  // Walk visible tree: collect current desired state
+  const seenRowCodes = new Set();
+  const seenSectionCodes = new Set();
+  let sortCounter = 3000000;
+
+const walk = (nodes, parentCode = null, sectionCode = null) => {
+    for (const n of (nodes || [])) {
+      if (n.kind === "breaker") {
+        const code = String(n.sectionCode ?? n.code ?? "");
+        if (code) {
+          seenSectionCodes.add(code);
+          sortCounter += 10;
+          const sectionSort = sortCounter;
+          const existing = liveSectionByKey.get(code);
+          const label = n.name ?? existing?.label ?? code;
+          const color = n.color ?? existing?.color ?? null;
+          if (!existing) {
+            sectionsAdded.push({
+              statement: "CF",
+              section_code: code,
+              label,
+              color,
+              sort_order: sectionSort,
+            });
+          } else {
+            const patch = {};
+            if (existing.label !== label) patch.label = label;
+            if (existing.color !== color) patch.color = color;
+            if (existing.sort_order !== sectionSort) patch.sort_order = sectionSort;
+            if (Object.keys(patch).length > 0) {
+              sectionsUpdated.push({
+                statement: "CF",
+                section_code: code,
+                patch,
+              });
+            }
+          }
+}
+        walk(n.children, parentCode, code);
+        continue;
+      }
+      const code = String(n.code ?? "");
+      if (!code) { walk(n.children, parentCode, sectionCode); continue; }
+      seenRowCodes.add(code);
+      sortCounter += 10;
+      const existing = liveByKey.get(code);
+      const isSum = !!(n.isSum || n.isSumAccount || (n.children && n.children.length > 0));
+const desired = {
+        statement: "CF",
+        account_code: code,
+        account_name: n.name ?? existing?.account_name ?? code,
+        parent_code: parentCode,
+        section_code: sectionCode,
+        is_sum: isSum,
+        sort_order: sortCounter,
+      };
+      if (!existing) {
+        rowsAdded.push(desired);
+      } else {
+        const patch = {};
+        // For originals: only position fields (parent/section/sort) allowed
+        const isOriginal = isOriginalRow(baseline, "CF", code);
+        if (existing.parent_code !== desired.parent_code) patch.parent_code = desired.parent_code;
+        if (existing.section_code !== desired.section_code) patch.section_code = desired.section_code;
+        if (existing.sort_order !== desired.sort_order) patch.sort_order = desired.sort_order;
+        if (!isOriginal) {
+          if (existing.account_name !== desired.account_name) patch.account_name = desired.account_name;
+          if (existing.is_sum !== desired.is_sum) patch.is_sum = desired.is_sum;
+        }
+        if (Object.keys(patch).length > 0) {
+          rowsUpdated.push({ statement: "CF", account_code: code, patch });
+        }
+      }
+walk(n.children, code, sectionCode);
+    }
+  };
+  walk(cfTree);
+  console.log("[diff CF] rowsUpdated for 7999:", rowsUpdated.find(u => u.account_code === "7999"));
+  console.log("[diff CF] rowsAdded parent-child:", rowsAdded.map(r => `${r.account_code} parent=${r.parent_code}`));
+  // Deletions: any live CF row/section not present in the tree and not original
+  liveRows.forEach(r => {
+    if (r.statement !== "CF") return;
+    if (seenRowCodes.has(String(r.account_code))) return;
+    if (isOriginalRow(baseline, "CF", r.account_code)) return;
+    rowsDeleted.push({ statement: "CF", account_code: r.account_code });
+  });
+  liveSections.forEach(s => {
+    if (s.statement !== "CF") return;
+    if (seenSectionCodes.has(String(s.section_code))) return;
+    if (isOriginalSection(baseline, "CF", s.section_code)) return;
+    sectionsDeleted.push({ statement: "CF", section_code: s.section_code });
+  });
+
+return { rowsAdded, rowsUpdated, rowsDeleted, sectionsAdded, sectionsUpdated, sectionsDeleted };
+}
+
 function buildCfAccountTree(cfMappingRows, cfChartAccounts = [], cfNameRows = []) {
   const cfInfo = new Map();      // cfCode → { name, parent }
   const groupAccountsByCf = new Map();
@@ -353,8 +491,18 @@ const [cfMappingRows, setCfMappingRows] = useState([]);
     api.list({ companyId }).then(rows => setMappings(rows ?? [])).finally(() => setMappingsLoading(false));
   }, [view, companyId, api]);
 
-  useEffect(() => {
-    if (!pendingEdit || !mappings.length) return;
+useEffect(() => {
+    if (!pendingEdit) return;
+    if (pendingEdit.openCustom && pendingEdit.standard) {
+      /* eslint-disable react-hooks/set-state-in-effect */
+      setEditingMapping(null);
+      setSelectedStandard(pendingEdit.standard);
+      setView("mapper");
+      /* eslint-enable react-hooks/set-state-in-effect */
+      onPendingEditConsumed?.();
+      return;
+    }
+    if (!mappings.length) return;
     const m = mappings.find(x => String(x.mapping_id) === String(pendingEdit.mapping_id));
     if (!m) return;
     /* eslint-disable react-hooks/set-state-in-effect */
@@ -363,7 +511,6 @@ const [cfMappingRows, setCfMappingRows] = useState([]);
     setCfViewMode(m.cf_view_mode ?? "consolidated");
     setView("mapper");
     /* eslint-enable react-hooks/set-state-in-effect */
-    onPendingEditConsumed?.();
   }, [pendingEdit, mappings, onPendingEditConsumed]);
 
   useEffect(() => {
@@ -718,7 +865,7 @@ headerSearch={view === "list" ? { value: search, onChange: setSearch, placeholde
           />
         )}
         {view === "selectStandard" && (
-        <SelectStandardView activeStandardKey={activeStandardKey} onPick={std => { setSelectedStandard(std); setView("mapper"); }} />
+       <SelectStandardView activeStandardKey={activeStandardKey} mappingKind={mappingKind} onPick={std => { setSelectedStandard(std); setView("mapper"); }} />
         )}
         {view === "mapper" && selectedStandard && (
 <CashFlowMapperView
@@ -733,7 +880,7 @@ headerSearch={view === "list" ? { value: search, onChange: setSearch, placeholde
             companyId={companyId}
             editingMapping={editingMapping}
             existingMappings={mappings}
-            onSaved={saved => { setEditingMapping(saved); if (!editingMapping) setPendingStandardMapping(saved); }}
+            onSaved={saved => { setEditingMapping(saved); if (!editingMapping && !saved?.is_hidden) setPendingStandardMapping(saved); }}
 saveRef={mapperSaveRef}
             resetRef={mapperResetRef}
            onDirtyChange={setMapperDirty}
@@ -928,11 +1075,11 @@ function CreateView({ onScratch, onExisting }) {
 }
 
 // ─── SelectStandardView ───────────────────────────────────────
-function SelectStandardView({ activeStandardKey, onPick }) {
+function SelectStandardView({ activeStandardKey, mappingKind = "structure", onPick }) {
   const t = useT();
   const { colors } = useSettings();
   const standards = ["PGC", "DanishIFRS", "SpanishIFRSEs"];
-  const hasCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+const hasCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-") && mappingKind !== "report";
   return (
     <div className="flex-1 flex flex-col min-h-0 p-5">
       <div className={`grid ${hasCustom ? "grid-cols-4" : "grid-cols-3"} gap-5 flex-1 min-h-0`}>
@@ -995,6 +1142,30 @@ const t = useT();
       ? { accent: (colors?.primary ?? "#7c3aed"), accentBg: `${colors?.primary ?? "#7c3aed"}12`, label: standard.replace(/^CUSTOM-/, "").toUpperCase() }
       : { accent: "#0891b2", accentBg: "#e0f2fe", label: standard ?? "" }
   );
+
+// ── CUSTOM standard editor mode ──────────────────────────────
+  const isCustomEditor = !!standard && String(standard).startsWith("CUSTOM-") && mappingKind === "structure";
+  const [customBaseline, setCustomBaseline] = useState(null);
+  const [customLiveRows, setCustomLiveRows] = useState([]);
+  const [customLiveSections, setCustomLiveSections] = useState([]);
+  const [showRestoreBaselineConfirm, setShowRestoreBaselineConfirm] = useState(false);
+
+  useEffect(() => {
+    if (!isCustomEditor) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const fresh = await loadCustomStandard(standard);
+        if (cancelled) return;
+        setCustomBaseline(fresh.baseline);
+        setCustomLiveRows(fresh.rows);
+        setCustomLiveSections(fresh.sections);
+      } catch (e) {
+        console.error("[CashFlowMapperView] loadCustomStandard failed:", e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isCustomEditor, standard, companyId]);
 
 // CF account meta (name + parent code) from consolidated CF/CFS rows
 // Build CF tree: chart of accounts (primary) + consolidated names (secondary) + mappings (tertiary)
@@ -1203,18 +1374,31 @@ const undoRef = useRef(undo);
         ]);
         const rows = await rowsRes.json(), secs = await secsRes.json();
         if (ac.signal.aborted) return;
-        setTplRows(Array.isArray(rows) ? rows : []);
+setTplRows(Array.isArray(rows) ? rows : []);
         setTplSections(Array.isArray(secs) ? secs : []);
+        if (isCustom) {
+          console.log("[CF CUSTOM tplRows]", rows?.length, rows?.slice(0, 10));
+          console.log("[CF CUSTOM tplSections]", secs?.length, secs);
+        }
       } catch (e) { if (e.name !== "AbortError") { setTplRows([]); setTplSections([]); } }
       finally { if (!ac.signal.aborted) setTplLoading(false); }
     })();
     return () => ac.abort();
   }, [standard]);
 
-  const baseTemplateTree = useMemo(() => {
+const baseTemplateTree = useMemo(() => {
     function addIds(nodes) { return nodes.map(n => ({ ...n, id: `tpl-${n.code}`, children: addIds(n.children || []) })); }
-    return addIds(buildTemplateTree(tplRows, tplSections));
-  }, [tplRows, tplSections]);
+    const tree = addIds(buildTemplateTree(tplRows, tplSections));
+    if (standard?.startsWith("CUSTOM-")) {
+      const summarize = (nodes, depth = 0) => nodes.forEach(n => {
+        console.log(`[CF tree] ${"  ".repeat(depth)}${n.code ?? n.kind ?? "?"} ${n.name ?? n.label ?? ""} (children: ${n.children?.length ?? 0})`);
+        if (n.children?.length) summarize(n.children, depth + 1);
+      });
+      console.log("[CF baseTemplateTree] root count:", tree.length);
+      summarize(tree);
+    }
+    return tree;
+  }, [tplRows, tplSections, standard]);
 
   // Init trees
   useEffect(() => {
@@ -1223,7 +1407,7 @@ const undoRef = useRef(undo);
     setMovedClientCodes(new Set()); setMovedTemplateIds(new Set());
   }, [standard]);
 
-  useEffect(() => {
+useEffect(() => {
     if (!editingMapping) return;
     const cfTree = Array.isArray(editingMapping.cf_tree) ? editingMapping.cf_tree : [];
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -1238,9 +1422,21 @@ const undoRef = useRef(undo);
       walk(n.children);
     });
     walk(cfTree);
-    setMovedClientCodes(moved);
-  }, [editingMapping]);
-
+    if (isCustomEditor) {
+      // In CUSTOM mode, "moved" reflects only the accounts actually linked in
+      // cfMappingRows (not the whole standard template). Filter down.
+      const mappedCodes = new Set();
+      (cfMappingRows || []).forEach(r => {
+        const c = String(r.cashFlowAccountCode ?? r.CashFlowAccountCode ?? "");
+        if (c) mappedCodes.add(c);
+      });
+      const filtered = new Set();
+      moved.forEach(c => { if (mappedCodes.has(c)) filtered.add(c); });
+      setMovedClientCodes(filtered);
+    } else {
+      setMovedClientCodes(moved);
+    }
+  }, [editingMapping, isCustomEditor, cfMappingRows]);
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (baseTemplateTree.length > 0 && !templateTree) setTemplateTree(baseTemplateTree); }, [baseTemplateTree, templateTree]);
   // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -1264,6 +1460,15 @@ const undoRef = useRef(undo);
       codes.forEach(code => { if (code && templateCodes.has(code)) next.add(code); });
       return next;
     });
+console.log("[CF init mark] editingMapping:", !!editingMapping, "baseLen:", baseTemplateTree.length, "cfMappingRowsLen:", cfMappingRows?.length, "templateCodes size:", templateCodes.size);
+    const sampleMapping = cfMappingRows.slice(0, 3);
+    console.log("[CF init mark] sample cfMappingRows:", sampleMapping);
+    const codesFromMapping = [...new Set(cfMappingRows.map(r => String(r.cashFlowAccountCode ?? r.CashFlowAccountCode ?? "")))];
+    const matched = codesFromMapping.filter(c => c && templateCodes.has(c));
+    console.log("[CF init mark] unique cf codes in cfMappingRows:", codesFromMapping.length, "matched vs template:", matched.length);
+    console.log("[CF init mark] sample matched:", matched.slice(0, 10));
+    console.log("[CF client tree]", baseClientTree.slice(0, 5));
+console.log("[CF client tree count nodes]", (() => { let n=0; const w=(nds)=>nds.forEach(x=>{n++;w(x.children||[])}); w(baseClientTree); return n; })());
   }, [editingMapping, standard, baseTemplateTree, cfMappingRows]);
 
 const effectiveClientTree = useMemo(() => {
@@ -1282,7 +1487,29 @@ const effectiveClientTree = useMemo(() => {
     }));
     return updateNames(clientTree);
   }, [clientTree, baseClientTree]);
-  const effectiveTemplateTree = templateTree ?? baseTemplateTree;
+const effectiveTemplateTree = templateTree ?? baseTemplateTree;
+
+  // Set of codes/section_codes considered ORIGINAL (from baseline). In CUSTOM
+  // editor these can be repositioned but NOT renamed, deleted, or have their
+  // is_sum toggled. In non-custom mode nothing is protected.
+  const originalRowCodes = useMemo(() => {
+    if (!isCustomEditor || !customBaseline?.rows) return new Set();
+    const s = new Set();
+    customBaseline.rows.forEach(k => {
+      const [statement, code] = String(k).split("::");
+      if (statement === "CF") s.add(code);
+    });
+    return s;
+  }, [isCustomEditor, customBaseline]);
+  const originalSectionCodes = useMemo(() => {
+    if (!isCustomEditor || !customBaseline?.sections) return new Set();
+    const s = new Set();
+    customBaseline.sections.forEach(k => {
+      const [statement, code] = String(k).split("::");
+      if (statement === "CF") s.add(code);
+    });
+    return s;
+  }, [isCustomEditor, customBaseline]);
 
   const templateAmountsById = useMemo(() => {
     const out = new Map();
@@ -1309,7 +1536,7 @@ const effectiveClientTree = useMemo(() => {
   // ── Save ────────────────────────────────────────────────────
   const handleSave = async ({ asNew = false } = {}) => {
 if (!companyId || !authUserId) { setSaveError(t("cfm_err_not_auth")); return; }
-    if (!currentName.trim()) { setSaveError(t("cfm_err_name_required")); setShowSaveForm(true); return; }
+    if (!isCustomEditor && !currentName.trim()) { setSaveError(t("cfm_err_name_required")); setShowSaveForm(true); return; }
 
     const cfTree = templateTree ?? [];
     const effectiveMoved = new Set();
@@ -1330,53 +1557,175 @@ if (!companyId || !authUserId) { setSaveError(t("cfm_err_not_auth")); return; }
       return n;
     };
     const unmapped = countUnmapped(effectiveClientTree);
-    if (unmapped > 0 && (!editingMapping || asNew) && mappingKind !== "report") {
+if (!isCustomEditor && unmapped > 0 && (!editingMapping || asNew) && mappingKind !== "report") {
       setSaveError(unmapped === 1 ? t("cfm_err_unmapped_one") : `${t("cfm_err_unmapped_many_pre")} ${unmapped} ${t("cfm_err_unmapped_many_post")}`);
       setShowSaveForm(true);
       return;
     }
 
-    const trimmedName = currentName.trim().toLowerCase();
-    const nameConflict = existingMappings.find(m =>
-      String(m.name ?? "").trim().toLowerCase() === trimmedName &&
-      (asNew || !editingMapping || m.mapping_id !== editingMapping.mapping_id)
-    );
-    if (nameConflict) { setSaveError(`${t("cfm_err_name_exists_pre")} "${currentName.trim()}" ${t("cfm_err_name_exists_post")}`.trim()); setShowSaveForm(true); return; }
+if (!isCustomEditor) {
+      const trimmedName = currentName.trim().toLowerCase();
+      const nameConflict = existingMappings.find(m =>
+        String(m.name ?? "").trim().toLowerCase() === trimmedName &&
+        (asNew || !editingMapping || m.mapping_id !== editingMapping.mapping_id)
+      );
+      if (nameConflict) { setSaveError(`${t("cfm_err_name_exists_pre")} "${currentName.trim()}" ${t("cfm_err_name_exists_post")}`.trim()); setShowSaveForm(true); return; }
+    }
 
-    setSaving(true); setSaveError(null);
+setSaving(true); setSaveError(null);
     try {
       const highlightedArr = [...highlightedIds];
-if (editingMapping && !asNew) {
+      if (isCustomEditor) {
+        // Silent save: hidden override + direct persistence in standard_statement_rows/sections
+        let saved;
+        try {
+          saved = await upsertHiddenOverrideMapping({
+            companyId, userId: authUserId, standard,
+            cfTree, highlightedIds: highlightedArr,
+          });
+        } catch (up) {
+          console.error("[handleSave CF] upsertHiddenOverrideMapping THREW:", up);
+          throw up;
+        }
+        if (saved?.mapping_id) {
+          try {
+            await setActiveMappingSilently({ userId: authUserId, mappingId: saved.mapping_id });
+          } catch (sa) {
+            console.error("[handleSave CF] setActiveMappingSilently THREW:", sa);
+          }
+        }
+        onSaved?.(saved);
+
+if (customBaseline) {
+          try {
+console.log("[handleSave CF] cfTree root count:", cfTree.length);
+            console.log("[handleSave CF] cfTree root names:", cfTree.map(n => `${n.kind}: ${n.name ?? n.code}`));
+            console.log("[handleSave CF] templateTree === cfTree ref:", templateTree === cfTree);
+            console.log("[handleSave CF] customLiveRows count:", customLiveRows.length, "CF only:", customLiveRows.filter(r => r.statement === "CF").length);
+            const changes = diffCustomStandardCF({
+              cfTree,
+              baseline: customBaseline,
+              liveRows: customLiveRows,
+              liveSections: customLiveSections,
+            });
+            const hasAnyChange = Object.values(changes).some(arr => Array.isArray(arr) && arr.length > 0);
+            console.log("[custom-save CF] changes:", JSON.stringify(changes, null, 2));
+            if (hasAnyChange) {
+              await saveCustomStandard({
+                standardKey: standard,
+                changes,
+                baseline: customBaseline,
+                liveRows: customLiveRows,
+                liveSections: customLiveSections,
+              });
+              const fresh = await loadCustomStandard(standard);
+              setCustomBaseline(fresh.baseline);
+              setCustomLiveRows(fresh.rows);
+              setCustomLiveSections(fresh.sections);
+              try {
+                window.dispatchEvent(new CustomEvent("custom-standard-updated", { detail: { standardKey: standard } }));
+              } catch { /* ignore */ }
+            }
+          } catch (customErr) {
+            console.error("[CashFlowMapperView] saveCustomStandard failed:", customErr, customErr.details);
+            setSaveError(customErr.details?.join(" · ") ?? customErr.message);
+            return;
+          }
+        }
+      } else if (editingMapping && !asNew) {
         const updated = await api.update({ mappingId: editingMapping.mapping_id, userId: authUserId, name: currentName.trim(), description: currentDescription.trim() || null, cfTree, highlightedIds: highlightedArr, cfViewMode });
         onSaved?.(updated);
       } else {
         const created = await api.create({ companyId, userId: authUserId, name: currentName.trim(), description: currentDescription.trim() || null, standard, cfTree, highlightedIds: highlightedArr, cfViewMode });
         onSaved?.(created);
       }
-onDirtyChange?.(false);
+      onDirtyChange?.(false);
       setShowSaveForm(false);
     } catch (e) { setSaveError(e.message); } finally { setSaving(false); }
   };
 
-  useEffect(() => {
+useEffect(() => {
     if (saveRef) saveRef.current = () => {
-      if (!editingMapping) setShowSaveForm(true);
-      else setShowSaveChoice(true);
+      if (isCustomEditor) { handleSave(); }
+      else if (!editingMapping) { setShowSaveForm(true); }
+      else { setShowSaveChoice(true); }
     };
-    if (resetRef) resetRef.current = () => setShowResetConfirm(true);
+    if (resetRef) resetRef.current = () => {
+      if (isCustomEditor) { setShowRestoreBaselineConfirm(true); }
+      else { setShowResetConfirm(true); }
+    };
   });
 
-  // ── Handlers ────────────────────────────────────────────────
-  const handleReset = () => {
+// ── Handlers ────────────────────────────────────────────────
+const handleReset = () => {
     pushHistory();
     setClientTree(baseClientTree); setTemplateTree(baseTemplateTree);
     setMovedClientCodes(new Set()); setMovedTemplateIds(new Set()); setHighlightedIds(new Set());
   };
-  const handleAddBreaker = ({ name, color }) => {
+
+  const handleRestoreBaseline = async () => {
+    if (!isCustomEditor || !customBaseline) return;
+    setSaving(true); setSaveError(null);
+    try {
+      await restoreBaseline({
+        standardKey: standard,
+        baseline: customBaseline,
+        liveRows: customLiveRows,
+        liveSections: customLiveSections,
+      });
+      try {
+        await upsertHiddenOverrideMapping({
+          companyId, userId: authUserId, standard,
+          cfTree: [], highlightedIds: [],
+        });
+      } catch (e) { console.warn("[restore] clear override failed:", e); }
+      // Reload templates + baseline
+      const fresh = await loadCustomStandard(standard);
+      setCustomBaseline(fresh.baseline);
+      setCustomLiveRows(fresh.rows);
+      setCustomLiveSections(fresh.sections);
+      // Force re-fetch of tpl rows/sections that build the visible tree
+      const rowsUrl = `${SUPABASE_URL}/standard_statement_rows?select=*&standard_key=eq.${encodeURIComponent(standard)}&statement=eq.CF&order=sort_order.asc`;
+      const secsUrl = `${SUPABASE_URL}/standard_statement_sections?select=*&standard_key=eq.${encodeURIComponent(standard)}&statement=eq.CF&order=sort_order.asc`;
+      const [rowsRes, secsRes] = await Promise.all([
+        fetch(rowsUrl, { headers: sbHeaders }),
+        fetch(secsUrl, { headers: sbHeaders }),
+      ]);
+      const rows = await rowsRes.json(), secs = await secsRes.json();
+      setTplRows(Array.isArray(rows) ? rows : []);
+      setTplSections(Array.isArray(secs) ? secs : []);
+      // Reset visible tree + history
+      setTemplateTree(null);
+      setClientTree(null);
+      setMovedClientCodes(new Set());
+      setMovedTemplateIds(new Set());
+      setHighlightedIds(new Set());
+      historyRef.current = [];
+      onDirtyChange?.(false);
+      setShowRestoreBaselineConfirm(false);
+    } catch (e) {
+      console.error("[handleRestoreBaseline] failed:", e);
+      setSaveError(e.message);
+    } finally {
+      setSaving(false);
+    }
+};
+
+const handleAddBreaker = ({ name, color }) => {
     pushHistory();
     const nb = { id: `brk-${Date.now()}`, kind: "breaker", code: `__breaker__custom_${Date.now()}`, sectionCode: `custom_${Date.now()}`, name, color, children: [] };
     setTemplateTree(prev => [...(prev ?? []), nb]);
   };
+
+  const handleColorChange = (targetId, newColor) => {
+    pushHistory();
+    setTemplateTree(prev => walkTransform(prev ?? effectiveTemplateTree, n =>
+      (n.id === targetId || n.code === targetId) && n.kind === "breaker"
+        ? { ...n, color: newColor }
+        : n
+    ));
+  };
+
   const handleAddRow = ({ code, name, isSum, parentId = null }) => {
     pushHistory();
     const nn = { id: `new-${Date.now()}`, code, name, isSum, isSumAccount: isSum, sectionCode: null, showInSummary: false, sourceSide: "template", children: [] };
@@ -1394,23 +1743,102 @@ onDirtyChange?.(false);
     const cloned = cloneSubtree(sourceNode, sourceSide);
     setTemplateTree(prev => [...(prev ?? []), cloned]);
   };
-  const handleRename = (side, targetId, newName) => {
+const handleRename = (side, targetId, newName) => {
+    if (side === "template" && isCustomEditor) {
+      const node = findNodeById(effectiveTemplateTree, targetId);
+      if (node && node.kind !== "breaker" && originalRowCodes.has(String(node.code))) {
+        console.warn("[handleRename] blocked rename of original row", node.code);
+        return;
+      }
+    }
     pushHistory();
     if (side === "client") setClientTree(prev => renameNode(prev ?? effectiveClientTree, targetId, newName));
     else setTemplateTree(prev => renameNode(prev ?? effectiveTemplateTree, targetId, newName));
   };
 const handleDelete = (side, target) => {
-    pushHistory();
     const targets = Array.isArray(target) ? target : [target];
+    if (side === "template" && isCustomEditor) {
+      const blocked = [];
+      const allowed = [];
+      targets.forEach(id => {
+        const node = findNodeById(effectiveTemplateTree, id);
+        if (!node) { allowed.push(id); return; }
+        if (node.kind === "breaker" && originalSectionCodes.has(String(node.sectionCode ?? ""))) {
+          blocked.push(id); return;
+        }
+        if (node.kind !== "breaker" && originalRowCodes.has(String(node.code))) {
+          blocked.push(id); return;
+        }
+        allowed.push(id);
+      });
+      if (blocked.length > 0) {
+        console.warn("[handleDelete] blocked delete of originals", blocked);
+      }
+      if (allowed.length === 0) return;
+      target = Array.isArray(target) ? allowed : allowed[0];
+    }
+    pushHistory();
+    const finalTargets = Array.isArray(target) ? target : [target];
     if (side === "client") {
       setClientTree(prev => {
         let tree = prev ?? effectiveClientTree;
-        targets.forEach(id => { tree = deleteNode(tree, id); });
+        finalTargets.forEach(id => { tree = deleteNode(tree, id); });
         return tree;
       });
     } else {
       let newTree = effectiveTemplateTree;
-      targets.forEach(id => { newTree = deleteNode(newTree, id); });
+      // For each target being deleted in CUSTOM mode: if it contains ORIGINAL
+      // descendants, extract them (with their subtrees) and reinsert them
+      // as siblings of the deleted node before removing it. This preserves
+      // originals when a user-created wrapper is deleted.
+      if (isCustomEditor) {
+        finalTargets.forEach(id => {
+          const node = findNodeById(newTree, id);
+          if (!node || node.kind === "breaker") return;
+          // Find originals INSIDE this subtree (not the node itself — it's custom by design)
+          const salvage = [];
+          const walkSubtree = (n) => {
+            (n.children || []).forEach(child => {
+              if (child.kind === "breaker") { walkSubtree(child); return; }
+              const code = String(child.code ?? "");
+              if (originalRowCodes.has(code)) {
+                salvage.push(child);
+              } else {
+                walkSubtree(child);
+              }
+            });
+          };
+          walkSubtree(node);
+          if (salvage.length === 0) return;
+          // Find where 'node' lives (parent + index) so we can splice salvages there
+          const locate = (nodes, parent = null) => {
+            for (let i = 0; i < nodes.length; i++) {
+              const n = nodes[i];
+              if ((n.id ?? n.code) === (node.id ?? node.code)) return { parent, index: i, siblings: nodes };
+              const found = locate(n.children || [], n);
+              if (found) return found;
+            }
+            return null;
+          };
+          const loc = locate(newTree);
+          if (!loc) return;
+          // Remove salvages from wherever they are inside the node's subtree,
+          // then insert them right before the node in its parent list.
+          const stripFromTree = (tree, codes) => walkTransform(tree, x => {
+            if (x.kind !== "breaker" && codes.has(String(x.code))) return null;
+            return x;
+          });
+          const salvageCodes = new Set(salvage.map(s => String(s.code)));
+          const cleanedNode = stripFromTree([node], salvageCodes)[0];
+          const newParent = loc.parent ? { ...loc.parent, children: [...loc.siblings.slice(0, loc.index), ...salvage, cleanedNode, ...loc.siblings.slice(loc.index + 1)] } : null;
+          if (newParent) {
+            newTree = walkTransform(newTree, x => (x.id ?? x.code) === (newParent.id ?? newParent.code) ? newParent : x);
+          } else {
+            newTree = [...loc.siblings.slice(0, loc.index), ...salvage, cleanedNode, ...loc.siblings.slice(loc.index + 1)];
+          }
+        });
+      }
+      finalTargets.forEach(id => { newTree = deleteNode(newTree, id); });
       setTemplateTree(newTree);
       const remaining = new Set();
       const walk = (nodes) => (nodes || []).forEach(n => {
@@ -1536,8 +1964,10 @@ const handleDrop = ({ sourceNode, sourceSide, targetId, position, destSide }) =>
           onDelete={id => handleDelete("client", id)}
           onCopy={id => handleCopy("client", id)}
           accent={meta.accent}
-          activeMultiSide={activeMultiSide}
+activeMultiSide={activeMultiSide}
           onSetMultiSide={setActiveMultiSide}
+          isCustomEditor={isCustomEditor}
+          onRestoreBaseline={isCustomEditor ? () => setShowRestoreBaselineConfirm(true) : null}
         />
         <TemplatePanel
           mappingKind={mappingKind}
@@ -1551,17 +1981,40 @@ const handleDrop = ({ sourceNode, sourceSide, targetId, position, destSide }) =>
           onDrop={p => handleDrop({ ...p, destSide: "template" })}
           onRename={(id, name) => handleRename("template", id, name)}
           onDelete={id => handleDelete("template", id)}
-          onAddRow={handleAddRow}
+onAddRow={handleAddRow}
           onAddBreaker={handleAddBreaker}
+          onColorChange={handleColorChange}
+          originalRowCodes={originalRowCodes}
+          originalSectionCodes={originalSectionCodes}
           onCopy={id => handleCopy("template", id)}
           highlightedIds={highlightedIds}
           onToggleHighlight={id => { pushHistory(); setHighlightedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; }); }}
-          activeMultiSide={activeMultiSide}
+activeMultiSide={activeMultiSide}
           onSetMultiSide={setActiveMultiSide}
+          isCustomEditor={isCustomEditor}
+          onRestoreBaseline={isCustomEditor ? () => setShowRestoreBaselineConfirm(true) : null}
         />
       </div>
       {conflict && <ConflictModal duplicates={conflict.duplicates} onResolve={conflict.onResolve} />}
       {showSaveForm && <SaveMappingForm name={currentName} setName={setCurrentName} description={currentDescription} setDescription={setCurrentDescription} error={saveError} saving={saving} asNew={!!editingMapping} accent={meta.accent} onCancel={() => { setShowSaveForm(false); setSaveError(null); }} onSave={() => handleSave({ asNew: !!editingMapping })} />}
+{showRestoreBaselineConfirm && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-6" onClick={() => setShowRestoreBaselineConfirm(false)}>
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-md" />
+          <div className="relative bg-white rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="px-6 pt-6 pb-5" style={{ background: "linear-gradient(135deg, #dc2626 0%, #991b1b 100%)" }}>
+              <p className="text-white font-black text-lg leading-tight">Restore original standard</p>
+              <p className="text-white/70 text-[11px] mt-0.5">This will revert all custom edits back to the AI-generated baseline.</p>
+            </div>
+            <div className="p-5 space-y-2">
+              <p className="text-xs text-gray-500 leading-relaxed pb-2">All custom-added CF rows and sections will be deleted, and originals will be restored to their initial values. This cannot be undone.</p>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setShowRestoreBaselineConfirm(false)} className="flex-1 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all">Cancel</button>
+                <button onClick={handleRestoreBaseline} disabled={saving} className="flex-1 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-white transition-all hover:opacity-90 active:scale-[0.98] disabled:opacity-50" style={{ background: "linear-gradient(135deg, #dc2626 0%, #991b1b 100%)" }}>{saving ? "Restoring…" : "Restore"}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {showResetConfirm && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-6" onClick={() => setShowResetConfirm(false)}>
           <div className="absolute inset-0 bg-black/50 backdrop-blur-md" />
@@ -1824,7 +2277,7 @@ extra={
 }
 
 // ─── TemplatePanel ────────────────────────────────────────────
-function TemplatePanel({ mappingKind, templateAmountsById, tree, sectionByCode, loading, accent, standardLabel, movedIds, onDrop, onRename, onDelete, onAddRow, onAddBreaker, onCopy, highlightedIds, onToggleHighlight, activeMultiSide, onSetMultiSide }) {
+function TemplatePanel({ mappingKind, templateAmountsById, tree, sectionByCode, loading, accent, standardLabel, movedIds, onDrop, onRename, onDelete, onAddRow, onAddBreaker, onCopy, highlightedIds, onToggleHighlight, activeMultiSide, onSetMultiSide, isCustomEditor = false, onRestoreBaseline = null, onColorChange, originalRowCodes = new Set(), originalSectionCodes = new Set() }) {
   const t = useT();
   const [pendingParentId, setPendingParentId] = useState(null);
   const [showBreakerForm, setShowBreakerForm] = useState(false);
@@ -1898,6 +2351,16 @@ const filteredTree = useMemo(() => {
       isExpanded={isExpanded}
 extra={
         <div className="flex items-center gap-1">
+{isCustomEditor && onRestoreBaseline && (
+          <button onClick={onRestoreBaseline} title="Restore original standard"
+            className="group rounded-md flex items-center justify-center overflow-hidden transition-all flex-shrink-0"
+            style={{ height: TOGGLE_HEIGHT, paddingLeft: TOGGLE_PADDING_X, paddingRight: TOGGLE_PADDING_X, background: "#dc262610", color: "#dc2626" }}>
+            <svg width={TOGGLE_ICON_SIZE} height={TOGGLE_ICON_SIZE} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>
+            </svg>
+            <span className="overflow-hidden whitespace-nowrap font-black uppercase tracking-widest max-w-0 opacity-0 ml-0 group-hover:max-w-[110px] group-hover:opacity-100 group-hover:ml-1.5 transition-all duration-300 ease-out" style={{ fontSize: TOGGLE_LABEL_FONT_SIZE }}>Restore</span>
+          </button>
+        )}
        <button onClick={() => { const next = !multiMode; setMultiMode(next); setSelectedIds(new Set()); onSetMultiSide?.(next ? "template" : null); }} title={multiMode ? t("cfm_exit_multi") : t("cfm_multi_select")}
           className="group rounded-md flex items-center justify-center overflow-hidden transition-all flex-shrink-0"
           style={{ height: TOGGLE_HEIGHT, paddingLeft: TOGGLE_PADDING_X, paddingRight: TOGGLE_PADDING_X, background: multiMode ? accent : `${accent}10`, color: multiMode ? "white" : accent }}>
@@ -1962,7 +2425,10 @@ onDelete={id => {
                   onDelete(id);
                 }
               }}
-              onCopy={onCopy}
+onCopy={onCopy}
+              onColorChange={onColorChange}
+              originalRowCodes={originalRowCodes}
+              originalSectionCodes={originalSectionCodes}
               onAddChild={parentId => { setPendingParentId(parentId); setExpanded(prev => ({ ...prev, [`tpl-${parentId}`]: true })); }}
               sectionByCode={sectionByCode}
               highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight}
@@ -2033,7 +2499,8 @@ function DraggableTreeRow({
   amountsByCode = new Map(), templateAmountsById = new Map(),
   groupAmountsByCode = new Map(), leavesByGroup = new Map(),
   cfViewMode = "consolidated",
-  movedIds, onDrop, onRename, onDelete, onCopy, onAddChild,
+movedIds, onDrop, onRename, onDelete, onCopy, onAddChild, onColorChange,
+  originalRowCodes = new Set(), originalSectionCodes = new Set(),
   sectionByCode, highlightedIds, onToggleHighlight,
 multiMode = false, selectedIds = new Set(), onToggleSelect, clientTree, templateTree,
 }) {
@@ -2049,8 +2516,16 @@ multiMode = false, selectedIds = new Set(), onToggleSelect, clientTree, template
   const [dropZone, setDropZone] = useState(null);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(node.name);
-  const [hovering, setHovering] = useState(false);
+const [hovering, setHovering] = useState(false);
+  const [showColorPicker, setShowColorPicker] = useState(false);
   const editInputRef = useRef(null);
+  const colorPickerRef = useRef(null);
+  useEffect(() => {
+    if (!showColorPicker) return;
+    const handler = e => { if (colorPickerRef.current && !colorPickerRef.current.contains(e.target)) setShowColorPicker(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showColorPicker]);
   useEffect(() => { if (editing && editInputRef.current) { editInputRef.current.focus(); editInputRef.current.select(); } }, [editing]);
   const startEdit = e => { e.stopPropagation(); setEditValue(node.name); setEditing(true); };
   const commitEdit = () => { const trimmed = editValue.trim(); if (trimmed && trimmed !== node.name) onRename?.(node.id ?? node.code, trimmed); setEditing(false); };
@@ -2120,12 +2595,38 @@ const handleDragStart = e => {
           {editing ? (
             <input ref={editInputRef} type="text" value={editValue} onChange={e => setEditValue(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} onKeyDown={e => { e.stopPropagation(); if (e.key === "Enter") commitEdit(); if (e.key === "Escape") cancelEdit(); }} onBlur={commitEdit} className="text-xs flex-1 min-w-0 px-2 py-0.5 rounded border border-white/40 outline-none focus:border-white bg-white/15 text-white uppercase tracking-widest font-black" />
           ) : <span className="text-xs flex-1 min-w-0 truncate font-black uppercase tracking-widest text-white">{node.name}</span>}
-          {!editing && hovering && (
+{!editing && (hovering || showColorPicker) && (() => {
+            const isOriginalBreaker = side === "template" && originalSectionCodes.has(String(node.sectionCode ?? ""));
+            return (
             <div className="flex items-center gap-0.5 flex-shrink-0">
               <button onClick={startEdit} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white"><Pencil size={13} /></button>
-              <button onClick={e => { e.stopPropagation(); onDelete?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white"><Trash2 size={13} /></button>
+              {onColorChange && (
+                <div ref={colorPickerRef} className="relative" onMouseDown={e => e.stopPropagation()}>
+                  <button onClick={e => { e.stopPropagation(); setShowColorPicker(v => !v); }} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white" title="Cambiar color">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>
+                  </button>
+                  {showColorPicker && (
+                    <div className="absolute top-full right-0 mt-1 z-50 bg-white rounded-xl shadow-2xl p-2.5 border border-gray-100" style={{ minWidth: 200 }} onClick={e => e.stopPropagation()}>
+                      <div className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-2 px-1">Color de sección</div>
+                      <div className="grid grid-cols-6 gap-1.5">
+                        {["#0891b2","#CF305D","#374151","#57aa78","#dc7533","#7c3aed","#1a2f8a","#ca8a04"].map(c => (
+                          <button key={c} onClick={() => { onColorChange(node.id ?? node.code, c); setShowColorPicker(false); }} className="w-7 h-7 rounded-lg transition-all hover:scale-110" style={{ backgroundColor: c, boxShadow: (node.color || "").toLowerCase() === c.toLowerCase() ? `0 0 0 2px white, 0 0 0 3.5px ${c}` : "none", transform: (node.color || "").toLowerCase() === c.toLowerCase() ? "scale(1.12)" : "scale(1)" }} title={c} />
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-2 mt-2.5 pt-2.5 border-t border-gray-100">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-gray-400 flex-shrink-0">Personalizado</span>
+                        <input type="color" value={node.color || "#374151"} onChange={e => onColorChange(node.id ?? node.code, e.target.value)} className="w-6 h-6 rounded-md cursor-pointer border border-gray-200 p-0 bg-transparent" style={{ appearance: "none" }} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+{!isOriginalBreaker && (
+                <button onClick={e => { e.stopPropagation(); onDelete?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white"><Trash2 size={13} /></button>
+              )}
             </div>
-          )}
+            );
+          })()}
         </div>
         {dropZone === "after" && dropLine}
 {isOpen && hasChildren && node.children.map(child => (
@@ -2134,8 +2635,8 @@ const handleDragStart = e => {
             side={side} mappingKind={mappingKind} hideAmounts={hideAmounts} hideZero={hideZero}
             amountsByCode={amountsByCode} templateAmountsById={templateAmountsById}
             groupAmountsByCode={groupAmountsByCode} leavesByGroup={leavesByGroup} cfViewMode={cfViewMode}
-            movedIds={movedIds} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onCopy={onCopy}
-            onAddChild={onAddChild} sectionByCode={sectionByCode}
+movedIds={movedIds} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onCopy={onCopy}
+            onColorChange={onColorChange} originalRowCodes={originalRowCodes} originalSectionCodes={originalSectionCodes} onAddChild={onAddChild} sectionByCode={sectionByCode}
             highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight}
             multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect}
             clientTree={clientTree} templateTree={templateTree}
@@ -2172,24 +2673,27 @@ className={`flex-1 min-w-0 flex items-center gap-2 px-2 py-2.5 rounded-lg transi
             const amt = side === "client" ? amountsByCode.get(node.code) : templateAmountsById.get(node.id ?? node.code);
             return <AnimatedAmount value={amt} hidden={hideAmounts} />;
           })()}
-          {!editing && hovering && (
+{!editing && hovering && (() => {
+            const isOriginalRowNode = side === "template" && node.kind !== "breaker" && originalRowCodes.has(String(node.code));
+            return (
             <div className="flex items-center gap-0.5 flex-shrink-0">
 {onAddChild && isSum && <button onClick={e => { e.stopPropagation(); onAddChild?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} title={t("cfm_add_child_row")} className="w-6 h-6 rounded flex items-center justify-center hover:bg-emerald-50 text-gray-400 hover:text-emerald-600"><Plus size={14} /></button>}
-              <button onClick={startEdit} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-[#0891b2]/10 text-gray-400 hover:text-[#0891b2]"><Pencil size={13} /></button>
+              {!isOriginalRowNode && <button onClick={startEdit} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-[#0891b2]/10 text-gray-400 hover:text-[#0891b2]"><Pencil size={13} /></button>}
               {mappingKind === "report" && <button onClick={e => { e.stopPropagation(); onCopy?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} title={t("cfm_duplicate_to_template")} className="w-6 h-6 rounded flex items-center justify-center hover:bg-indigo-50 text-gray-400 hover:text-indigo-600"><Copy size={12} /></button>}
               {side !== "client" && (
                 <>
                   <button onClick={e => { e.stopPropagation(); onToggleHighlight?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center" style={{ color: highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : undefined }}>
                     <svg width="13" height="13" viewBox="0 0 24 24" fill={highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : "none"} stroke={highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
                   </button>
-                  <button onClick={e => { e.stopPropagation(); onDelete?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-red-50 text-gray-400 hover:text-red-500"><Trash2 size={13} /></button>
+                  {!isOriginalRowNode && <button onClick={e => { e.stopPropagation(); onDelete?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-red-50 text-gray-400 hover:text-red-500"><Trash2 size={13} /></button>}
                 </>
               )}
-              {side === "client" && mappingKind === "report" && (
+{side === "client" && mappingKind === "report" && (
                 <button onClick={e => { e.stopPropagation(); onDelete?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-red-50 text-gray-400 hover:text-red-500"><Trash2 size={13} /></button>
               )}
             </div>
-          )}
+            );
+          })()}
           {editing && (
             <div className="flex items-center gap-0.5 flex-shrink-0">
               <button onMouseDown={e => { e.preventDefault(); commitEdit(); }} className="w-5 h-5 rounded flex items-center justify-center hover:bg-emerald-50 text-emerald-500"><Check size={10} /></button>

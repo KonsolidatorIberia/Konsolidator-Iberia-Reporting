@@ -154,6 +154,7 @@ import { useTypo, useSettings, useSettingsControls } from "./SettingsContext";
 import { useLatestPeriod } from "./LatestPeriodContext.jsx";
 import { t } from "../../lib/i18n";
 import PageHeader, { FilterPill as HeaderFilterPill, MultiFilterPill } from "./PageHeader.jsx";
+import { useCurrentUserResourceAccess } from "../../lib/userPermissionsApi";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import { saveAs } from "file-saver";
@@ -832,7 +833,7 @@ function FilterPill({ label, value, onChange, options }) {
 }
 
 const INDENT = 14;
-const DimensionRow = React.memo(function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null, valCache = null, cmpCache = null, isAnimatingData = false, tableJustLoaded = false, cmpRecentlyToggled = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), onToggleDrillAccount = null, statementType = "pl", selGroups = new Set(), selDims = new Set(), sign = -1, groupAccounts = [], masterCompany = "", computeDrillCompanyRows = null, dimNameToCodes = null }) {
+const DimensionRow = React.memo(function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, getLocalVal = null, getCmpLocalVal = null, localPivot = null, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null, valCache = null, cmpCache = null, isAnimatingData = false, tableJustLoaded = false, cmpRecentlyToggled = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), onToggleDrillAccount = null, statementType = "pl", selGroups = new Set(), selDims = new Set(), sign = -1, groupAccounts = [], masterCompany = "", computeDrillCompanyRows = null, dimNameToCodes = null }) {
   const subbody2Style = useTypo("subbody2");
   const code = node.AccountCode;
 if (code === "600000") {
@@ -889,7 +890,8 @@ const getNodeVal = (dimKey) => {
       } else {
         v = getVal(n.AccountCode, dimKey);
       }
-      if (valCache) valCache.set(k, v);
+if (valCache) valCache.set(k, v);
+     if (n.AccountCode === "D.PL") console.log("[DPL sumNode]", { dimKey, childrenSum: (n.children||[]).map(c => ({code:c.AccountCode, v: sumNode(c, depth+1)})), final: v });
       return v;
     };
     return sumNode(node);
@@ -943,9 +945,12 @@ const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 
                   {isExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
                 </span>
               : <span className="inline-block mr-2" style={{ width: 12 }} />}
-            <span className="flex-shrink-0 mr-2" style={subbody2Style}>{code}</span>
-            <span className="truncate max-w-[280px]" style={rowStyle}>{node.AccountName ?? node.accountName ?? ""}</span>
-{onToggleDrillAccount && !compareMode && (() => {
+<span className="flex-shrink-0 mr-2 font-mono text-gray-400" style={subbody2Style}>{code}</span>
+            <span className="truncate max-w-[280px]" style={rowStyle}>{(() => {
+              const n = String(node.AccountName ?? node.accountName ?? "");
+              return n ? n.charAt(0).toUpperCase() + n.slice(1).toLowerCase() : "";
+            })()}</span>
+{onToggleDrillAccount && (() => {
               const isDrilled = drillExpanded.has(code);
               return (
                 <button
@@ -1075,11 +1080,59 @@ if (!window.__drillFlatDebugged?.has(code)) {
             </tr>
           );
         });
+})()}
+{isExpanded && (() => {
+        console.log('[LOCAL DEBUG]', code, {
+          isExpanded,
+          hasLocalPivot: !!localPivot,
+          localPivotSize: localPivot?.size,
+          hasGetLocalVal: !!getLocalVal,
+          localsForThisCode: localPivot?.get(String(code)),
+          codeType: typeof code,
+        });
+        if (!localPivot || !getLocalVal) return null;
+        const localsMap = localPivot.get(String(code));
+        if (!localsMap || localsMap.size === 0) return null;
+      return [...localsMap.entries()].map(([lac, info]) => {
+          const rowTotalLoc = dimCols.reduce((s, d) => s + getLocalVal(code, lac, d.code ?? "__none__"), 0);
+          return (
+            <tr key={`${code}__lac__${lac}`} className="border-b border-gray-100 bg-white hover:bg-[#eef1fb]/60">
+              <td className="py-2 sticky left-0 z-10 border-r border-gray-100 bg-white"
+                  style={{ paddingLeft: `${16 + (depth + 1) * INDENT}px`, minWidth: 300 }}>
+                <div className="flex items-center">
+                  <span className="inline-block mr-2" style={{ width: 12 }} />
+                  <span className="flex-shrink-0 mr-2 font-mono text-gray-400" style={subbody2Style}>{lac}</span>
+                  <span className="truncate max-w-[280px]" style={body2Style}>{
+                    info.name ? (info.name.charAt(0).toUpperCase() + info.name.slice(1).toLowerCase()) : ""
+                  }</span>
+                </div>
+              </td>
+              {dimCols.map(d => {
+                const dk = d.code ?? "__none__";
+                const val = getLocalVal(code, lac, dk);
+                if (!cmpVisible) return <DimAmountCell key={dk} value={val} typoStyle={body2Style} animate={isAnimatingData} />;
+                const cmpVal = getCmpLocalVal ? getCmpLocalVal(code, lac, dk) : 0;
+                const diff = val - cmpVal;
+                const pct = cmpVal !== 0 ? (diff / Math.abs(cmpVal)) * 100 : null;
+                const devColor = diff === 0 ? "#9ca3af" : (diff > 0 ? "#059669" : "#dc2626");
+                return (
+                  <React.Fragment key={dk}>
+                    <DimAmountCell value={val} typoStyle={body2Style} animate={isAnimatingData} />
+                    <DimAmountCell value={cmpVal} typoStyle={body2Style} animate={isAnimatingData} bgColor="#fafbff" />
+                    <DimDiffCell value={diff} animate={isAnimatingData} color={devColor} width={110} bgColor="#f5f7ff" />
+                    <DimPctCell value={pct} animate={isAnimatingData} color={devColor} width={90} bgColor="#f0f3ff" />
+                  </React.Fragment>
+                );
+              })}
+              {!cmpVisible && <DimAmountCell value={rowTotalLoc} typoStyle={body2Style} animate={isAnimatingData} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
+            </tr>
+          );
+        });
       })()}
 {isExpanded && hasChildren && visibleChildren.map((child, ci) => (
 <DimensionRow key={child.AccountCode} node={child} depth={depth + 1}
           expandedSet={expandedSet} onToggle={onToggle}
-          dimCols={dimCols} getVal={getVal} getCmpVal={getCmpVal} compareMode={compareMode} cmpVisible={cmpVisible} cmpExiting={cmpExiting}
+         dimCols={dimCols} getVal={getVal} getCmpVal={getCmpVal} getLocalVal={getLocalVal} getCmpLocalVal={getCmpLocalVal} localPivot={localPivot} compareMode={compareMode} cmpVisible={cmpVisible} cmpExiting={cmpExiting}
           body1Style={body1Style} body2Style={body2Style}
           header2Style={header2Style} colors={colors}
           excludeCodes={excludeCodes} rowIndex={rowIndex + ci + 1}
@@ -1202,7 +1255,7 @@ function AccountsTab({ data }) {
 
 
 /* ── Pivot Tab ────────────────────────────────────────────── */
-function PivotTab({ data, dimensions, groupAccounts = [], selGroups = new Set(), selDims = new Set(), compareMode, statementType = "pl", externalViewMode = null, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), drillPrevRows = [], onToggleDrillAccount = () => {}, activeStandardKey = null }) {
+function PivotTab({ data, dimensions, groupAccounts = [], selGroups = new Set(), selDims = new Set(), compareMode, statementType = "pl", externalViewMode = null, sources = [], structures = [], companies = [], allowedCompanies = null, token = "", onFilterSnapshotChange = null,masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), drillPrevRows = [], onToggleDrillAccount = () => {}, activeStandardKey = null }) {
   console.log('[PivotTab.mount]', { statementType, hasCustomMapping, hasPlMap: !!plMapping, hasBsMap: !!bsMapping, plRowsSize: plMapping?.rows?.size, plInstancesLen: plMapping?.instances?.length });
 
 const header2Style = useTypo("header2");
@@ -1259,9 +1312,11 @@ const cmpVisible = compareMode || cmpExiting;
   const setExpandedSet = statementType === "pl" ? setExpandedSetPL : setExpandedSetBS;
 
 // Track viewport so we can window large render passes.
-  const [scrollTop, setScrollTop] = useState(0);
+const [scrollTop, setScrollTop] = useState(0);
   const [bodyHeight, setBodyHeight] = useState(800);
-
+  // Per-local drill toggle. Reuses parent's drillCache filtered by LocalAccountCode,
+  // so we don't need to fetch any new data. Key: `${parentCode}|${lac}`.
+  const [drillExpandedLocals, setDrillExpandedLocals] = useState(new Set());
   // Three short-lived animation flags. Each one gates a specific animation so
   // it only fires on the event that warrants it, never during scroll or expand.
   //   - isAnimatingData : true for ~1s after pivot identity changes (count-up)
@@ -1298,8 +1353,8 @@ const toggleExpand = useCallback(code => {
   }, [setExpandedSet]);
 
 // Build pivot from data
-const { accountMap: allAccountMap, dimCols, pivot } = useMemo(() => {
-    if (!data.length) return { accountMap: new Map(), dimCols: [], pivot: new Map() };
+const { accountMap: allAccountMap, dimCols, pivot, localPivot } = useMemo(() => {
+    if (!data.length) return { accountMap: new Map(), dimCols: [], pivot: new Map(), localPivot: new Map() };
 
     // Filter rows by selected group: keep rows that have AT LEAST ONE dim
     // in the selected group, OR rows with no dim at all (totals).
@@ -1430,7 +1485,35 @@ const targetType = statementType === "bs" ? "B/S" : "P/L";
       }
     });
 
-return { accountMap, dimCols, pivot };
+// Local-account pivot for drill-down under each group account.
+    const localPivot = new Map();
+    rows.forEach(r => {
+      const ac  = r.AccountCode ?? r.accountCode ?? "";
+      const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
+      if (!ac || !lac || lac === "—") return;
+      const acType = r.AccountType ?? r.accountType ?? "";
+      const targetType = statementType === "bs" ? "B/S" : "P/L";
+      if (acType && acType !== targetType) return;
+      const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? r.AmountPeriod ?? r.amountPeriod ?? 0);
+      const lname = r.LocalAccountName ?? r.localAccountName ?? "";
+      if (!localPivot.has(ac)) localPivot.set(ac, new Map());
+      const locals = localPivot.get(ac);
+      if (!locals.has(lac)) locals.set(lac, { name: lname, dims: new Map() });
+      const local = locals.get(lac);
+      if (lname && !local.name) local.name = lname;
+      const pairs = parseDimensions(r.Dimensions);
+      if (pairs.length === 0) {
+        local.dims.set("__none__", (local.dims.get("__none__") ?? 0) + amt);
+        return;
+      }
+      for (const [group, code] of pairs) {
+        if (selGroups.size > 0 && !selGroups.has(group)) continue;
+        if (selDims.size > 0 && !selDims.has(code)) continue;
+        local.dims.set(code, (local.dims.get(code) ?? 0) + amt);
+      }
+    });
+
+    return { accountMap, dimCols, pivot, localPivot };
 }, [data, selGroups, selDims, groupAccounts, statementType, dimensions, T]);
 
 // Row slide-in fires only when the table itself appears: first time data lands,
@@ -1531,9 +1614,11 @@ const [cmp3Source]    = useState(masterSource);
 const [line, setLine] = useState("all");
 const viewMode = externalViewMode ?? "monthly";
 const [prevPivot] = useState(new Map());
-  const [prevPivotMain, setPrevPivotMain] = useState(new Map());
+const [prevPivotMain, setPrevPivotMain] = useState(new Map());
   const [prevPivot2, setPrevPivot2] = useState(new Map());
   const [prevPivot3, setPrevPivot3] = useState(new Map());
+  const [prevLocalPivotMain, setPrevLocalPivotMain] = useState(new Map());
+  const [prevLocalPivot2, setPrevLocalPivot2] = useState(new Map());
 
 const getVal = useCallback((ac, dk) => {
     const ytd = (pivot.get(ac)?.get(dk) ?? 0) * sign;
@@ -1541,6 +1626,13 @@ const getVal = useCallback((ac, dk) => {
     const prevYtd = (prevPivotMain.get(ac)?.get(dk) ?? 0) * sign;
     return ytd - prevYtd;
   }, [pivot, prevPivotMain, sign, viewMode]);
+
+  const getLocalVal = useCallback((ac, lac, dk) => {
+    const ytd = (localPivot.get(ac)?.get(lac)?.dims.get(dk) ?? 0) * sign;
+    if (viewMode === "ytd") return ytd;
+    const prevYtd = (prevLocalPivotMain.get(ac)?.get(lac)?.dims.get(dk) ?? 0) * sign;
+    return ytd - prevYtd;
+  }, [localPivot, prevLocalPivotMain, sign, viewMode]);
 
   // Dim name → code resolver. Mapping instances store dims as "Group:Name"
   // but dimCols are keyed by code (e.g. "1" for "Producción"). Build a
@@ -1572,7 +1664,11 @@ const getVal = useCallback((ac, dk) => {
   // changes (data/sign/viewMode shifts), the cache resets.
   const valCache = useMemo(() => { void getVal; return new Map(); }, [getVal]);
 
-  const [cmp2Data, setCmp2Data] = useState([]);
+const [cmp2Data, setCmp2Data] = useState([]);
+  // Cross-company cmp rows for the drill-by-company view. `cmp2Data` is
+  // filtered to `cmp2Company` at fetch time; the drill needs every company.
+  const [drillCmpAllRows, setDrillCmpAllRows] = useState([]);
+  const [drillCmpAllPrevRows, setDrillCmpAllPrevRows] = useState([]);
   const [cmp3Data, setCmp3Data] = useState([]);
 const [, setCmp2Loading] = useState(false);
   const [, setCmp3Loading] = useState(false);
@@ -1600,13 +1696,46 @@ const acType = r.AccountType ?? r.accountType ?? "";
         if (dimFilter.size > 0 && !dimFilter.has(code)) continue;
         if (!p.has(ac)) p.set(ac, new Map());
         p.get(ac).set(code, (p.get(ac).get(code) ?? 0) + amt);
-      }
+}
     });
     return p;
 }, [selGroups, selDims, statementType]);
 
+// Local-account pivot: same shape as pivot but nested by LocalAccountCode.
+// Map<AccountCode, Map<LocalAccountCode, { name, dims: Map<dimCode, amount> }>>
+const buildLocalPivot = useCallback((rows, grpFilter = selGroups, dimFilter = selDims) => {
+  const p = new Map();
+  rows.forEach(r => {
+    const ac  = r.AccountCode ?? r.accountCode ?? "";
+    const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
+    if (!ac || !lac || lac === "—") return;
+    const acType = r.AccountType ?? r.accountType ?? "";
+    const targetType = statementType === "bs" ? "B/S" : "P/L";
+    if (acType && acType !== targetType) return;
+    const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+    const lname = r.LocalAccountName ?? r.localAccountName ?? "";
+    if (!p.has(ac)) p.set(ac, new Map());
+    const locals = p.get(ac);
+    if (!locals.has(lac)) locals.set(lac, { name: lname, dims: new Map() });
+    const local = locals.get(lac);
+    if (lname && !local.name) local.name = lname;
+    const pairs = parseDimensions(r.Dimensions);
+    if (pairs.length === 0) {
+      local.dims.set("__none__", (local.dims.get("__none__") ?? 0) + amt);
+      return;
+    }
+    for (const [group, code] of pairs) {
+      if (grpFilter.size > 0 && !grpFilter.has(group)) continue;
+      if (dimFilter.size > 0 && !dimFilter.has(code)) continue;
+      local.dims.set(code, (local.dims.get(code) ?? 0) + amt);
+    }
+  });
+  return p;
+}, [selGroups, selDims, statementType]);
+
 const pivot2 = useMemo(() => buildPivot(cmp2Data, cmp2SelGroups, cmp2SelDims), [cmp2Data, cmp2SelGroups, cmp2SelDims, buildPivot]);
   const pivot3 = useMemo(() => buildPivot(cmp3Data), [cmp3Data, buildPivot]);
+  const localPivot2 = useMemo(() => buildLocalPivot(cmp2Data, cmp2SelGroups, cmp2SelDims), [cmp2Data, cmp2SelGroups, cmp2SelDims, buildLocalPivot]);
 
 // Same cache-invalidation pattern as valCache — deps are referenced via
   // `void` so ESLint sees them as used.
@@ -1640,7 +1769,7 @@ const fetchCmpData = useCallback(async (yr, mo, src, str, co, setter, loadSetter
     const yr = Number(masterYear);
     const prevMo = mo === 1 ? 12 : mo - 1;
     const prevYr = mo === 1 ? yr - 1 : yr;
-    fetchCmpData(String(prevYr), String(prevMo), masterSource, masterStructure, masterCompany, (d) => setPrevPivotMain(buildPivot(d)), () => {});
+  fetchCmpData(String(prevYr), String(prevMo), masterSource, masterStructure, masterCompany, (d) => { setPrevPivotMain(buildPivot(d)); setPrevLocalPivotMain(buildLocalPivot(d)); }, () => {});
   }, [viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, fetchCmpData, buildPivot]);
 
 
@@ -1658,7 +1787,7 @@ useEffect(() => {
     const yr = Number(cmp2Year);
     const prevMo = mo === 1 ? 12 : mo - 1;
     const prevYr = mo === 1 ? yr - 1 : yr;
-    fetchCmpData(String(prevYr), String(prevMo), cmp2Source, cmp2Structure, cmp2Company, (d) => setPrevPivot2(buildPivot(d)), () => {});
+fetchCmpData(String(prevYr), String(prevMo), cmp2Source, cmp2Structure, cmp2Company, (d) => { setPrevPivot2(buildPivot(d)); setPrevLocalPivot2(buildLocalPivot(d));  }, () => {});
   }, [compareMode, viewMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, fetchCmpData, buildPivot]);
 
   useEffect(() => {
@@ -1668,7 +1797,46 @@ useEffect(() => {
     const prevMo = mo === 1 ? 12 : mo - 1;
     const prevYr = mo === 1 ? yr - 1 : yr;
     fetchCmpData(String(prevYr), String(prevMo), cmp3Source, cmp3Structure, cmp3Company, (d) => setPrevPivot3(buildPivot(d)), () => {});
-  }, [compareMode, viewMode, cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3Company, fetchCmpData, buildPivot]);
+}, [compareMode, viewMode, cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3Company, fetchCmpData, buildPivot]);
+
+  // Fetch cmp period across ALL companies for the drill-by-company view.
+  // Same period params as cmp2Data but NO CompanyShortName filter.
+useEffect(() => {
+    if (!compareMode || drillExpanded.size === 0) return;
+    if (!cmp2Year || !cmp2Month || !cmp2Source || !cmp2Structure || !token) return;
+    let cancelled = false;
+    const fetchAllCos = async (yr, mo) => {
+      const filter = `Year eq ${yr} and Month eq ${mo} and Source eq '${cmp2Source}' and GroupStructure eq '${cmp2Structure}'`;
+      const res = await fetch(
+        `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
+        { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Cache-Control": "no-cache" } }
+      );
+      if (!res.ok) return [];
+      const j = await res.json();
+      return j.value ?? (Array.isArray(j) ? j : []);
+    };
+fetchAllCos(cmp2Year, cmp2Month).then(rows => {
+      if (cancelled) return;
+      const filtered = allowedCompanies
+        ? rows.filter(r => allowedCompanies.has(String(r.CompanyShortName ?? r.companyShortName ?? "")))
+        : rows;
+      setDrillCmpAllRows(filtered);
+    }).catch(() => {});
+    if (viewMode === "monthly") {
+      const moN = Number(cmp2Month);
+      const yrN = Number(cmp2Year);
+      const prevMo = moN === 1 ? 12 : moN - 1;
+      const prevYr = moN === 1 ? yrN - 1 : yrN;
+fetchAllCos(String(prevYr), String(prevMo)).then(rows => {
+        if (cancelled) return;
+        const filtered = allowedCompanies
+          ? rows.filter(r => allowedCompanies.has(String(r.CompanyShortName ?? r.companyShortName ?? "")))
+          : rows;
+        setDrillCmpAllPrevRows(filtered);
+}).catch(() => {});
+    }
+    return () => { cancelled = true; };
+  }, [compareMode, drillExpanded, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, viewMode, token]);
 
 const cmp2DimGroups = useMemo(() => {
     const seen = new Set();
@@ -1797,7 +1965,8 @@ const displayedTree = useMemo(() => {
 // Pass the CUSTOM standard mapping (when active) so buildTree uses
     // parent_code from the standard rather than SumAccountCode from the
     // client's chart of accounts.
-    const activeStdMapping = statementType === "pl" ? plMapping : bsMapping;
+const activeStdMapping = statementType === "pl" ? plMapping : bsMapping;
+    console.log("[Dim displayedTree]", statementType, "groupMap size:", groupMap.size, "stdMapping rows:", activeStdMapping?.rows?.size, "has 999:", activeStdMapping?.rows?.has("999"), "has 888:", activeStdMapping?.rows?.has("888"), "has A.01:", activeStdMapping?.rows?.has("A.01"), "A.01 parent:", activeStdMapping?.rows?.get("A.01")?.parent_code);
     return buildTree([...groupMap.values()], activeStdMapping);
  }, [data, groupAccounts, statementType, plMapping, bsMapping]);
 
@@ -2521,9 +2690,9 @@ const leafVal = (n, dimKey) => {
         }
         return valFor(n.code, dimKey);
       };
-      const sumLitForDim = (n, dimKey, depth = 0) => {
+const sumLitForDim = (n, dimKey, depth = 0) => {
         if (depth > 50) return 0;
-        if (n.isSum && n.children && n.children.length > 0) {
+        if (n.children && n.children.length > 0) {
           return n.children.reduce((s, c) => s + sumLitForDim(c, dimKey, depth + 1), 0);
         }
         return leafVal(n, dimKey);
@@ -2539,9 +2708,9 @@ const leafVal = (n, dimKey) => {
         }
         return cmpValFor(n.code, dimKey);
       };
-      const sumLitCmpForDim = (n, dimKey, depth = 0) => {
+const sumLitCmpForDim = (n, dimKey, depth = 0) => {
         if (depth > 50) return 0;
-        if (n.isSum && n.children && n.children.length > 0) {
+        if (n.children && n.children.length > 0) {
           return n.children.reduce((s, c) => s + sumLitCmpForDim(c, dimKey, depth + 1), 0);
         }
         return leafCmpVal(n, dimKey);
@@ -2605,6 +2774,92 @@ if (node.children && node.children.length > 0) {
             if (excludeCodes && excludeCodes.has(String(c.code ?? c.AccountCode ?? ""))) return;
             renderRow(c, depth + 1, mode, excludeCodes);
           });
+        }
+
+        // Also emit rows for local accounts under this node's code (mirrors the on-screen
+        // walkLit that pushes descriptors of kind "local"). Respects node.dims filter so
+        // dim-filtered mapping rows only show their matching locals.
+        if (localPivot && node.code) {
+          const localsForNode = localPivot.get(String(node.code));
+          if (localsForNode && localsForNode.size > 0) {
+            const hasDimFilter = !!(node.dims && node.dims.length > 0);
+            const isDimAccepted = (dkStr) => {
+              if (!hasDimFilter) return true;
+              return node.dims.some(d => {
+                const s = String(d);
+                if (s === dkStr) return true;
+                const i = s.indexOf(":");
+                const nameOrValue = i === -1 ? s : s.slice(i + 1);
+                const groupHint = i === -1 ? "" : s.slice(0, i);
+                if (String(nameOrValue) === dkStr) return true;
+                for (const dd of (dimensions || [])) {
+                  const gg = String(dd.DimensionGroup ?? dd.dimensionGroup ?? "");
+                  const nn = String(dd.DimensionName ?? dd.dimensionName ?? "");
+                  const cc = String(dd.DimensionCode ?? dd.dimensionCode ?? "");
+                  if (!cc) continue;
+                  if (groupHint && groupHint !== gg) continue;
+                  if (nn === nameOrValue && cc === dkStr) return true;
+                }
+                return false;
+              });
+            };
+            const acceptedDimSet = hasDimFilter
+              ? new Set(visibleDims.map(d => String(d.code ?? "__none__")).filter(dk => isDimAccepted(dk)))
+              : null;
+            localsForNode.forEach((info, lac) => {
+              // Skip locals that have no postings in any accepted dim (matches app filtering)
+              if (hasDimFilter) {
+                let anyMatch = false;
+                for (const [dk, amt] of info.dims.entries()) {
+                  if (amt !== 0 && acceptedDimSet.has(String(dk))) { anyMatch = true; break; }
+                }
+                if (!anyMatch) return;
+              }
+              const locDepth = Math.min(7, depth + 1);
+              maxDepth = Math.max(maxDepth, depth + 1);
+              const band = dataIdx % 2 === 0 ? C.band1 : C.band2;
+              dataIdx++;
+              const labelCell = ws.getCell(curRow, 1);
+              const nameRaw = String(info.name ?? lac);
+              const capName = nameRaw ? nameRaw.charAt(0).toUpperCase() + nameRaw.slice(1).toLowerCase() : "";
+              labelCell.value = { richText: [
+                { text: `${lac}  `, font: { name: "Calibri", size: 9, color: { argb: "FF6B7280" } } },
+                { text: capName,    font: { name: "Calibri", size: 10, color: { argb: "FF2F3138" } } },
+              ] };
+              labelCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
+              labelCell.alignment = { vertical: "middle", horizontal: "left", indent: locDepth + 1 };
+              labelCell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+
+              let localRowTotal = 0;
+              visibleDims.forEach((dim, i) => {
+                const dk = dim.code ?? "__none__";
+                const accepted = !acceptedDimSet || acceptedDimSet.has(String(dk));
+                const a = accepted ? (typeof getLocalVal === "function" ? getLocalVal(node.code, lac, dk) : 0) : 0;
+                localRowTotal += a;
+                if (sheetCompare) {
+                  const startCol = 2 + i * 4;
+                  const c = accepted && typeof getCmpLocalVal === "function" ? getCmpLocalVal(node.code, lac, dk) : 0;
+                  const delta    = (Number.isFinite(a) && Number.isFinite(c)) ? a - c : null;
+                  const deltaPct = (Number.isFinite(a) && Number.isFinite(c) && Math.abs(c) > 1e-9) ? ((a - c) / Math.abs(c)) * 100 : null;
+                  writeNum(curRow, startCol,     a, band);
+                  writeNum(curRow, startCol + 1, c, "FFFAFBFF");
+                  writeNum(curRow, startCol + 2, delta,    "FFF5F7FF", { colorOverride: (delta == null || delta === 0) ? null : (delta < 0 ? C.red : "FF059669") });
+                  writeNum(curRow, startCol + 3, deltaPct, "FFF0F3FF", { percent: true, colorOverride: deltaPct == null ? null : (deltaPct < 0 ? C.red : "FF059669") });
+                } else {
+                  writeNum(curRow, 2 + i, a, band);
+                }
+              });
+              if (showTotals) {
+                writeNum(curRow, 2 + visibleDims.length, localRowTotal, C.highlight);
+              }
+              if (drilldown) {
+                const lrow = ws.getRow(curRow);
+                lrow.outlineLevel = locDepth;
+                if (locDepth > 0) lrow.hidden = true;
+              }
+              curRow++;
+            });
+          }
         }
       };
 
@@ -2738,7 +2993,7 @@ if (mappingForSt?.rows && mappingForSt?.sections) {
         ws.properties.summaryBelow = false;
       }
 
-      ws.getColumn(1).width = 44;
+ws.getColumn(1).width = 44;
       if (sheetCompare) {
         for (let i = 0; i < visibleDims.length; i++) {
           ws.getColumn(2 + i * 4).width     = 15;
@@ -2749,6 +3004,26 @@ if (mappingForSt?.rows && mappingForSt?.sections) {
       } else {
         for (let i = 0; i < visibleDims.length; i++) ws.getColumn(2 + i).width = 18;
         if (showTotals) ws.getColumn(2 + visibleDims.length).width = 18;
+      }
+
+      // Frame each dimension "block" with a medium left border so groups visually separate.
+      // In compare mode each dim spans 4 sub-columns (A / Σcmp / Δ / Δ%); outside compare
+      // mode each dim is a single column. The Total column (if shown) also gets a divider.
+      {
+        const borderStyle = { style: 'medium', color: { argb: 'FF6B7280' } };
+        const boundaries = [];
+        for (let i = 0; i < visibleDims.length; i++) {
+          boundaries.push(2 + i * subColsPerDim); // start column of dim i
+        }
+        if (showTotals) boundaries.push(2 + visibleDims.length * subColsPerDim); // divider before Total
+        const lastRow = ws.lastRow?.number ?? 0;
+        for (let r = 1; r <= lastRow; r++) {
+          const row = ws.getRow(r);
+          boundaries.forEach(colIdx => {
+            const cell = row.getCell(colIdx);
+            cell.border = { ...(cell.border || {}), left: borderStyle };
+          });
+        }
       }
     };
 
@@ -3065,38 +3340,44 @@ doc.text(stType === "pl" ? T("file_dimensions_pl_upper") : T("file_dimensions_bs
         }
         return flatCmpVal(n.code, dk);
       };
+const isDimAccepted = (nodeDims, dkStr) => {
+        if (!nodeDims || nodeDims.length === 0) return true;
+        return nodeDims.some(d => {
+          const s = String(d);
+          if (s === dkStr) return true;
+          const i = s.indexOf(":");
+          const nameOrValue = i === -1 ? s : s.slice(i + 1);
+          const groupHint = i === -1 ? "" : s.slice(0, i);
+          if (String(nameOrValue) === dkStr) return true;
+          for (const dd of (dimensions || [])) {
+            const gg = String(dd.DimensionGroup ?? dd.dimensionGroup ?? "");
+            const nn = String(dd.DimensionName ?? dd.dimensionName ?? "");
+            const cc = String(dd.DimensionCode ?? dd.dimensionCode ?? "");
+            if (!cc) continue;
+            if (groupHint && groupHint !== gg) continue;
+            if (nn === nameOrValue && cc === dkStr) return true;
+          }
+          return false;
+        });
+      };
       const leafVal = (n, dimKey) => {
-        if (n.dims && n.dims.length > 0) {
-          const match = n.dims.some(d => {
-            const i = d.indexOf(":");
-            const v = i === -1 ? d : d.slice(i + 1);
-            return String(v) === String(dimKey);
-          });
-          if (!match) return 0;
-        }
+        if (!isDimAccepted(n.dims, String(dimKey))) return 0;
         return valFor(n.code, dimKey);
       };
-      const leafCmpVal = (n, dimKey) => {
-        if (n.dims && n.dims.length > 0) {
-          const match = n.dims.some(d => {
-            const i = d.indexOf(":");
-            const v = i === -1 ? d : d.slice(i + 1);
-            return String(v) === String(dimKey);
-          });
-          if (!match) return 0;
-        }
+const leafCmpVal = (n, dimKey) => {
+        if (!isDimAccepted(n.dims, String(dimKey))) return 0;
         return cmpValFor(n.code, dimKey);
       };
-      const sumLitForDim = (n, dimKey, depth = 0) => {
+const sumLitForDim = (n, dimKey, depth = 0) => {
         if (depth > 50) return 0;
-        if (n.isSum && n.children && n.children.length > 0) {
+        if (n.children && n.children.length > 0) {
           return n.children.reduce((s, c) => s + sumLitForDim(c, dimKey, depth + 1), 0);
         }
         return leafVal(n, dimKey);
       };
       const sumLitCmpForDim = (n, dimKey, depth = 0) => {
         if (depth > 50) return 0;
-        if (n.isSum && n.children && n.children.length > 0) {
+        if (n.children && n.children.length > 0) {
           return n.children.reduce((s, c) => s + sumLitCmpForDim(c, dimKey, depth + 1), 0);
         }
         return leafCmpVal(n, dimKey);
@@ -3431,12 +3712,22 @@ doc.save(`Konsolidator_Dimensions_${masterYear}_${String(masterMonth).padStart(2
 }, [T, data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, plMapping, bsMapping, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, selGroups, selDims, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, groupAccounts]);
 
 
-  // Wire export functions to the ref so DimensionesPage FAB can call them
+// Wire export functions to the ref so DimensionesPage FAB can call them
   useEffect(() => {
     if (!exportRef) return;
     exportRef.current.xlsx = handleExportXlsx;
     exportRef.current.pdf  = handleExportPdf;
   }, [exportRef, handleExportXlsx, handleExportPdf]);
+
+// Snapshot of the current filter state so the pre-download modal (which lives at
+  // DimensionesPage level) can render PeriodChip cards without needing this state lifted.
+  useEffect(() => {
+    if (typeof onFilterSnapshotChange !== "function") return;
+    onFilterSnapshotChange({
+      A: { year: masterYear, month: masterMonth, source: masterSource, structure: masterStructure, company: masterCompany, dimGroups: selGroups, dimensions: selDims },
+      B: compareMode ? { year: cmp2Year, month: cmp2Month, source: cmp2Source, structure: cmp2Structure, company: cmp2Company, dimGroups: cmp2SelGroups, dimensions: cmp2SelDims } : null,
+    });
+  }, [onFilterSnapshotChange, masterYear, masterMonth, masterSource, masterStructure, masterCompany, selGroups, selDims, compareMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, cmp2SelGroups, cmp2SelDims]);
   // ── End export helpers ───────────────────────────────────────────────────
 const getCmpVal = useCallback((ac, dk) => {
     const ytd = (pivot2.get(ac)?.get(dk) ?? 0) * sign;
@@ -3444,6 +3735,13 @@ const getCmpVal = useCallback((ac, dk) => {
     const prevYtd = (prevPivot2.get(ac)?.get(dk) ?? 0) * sign;
     return ytd - prevYtd;
   }, [pivot2, prevPivot2, sign, viewMode]);
+
+  const getCmpLocalVal = useCallback((ac, lac, dk) => {
+    const ytd = (localPivot2.get(ac)?.get(lac)?.dims.get(dk) ?? 0) * sign;
+    if (viewMode === "ytd") return ytd;
+    const prevYtd = (prevLocalPivot2.get(ac)?.get(lac)?.dims.get(dk) ?? 0) * sign;
+    return ytd - prevYtd;
+  }, [localPivot2, prevLocalPivot2, sign, viewMode]);
 
   // Count-up fires on anything that changes a displayed number. getVal/getCmpVal
   // are useCallbacks whose deps already cover pivot, prevPivot, sign, viewMode;
@@ -3767,11 +4065,14 @@ const leaf = (n, dk) => {
                       }
                       return getValFn(n.code, dk);
                     };
-                    const sum = (n, dk) => {
+const sum = (n, dk) => {
                       const k = `${n.id}|${dk}`;
                       const c = cache.get(k);
                       if (c !== undefined) return c;
-                      const v = (n.isSum && n.children && n.children.length > 0)
+                      // Any node with children rolls up as sum-of-children, regardless of
+                      // isSum flag. This avoids double-counting from rolledPivot when a
+                      // node has children but its isSum was miscategorized.
+                      const v = (n.children && n.children.length > 0)
                         ? n.children.reduce((s, c2) => s + sum(c2, dk), 0)
                         : leaf(n, dk);
                       cache.set(k, v);
@@ -3785,13 +4086,72 @@ const leaf = (n, dk) => {
                   // PASS 1: build a flat list of descriptors for every visible row.
                   // No JSX yet — just data. Cheap.
                   const descriptors = [];
-                  const walkLit = (node, depth, parentPath, secIdx) => {
+const walkLit = (node, depth, parentPath, secIdx) => {
                     const rowKey = `litrow-${secIdx}-${parentPath}-${node.id}`;
                     const hasKids = node.children && node.children.length > 0;
+                    const localsForNode = (localPivot && node.code) ? localPivot.get(String(node.code)) : null;
+                    const hasLocals = localsForNode && localsForNode.size > 0;
+if (depth === 0 && node.code === 'B') {
+                      console.log('[walkLit BS ALL KEYS]', [...(localPivot?.keys() || [])]);
+                    }
                     const expanded = expandedSet.has(rowKey) || (searchExpansionSet?.has(rowKey) ?? false);
-                    descriptors.push({ kind: "row", rowKey, node, depth, hasKids, expanded });
+                    descriptors.push({ kind: "row", rowKey, node, depth, hasKids: hasKids || hasLocals, expanded });
+                    if (secIdx === 0) {
+                      console.log('[walkLit trace]', 'd='+depth, 'code='+node.code, 'name='+node.name, 'hasKids='+hasKids, 'expanded='+expanded, 'hasLocals='+hasLocals);
+                    }
                     if (expanded && hasKids) {
                       node.children.forEach(c => walkLit(c, depth + 1, `${parentPath}-${node.id}`, secIdx));
+                    }
+if (expanded && hasLocals) {
+                      // If this node has a dim filter (e.g. mapping row "600000 Producción"),
+                      // resolve which dim column keys are accepted, matching the same logic
+                      // used by makeSumLit's `leaf` function.
+                      const isDimAccepted = (dkStr) => {
+                        if (!node.dims || node.dims.length === 0) return true;
+                        return node.dims.some(d => {
+                          const s = String(d);
+                          if (s === dkStr) return true;
+                          const i = s.indexOf(":");
+                          const nameOrValue = i === -1 ? s : s.slice(i + 1);
+                          const groupHint = i === -1 ? "" : s.slice(0, i);
+                          if (String(nameOrValue) === dkStr) return true;
+                          for (const dd of (dimensions || [])) {
+                            const gg = String(dd.DimensionGroup ?? dd.dimensionGroup ?? "");
+                            const nn = String(dd.DimensionName ?? dd.dimensionName ?? "");
+                            const cc = String(dd.DimensionCode ?? dd.dimensionCode ?? "");
+                            if (!cc) continue;
+                            if (groupHint && groupHint !== gg) continue;
+                            if (nn === nameOrValue && cc === dkStr) return true;
+                          }
+                          return false;
+                        });
+                      };
+                      const hasDimFilter = !!(node.dims && node.dims.length > 0);
+                      const acceptedDimSet = hasDimFilter
+                        ? new Set(orderedDimCols
+                            .map(d => String(d.code ?? "__none__"))
+                            .filter(dk => isDimAccepted(dk)))
+                        : null;
+                      localsForNode.forEach((info, lac) => {
+                        // Skip locals with no postings in accepted dims — they don't belong
+                        // under a dim-filtered mapping row.
+                        if (hasDimFilter) {
+                          let anyMatch = false;
+                          for (const [dk, amt] of info.dims.entries()) {
+                            if (amt !== 0 && acceptedDimSet.has(String(dk))) { anyMatch = true; break; }
+                          }
+                          if (!anyMatch) return;
+                        }
+                        descriptors.push({
+                          kind: "local",
+                          rowKey: `${rowKey}-lac-${lac}`,
+                          parentCode: String(node.code),
+                          lac,
+                          info,
+                          depth: depth + 1,
+                          acceptedDimSet, // null = no filter; Set = only these dk are shown non-zero
+                        });
+                      });
                     }
                   };
                   literal.forEach((section, secIdx) => {
@@ -3825,6 +4185,196 @@ const leaf = (n, dk) => {
                           ))}
                         </tr>
                       );
+continue;
+                    }
+if (d.kind === "local") {
+                      const rowStyleLoc = body2Style;
+const rowTotalLoc = orderedDimCols.reduce((s, dim) => {
+                        const dk = String(dim.code ?? "__none__");
+                        if (d.acceptedDimSet && !d.acceptedDimSet.has(dk)) return s;
+                        return s + (getLocalVal ? getLocalVal(d.parentCode, d.lac, dk) : 0);
+                      }, 0);
+                      const localDrillKey = `${d.parentCode}|${d.lac}`;
+                      const localIsDrilled = drillExpandedLocals.has(localDrillKey);
+                      out.push(
+                        <tr key={d.rowKey} className="border-b border-gray-100 bg-white hover:bg-[#eef1fb]/60">
+                          <td className="py-2 sticky left-0 z-10 border-r border-gray-100 bg-white"
+                              style={{ paddingLeft: `${16 + d.depth * INDENT}px`, minWidth: 300 }}>
+                            <div className="flex items-center group/row">
+                              <span className="inline-block mr-2" style={{ width: 12 }} />
+                              <span className="flex-shrink-0 mr-2 font-mono text-gray-400" style={subbody2Style}>{d.lac}</span>
+                              <span className="truncate max-w-[280px]" style={rowStyleLoc}>{
+                                d.info.name ? (d.info.name.charAt(0).toUpperCase() + d.info.name.slice(1).toLowerCase()) : ""
+                              }</span>
+{(() => {
+                                // Pre-check: if drillCache is already loaded and there are NO non-master
+                                // company rows for this local, hide the button entirely (avoid showing an
+                                // empty "Ninguna empresa" state on click).
+                                const cachedDrillRows = drillCache.get(d.parentCode);
+                                if (cachedDrillRows) {
+                                  const masterCoLower = String(masterCompany ?? "").trim().toLowerCase();
+                                  const anyForLocal = cachedDrillRows.some(r => {
+                                    const lac = String(r.LocalAccountCode ?? r.localAccountCode ?? "");
+                                    if (lac !== String(d.lac)) return false;
+                                    const co = String(r.CompanyShortName ?? r.companyShortName ?? "").trim().toLowerCase();
+                                    return co && co !== masterCoLower;
+                                  });
+                                  if (!anyForLocal) return null;
+                                }
+                                return (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (!drillCache.get(d.parentCode) && onToggleDrillAccount) {
+                                      onToggleDrillAccount({ code: d.parentCode, name: d.parentCode });
+                                    }
+setDrillExpandedLocals(prev => {
+                                      // Single-drill policy: if it's already open close it, otherwise
+                                      // close all others and open only this one.
+                                      if (prev.has(localDrillKey)) return new Set();
+                                      return new Set([localDrillKey]);
+                                    });
+                                  }}
+                                  className={`ml-auto ${localIsDrilled ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"} transition-all flex items-center justify-center flex-shrink-0`}
+                                  style={{
+                                    width: 22, height: 22, borderRadius: 6,
+                                    background: localIsDrilled ? colors.primary : `${colors.primary}12`,
+                                    color: localIsDrilled ? "white" : colors.primary,
+                                    marginRight: 8,
+                                  }}
+                                  title={localIsDrilled ? "Cerrar desglose por empresa" : "Ver desglose por empresa"}
+>
+                                  <Building2 size={12} strokeWidth={2.2} />
+                                </button>
+                                );
+                              })()}
+                            </div>
+                          </td>
+{orderedDimCols.map(dim => {
+                            const dk = dim.code ?? "__none__";
+                            const accepted = !d.acceptedDimSet || d.acceptedDimSet.has(String(dk));
+                            const val = accepted && getLocalVal ? getLocalVal(d.parentCode, d.lac, dk) : 0;
+                            if (!cmpVisible) return <DimAmountCell key={dk} value={val} typoStyle={rowStyleLoc} animate={isAnimatingData} />;
+                            const cmpVal = accepted && getCmpLocalVal ? getCmpLocalVal(d.parentCode, d.lac, dk) : 0;
+                            const diff = val - cmpVal;
+                            const pct = cmpVal !== 0 ? (diff / Math.abs(cmpVal)) * 100 : null;
+                            const devColor = diff === 0 ? "#D1D5DB" : diff > 0 ? "#059669" : "#EF4444";
+                            return (
+                              <React.Fragment key={dk}>
+                                <DimAmountCell value={val} typoStyle={rowStyleLoc} animate={isAnimatingData} />
+                                <DimAmountCell value={cmpVal} typoStyle={rowStyleLoc} animate={isAnimatingData} bgColor="#fafbff" />
+                                <DimDiffCell value={diff} animate={isAnimatingData} color={devColor} width={110} bgColor="#f5f7ff" />
+                                <DimPctCell value={pct} animate={isAnimatingData} color={devColor} width={90} bgColor="#f0f3ff" />
+                              </React.Fragment>
+                            );
+                          })}
+                          {!cmpVisible && <DimAmountCell value={rowTotalLoc} typoStyle={rowStyleLoc} animate={isAnimatingData} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
+                        </tr>
+                      );
+                      // Drill-by-company sub-rows for this local account. Reuses the parent
+                      // group's drillCache (already fetched when the group was drilled once),
+                      // filtered by LocalAccountCode == d.lac.
+                      if (localIsDrilled) {
+                        const drillRows = drillCache.get(d.parentCode);
+                        const isLoading = drillLoadingSet.has(d.parentCode);
+                        if (isLoading || !drillRows) {
+                          out.push(
+                            <tr key={`${d.rowKey}__drill_loading`} className="bg-[#f8f9ff]">
+                              <td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + 2} className="py-3 text-center">
+                                <Loader2 size={14} className="animate-spin inline-block mr-2" style={{ color: colors.primary }} />
+                                <span className="text-[11px] text-gray-400 font-bold">Cargando empresas…</span>
+                              </td>
+                            </tr>
+                          );
+                        } else {
+                          const masterCoLower = String(masterCompany ?? "").trim().toLowerCase();
+                          // Filter drill rows by this local's LocalAccountCode.
+                          const rowsForLocal = drillRows.filter(r => {
+                            const lac = String(r.LocalAccountCode ?? r.localAccountCode ?? "");
+                            return lac === String(d.lac);
+                          });
+                          const prevRowsForLocal = (drillPrevRows || []).filter(r => {
+                            const lac = String(r.LocalAccountCode ?? r.localAccountCode ?? "");
+                            return lac === String(d.lac);
+                          });
+                          // Build per-company (co) → Map<dk, amt>. Skip master (master is in main pivot already).
+                          const buildPerCoLocal = (rows) => {
+                            const m = new Map();
+                            rows.forEach(r => {
+                              const co = r.CompanyShortName ?? r.companyShortName ?? "—";
+                              if (String(co).trim().toLowerCase() === masterCoLower) return;
+                              const coN = r.CompanyLegalName ?? r.companyLegalName ?? co;
+                              const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? r.AmountPeriod ?? r.amountPeriod ?? 0);
+                              if (!m.has(co)) m.set(co, { name: coN, dims: new Map() });
+                              const entry = m.get(co);
+                              const pairs = parseDimensions(r.Dimensions);
+                              if (pairs.length === 0) {
+                                entry.dims.set("__none__", (entry.dims.get("__none__") ?? 0) + amt);
+                                return;
+                              }
+                              for (const [group, code] of pairs) {
+                                if (selGroups.size > 0 && !selGroups.has(group)) continue;
+                                if (selDims.size > 0 && !selDims.has(code)) continue;
+                                entry.dims.set(code, (entry.dims.get(code) ?? 0) + amt);
+                              }
+                            });
+                            return m;
+                          };
+                          const perCoCur = buildPerCoLocal(rowsForLocal);
+                          const perCoPrev = viewMode === "monthly" ? buildPerCoLocal(prevRowsForLocal) : new Map();
+if (perCoCur.size === 0) {
+                            // No non-master companies with movement — auto-collapse and hide silently.
+                            setTimeout(() => {
+                              setDrillExpandedLocals(prev => {
+                                if (!prev.has(localDrillKey)) return prev;
+                                const next = new Set(prev);
+                                next.delete(localDrillKey);
+                                return next;
+                              });
+                            }, 0);
+                          } else {
+                            {(() => null)()}
+                            const coEntries = [...perCoCur.entries()];
+                            coEntries.forEach(([co, info], ci) => {
+                              const getCoDim = (dk) => {
+                                const ytd = (info.dims.get(dk) ?? 0) * sign;
+                                if (viewMode === "ytd") return ytd;
+                                const prevYtd = (perCoPrev.get(co)?.dims.get(dk) ?? 0) * sign;
+                                return ytd - prevYtd;
+                              };
+                              const rowTotalCo = orderedDimCols.reduce((s, dim) => s + getCoDim(dim.code ?? "__none__"), 0);
+                              out.push(
+                                <tr key={`${d.rowKey}__drill_${co}`} className="border-b border-gray-100"
+                                    style={{ background: "#fafbff", animation: `plRowSlideIn 320ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(ci, 12) * 28}ms both` }}>
+                                  <td className="py-2 sticky left-0 z-10 border-r border-gray-100" style={{ paddingLeft: `${16 + (d.depth + 1) * INDENT + 22}px`, minWidth: 300, background: "#fafbff" }}>
+                                    <div className="flex items-center">
+                                      <span className="flex-shrink-0 mr-2 inline-flex items-center justify-center" style={{ width: 18, height: 18, borderRadius: 5, background: `${colors.primary}18`, color: colors.primary }}>
+                                        <Building2 size={10} strokeWidth={2.2} />
+                                      </span>
+                                      <span className="flex-shrink-0 mr-2 font-mono text-gray-400" style={subbody2Style}>{co}</span>
+                                      <span className="truncate max-w-[220px]" style={body2Style}>{info.name}</span>
+                                    </div>
+                                  </td>
+                                  {orderedDimCols.map(dim => {
+                                    const dk = dim.code ?? "__none__";
+                                    const v = getCoDim(dk);
+                                    if (!cmpVisible) return <DimAmountCell key={dk} value={v} typoStyle={body2Style} animate={isAnimatingData} />;
+                                    return (
+                                      <React.Fragment key={dk}>
+                                        <DimAmountCell value={v} typoStyle={body2Style} animate={isAnimatingData} />
+                                        <td style={{ background: "#fafbff" }} />
+                                        <td style={{ background: "#fafbff" }} />
+                                        <td style={{ background: "#fafbff" }} />
+                                      </React.Fragment>
+                                    );
+                                  })}
+                                  {!cmpVisible && <DimAmountCell value={rowTotalCo} typoStyle={body2Style} animate={isAnimatingData} bgColor="#f5f7ff" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
+                                </tr>
+                              );
+                            });
+                          }
+                        }
+                      }
                       continue;
                     }
                     const { node, depth, hasKids, expanded, rowKey } = d;
@@ -3853,7 +4403,7 @@ const rowAnim = tableJustLoaded && i < 25
                               : <span className="inline-block mr-2" style={{ width: 12 }} />}
                             {node.code && <span className="flex-shrink-0 mr-2" style={subbody2Style}>{node.code}</span>}
                             <span className="truncate max-w-[280px]" style={rowStyle}>{node.name || node.code}</span>
-{node.code && !compareMode && (() => {
+{node.code && (() => {
                               const isDrilled = drillExpanded.has(node.code);
                               return (
                                 <button
@@ -3961,11 +4511,27 @@ const perCompanyPivots = new Map();
                             }
                           });
                         };
-
-                        accumIntoPivots(drillRows, perCompanyPivots);
+accumIntoPivots(drillRows, perCompanyPivots);
                         // Build prev-month per-company pivots for monthly subtraction.
                         if (viewMode === "monthly") {
                           accumIntoPivots(drillPrevRows || [], perCompanyPrevPivots);
+                        }
+
+                        // Build per-company pivots for the COMPARE period (YTD only).
+                        // We filter cmp2Data by the set of AccountCodes present in the main-period
+                        // drillRows so we only process rows relevant to this drilled account family.
+const perCompanyCmpPivots = new Map();
+                        const perCompanyCmpPrevPivots = new Map();
+                        if (cmpVisible) {
+                          const accountCodesInDrill = new Set(drillRows.map(r => String(r.AccountCode ?? r.accountCode ?? "")));
+                          // Use the cross-company cmp fetch (drillCmpAllRows) NOT cmp2Data — the latter
+                          // is filtered to cmp2Company so it has no rows for other companies.
+                          const cmpRowsInDrill = (drillCmpAllRows || []).filter(r => accountCodesInDrill.has(String(r.AccountCode ?? r.accountCode ?? "")));
+                          accumIntoPivots(cmpRowsInDrill, perCompanyCmpPivots);
+                          if (viewMode === "monthly") {
+                            const cmpPrevRowsInDrill = (drillCmpAllPrevRows || []).filter(r => accountCodesInDrill.has(String(r.AccountCode ?? r.accountCode ?? "")));
+                            accumIntoPivots(cmpPrevRowsInDrill, perCompanyCmpPrevPivots);
+                          }
                         }
 
 // Per-company rolled pivots — SAME rollup as the master `rolledPivot`
@@ -4006,7 +4572,7 @@ const perCompanyPivots = new Map();
                           const coRolledPrev = useMaster
                             ? rolledPrevPivot
                             : rollUp(perCompanyPrevPivots.get(co)?.pivot ?? new Map());
-                          const getValCo = (code, dk) => {
+const getValCo = (code, dk) => {
                             const ytd = (coRolled.get(code)?.get(dk) ?? 0) * sign;
                             if (viewMode === "ytd") return ytd;
                             const prevYtd = (coRolledPrev.get(code)?.get(dk) ?? 0) * sign;
@@ -4014,15 +4580,39 @@ const perCompanyPivots = new Map();
                           };
                           const sumLitCo = makeSumLit(getValCo);
 
+                          // Compare-period per-company sumLit (YTD only — monthly-compare
+                          // would need raw cmp2PrevData rows which we don't store).
+const coRolledCmp = cmpVisible
+                            ? (useMaster ? rolledPivot2 : rollUp(perCompanyCmpPivots.get(co)?.pivot ?? new Map()))
+                            : null;
+                          const coRolledCmpPrev = (cmpVisible && viewMode === "monthly")
+                            ? (useMaster ? rolledPrevPivot2 : rollUp(perCompanyCmpPrevPivots.get(co)?.pivot ?? new Map()))
+                            : null;
+                          const getValCoCmp = cmpVisible
+                            ? ((code, dk) => {
+                                const ytd = (coRolledCmp.get(code)?.get(dk) ?? 0) * sign;
+                                if (viewMode === "ytd") return ytd;
+                                const prevYtd = (coRolledCmpPrev?.get(code)?.get(dk) ?? 0) * sign;
+                                return ytd - prevYtd;
+                              })
+                            : null;
+                          const sumLitCoCmp = cmpVisible ? makeSumLit(getValCoCmp) : null;
+
                           const dims = new Map();
+                          const cmpDims = new Map();
                           let anyNonZero = false;
                           orderedDimCols.forEach(d2 => {
                             const dk = d2.code ?? "__none__";
                             const v = sumLitCo(node, dk);
                             dims.set(dk, v);
                             if (v !== 0) anyNonZero = true;
+                            if (cmpVisible) {
+                              const cv = sumLitCoCmp(node, dk);
+                              cmpDims.set(dk, cv);
+                              if (cv !== 0) anyNonZero = true;
+                            }
                           });
-                          if (anyNonZero) companyRows.push([co, { name: info.name, dims }]);
+                          if (anyNonZero) companyRows.push([co, { name: info.name, dims, cmpDims }]);
                         });
                         companyRows.sort((a, b) => a[1].name.localeCompare(b[1].name));
                         if (companyRows.length === 0) {
@@ -4048,16 +4638,20 @@ const perCompanyPivots = new Map();
                                     <span className="truncate max-w-[220px]" style={body2Style}>{info.name}</span>
                                   </div>
                                 </td>
-                                {orderedDimCols.map(d2 => {
+{orderedDimCols.map(d2 => {
                                   const dk = d2.code ?? "__none__";
                                   const v = info.dims.get(dk) ?? 0;
                                   if (!cmpVisible) return <DimAmountCell key={dk} value={v} typoStyle={body2Style} animate={isAnimatingData} />;
+                                  const cmpV = info.cmpDims?.get(dk) ?? 0;
+                                  const diff = v - cmpV;
+                                  const pct = cmpV !== 0 ? (diff / Math.abs(cmpV)) * 100 : null;
+                                  const devColor = diff === 0 ? "#D1D5DB" : diff > 0 ? "#059669" : "#EF4444";
                                   return (
                                     <React.Fragment key={dk}>
                                       <DimAmountCell value={v} typoStyle={body2Style} animate={isAnimatingData} />
-                                      <td style={{ background: "#fafbff" }} />
-                                      <td style={{ background: "#fafbff" }} />
-                                      <td style={{ background: "#fafbff" }} />
+                                      <DimAmountCell value={cmpV} typoStyle={body2Style} animate={isAnimatingData} bgColor="#fafbff" />
+                                      <DimDiffCell value={diff} animate={isAnimatingData} color={devColor} width={110} bgColor="#f5f7ff" />
+                                      <DimPctCell value={pct} animate={isAnimatingData} color={devColor} width={90} bgColor="#f0f3ff" />
                                     </React.Fragment>
                                   );
                                 })}
@@ -4110,7 +4704,7 @@ console.log('[render-map]',
                       )}
 <DimensionRow node={node} depth={depth}
                         expandedSet={expandedSet} onToggle={toggleExpand}
-                        dimCols={orderedDimCols} getVal={getVal} getCmpVal={compareMode ? getCmpVal : null}
+                        dimCols={orderedDimCols} getVal={getVal} getCmpVal={compareMode ? getCmpVal : null} getLocalVal={getLocalVal} getCmpLocalVal={compareMode ? getCmpLocalVal : null} localPivot={localPivot}
                         compareMode={compareMode} cmpVisible={cmpVisible} cmpExiting={cmpExiting}
                         body1Style={body1Style} body2Style={body2Style}
                         header2Style={header2Style} colors={colors}
@@ -4137,8 +4731,81 @@ drillExpanded={drillExpanded} drillCache={drillCache} drillLoadingSet={drillLoad
 
 /* ── Main ─────────────────────────────────────────────────── */
 /* ── Main ─────────────────────────────────────────────────── */
-export default function DimensionesPage({ token, onNavigate, sources = [], structures = [], companies = [], dimensions = [], cachedPeriod = null, activeStandardKey = null }) {
+const PeriodChip = ({ letter, color, label, filters, MONTHS, t = (k) => k, companies = [] }) => {
+  if (!filters) return null;
+  const moLabel = MONTHS.find(m => String(m.value) === String(filters.month))?.label ?? filters.month;
+  const resolveCompany = (code) => {
+    if (!code) return null;
+    if (Array.isArray(code)) {
+      return code.map(c => {
+        const m = companies.find(co => String(typeof co === 'object' ? (co.value ?? co.code ?? co.CompanyShortName) : co) === String(c));
+        return typeof m === 'object' ? (m.label ?? m.name ?? c) : (m ?? c);
+      }).join(", ");
+    }
+    const m = companies.find(co => String(typeof co === 'object' ? (co.value ?? co.code ?? co.CompanyShortName) : co) === String(code));
+    return typeof m === 'object' ? (m?.label ?? m?.name ?? code) : (m ?? code);
+  };
+  const lines = [
+    moLabel && filters.year ? `${moLabel} ${filters.year}` : null,
+    filters.source,
+    filters.structure,
+    resolveCompany(filters.company),
+    filters.dimGroups instanceof Set && filters.dimGroups.size > 0 ? `${filters.dimGroups.size} dim group${filters.dimGroups.size === 1 ? '' : 's'}` : null,
+    filters.dimensions instanceof Set && filters.dimensions.size > 0 ? `${filters.dimensions.size} dim${filters.dimensions.size === 1 ? '' : 's'}` : null,
+  ].filter(Boolean);
+  return (
+    <div className="group flex gap-3 p-3 rounded-2xl border transition-all hover:shadow-sm"
+      style={{ borderColor: `${color}25`, background: `linear-gradient(135deg, ${color}08 0%, ${color}03 100%)` }}>
+      <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 text-white text-xs font-black"
+        style={{ background: color, boxShadow: `0 4px 12px -2px ${color}50` }}>
+        {letter}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-baseline justify-between gap-2 mb-1.5">
+          <p className="text-[10px] font-black uppercase tracking-[0.18em]" style={{ color }}>{label}</p>
+          {lines[0] && <p className="text-[11px] font-bold text-gray-800 truncate">{lines[0]}</p>}
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {lines.slice(1).map((line, i) => (
+            <span key={i} className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-white/60 text-gray-600 border border-gray-100/80">{line}</span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default function DimensionesPage({ token, onNavigate, sources: rawSources = [], structures: rawStructures = [], companies: rawCompanies = [], dimensions: rawDimensions = [], cachedPeriod = null, activeStandardKey = null }) {
 const { colors, locale } = useSettings();
+const { access } = useCurrentUserResourceAccess();
+
+// Resource-access filter: for each "kind" (source/structure/company/dimension/mapping)
+// the hook returns a Set of allowed IDs, or undefined = "no restriction".
+// We try a few common identifier shapes so this works regardless of how the settings
+// UI stored the resource_id.
+const isAllowed = useCallback((item, kind) => {
+  const allowed = access?.[kind];
+  if (!allowed) return true;
+  const candidates = [];
+  if (item == null) return false;
+  if (typeof item === "string") candidates.push(item);
+  else if (typeof item === "object") {
+    candidates.push(
+      item.id, item.value, item.code, item.name, item.Name,
+      item.shortName, item.short_name, item.CompanyShortName, item.companyShortName,
+      item.SourceName, item.sourceName,
+      item.DimensionCode, item.dimensionCode,
+      item.mapping_id, item.mappingId,
+      item.structure, item.Structure, item.GroupStructure, item.groupStructure,
+    );
+  }
+  return candidates.some(c => c != null && allowed.has(String(c)));
+}, [access]);
+
+const sources    = useMemo(() => rawSources.filter(s => isAllowed(s, "source")),      [rawSources, isAllowed]);
+const structures = useMemo(() => rawStructures.filter(s => isAllowed(s, "structure")), [rawStructures, isAllowed]);
+const companies  = useMemo(() => rawCompanies.filter(c => isAllowed(c, "company")),   [rawCompanies, isAllowed]);
+const dimensions = useMemo(() => rawDimensions.filter(d => isAllowed(d, "dimension")), [rawDimensions, isAllowed]);
 const { companyId: settingsCompanyId } = useSettingsControls();
 const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
 const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();
@@ -4162,19 +4829,19 @@ const [drillLoadingSet, setDrillLoadingSet] = useState(() => new Set()); // acco
 const toggleDrillAccount = useCallback((acc) => {
   if (!acc?.code) return;
   setDrillExpanded(prev => {
-    const next = new Set(prev);
-    if (next.has(acc.code)) next.delete(acc.code);
-    else next.add(acc.code);
-    return next;
+    // If it's already open, close it. If it's a new one, close all others
+    // and open only this one (single-drill policy).
+    if (prev.has(acc.code)) return new Set();
+    return new Set([acc.code]);
   });
 }, []);
 const [ytdOnly, setYtdOnly] = useState(false);
-  const viewMode = ytdOnly ? "ytd" : "monthly";
   // P&L / B/S statement type — lifted from PivotTab to drive PageHeader tabs
   const [statementType, setStatementType] = useState("pl");
 const [activeMapping, setActiveMapping] = useState(null);
 const [exporting, setExporting] = useState(false);
-  const pivotExportRef = useRef({ xlsx: null, pdf: null });
+const pivotExportRef = useRef({ xlsx: null, pdf: null });
+  const [filterSnapshot, setFilterSnapshot] = useState({ A: null, B: null });
 const [exportModal, setExportModal] = useState(false);
 const [exportOpts, setExportOpts] = useState({
     statements: { pl: true, bs: true },
@@ -4215,6 +4882,7 @@ if (!fn) {
 }, [exportOpts, T]);
 
 const handleApplyMapping = useCallback((m, kind = "structure") => {
+  console.log("[handleApplyMapping DIM] m.is_hidden:", m?.is_hidden, "m:", m);
     setActiveMapping({
       mapping_id:  m.mapping_id,
       kind,
@@ -4226,41 +4894,45 @@ const handleApplyMapping = useCallback((m, kind = "structure") => {
       bsSections:  extractSectionsFromTree(m.bs_tree),
       plLiteral:   buildSavedMappingLiteral(m.pl_tree),
       bsLiteral:   buildSavedMappingLiteral(m.bs_tree),
+      is_hidden:   !!m.is_hidden,
     });
 }, []);
 
   // Auto-apply the user's saved standard mapping once per page load. Mirrors
   // the same flow used by AccountsDashboard / KpiIndividualesPage so jumping
   // between tabs doesn't lose your default view.
+// Extracted so the "clear mapping" button can re-run the exact same flow the page
+  // uses on mount — reads the user's preferred standard mapping and applies it.
+  const applyPreferredMapping = useCallback(async () => {
+    try {
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) { setActiveMapping(null); return; }
+      const { data: settingsData } = await supabase
+        .from("user_settings")
+        .select("preferences")
+        .eq("user_id", uid)
+        .single();
+      const mid = settingsData?.preferences?.standard_mapping_id;
+      if (!mid) { setActiveMapping(null); return; }
+      const { listMappings, getMapping, getActiveCompanyId } = await import("../../lib/mappingsApi");
+      const cid = await getActiveCompanyId(uid);
+      if (!cid) { setActiveMapping(null); return; }
+      const allMappings = await listMappings({ companyId: cid, includeHidden: true });
+      const match = (allMappings || []).find(m => String(m.mapping_id) === String(mid));
+      if (!match) { setActiveMapping(null); return; }
+      const full = await getMapping(match.mapping_id);
+      handleApplyMapping(full ?? match, "structure");
+    } catch (err) { console.error("[applyPreferredMapping] error:", err); }
+  }, [handleApplyMapping]);
+
   const autoMappingAppliedRef = useRef(false);
   useEffect(() => {
     if (autoMappingAppliedRef.current) return;
     autoMappingAppliedRef.current = true;
-    (async () => {
-      try {
-        const { supabase } = await import("../../lib/supabaseClient");
-        const { data: { session } } = await supabase.auth.getSession();
-        const uid = session?.user?.id;
-        if (!uid) return;
-        const { data: settingsData } = await supabase
-          .from("user_settings")
-          .select("preferences")
-          .eq("user_id", uid)
-          .single();
-        const mid = settingsData?.preferences?.standard_mapping_id;
-        if (!mid) return;
-        const { listMappings, getMapping, getActiveCompanyId } = await import("../../lib/mappingsApi");
-        const cid = await getActiveCompanyId(uid);
-        if (!cid) return;
-        const allMappings = await listMappings({ companyId: cid });
-        const match = (allMappings || []).find(m => String(m.mapping_id) === String(mid));
-        if (!match) return;
-        // Fetch the full mapping (with pl_tree / bs_tree) — list endpoint omits them
-        const full = await getMapping(match.mapping_id);
-        handleApplyMapping(full ?? match, "structure");
-      } catch (err) { console.error("[auto-mapping] error:", err); }
-    })();
-  }, [handleApplyMapping]);
+    applyPreferredMapping();
+  }, [applyPreferredMapping]);
 
   // Recent mappings for the PageHeader hover-dropdown quick-access
   const [recentMappings, setRecentMappings] = useState([]);
@@ -4336,7 +5008,13 @@ const handleApplyMapping = useCallback((m, kind = "structure") => {
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (viewsMode === "report") fetchReportMappings(); }, [viewsMode, fetchReportMappings]);
 
-const [rawData, setRawData] = useState([]);
+const [rawData, setRawDataRaw] = useState([]);
+const filteredRawData = useMemo(() => {
+  const allowedCo = access?.company;
+  if (!allowedCo) return rawData;
+  return rawData.filter(r => allowedCo.has(String(r.CompanyShortName ?? r.companyShortName ?? "")));
+}, [rawData, access]);
+const setRawData = setRawDataRaw;
   const [probeFinished, setProbeFinished] = useState(false);
   // `loading` / `hasCompletedFetch` / `error` are all derived from a fetch-key.
   // The fetch effect only writes state inside async callbacks (post-await),
@@ -4478,8 +5156,28 @@ const defaultPlMapping = pgcPlMapping ?? danishPlMapping ?? spIfrsEsPlMapping;
 
   // When a custom mapping is applied, its converted tree takes over for row
   // ordering and section breakers.
-  const plMapping = activeMapping?.plConverted ?? defaultPlMapping;
-  const bsMapping = activeMapping?.bsConverted ?? defaultBsMapping;
+// For CUSTOM standards, the activeMapping (hidden override) only contains
+  // rows the user explicitly touched. The defaultPlMapping (loaded from
+  // standard_statement_rows) contains ALL rows of the custom standard.
+  // Merge: default rows as base, override rows on top so parent_code changes
+  // from the user win, but standard-only rows still appear.
+const mergeMappings = (override, base) => {
+    if (!override) return base;
+    if (!base) return override;
+    console.log("[mergeMappings]", "override rows:", override.rows?.size, "override A.01:", override.rows?.get("A.01"), "base A.01:", base.rows?.get("A.01"), "override 999:", override.rows?.get("999"));
+    const rows = new Map(base.rows);
+    override.rows.forEach((info, code) => { rows.set(code, { ...(base.rows.get(code) ?? {}), ...info }); });
+    const sections = new Map(base.sections);
+    override.sections.forEach((s, code) => sections.set(code, s));
+    return { ...override, rows, sections, instances: override.instances ?? [] };
+  };
+const isCustomStd = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+  const plMapping = isCustomStd
+    ? mergeMappings(activeMapping?.plConverted, defaultPlMapping)
+    : (activeMapping?.plConverted ?? defaultPlMapping);
+  const bsMapping = isCustomStd
+    ? mergeMappings(activeMapping?.bsConverted, defaultBsMapping)
+    : (activeMapping?.bsConverted ?? defaultBsMapping);
 
   // Effective ccTagToCodes + resolveCcTag. When a mapping is active:
   //   - Each section label is fuzzy-matched against cc_tag synonyms; matches
@@ -4718,7 +5416,13 @@ if (drillFetchRef.current.key !== drillContextKey) {
       )
         .then(r => r.ok ? r.json() : { value: [] })
         .then(j => j.value ?? (Array.isArray(j) ? j : []))
-        .then(rows => { setDrillPrevRows(rows); return rows; })
+      .then(rows => {
+          const filtered = access?.company
+            ? rows.filter(r => access.company.has(String(r.CompanyShortName ?? r.companyShortName ?? "")))
+            : rows;
+          setDrillPrevRows(filtered);
+          return filtered;
+        })
         .catch(() => { setDrillPrevRows([]); return []; }),
     };
   }
@@ -4728,9 +5432,12 @@ const myFetch = drillFetchRef.current.promise;
     .then(rows => {
       // Only apply if the context hasn't moved on under us.
       if (drillFetchRef.current.promise !== myFetch) return;
+const filteredRows = access?.company
+        ? rows.filter(r => access.company.has(String(r.CompanyShortName ?? r.companyShortName ?? "")))
+        : rows;
       setDrillCache(prev => {
         const next = new Map(prev);
-        pending.forEach(c => next.set(c, rows));
+        pending.forEach(c => next.set(c, filteredRows));
         return next;
       });
       setDrillLoadingSet(prev => {
@@ -4886,12 +5593,12 @@ periodToggle={(viewsMode || statementType === "bs") ? null : {
           value: ytdOnly ? "ytd" : "monthly",
           onChange: (next) => setYtdOnly(next === "ytd"),
         }}
-compareToggle={(viewsMode || drillExpanded.size > 0) ? null : {
+compareToggle={viewsMode ? null : {
           active: compareMode,
           onChange: setCompareMode,
         }}
         onMappingsClick={viewsMode ? undefined : () => setViewsMode("landing")}
-        mappingsQuickAccess={viewsMode ? [] : recentMappings}
+mappingsQuickAccess={viewsMode ? [] : recentMappings.filter(m => isAllowed(m, "mapping"))}
   onQuickApplyMapping={async (m) => {
           try {
             const mod = await import(m.kind === "report" ? "../../lib/reportMappingsApi" : "../../lib/mappingsApi");
@@ -4910,8 +5617,8 @@ onExportXlsx={(viewsMode || drillExpanded.size > 0) ? undefined : () => {
           setExportModal(true);
         }}
       />
-
-{activeMapping && (
+{console.log("[GREEN CARD RENDER]", activeMapping?.is_hidden, activeMapping)}
+{activeMapping && !activeMapping.is_hidden && activeMapping.name !== "__custom_override__" && (
         <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm flex-shrink-0">
           <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
 <span className="text-xs text-emerald-700 font-medium">
@@ -4935,7 +5642,7 @@ title={T("edit_mapping_title")}
             {T("btn_edit")}
           </button>
           <button
-            onClick={() => setActiveMapping(null)}
+           onClick={() => applyPreferredMapping()}
             className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
 title={T("clear_mapping_title")}
           >
@@ -5160,10 +5867,10 @@ title={T("clear_mapping_title")}
           </div>
         </div>
 ) : (
-<PivotTab data={rawData} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroups={selGroups} selDims={selDims} onSelGroupsChange={setSelGroups} onSelDimsChange={setSelDims} dimGroups={dimGroups}compareMode={compareMode} statementType={statementType} externalViewMode={statementType === "bs" ? "ytd" : (ytdOnly ? "ytd" : "monthly")} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} kpiList={kpiList} ccTagToCodes={ccTagToCodes} resolveCcTag={resolveCcTag}plMapping={plMapping} bsMapping={bsMapping} activeStandardKey={activeStandardKey}
+<PivotTab data={filteredRawData} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroups={selGroups} selDims={selDims} onSelGroupsChange={setSelGroups} onSelDimsChange={setSelDims} dimGroups={dimGroups}compareMode={compareMode} statementType={statementType} externalViewMode={statementType === "bs" ? "ytd" : (ytdOnly ? "ytd" : "monthly")} sources={sources} structures={structures} companies={companies} allowedCompanies={access?.company ?? null} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterCompany={company} kpiList={kpiList} ccTagToCodes={ccTagToCodes} resolveCcTag={resolveCcTag}plMapping={plMapping} bsMapping={bsMapping} activeStandardKey={activeStandardKey}
 plLiteral={activeMapping?.plLiteral ?? null}
 bsLiteral={activeMapping?.bsLiteral ?? null}
-exportRef={pivotExportRef} hasCustomMapping={!!activeMapping}
+exportRef={pivotExportRef} onFilterSnapshotChange={setFilterSnapshot} hasCustomMapping={!!activeMapping}
 drillExpanded={drillExpanded} drillCache={drillCache} drillLoadingSet={drillLoadingSet} drillPrevRows={drillPrevRows}
 onToggleDrillAccount={toggleDrillAccount} />
 
@@ -5175,8 +5882,12 @@ onToggleDrillAccount={toggleDrillAccount} />
         <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
           style={{ background: "rgba(15,23,42,0.55)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", animation: "kBadgesPop 280ms cubic-bezier(0.34,1.56,0.64,1)" }}
           onClick={() => setExportModal(false)}>
-          <div className="relative bg-white w-full max-w-xl overflow-hidden max-h-[92vh] flex flex-col"
-            style={{ borderRadius: 28, boxShadow: `0 30px 80px -12px ${colors.primary}40, 0 12px 24px -6px rgba(0,0,0,0.12)` }}
+<div className="relative bg-white w-full max-w-xl overflow-hidden max-h-[92vh] flex flex-col"
+            style={{
+              borderRadius: 28,
+              boxShadow: `0 30px 80px -12px ${colors.primary}40, 0 12px 24px -6px rgba(0,0,0,0.12)`,
+              animation: "plRowSlideIn 340ms cubic-bezier(0.34,1.56,0.64,1)"
+            }}
             onClick={e => e.stopPropagation()}>
 
             {/* Header */}
@@ -5198,16 +5909,18 @@ onToggleDrillAccount={toggleDrillAccount} />
                         <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
                           style={{ background: "#CF305D15", color: "#CF305D" }}>{T("badge_compare")}</span>
                       )}
-                      {activeMapping && (
+{activeMapping && activeMapping.name !== "__custom_override__" && (
                         <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
                           style={{ background: "#10B98115", color: "#10B981" }}>{T("badge_mapped")}</span>
                       )}
                     </div>
                   </div>
                 </div>
-                <button onClick={() => setExportModal(false)}
+<button onClick={() => setExportModal(false)}
                   className="w-9 h-9 rounded-xl flex items-center justify-center transition-all duration-200 hover:scale-[1.05]"
-                  style={{ background: "#f3f4f6", color: "#6b7280" }}>
+                  style={{ background: "#f3f4f6", color: "#6b7280" }}
+                  onMouseEnter={e => { e.currentTarget.style.background = "#e5e7eb"; e.currentTarget.style.color = "#111827"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "#f3f4f6"; e.currentTarget.style.color = "#6b7280"; }}>
                   <X size={14} strokeWidth={2.5} />
                 </button>
               </div>
@@ -5277,38 +5990,77 @@ onToggleDrillAccount={toggleDrillAccount} />
                 </div>
               </div>
 
-              {/* Current filters preview */}
+{/* Primary Period */}
               <div>
-                <div className="flex items-center gap-2 mb-3">
-                  <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">{T("export_current_filters")}</p>
+                <div className="flex items-center gap-2 mb-2.5">
+                  <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">{T("primary_period") || "Primary Period"}</p>
                   <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
                 </div>
-                <div className="rounded-xl p-4 text-xs text-gray-600 leading-relaxed space-y-0.5"
-                  style={{ background: "#f8f9ff", border: "1px solid #e8eaf0" }}>
-<div><span className="font-bold text-gray-500">{T("export_filter_period")}:</span> {month && year ? `${T(`month_${parseInt(month)}`)} ${year}` : "—"}</div>
-                  <div><span className="font-bold text-gray-500">{T("export_filter_source_structure")}:</span> {source} · {structure}</div>
-                  <div><span className="font-bold text-gray-500">{T("export_filter_company")}:</span> {company}</div>
-                  <div><span className="font-bold text-gray-500">{T("export_filter_view")}:</span> {viewMode === "ytd" ? T("mode_ytd") : T("mode_monthly")}</div>
-                  <div><span className="font-bold text-gray-500">{T("export_filter_dim_groups")}:</span> {selGroups.size > 0 ? [...selGroups].join(", ") : <span className="italic text-gray-400">{T("all")}</span>}</div>
-                  <div><span className="font-bold text-gray-500">{T("export_filter_dims")}:</span> {selDims.size > 0 ? [...selDims].join(", ") : <span className="italic text-gray-400">{T("all")}</span>}</div>
-                  <div><span className="font-bold text-gray-500">{T("export_filter_compare")}:</span> {compareMode ? T("export_compare_on") : <span className="italic text-gray-400">{T("export_compare_off")}</span>}</div>
-                  {activeMapping && <div><span className="font-bold text-gray-500">{T("export_filter_mapping")}:</span> {activeMapping.name}</div>}
-                </div>
+<PeriodChip letter="A" color={colors.primary} label={T("period_a") || "Period A"}
+                  filters={filterSnapshot.A ?? { year, month, source, structure, company, dimGroups: null, dimensions: null }}
+                  MONTHS={(() => { const arr = []; for (let i = 1; i <= 12; i++) arr.push({ value: i, label: T(`month_${i}`) }); return arr; })()}
+                  t={T} companies={companies} />
               </div>
+
+              {/* Compare period (only when compareMode on) */}
+              {compareMode && filterSnapshot.B && (
+                <div>
+                  <div className="flex items-center gap-2 mb-2.5">
+                    <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">{T("export_compare_period") || "Compare Period"}</p>
+                    <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
+                  </div>
+                  <PeriodChip letter="B" color="#CF305D" label={T("period_b") || "Period B"}
+            filters={filterSnapshot.B}
+                    MONTHS={(() => { const arr = []; for (let i = 1; i <= 12; i++) arr.push({ value: i, label: T(`month_${i}`) }); return arr; })()}
+                    t={T} companies={companies} />
+                </div>
+              )}
+
+{/* Mapping badge */}
+              {activeMapping && activeMapping.name !== "__custom_override__" && (
+                <div className="rounded-xl px-3 py-2.5 flex items-center gap-2"
+                  style={{ background: "#10B98110", border: "1px solid #10B98130" }}>
+                  <div className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0"
+                    style={{ background: "#10B981", color: "white" }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M20 6L9 17l-5-5"/></svg>
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[9px] font-black uppercase tracking-[0.22em] text-emerald-700">{T("export_filter_mapping") || "Mapping"}</p>
+                    <p className="text-[11px] font-bold text-gray-800 truncate">{activeMapping.name}</p>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Footer */}
             <div className="px-7 py-5 flex items-center gap-3 flex-shrink-0"
               style={{ background: "linear-gradient(180deg, transparent 0%, #f9fafb 100%)" }}>
-              <div className="relative flex items-center p-1 rounded-xl" style={{ background: "#f3f4f6" }}>
+<div className="relative flex items-center p-1 rounded-xl"
+                style={{ background: "#f3f4f6" }}
+                ref={el => {
+                  if (!el) return;
+                  const btns = el.querySelectorAll("[data-fmt]");
+                  const idx = ["xlsx","pdf"].indexOf(exportOpts.format ?? "xlsx");
+                  const active = btns[idx >= 0 ? idx : 0];
+                  const pill = el.querySelector(".fmt-pill");
+                  if (active && pill) {
+                    pill.style.left = active.offsetLeft + "px";
+                    pill.style.width = active.offsetWidth + "px";
+                  }
+                }}>
+                <span className="fmt-pill" style={{
+                  position: "absolute", top: 4, bottom: 4,
+                  background: "white", borderRadius: 8,
+                  boxShadow: "0 2px 6px rgba(0,0,0,0.06)",
+                  transition: "left 320ms cubic-bezier(0.34,1.56,0.64,1), width 320ms cubic-bezier(0.34,1.56,0.64,1)",
+                  pointerEvents: "none"
+                }} />
                 {[["xlsx", T("export_excel")], ["pdf", T("export_pdf")]].map(([f, l]) => (
-                  <button key={f} onClick={() => setExportOpts(o => ({ ...o, format: f }))}
-                    className="relative z-10 px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all duration-200"
-                    style={{
-                      background: exportOpts.format === f ? "white" : "transparent",
-                      color: exportOpts.format === f ? colors.primary : "#9ca3af",
-                      boxShadow: exportOpts.format === f ? "0 2px 6px rgba(0,0,0,0.06)" : "none",
-                    }}>{l}</button>
+                  <button key={f} data-fmt onClick={() => setExportOpts(o => ({ ...o, format: f }))}
+                    className="relative z-10 px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-colors duration-200"
+                    style={{ background: "transparent", color: exportOpts.format === f ? colors.primary : "#9ca3af" }}>
+                    {l}
+                  </button>
                 ))}
               </div>
               <button

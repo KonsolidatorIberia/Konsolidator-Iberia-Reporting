@@ -217,7 +217,7 @@ if (activePage === "statistical-parties") return (
   );
 if (activePage === "settings") return <SettingsPage token={token} preloadedData={rawData} />;
 
-if (activePage === "admin-onboarding") return <AdminOnboardingPage token={token} />;
+if (activePage === "admin-onboarding") return <AdminOnboardingPage token={token} onNavigate={onNavigate} />;
 if (activePage === "mappings") {
     let pendingEdit = null;
     try {

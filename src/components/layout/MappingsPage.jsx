@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useId } from "react";
+import React, { useState, useEffect, useMemo, useRef, useId, useCallback } from "react";
 import {
   X, Plus, Search, Layers, FilePlus, Library, ChevronLeft,
   ChevronDown, ChevronRight, Clock, FileText, Sparkles, ArrowRightLeft,
@@ -9,7 +9,18 @@ import PageHeader from "./PageHeader.jsx";
 import { GitMerge, LayoutTemplate } from "lucide-react";
 import { useT } from "./SettingsContext.jsx";
 import {
+  loadCustomStandard,
+  saveCustomStandard,
+  restoreBaseline,
+  isOriginalRow,
+  isOriginalSection,
+} from "../../lib/standardMappingApi";
+import {
   listMappings, createMapping, updateMapping, archiveMapping, getActiveCompanyId,
+getHiddenOverrideMapping,
+  upsertHiddenOverrideMapping,
+  deleteHiddenOverrideMapping,
+  setActiveMappingSilently,
 } from "../../lib/mappingsApi";
 import {
   listMappings as listReportMappings,
@@ -149,6 +160,139 @@ function insertAt(tree, targetId, position, newNode) {
 }
 function appendToRoot(tree, newNode) { return [...tree, newNode]; }
 function findNodeById(tree, targetId) { for (const n of tree) { if (n.id === targetId || n.code === targetId) return n; const f = findNodeById(n.children || [], targetId); if (f) return f; } return null; }
+
+const PRESET_COLORS = ["#1a2f8a","#CF305D","#374151","#57aa78","#dc7533","#7c3aed","#0891b2","#ca8a04"];
+
+// ────────────────────────────────────────────────────────────────
+// Diff a live templateTree (per statement) against baseline + current live
+// standard_statement_rows/sections, returning the set of changes needed.
+//
+// Only STANDARD-side nodes (i.e. NOT sourceSide === "client") count for
+// this diff. Client nodes are the account-mapping data that lives inside
+// mappings.pl_tree/bs_tree, not the standard structure.
+// ────────────────────────────────────────────────────────────────
+function diffCustomStandard({ statementTrees, baseline, liveRows, liveSections }) {
+  const rowsAdded = [];
+  const rowsUpdated = [];
+  const rowsDeleted = [];
+  const sectionsAdded = [];
+  const sectionsUpdated = [];
+  const sectionsDeleted = [];
+
+  // Build lookup maps of the live state
+  const liveRowByKey = new Map();
+  liveRows.forEach(r => liveRowByKey.set(`${r.statement}::${r.account_code}`, r));
+  const liveSecByKey = new Map();
+  liveSections.forEach(s => liveSecByKey.set(`${s.statement}::${s.section_code}`, s));
+
+  // Walk the template tree per statement and collect what we see now
+  const seenRowKeys = new Set();
+  const seenSecKeys = new Set();
+
+  ["PL", "BS"].forEach(statement => {
+    const tree = statementTrees[statement] ?? [];
+    let cursorSortOrder = 1000;
+    let currentSectionCode = null;
+
+const walk = (nodes, parentCode) => {
+      for (const node of nodes) {
+        // Skip client-mapping nodes: any of these markers means it's a client account
+        // that was dragged into the template (its mapping lives in mappings.pl_tree/bs_tree,
+        // NOT in standard_statement_rows).
+        if (node.sourceSide === "client") continue;
+        if (typeof node.id === "string" && (node.id.startsWith("imp-client-") || node.id.startsWith("cli-"))) continue;
+        if (node.accountType === "P/L" || node.accountType === "B/S") continue; // client accounts carry accountType; standard rows do not
+        cursorSortOrder += 10;
+
+        if (node.kind === "breaker") {
+          const sectionCode = node.sectionCode ?? node.code;
+          if (!sectionCode) continue;
+          currentSectionCode = sectionCode;
+          const key = `${statement}::${sectionCode}`;
+          seenSecKeys.add(key);
+          const live = liveSecByKey.get(key);
+          if (!live) {
+            // NEW section
+            sectionsAdded.push({
+              statement,
+              section_code: sectionCode,
+              label: node.name ?? sectionCode,
+              color: node.color ?? "#374151",
+              sort_order: cursorSortOrder,
+            });
+          } else {
+            // EXISTING section — check for label / color changes
+            const patch = {};
+            if (String(live.label ?? "") !== String(node.name ?? "")) patch.label = node.name ?? live.label;
+            if (String(live.color ?? "") !== String(node.color ?? "")) patch.color = node.color ?? live.color;
+            if (Object.keys(patch).length > 0) {
+              sectionsUpdated.push({ statement, section_code: sectionCode, patch });
+            }
+          }
+          // Descend into breaker's children — its section applies to them
+          walk(node.children ?? [], null);
+          continue;
+        }
+
+        // It's a row
+        const accountCode = node.code;
+        if (!accountCode) continue;
+        const key = `${statement}::${accountCode}`;
+        seenRowKeys.add(key);
+        const live = liveRowByKey.get(key);
+        if (!live) {
+          // NEW row
+          rowsAdded.push({
+            statement,
+            account_code: accountCode,
+            account_name: node.name ?? accountCode,
+            parent_code: parentCode ?? null,
+            section_code: currentSectionCode,
+            cc_tag: null,
+            is_sum: !!(node.isSum || node.isSumAccount),
+            sort_order: cursorSortOrder,
+            level: null,
+            show_in_summary: node.showInSummary !== false,
+          });
+} else {
+          // EXISTING row — build patch. Baseline rows will be restricted to
+          // position-only fields by the API's validator.
+          const isOriginal = baseline.rows.has(key);
+          const patch = {};
+          if (!isOriginal && String(live.account_name ?? "") !== String(node.name ?? "")) patch.account_name = node.name ?? live.account_name;
+          if (String(live.parent_code ?? "") !== String(parentCode ?? "")) patch.parent_code = parentCode ?? null;
+          if (String(live.section_code ?? "") !== String(currentSectionCode ?? "")) patch.section_code = currentSectionCode;
+          const newIsSum = !!(node.isSum || node.isSumAccount);
+          if (!isOriginal && !!live.is_sum !== newIsSum) patch.is_sum = newIsSum;
+          if (Number(live.sort_order ?? 0) !== cursorSortOrder) patch.sort_order = cursorSortOrder;
+          if (Object.keys(patch).length > 0) {
+            rowsUpdated.push({ statement, account_code: accountCode, patch });
+          }
+        }
+        walk(node.children ?? [], accountCode);
+      }
+    };
+    walk(tree, null);
+  });
+
+  // Detect deletions — rows/sections that were live but not seen in the tree
+  liveRows.forEach(r => {
+    if (r.statement !== "PL" && r.statement !== "BS") return; // ignore CF here
+    const key = `${r.statement}::${r.account_code}`;
+    if (seenRowKeys.has(key)) return;
+    if (baseline.rows.has(key)) return; // can't delete originals — silently keep them
+    rowsDeleted.push({ statement: r.statement, account_code: r.account_code });
+  });
+  liveSections.forEach(s => {
+    if (s.statement !== "PL" && s.statement !== "BS") return;
+    const key = `${s.statement}::${s.section_code}`;
+    if (seenSecKeys.has(key)) return;
+    if (baseline.sections.has(key)) return;
+    sectionsDeleted.push({ statement: s.statement, section_code: s.section_code });
+  });
+
+  return { rowsAdded, rowsUpdated, rowsDeleted, sectionsAdded, sectionsUpdated, sectionsDeleted };
+}
 function isDescendantOf(tree, ancestorId, targetId) { if (!targetId) return false; const ancestor = findNodeById(tree, ancestorId); if (!ancestor) return false; return findNodeById(ancestor.children || [], targetId) !== null; }
 function renameNode(tree, targetId, newName) { return walkTransform(tree, n => (n.id === targetId || n.code === targetId) ? { ...n, name: newName } : n); }
 function deleteNode(tree, targetId) { return walkTransform(tree, n => (n.id === targetId || n.code === targetId) ? null : n); }
@@ -173,15 +317,16 @@ const groupAccounts = preloadedData.groupAccounts ?? [];
     try {
       const raw = sessionStorage.getItem("mappings:openForEdit");
       if (!raw) return null;
-      sessionStorage.removeItem("mappings:openForEdit");
+sessionStorage.removeItem("mappings:openForEdit");
       const parsed = JSON.parse(raw);
+      if (parsed?.openCustom && parsed?.standard) return parsed;
       if (parsed?.mapping_id && (parsed.kind === "structure" || parsed.kind === "report")) return parsed;
     } catch { /* ignore */ }
     return null;
   }, []);
 
   const [category, setCategory] = useState(initialOpenForEdit ? "account" : null); // null | "account" | "cashflow"
-  const [selected, setSelected] = useState(initialOpenForEdit?.kind ?? null);      // null | "structure" | "report"
+  const [selected, setSelected] = useState(initialOpenForEdit?.openCustom ? "structure" : (initialOpenForEdit?.kind ?? null));
   const [search, setSearch] = useState("");
   const [pendingEdit, setPendingEdit] = useState(initialOpenForEdit);
 
@@ -596,9 +741,20 @@ useEffect(() => {
     api.list({ companyId }).then(rows => setMappings(rows)).finally(() => setMappingsLoading(false));
   }, [view, companyId, api]);
 
-  // Auto-open the requested mapping once the list has loaded
+// Auto-open the requested mapping once the list has loaded
   useEffect(() => {
-    if (!pendingEdit || !mappings.length) return;
+    if (!pendingEdit) return;
+    // Direct-open the CUSTOM editor without needing a specific mapping_id.
+    if (pendingEdit.openCustom && pendingEdit.standard) {
+      /* eslint-disable react-hooks/set-state-in-effect */
+      setEditingMapping(null);
+      setSelectedStandard(pendingEdit.standard);
+      setView("mapper");
+      /* eslint-enable react-hooks/set-state-in-effect */
+      onPendingEditConsumed?.();
+      return;
+    }
+    if (!mappings.length) return;
     const m = mappings.find(x => String(x.mapping_id) === String(pendingEdit.mapping_id));
     if (!m) return;
     /* eslint-disable react-hooks/set-state-in-effect */
@@ -752,12 +908,14 @@ const rows = json.value ?? (Array.isArray(json) ? json : []);
   }, [token, filterYear, filterMonth, filterSource, filterStructure, filterCompany]);
 
 const handleMapperBack = () => {
+    console.log("[handleMapperBack] mapperDirty:", mapperDirty);
     if (mapperDirty) { setShowBackConfirm(true); return; }
     setEditingMapping(null); setSelectedStandard(null); setView("list");
   };
 
 useEffect(() => {
     window.__navGuard = (go) => {
+      console.log("[__navGuard] view:", view, "mapperDirty:", mapperDirty);
       if (view !== "mapper" || !mapperDirty) { go(); return; }
       setPendingNav(() => go);
       setShowBackConfirm(true);
@@ -914,6 +1072,7 @@ headerSearch={view === "list" ? { value: search, onChange: setSearch, placeholde
           <SelectStandardView
             detectedStandard={detectedStandard}
             activeStandardKey={activeStandardKey}
+            mappingKind={mappingKind}
             onPick={std => { setSelectedStandard(std); setView("mapper"); }}
           />
         )}
@@ -928,7 +1087,7 @@ headerSearch={view === "list" ? { value: search, onChange: setSearch, placeholde
             companyId={companyId}
 editingMapping={editingMapping}
             existingMappings={mappings}
-            onSaved={saved => { setEditingMapping(saved); if (!editingMapping) setPendingStandardMapping(saved); }}
+            onSaved={saved => { setEditingMapping(saved); if (!editingMapping && !saved?.is_hidden) setPendingStandardMapping(saved); }}
             onBackToList={() => { setEditingMapping(null); setSelectedStandard(null); setView("list"); }}
 statement={mapperStatement}
             setStatement={setMapperStatement}
@@ -1228,7 +1387,7 @@ function CreateView({ onScratch, onExisting }) {
 }
 
 // ─── SelectStandardView ───────────────────────────────────────
-function SelectStandardView({ detectedStandard, activeStandardKey, onPick }) {
+function SelectStandardView({ detectedStandard, activeStandardKey, mappingKind = "structure", onPick }) {
   const t = useT();
   const { colors } = useSettings();
   const [catalog, setCatalog] = useState([]);
@@ -1241,7 +1400,7 @@ function SelectStandardView({ detectedStandard, activeStandardKey, onPick }) {
 
   // If this tenant has a CUSTOM-* standard bound, show it as an extra card
   // (marked recommended, using their brand colour).
-const hasCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+const hasCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-") && mappingKind !== "report";
   console.log("[SelectStandardView] activeStandardKey =", activeStandardKey, "hasCustom =", hasCustom);
 
   if (loading) return <div className="flex-1 flex items-center justify-center text-xs text-gray-400">{t("am_loading_templates")}</div>;
@@ -1325,6 +1484,68 @@ function StandardCard({ stdKey, meta, isRecommended, isCustom = false, onClick }
 function MapperView({ standard, groupAccounts, uploadedAccounts = [], previousUploadedAccounts = [], dimensions = [], authUserId, companyId, editingMapping, existingMappings = [], onSaved, statement, periodMode = "ytd", saveRef, resetRef, onDirtyChange, api = { create: createMapping, update: updateMapping }, mappingKind = "structure" }) {
 const t = useT();
   const { colors: mapperColors } = useSettings();
+  // ── CUSTOM-standard editor mode ─────────────────────────────
+  // When the user picks the company's own CUSTOM-<slug> as the standard,
+  // this editor also persists structural changes (new rows / new sections /
+  // section-label edits) directly to standard_statement_rows via the API in
+  // ../../lib/standardMappingApi. The baseline (immutable snapshot of the
+  // AI-generated original) tells us which rows are ORIGINAL (readonly) vs
+  // CUSTOM (fully editable).
+  const isCustomEditor = !!standard && String(standard).startsWith("CUSTOM-") && mappingKind === "structure";
+const [customBaseline, setCustomBaseline] = useState(null); // { rows:Set, sections:Set, raw:{rows,sections} }
+  const [customLiveRows, setCustomLiveRows] = useState([]);   // live rows from standard_statement_rows
+  const [customLiveSections, setCustomLiveSections] = useState([]); // live sections
+const [showRestoreBaselineConfirm, setShowRestoreBaselineConfirm] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+useEffect(() => {
+    if (!isCustomEditor) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [data, hiddenMap] = await Promise.all([
+          loadCustomStandard(standard),
+          getHiddenOverrideMapping({ companyId, standard }),
+        ]);
+        if (cancelled) return;
+        setCustomBaseline(data.baseline);
+        setCustomLiveRows(data.rows);
+        setCustomLiveSections(data.sections);
+if (hiddenMap) {
+          setTemplateTreeBy(prev => ({
+            ...prev,
+            PL: Array.isArray(hiddenMap.pl_tree) && hiddenMap.pl_tree.length > 0 ? hiddenMap.pl_tree : prev.PL,
+            BS: Array.isArray(hiddenMap.bs_tree) && hiddenMap.bs_tree.length > 0 ? hiddenMap.bs_tree : prev.BS,
+          }));
+          setHighlightedIds(new Set(hiddenMap.highlighted_ids ?? []));
+        }
+      } catch (e) {
+        console.error("[MapperView] loadCustomStandard failed:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      // Reset happens in cleanup — this is allowed by the lint because it's the
+      // cleanup phase, not the effect body.
+      setCustomBaseline(null);
+      setCustomLiveRows([]);
+      setCustomLiveSections([]);
+    };
+  }, [isCustomEditor, standard, companyId]);
+
+  // Whether a template-tree node (breaker or row) is an ORIGINAL from the baseline.
+  // Breakers use section_code (n.sectionCode); rows use account_code (n.code).
+  const isOriginalNode = useCallback((node) => {
+    if (!isCustomEditor || !customBaseline) return false;
+    if (!node) return false;
+    if (node.kind === "breaker") {
+      const sc = node.sectionCode ?? node.code;
+      if (!sc) return false;
+      return isOriginalSection(customBaseline, statement, sc);
+    }
+    const ac = node.code;
+    if (!ac) return false;
+    return isOriginalRow(customBaseline, statement, ac);
+  }, [isCustomEditor, customBaseline, statement]);
   // CUSTOM standards live outside STANDARD_META — synthesize a meta shell
   // so components that read meta.accent / meta.accentBg don't blow up.
   const meta = STANDARD_META[standard] ?? (
@@ -1541,7 +1762,14 @@ return map;
   const [tplLoading, setTplLoading] = useState(false);
   const [tplStatement, setTplStatement] = useState(null);
   const [clientTreeBy, setClientTreeBy] = useState({ PL: null, BS: null });
-  const [templateTreeBy, setTemplateTreeBy] = useState({ PL: null, BS: null });
+const [templateTreeBy, setTemplateTreeBy] = useState({ PL: null, BS: null });
+const [tplRefreshTick, setTplRefreshTick] = useState(0);
+  useEffect(() => {
+    const handler = () => { console.log("[tpl-listener] event received"); setTplRefreshTick(v => v + 1); };
+    window.addEventListener("custom-standard-updated", handler);
+    console.log("[tpl-listener] attached");
+    return () => window.removeEventListener("custom-standard-updated", handler);
+  }, []);
 const [activeMultiSide, setActiveMultiSide] = useState(null);
 const [movedClientCodes, setMovedClientCodes] = useState(() => new Set());
   const [movedDimsByCode, setMovedDimsByCode] = useState(() => new Map()); // Map<accountCode, Set<dimString>>
@@ -1559,6 +1787,7 @@ const [showSaveChoice, setShowSaveChoice] = useState(false);
 useEffect(() => {
     const ac = new AbortController();
     if (templateTreeBy[statement]) return;
+console.log("[tpl-effect] fired", { standard, statement, tplRefreshTick });
 if (standard === "Scratch") {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setTplRows([]); setTplSections([]); setTplStatement(statement); setTplLoading(false);
@@ -1592,8 +1821,8 @@ if (standard === "Scratch") {
       finally { if (!ac.signal.aborted) setTplLoading(false); }
     })();
 return () => ac.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [standard, statement]);
+// eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [standard, statement, tplRefreshTick]);
 
   const baseClientTree = useMemo(() => {
     if (!groupAccounts.length) return [];
@@ -1617,6 +1846,7 @@ useEffect(() => {
   }, [standard]);
 useEffect(() => {
   if (!editingMapping) return;
+  console.log("[editingMapping effect] fired, will overwrite templateTreeBy with", { pl: editingMapping.pl_tree?.length, bs: editingMapping.bs_tree?.length });
   const plTree = Array.isArray(editingMapping.pl_tree) ? editingMapping.pl_tree : [];
   const bsTree = Array.isArray(editingMapping.bs_tree) ? editingMapping.bs_tree : [];
 setTemplateTreeBy({ PL: plTree, BS: bsTree });
@@ -1683,7 +1913,8 @@ walkTemplate(baseTemplateTree);
   }, [editingMapping, standard, baseTemplateTree, groupAccounts]);
 
 const clientTree = clientTreeBy[statement] ?? baseClientTree;
-  const templateTree = templateTreeBy[statement] ?? baseTemplateTree;
+const templateTree = templateTreeBy[statement] ?? baseTemplateTree;
+  console.log("[render] templateTree source:", templateTreeBy[statement] ? "override" : "base", "size:", templateTree?.length, "base size:", baseTemplateTree?.length, "tplRows:", tplRows?.length);
   const templateAmountsById = useMemo(() => {
     const out = new Map();
     const walk = node => {
@@ -1713,8 +1944,9 @@ let amt;
   const sectionByCode = useMemo(() => { const m = new Map(); tplSections.forEach(s => m.set(s.section_code, { label: s.label, color: s.color })); return m; }, [tplSections]);
 
 const handleSave = async ({ asNew = false } = {}) => {
-if (!companyId || !authUserId) { setSaveError(t("am_err_not_auth")); return; }
-    if (!currentName.trim()) { setSaveError(t("am_err_name_required")); setShowSaveForm(true); return; }
+console.log("[handleSave]", "isCustomEditor:", isCustomEditor, "asNew:", asNew, "companyId:", !!companyId, "authUserId:", !!authUserId);
+if (!companyId || !authUserId) { console.log("[handleSave] EXIT: no auth"); setSaveError(t("am_err_not_auth")); return; }
+    if (!isCustomEditor && !currentName.trim()) { console.log("[handleSave] EXIT: no name"); setSaveError(t("am_err_name_required")); setShowSaveForm(true); return; }
 // Re-derive moved state from BOTH template trees (safeguard against stale state)
     const effectiveMoved = new Set();
     const dimsSeenByCode = new Map();
@@ -1756,7 +1988,7 @@ const plClientTree = clientTreeBy.PL ?? baseClientTree;
     const unmappedPL = countUnmapped(plClientTree);
     const unmappedBS = countUnmapped(bsClientTree);
     const totalUnmapped = unmappedPL + unmappedBS;
-if (totalUnmapped > 0 && (!editingMapping || asNew) && mappingKind !== "report") {
+if (!isCustomEditor && totalUnmapped > 0 && (!editingMapping || asNew) && mappingKind !== "report") {
       const parts = [];
       if (unmappedPL > 0) parts.push(`${unmappedPL} ${t("am_err_unmapped_pl_suffix")}`);
       if (unmappedBS > 0) parts.push(`${unmappedBS} ${t("am_err_unmapped_bs_suffix")}`);
@@ -1764,28 +1996,97 @@ if (totalUnmapped > 0 && (!editingMapping || asNew) && mappingKind !== "report")
       setShowSaveForm(true);
       return;
     }
-const trimmedName = currentName.trim().toLowerCase();
+if (!isCustomEditor) {
+    const trimmedName = currentName.trim().toLowerCase();
     const nameConflict = existingMappings.find(m =>
       String(m.name ?? "").trim().toLowerCase() === trimmedName &&
       (asNew || !editingMapping || m.mapping_id !== editingMapping.mapping_id)
     );
     if (nameConflict) { setSaveError(t("am_err_name_exists").replace("{name}", currentName.trim())); setShowSaveForm(true); return; }
+}
+console.log("[handleSave] reaching save block");
     setSaving(true); setSaveError(null);
     try {
 const plTree = templateTreeBy.PL ?? templateTree ?? [], bsTree = templateTreeBy.BS ?? [];
       const highlightedArr = [...highlightedIds];
-if (editingMapping && !asNew) { const updated = await api.update({ mappingId: editingMapping.mapping_id, userId: authUserId, name: currentName.trim(), description: currentDescription.trim() || null, plTree, bsTree, highlightedIds: highlightedArr }); onSaved?.(updated); }
+      console.log("[handleSave] payload sizes:", "plTree:", plTree?.length, "bsTree:", bsTree?.length, "highlighted:", highlightedArr.length);
+if (isCustomEditor) {
+        console.log("[handleSave] entering CUSTOM branch");
+        let saved;
+        try {
+          saved = await upsertHiddenOverrideMapping({
+            companyId, userId: authUserId, standard,
+            plTree, bsTree, highlightedIds: highlightedArr,
+          });
+          console.log("[handleSave] upsertHiddenOverrideMapping returned:", saved);
+        } catch (up) {
+          console.error("[handleSave] upsertHiddenOverrideMapping THREW:", up);
+          throw up;
+        }
+        if (saved?.mapping_id) {
+          try {
+            const ok = await setActiveMappingSilently({ userId: authUserId, mappingId: saved.mapping_id });
+            console.log("[handleSave] setActiveMappingSilently ok:", ok);
+          } catch (sa) {
+            console.error("[handleSave] setActiveMappingSilently THREW:", sa);
+          }
+        } else {
+          console.warn("[handleSave] saved has no mapping_id:", saved);
+        }
+        onSaved?.(saved);
+        console.log("[handleSave] onSaved called with:", saved);
+      } else if (editingMapping && !asNew) { const updated = await api.update({ mappingId: editingMapping.mapping_id, userId: authUserId, name: currentName.trim(), description: currentDescription.trim() || null, plTree, bsTree, highlightedIds: highlightedArr }); onSaved?.(updated); }
       else { const created = await api.create({ companyId, userId: authUserId, name: currentName.trim(), description: currentDescription.trim() || null, standard, plTree, bsTree, highlightedIds: highlightedArr }); onSaved?.(created); }
+
+      // In CUSTOM-editor mode, ALSO persist added/edited standard rows and sections
+      // directly to standard_statement_rows / standard_statement_sections.
+      if (isCustomEditor && customBaseline) {
+        try {
+          const changes = diffCustomStandard({
+            statementTrees: { PL: templateTreeBy.PL ?? [], BS: templateTreeBy.BS ?? [] },
+            baseline: customBaseline,
+            liveRows: customLiveRows,
+            liveSections: customLiveSections,
+          });
+          const hasAnyChange = Object.values(changes).some(arr => Array.isArray(arr) && arr.length > 0);
+console.log("[custom-save] changes:", JSON.stringify(changes, null, 2));
+          if (hasAnyChange) {
+            await saveCustomStandard({
+              standardKey: standard,
+              changes,
+              baseline: customBaseline,
+              liveRows: customLiveRows,
+              liveSections: customLiveSections,
+            });
+            // Refresh local state after save so subsequent diffs are correct
+            const fresh = await loadCustomStandard(standard);
+            setCustomBaseline(fresh.baseline);
+            setCustomLiveRows(fresh.rows);
+            setCustomLiveSections(fresh.sections);
+          }
+        } catch (customErr) {
+          console.error("[MapperView] saveCustomStandard failed:", customErr, customErr.details);
+          setSaveError(customErr.details?.join(" · ") ?? customErr.message);
+          return;
+        }
+      }
+
+console.log("[handleSave] calling onDirtyChange(false)");
       onDirtyChange?.(false);
       setShowSaveForm(false);
     } catch (e) { setSaveError(e.message); } finally { setSaving(false); }
   };
 useEffect(() => {
     if (saveRef) saveRef.current = () => {
-      if (!editingMapping) { setShowSaveForm(true); }
+      console.log("[saveRef.current fired]", "isCustomEditor:", isCustomEditor, "editingMapping:", !!editingMapping);
+      if (isCustomEditor) { handleSave(); }
+      else if (!editingMapping) { setShowSaveForm(true); }
       else { setShowSaveChoice(true); }
     };
-    if (resetRef) resetRef.current = () => setShowResetConfirm(true);
+  if (resetRef) resetRef.current = () => {
+      if (isCustomEditor) { setShowRestoreBaselineConfirm(true); }
+      else { setShowResetConfirm(true); }
+    };
   });
 
 const handleReset = () => { pushHistory(); setClientTreeBy({ ...clientTreeBy, [statement]: baseClientTree }); setTemplateTreeBy({ ...templateTreeBy, [statement]: baseTemplateTree }); setMovedClientCodes(new Set()); setMovedTemplateIds(new Set()); setHighlightedIds(new Set()); onDirtyChange?.(false); };
@@ -1803,8 +2104,45 @@ const handleCopy = (sourceSide, nodeId) => {
     const cloned = cloneSubtree(sourceNode, sourceSide);
     setTemplateTreeBy(prev => ({ ...prev, [statement]: [...(prev[statement] ?? templateTree), cloned] }));
   };
-  const handleRename = (side, targetId, newName) => { pushHistory(); if (side === "client") setClientTreeBy(prev => ({ ...prev, [statement]: renameNode(prev[statement] ?? clientTree, targetId, newName) })); else setTemplateTreeBy(prev => ({ ...prev, [statement]: renameNode(prev[statement] ?? templateTree, targetId, newName) })); };
+const handleRename = (side, targetId, newName) => {
+    // In CUSTOM-editor mode, block renames on ORIGINAL template rows
+    // (their names come from the standard and must not be changed).
+    // Breakers (sections) CAN be renamed — that maps to editing section.label.
+    if (isCustomEditor && side === "template") {
+      const tree = templateTreeBy[statement] ?? templateTree ?? [];
+      const found = findNodeById(tree, targetId);
+      if (found && found.kind !== "breaker" && isOriginalNode(found)) {
+        return;
+      }
+    }
+    pushHistory();
+    if (side === "client") setClientTreeBy(prev => ({ ...prev, [statement]: renameNode(prev[statement] ?? clientTree, targetId, newName) }));
+    else setTemplateTreeBy(prev => ({ ...prev, [statement]: renameNode(prev[statement] ?? templateTree, targetId, newName) }));
+  };
+  const handleColorChange = (targetId, newColor) => {
+    pushHistory();
+    setTemplateTreeBy(prev => ({
+      ...prev,
+      [statement]: walkTransform(prev[statement] ?? templateTree, n =>
+        (n.id === targetId || n.code === targetId) ? { ...n, color: newColor } : n
+      ),
+    }));
+  };
 const handleDelete = (side, target) => {
+    // In CUSTOM-editor mode, block deletes on ORIGINAL template rows/sections
+    // (only user-added rows and sections may be deleted).
+    if (isCustomEditor && side === "template") {
+      const tree = templateTreeBy[statement] ?? templateTree ?? [];
+      const targetIds = Array.isArray(target) ? target : [target];
+      for (const tid of targetIds) {
+        if (typeof tid === "string" && tid.startsWith("__dim__")) continue;
+        const node = findNodeById(tree, tid);
+        if (node && isOriginalNode(node)) {
+          console.warn("[MapperView] blocked delete of ORIGINAL", node);
+          return;
+        }
+      }
+    }
     pushHistory();
     const targets = Array.isArray(target) ? target : [target];
     if (side === "client") {
@@ -2109,12 +2447,69 @@ if (sourceSide === "client") {
   movedDimsByCode.forEach((moved, code) => {
     if (moved.size > 0 && !dimsByGroupCode.has(code)) effective.add(code);
   });
+
   return effective;
 })()} movedDimsByCode={movedDimsByCode} onDrop={p => handleDrop({ ...p, destSide: "client" })} onRename={(id, name) => handleRename("client", id, name)} onDelete={id => handleDelete("client", id)} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} dimsByGroupCode={dimsByGroupCodeWithResidual} />
-<TemplatePanel mappingKind={mappingKind} templateAmountsById={templateAmountsById} amountsByCodeDim={amountsByCodeDim} onCopy={id => handleCopy("template", id)} tree={templateTree} sectionByCode={sectionByCode} loading={tplLoading} accent={meta.accent} standardLabel={stdLabel(t, standard)} movedIds={movedTemplateIds} onDrop={p => handleDrop({ ...p, destSide: "template" })} onRename={(id, name) => handleRename("template", id, name)} onDelete={id => handleDelete("template", id)} onAddRow={handleAddRow} onAddBreaker={handleAddBreaker} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} highlightedIds={highlightedIds} onToggleHighlight={id => { pushHistory(); setHighlightedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; }); }}/>
+<TemplatePanel mappingKind={mappingKind} templateAmountsById={templateAmountsById} amountsByCodeDim={amountsByCodeDim} onCopy={id => handleCopy("template", id)} tree={templateTree} sectionByCode={sectionByCode} loading={tplLoading} accent={meta.accent} standardLabel={stdLabel(t, standard)} movedIds={movedTemplateIds} onDrop={p => handleDrop({ ...p, destSide: "template" })} onRename={(id, name) => handleRename("template", id, name)} onColorChange={handleColorChange} onDelete={id => handleDelete("template", id)} onAddRow={handleAddRow} onAddBreaker={handleAddBreaker} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} highlightedIds={highlightedIds} onToggleHighlight={id => { pushHistory(); setHighlightedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; }); }} isCustomEditor={isCustomEditor} onRestoreBaseline={isCustomEditor ? () => setShowRestoreBaselineConfirm(true) : null}/>
       </div>
       {conflict && <ConflictModal duplicates={conflict.duplicates} onResolve={conflict.onResolve} />}
       {showSaveForm && <SaveMappingForm name={currentName} setName={setCurrentName} description={currentDescription} setDescription={setCurrentDescription} error={saveError} saving={saving} asNew={!!editingMapping} accent={meta.accent} onCancel={() => { setShowSaveForm(false); setSaveError(null); }} onSave={() => handleSave({ asNew: !!editingMapping })} />}
+{showRestoreBaselineConfirm && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" onClick={() => setShowRestoreBaselineConfirm(false)}>
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-md" />
+          <div className="relative bg-white rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="px-6 pt-6 pb-5" style={{ background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)" }}>
+              <p className="text-white font-black text-lg leading-tight">Restaurar versión original</p>
+              <p className="text-white/70 text-[11px] mt-0.5">Esto revertirá el standard al snapshot generado por la IA en el onboarding.</p>
+            </div>
+            <div className="p-5 space-y-3">
+              <p className="text-xs text-gray-600 leading-relaxed">Se borrarán todas las filas y secciones que hayas añadido, y se restablecerán etiquetas y colores originales de las secciones. Los cambios que hayas hecho en la tabla `mappings` no se tocan.</p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowRestoreBaselineConfirm(false)}
+                  className="flex-1 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all">
+                  Cancelar
+                </button>
+                <button
+onClick={async () => {
+                    if (restoring) return;
+                    setRestoring(true);
+                    try {
+                      // 1. Restore standard_statement_rows/sections to baseline (bulk upsert)
+                      await restoreBaseline({ standardKey: standard, baseline: customBaseline, liveRows: customLiveRows, liveSections: customLiveSections });
+                      // 2. Delete the hidden override mapping — its tree references rows that no longer exist
+                      await deleteHiddenOverrideMapping({ companyId, standard });
+                      // 3. Reset all UI trees so MapperView re-derives them from the fresh standard
+                      setTemplateTreeBy({});
+                      setClientTreeBy({});
+                      setMovedClientCodes(new Set());
+                      setMovedTemplateIds(new Set());
+                      setHighlightedIds(new Set());
+                      // 4. Refresh local baseline snapshot (needed for next diff)
+                      const fresh = await loadCustomStandard(standard);
+                      setCustomBaseline(fresh.baseline);
+                      setCustomLiveRows(fresh.rows);
+                      setCustomLiveSections(fresh.sections);
+                      // 5. Explicit refetch of tplRows/tplSections (deterministic, independent of the event listener)
+                      setTplRefreshTick(v => v + 1);
+                      setShowRestoreBaselineConfirm(false);
+                      onDirtyChange?.(false);
+                    } catch (err) {
+                      console.error("[MapperView] restoreBaseline failed:", err);
+                      alert("Error al restaurar: " + (err.message || err));
+                    } finally {
+                      setRestoring(false);
+                    }
+                  }}
+                  disabled={restoring}
+className="flex-1 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
+                  {restoring ? "Restaurando…" : "Restaurar"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 {showResetConfirm && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-6" onClick={() => setShowResetConfirm(false)}>
           <div className="absolute inset-0 bg-black/50 backdrop-blur-md" />
@@ -2516,7 +2911,7 @@ setSelectedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(
 }
 
 // ─── TemplatePanel ────────────────────────────────────────────
-function TemplatePanel({ mappingKind = "structure", templateAmountsById = new Map(), amountsByCodeDim = new Map(), onCopy, tree, sectionByCode, loading, accent, standardLabel, movedIds, onDrop, onRename, onDelete, onAddRow, onAddBreaker, activeMultiSide, onSetMultiSide, highlightedIds, onToggleHighlight }) {
+function TemplatePanel({ mappingKind = "structure", templateAmountsById = new Map(), amountsByCodeDim = new Map(), onCopy, tree, sectionByCode, loading, accent, standardLabel, movedIds, onDrop, onRename, onColorChange, onDelete, onAddRow, onAddBreaker, activeMultiSide, onSetMultiSide, highlightedIds, onToggleHighlight, isCustomEditor = false, onRestoreBaseline = null }) {
   const t = useT();
   const [pendingParentId, setPendingParentId] = useState(null);
 const [showBreakerForm, setShowBreakerForm] = useState(false);
@@ -2605,13 +3000,22 @@ const multiToggleBtn = (
     </div>
   );
   return (
-<Panel title={`${standardLabel} ${t("am_panel_template_suffix")}`} subtitle={loading ? t("am_loading_ellipsis") : `${totalCount} ${t("am_rows_suffix")}`} accent={accent} onExpandAll={() => setExpanded(Object.fromEntries(allKeys.map(k => [k, true])))} onCollapseAll={() => setExpanded({})} isExpanded={isExpanded} extra={<div className="flex items-center gap-1">{multiToggleBtn}{viewMenuBtn}</div>}>
+<Panel title={`${standardLabel} ${t("am_panel_template_suffix")}`} subtitle={loading ? t("am_loading_ellipsis") : `${totalCount} ${t("am_rows_suffix")}`} accent={accent} onExpandAll={() => setExpanded(Object.fromEntries(allKeys.map(k => [k, true])))} onCollapseAll={() => setExpanded({})} isExpanded={isExpanded} extra={<div className="flex items-center gap-1">{isCustomEditor && onRestoreBaseline && (
+  <button onClick={onRestoreBaseline} title="Restaurar versión original"
+    className="group rounded-md flex items-center justify-center overflow-hidden transition-all flex-shrink-0"
+    style={{ height: TOGGLE_HEIGHT, paddingLeft: TOGGLE_PADDING_X, paddingRight: TOGGLE_PADDING_X, background: "#f59e0b10", color: "#b45309" }}>
+    <svg width={TOGGLE_ICON_SIZE} height={TOGGLE_ICON_SIZE} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>
+    </svg>
+<span className="overflow-hidden whitespace-nowrap font-black uppercase tracking-widest max-w-0 opacity-0 ml-0 group-hover:max-w-[200px] group-hover:opacity-100 group-hover:ml-1.5 transition-all duration-300 ease-out" style={{ fontSize: TOGGLE_LABEL_FONT_SIZE }}>Restaurar original</span>
+  </button>
+)}{multiToggleBtn}{viewMenuBtn}</div>}>
       <PanelToolbar search={search} setSearch={setSearch} placeholder={t("am_search_template")} count={visibleCount} total={totalCount} />
       <AddRowForm accent={accent} onAdd={p => onAddRow({ ...p, parentId: pendingParentId })} existingTree={tree} pendingParentId={pendingParentId} onClearParent={() => setPendingParentId(null)} tree={tree} />
       <AddBreakerForm accent={accent} open={showBreakerForm} onOpen={() => setShowBreakerForm(true)} onClose={() => setShowBreakerForm(false)} onAdd={onAddBreaker} />
 
 <div className="flex-1 overflow-y-auto px-1" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); if (data.sourceSide === "client") onDrop({ sourceNode: data.node, sourceSide: "client", targetId: null, position: "after" }); else if (data.sourceSide === "template") onDrop({ sourceNode: data.node, sourceSide: "template", targetId: null, position: "after" }); } catch { /* ignore parse */ } }}>
-        {loading ? <div className="text-center py-16 text-xs text-gray-400">{t("am_loading_template")}</div> : filteredTree.length === 0 ? <EmptyPanelState icon={Library} message={search ? t("am_no_matches") : t("am_no_rows")} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="template" mappingKind={mappingKind} hideAmounts={hideAmounts} templateAmountsById={templateAmountsById} amountsByCodeDim={amountsByCodeDim} onCopy={onCopy}movedIds={movedIds} onDrop={onDrop}onRename={onRename} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { onDelete([...selectedIds]); setSelectedIds(new Set()); } else { onDelete(id); } }} onAddChild={parentId => { setPendingParentId(parentId); setExpanded(prev => ({ ...prev, [`tpl-${parentId}`]: true })); }} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} templateTree={tree} onToggleSelect={(id, shiftKey) => {
+{loading ? <div className="text-center py-16 text-xs text-gray-400">{t("am_loading_template")}</div> : filteredTree.length === 0 ? <EmptyPanelState icon={Library} message={search ? t("am_no_matches") : t("am_no_rows")} /> : filteredTree.map(node => <DraggableTreeRow key={node.id ?? node.code} node={node} depth={0} expanded={expanded} onToggle={toggle} side="template" mappingKind={mappingKind} hideAmounts={hideAmounts} templateAmountsById={templateAmountsById} amountsByCodeDim={amountsByCodeDim} onCopy={onCopy}movedIds={movedIds} onDrop={onDrop}onRename={onRename} onColorChange={onColorChange} onDelete={id => { if (multiMode && selectedIds.size > 0 && selectedIds.has(id)) { onDelete([...selectedIds]); setSelectedIds(new Set()); } else { onDelete(id); } }} onAddChild={parentId => { setPendingParentId(parentId); setExpanded(prev => ({ ...prev, [`tpl-${parentId}`]: true })); }} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} templateTree={tree} onToggleSelect={(id, shiftKey) => {
   if (shiftKey && lastSelectedRef.current && lastSelectedRef.current !== id) {
     const from = flatSelectableIds.indexOf(lastSelectedRef.current);
     const to = flatSelectableIds.indexOf(id);
@@ -2682,7 +3086,7 @@ function AnimatedAmount({ value, hidden }) {
 }
 
 // ─── DraggableTreeRow ─────────────────────────────────────────
-function DraggableTreeRow({ node, depth, expanded, onToggle, side, mappingKind = "structure", hideAmounts = false, amountsByCode = new Map(), templateAmountsById = new Map(), amountsByCodeDim = new Map(), onCopy, movedIds, movedDimsByCode = new Map(), onDrop, onRename, onDelete, onAddChild, sectionByCode, multiMode, selectedIds, onToggleSelect, clientTree, templateTree, highlightedIds, onToggleHighlight, dimsByGroupCode }) {
+function DraggableTreeRow({ node, depth, expanded, onToggle, side, mappingKind = "structure", hideAmounts = false, amountsByCode = new Map(), templateAmountsById = new Map(), amountsByCodeDim = new Map(), onCopy, movedIds, movedDimsByCode = new Map(), onDrop, onRename, onColorChange, onDelete, onAddChild, sectionByCode, multiMode, selectedIds, onToggleSelect, clientTree, templateTree, highlightedIds, onToggleHighlight, dimsByGroupCode }) {
   const t = useT();
   const key = `${side === "client" ? "client" : "tpl"}-${node.code}`;
   const isOpen = !!expanded[key];
@@ -2694,6 +3098,16 @@ function DraggableTreeRow({ node, depth, expanded, onToggle, side, mappingKind =
   const [editValue, setEditValue] = useState(node.name);
 const [hovering, setHovering] = useState(false);
 const [showDims, setShowDims] = useState(false);
+const [showColorPicker, setShowColorPicker] = useState(false);
+const colorPickerRef = useRef(null);
+useEffect(() => {
+  if (!showColorPicker) return;
+  const handler = (e) => {
+    if (colorPickerRef.current && !colorPickerRef.current.contains(e.target)) setShowColorPicker(false);
+  };
+  document.addEventListener("mousedown", handler);
+  return () => document.removeEventListener("mousedown", handler);
+}, [showColorPicker]);
 const dimUid = useId();
   const dimIdRef = useRef(`dim-${node.code}-${dimUid}`);
   useEffect(() => {
@@ -2781,11 +3195,11 @@ const accent = side === "client" ? "#1a2f8a" : "#374151";
           {hasChildren && <span className="text-white/70 flex-shrink-0">{isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>}
           {editing ? <input ref={editInputRef} type="text" value={editValue} onChange={e => setEditValue(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} onKeyDown={e => { e.stopPropagation(); if (e.key === "Enter") commitEdit(); if (e.key === "Escape") cancelEdit(); }} onBlur={commitEdit} className="text-xs flex-1 min-w-0 px-2 py-0.5 rounded border border-white/40 outline-none focus:border-white bg-white/15 text-white placeholder:text-white/50 uppercase tracking-widest font-black" />
           : <span className="text-xs flex-1 min-w-0 truncate font-black uppercase tracking-widest text-white">{node.name}</span>}
-         {!editing && hovering && <div className="flex items-center gap-0.5 flex-shrink-0"><button onClick={startEdit} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white transition-colors"><Pencil size={13} /></button><button onClick={e => { e.stopPropagation(); onDelete?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white transition-colors"><Trash2 size={13} /></button></div>}
+         {!editing && (hovering || showColorPicker) && <div className="flex items-center gap-0.5 flex-shrink-0"><button onClick={startEdit} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white transition-colors"><Pencil size={13} /></button>{onColorChange && (<div ref={colorPickerRef} className="relative" onMouseDown={e => e.stopPropagation()}><button onClick={e => { e.stopPropagation(); setShowColorPicker(v => !v); }} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white transition-colors" title="Cambiar color"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg></button>{showColorPicker && (<div className="absolute top-full right-0 mt-1 z-50 bg-white rounded-xl shadow-2xl p-2.5 border border-gray-100" style={{ minWidth: 200 }} onClick={e => e.stopPropagation()}><div className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-2 px-1">Color de sección</div><div className="grid grid-cols-6 gap-1.5">{PRESET_COLORS.map(c => (<button key={c} onClick={() => { onColorChange(node.id ?? node.code, c); setShowColorPicker(false); }} className="w-7 h-7 rounded-lg transition-all hover:scale-110" style={{ backgroundColor: c, boxShadow: (node.color || "").toLowerCase() === c.toLowerCase() ? `0 0 0 2px white, 0 0 0 3.5px ${c}` : "none", transform: (node.color || "").toLowerCase() === c.toLowerCase() ? "scale(1.12)" : "scale(1)" }} title={c} />))}</div><div className="flex items-center gap-2 mt-2.5 pt-2.5 border-t border-gray-100"><span className="text-[9px] font-black uppercase tracking-widest text-gray-400 flex-shrink-0">Personalizado</span><input type="color" value={node.color || "#374151"} onChange={e => onColorChange(node.id ?? node.code, e.target.value)} className="w-6 h-6 rounded-md cursor-pointer border border-gray-200 p-0 bg-transparent" style={{ appearance: "none" }} /></div></div>)}</div>)}<button onClick={e => { e.stopPropagation(); onDelete?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white transition-colors"><Trash2 size={13} /></button></div>}
           {editControls}
         </div>
         {dropZone === "after" && dropLine}
-     {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child}depth={1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} hideAmounts={hideAmounts} amountsByCode={amountsByCode} templateAmountsById={templateAmountsById} amountsByCodeDim={amountsByCodeDim} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onAddChild={onAddChild} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} />)}
+     {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child}depth={1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} hideAmounts={hideAmounts} amountsByCode={amountsByCode} templateAmountsById={templateAmountsById} amountsByCodeDim={amountsByCodeDim} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onColorChange={onColorChange} onDelete={onDelete} onAddChild={onAddChild} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} />)}
       </>
     );
   }
@@ -2898,7 +3312,7 @@ className={`group/dim flex items-center gap-1 py-1.5 rounded-lg transition-color
           </div>
         );
       })}
-    {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} hideAmounts={hideAmounts} amountsByCode={amountsByCode} templateAmountsById={templateAmountsById} amountsByCodeDim={amountsByCodeDim} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onDelete={onDelete} onAddChild={onAddChild}sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} dimsByGroupCode={dimsByGroupCode} />)}
+    {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} hideAmounts={hideAmounts} amountsByCode={amountsByCode} templateAmountsById={templateAmountsById} amountsByCodeDim={amountsByCodeDim} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onColorChange={onColorChange} onDelete={onDelete} onAddChild={onAddChild}sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} dimsByGroupCode={dimsByGroupCode} />)}
     </>
   );
 }
@@ -2960,9 +3374,8 @@ if (!open) return (
 function AddBreakerForm({ accent, open, onOpen, onClose, onAdd }) {
   const t = useT();
   const [name, setName] = useState(""), [color, setColor] = useState("#1a2f8a"), [error, setError] = useState(null);
-  const inputRef = useRef(null);
+const inputRef = useRef(null);
   useEffect(() => { if (open && inputRef.current) inputRef.current.focus(); }, [open]);
-  const PRESET_COLORS = ["#1a2f8a","#CF305D","#374151","#57aa78","#dc7533","#7c3aed","#0891b2","#ca8a04"];
   const reset = () => { setName(""); setColor("#1a2f8a"); setError(null); };
 const handleSubmit = () => { const trimmed = name.trim(); if (!trimmed) { setError(t("am_err_name_required")); return; } onAdd({ name: trimmed.toUpperCase(), color }); reset(); onClose(); };
 if (!open) return (

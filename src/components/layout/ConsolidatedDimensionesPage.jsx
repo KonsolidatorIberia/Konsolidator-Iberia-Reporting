@@ -722,14 +722,19 @@ const getNodeVal = (dimKey) => {
         const cached = valCache.get(k);
         if (cached !== undefined) return cached;
       }
-      let v;
+let v;
+      const selfVal = getVal(n.AccountCode, dimKey);
       if (n.children && n.children.length > 0) {
-        const childSum = n.children.reduce((s, c) => s + sumNode(c, depth + 1), 0);
-        v = childSum !== 0 ? childSum : getVal(n.AccountCode, dimKey);
+        if (selfVal !== 0) {
+          v = selfVal;
+        } else {
+          v = n.children.reduce((s, c) => s + sumNode(c, depth + 1), 0);
+        }
       } else {
-        v = getVal(n.AccountCode, dimKey);
+        v = selfVal;
       }
-      if (valCache) valCache.set(k, v);
+if (valCache) valCache.set(k, v);
+      if (n.AccountCode === "D.PL") console.log("[DPL sumNode]", { dimKey, selfVal, childrenSum: (n.children||[]).map(c => ({code:c.AccountCode, v: sumNode(c, depth+1)})), final: v });
       return v;
     };
     return sumNode(node);
@@ -744,12 +749,16 @@ const getNodeVal = (dimKey) => {
         const cached = cmpCache.get(k);
         if (cached !== undefined) return cached;
       }
-      let v;
+let v;
+      const selfVal = getCmpVal(n.AccountCode, dimKey);
       if (n.children && n.children.length > 0) {
-        const childSum = n.children.reduce((s, c) => s + sumNode(c, depth + 1), 0);
-        v = childSum !== 0 ? childSum : getCmpVal(n.AccountCode, dimKey);
+        if (selfVal !== 0) {
+          v = selfVal;
+        } else {
+          v = n.children.reduce((s, c) => s + sumNode(c, depth + 1), 0);
+        }
       } else {
-        v = getCmpVal(n.AccountCode, dimKey);
+        v = selfVal;
       }
       if (cmpCache) cmpCache.set(k, v);
       return v;
@@ -1623,9 +1632,33 @@ const displayedTree = useMemo(() => {
       });
     });
 
-    return buildTree([...groupMap.values()]);
+const tree = buildTree([...groupMap.values()]);
+    if (statementType === "pl") {
+      const findNode = (nodes, code) => {
+        for (const n of nodes) {
+          if (n.AccountCode === code) return n;
+          if (n.children) { const f = findNode(n.children, code); if (f) return f; }
+        }
+        return null;
+      };
+      const dpl = findNode(tree, "D.PL");
+      console.log("[DPL tree]", dpl ? { code: dpl.AccountCode, childCodes: (dpl.children || []).map(c => c.AccountCode) } : "not found");
+      console.log("[groupMap has]", { "D.PL": groupMap.has("D.PL"), "C.PL": groupMap.has("C.PL"), "D.01": groupMap.has("D.01"), "D.02": groupMap.has("D.02"), "D.01 parent": groupMap.get("D.01")?.SumAccountCode, "D.02 parent": groupMap.get("D.02")?.SumAccountCode });
+const leaves = ["692000","771000","772000","666300","900000","940000"];
+      const perLeaf = {};
+      leaves.forEach(c => {
+        const rows = data.filter(r => (r.AccountCode ?? r.accountCode) === c);
+        perLeaf[c] = { count: rows.length, sample: rows.slice(0,3).map(r => ({ co: r.CompanyShortName, amt: r.AmountYTD, dim: r.DimensionCode, role: r.CompanyRole })) };
+      });
+      console.log("[DPL leaves in data]", perLeaf);
+      const cplRows = data.filter(r => (r.AccountCode ?? r.accountCode) === "C.PL");
+      const dplRows = data.filter(r => (r.AccountCode ?? r.accountCode) === "D.PL");
+      console.log("[C.PL rows]", cplRows.length, cplRows.slice(0,3).map(r => ({ co: r.CompanyShortName, amt: r.AmountYTD, role: r.CompanyRole })));
+      console.log("[D.PL rows]", dplRows.length, dplRows.slice(0,3).map(r => ({ co: r.CompanyShortName, amt: r.AmountYTD, role: r.CompanyRole })));
+      
+    }
+    return tree;
  }, [data, groupAccounts, statementType]);
-
 const treeIndex = useMemo(() => {
   const idx = new Map();
   const walk = (nodes) => nodes.forEach(n => { idx.set(String(n.AccountCode), n); walk(n.children || []); });
@@ -1770,7 +1803,6 @@ return out;
 const { parentOf } = useMemo(() => {
   const childrenByParent = new Map();
   const parentOf = new Map();
-  // Build from both groupAccounts AND rawData rows so posting codes are included
   const sources = [
     ...(groupAccounts || []).map(a => ({
       ac: String(a.AccountCode ?? a.accountCode ?? ""),
@@ -1788,8 +1820,45 @@ const { parentOf } = useMemo(() => {
       parentOf.set(ac, sum);
     }
   });
+  // OVERRIDE from mapping (custom standard hierarchy is authoritative).
+  const applyOverride = (ac, sum) => {
+    const acS = String(ac);
+    const sumS = sum ? String(sum) : "";
+    const oldParent = parentOf.get(acS);
+    if (oldParent && childrenByParent.has(oldParent)) {
+      const arr = childrenByParent.get(oldParent);
+      const idx = arr.indexOf(acS);
+      if (idx >= 0) arr.splice(idx, 1);
+    }
+    if (sumS && acS !== sumS) {
+      parentOf.set(acS, sumS);
+      if (!childrenByParent.has(sumS)) childrenByParent.set(sumS, []);
+      if (!childrenByParent.get(sumS).includes(acS)) childrenByParent.get(sumS).push(acS);
+    } else {
+      parentOf.delete(acS);
+    }
+  };
+  if (plMapping?.rows) {
+    plMapping.rows.forEach((info, code) => {
+      applyOverride(code, info.parent_code);
+    });
+  }
+  if (bsMapping?.rows) {
+    bsMapping.rows.forEach((info, code) => {
+      applyOverride(code, info.parent_code);
+    });
+  }
+  console.log("[parentOf check]", { hasPlMapping: !!plMapping?.rows, plMappingSize: plMapping?.rows?.size, hasBsMapping: !!bsMapping?.rows });
+  console.log("[parentOf I.PL children]", childrenByParent.get("I.PL"));
+  console.log("[parentOf F.PL children]", childrenByParent.get("F.PL"));
+  console.log("[parentOf F.PL parent]", parentOf.get("F.PL"));
+  console.log("[parentOf 999 children]", childrenByParent.get("999"));
+  console.log("[parentOf 999 parent]", parentOf.get("999"));
+  console.log("[parentOf A.PL parent]", parentOf.get("A.PL"));
+  console.log("[parentOf B.PL parent]", parentOf.get("B.PL"));
+  console.log("[parentOf D.PL parent]", parentOf.get("D.PL"));
   return { childrenByParent, parentOf };
-}, [groupAccounts, data]);
+}, [groupAccounts, data, plMapping, bsMapping]);
 
 // Precompute rolled-up pivots: walk the source pivot ONCE; for each posting,
 // add its value to itself + every ancestor via parentOf. After this, looking up
@@ -1827,9 +1896,12 @@ const rolledPrevPivot2 = useMemo(() => rollUpPivot(prevPivot2),    [prevPivot2, 
 
 const getValWithDescendants = useCallback((code, dk) => {
   const ytd = (rolledPivot.get(code)?.get(dk) ?? 0) * sign;
-  if (viewMode === "ytd") return ytd;
   const prevYtd = (rolledPrevPivot.get(code)?.get(dk) ?? 0) * sign;
-  return ytd - prevYtd;
+  const final = viewMode === "ytd" ? ytd : ytd - prevYtd;
+  if ((code === "D.PL" || code === "C.PL" || code === "B.PL" || code === "B.04") && dk === "DK") {
+    console.log("[gvwd DK]", code, "viewMode:", viewMode, "ytd:", ytd, "prev:", prevYtd, "final:", final);
+  }
+  return final;
 }, [rolledPivot, rolledPrevPivot, viewMode, sign]);
 
 const getCmpValWithDescendants = useCallback((code, dk) => {
@@ -3965,7 +4037,8 @@ const handleApplyMapping = useCallback((m, kind = "structure") => {
       plSections:  extractSectionsFromTree(m.pl_tree),
       bsSections:  extractSectionsFromTree(m.bs_tree),
       plLiteral:   buildSavedMappingLiteral(m.pl_tree),
-      bsLiteral:   buildSavedMappingLiteral(m.bs_tree),
+bsLiteral:   buildSavedMappingLiteral(m.bs_tree),
+      is_hidden:   !!m.is_hidden,
     });
 }, []);
 
@@ -3992,7 +4065,7 @@ const handleApplyMapping = useCallback((m, kind = "structure") => {
         const { listMappings, getMapping, getActiveCompanyId } = await import("../../lib/mappingsApi");
         const cid = await getActiveCompanyId(uid);
         if (!cid) return;
-        const allMappings = await listMappings({ companyId: cid });
+        const allMappings = await listMappings({ companyId: cid, includeHidden: true });
         const match = (allMappings || []).find(m => String(m.mapping_id) === String(mid));
         if (!match) return;
         // Fetch the full mapping (with pl_tree / bs_tree) — list endpoint omits them
@@ -4147,7 +4220,7 @@ useEffect(() => {
 
   // Derive groupAccountsLocal from raw group accounts + optional CUSTOM std rows.
   // No useState needed → no cascading render lint warning.
-  const groupAccountsLocal = useMemo(() => {
+const groupAccountsLocal = useMemo(() => {
     if (!rawGroupAccounts.length) return [];
     const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
     if (!isCustom || customStdRows.length === 0) return rawGroupAccounts;
@@ -4156,25 +4229,39 @@ useEffect(() => {
     customStdRows.forEach(r => {
       if (r.parent_code) parentByCode.set(String(r.account_code), String(r.parent_code));
     });
+    // Override with activeMapping (hidden override) - it takes precedence
+    if (activeMapping?.plConverted?.rows) {
+      activeMapping.plConverted.rows.forEach((info, code) => {
+        if (info.parent_code) parentByCode.set(String(code), String(info.parent_code));
+      });
+    }
+    if (activeMapping?.bsConverted?.rows) {
+      activeMapping.bsConverted.rows.forEach((info, code) => {
+        if (info.parent_code) parentByCode.set(String(code), String(info.parent_code));
+      });
+    }
     const existingCodes = new Set(rawGroupAccounts.map(g => String(g.AccountCode ?? g.accountCode ?? "")));
     const STMT_TO_TYPE = { PL: "P/L", BS: "B/S", CF: "C/F" };
     const synth = customStdRows
       .filter(r => !existingCodes.has(String(r.account_code)))
-      .map(r => ({
-        AccountCode: String(r.account_code),
-        AccountName: r.account_name ?? String(r.account_code),
-        AccountType: STMT_TO_TYPE[r.statement] ?? "P/L",
-        SumAccountCode: r.parent_code ?? "",
-        IsSumAccount: true,
-      }));
+      .map(r => {
+        const overrideParent = parentByCode.get(String(r.account_code));
+        return {
+          AccountCode: String(r.account_code),
+          AccountName: r.account_name ?? String(r.account_code),
+          AccountType: STMT_TO_TYPE[r.statement] ?? "P/L",
+          SumAccountCode: overrideParent ?? r.parent_code ?? "",
+          IsSumAccount: true,
+        };
+      });
     const overridden = rawGroupAccounts.map(g => {
       const code = String(g.AccountCode ?? g.accountCode ?? "");
-      const stdParent = parentByCode.get(code);
-      if (stdParent) return { ...g, SumAccountCode: stdParent };
+      const overrideParent = parentByCode.get(code);
+      if (overrideParent !== undefined) return { ...g, SumAccountCode: overrideParent };
       return g;
     });
     return [...overridden, ...synth];
-  }, [rawGroupAccounts, customStdRows, activeStandardKey]);
+  }, [rawGroupAccounts, customStdRows, activeStandardKey, activeMapping]);
 
 // Resolve KPIs against the current accounting standard
   const {
@@ -4282,8 +4369,22 @@ const defaultPlMapping = pgcPlMapping ?? danishPlMapping ?? spIfrsEsPlMapping;
 
   // When a custom mapping is applied, its converted tree takes over for row
   // ordering and section breakers.
-  const plMapping = activeMapping?.plConverted ?? defaultPlMapping;
-  const bsMapping = activeMapping?.bsConverted ?? defaultBsMapping;
+const mergeMappings = (override, base) => {
+    if (!override) return base;
+    if (!base) return override;
+    const rows = new Map(base.rows);
+    override.rows.forEach((info, code) => { rows.set(code, { ...(base.rows.get(code) ?? {}), ...info }); });
+    const sections = new Map(base.sections);
+    override.sections.forEach((s, code) => sections.set(code, s));
+    return { ...override, rows, sections, instances: override.instances ?? [] };
+  };
+  const isCustomStd = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+  const plMapping = isCustomStd
+    ? mergeMappings(activeMapping?.plConverted, defaultPlMapping)
+    : (activeMapping?.plConverted ?? defaultPlMapping);
+  const bsMapping = isCustomStd
+    ? mergeMappings(activeMapping?.bsConverted, defaultBsMapping)
+    : (activeMapping?.bsConverted ?? defaultBsMapping);
 
   // Effective ccTagToCodes + resolveCcTag. When a mapping is active:
   //   - Each section label is fuzzy-matched against cc_tag synonyms; matches
@@ -4703,7 +4804,7 @@ onExportXlsx={(viewsMode || drillExpanded.size > 0) ? undefined : () => {
         }}
       />
 
-{activeMapping && (
+{activeMapping && !activeMapping.is_hidden && (
         <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm flex-shrink-0">
           <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
 <span className="text-xs text-emerald-700 font-medium">

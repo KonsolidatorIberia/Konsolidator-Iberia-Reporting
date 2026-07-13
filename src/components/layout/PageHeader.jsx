@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, MoreHorizontal, GitCompareArrows, Calendar, CalendarRange, Search, X } from "lucide-react";
+import { ChevronDown, MoreHorizontal, GitCompareArrows, Calendar, CalendarRange, Search, X, Coins, CheckCircle2 } from "lucide-react";
 import { useSettings, useTypo, useT } from "./SettingsContext.jsx";
 
 const SPRING = "cubic-bezier(0.34, 1.56, 0.64, 1)";
@@ -78,8 +78,9 @@ useEffect(() => {
     }
   }, [open]);
 
-useEffect(() => {
-    if (!open) return;
+useLayoutEffect(() => {
+    if (!open) { setDropdownRect(null); return; }
+    if (ref.current) setDropdownRect(ref.current.getBoundingClientRect());
     let rafId;
     const track = () => {
       if (ref.current) setDropdownRect(ref.current.getBoundingClientRect());
@@ -140,6 +141,7 @@ useEffect(() => {
           style={{
             top: dropdownRect ? dropdownRect.bottom + 8 : 0,
             left: dropdownRect ? dropdownRect.left : 0,
+            visibility: dropdownRect ? "visible" : "hidden",
             background: "rgba(255,255,255,0.95)",
             backdropFilter: "blur(20px)",
             WebkitBackdropFilter: "blur(20px)",
@@ -277,8 +279,10 @@ useEffect(() => {
     }
   }, [open]);
 
-useEffect(() => {
-    if (!open) return;
+useLayoutEffect(() => {
+    if (!open) { setDropdownRect(null); return; }
+    // Measure synchronously before paint so the portal never renders at (0,0)
+    if (ref.current) setDropdownRect(ref.current.getBoundingClientRect());
     let rafId;
     const track = () => {
       if (ref.current) setDropdownRect(ref.current.getBoundingClientRect());
@@ -332,6 +336,7 @@ const display = isDefault
           style={{
             top: dropdownRect ? dropdownRect.bottom + 8 : 0,
             left: dropdownRect ? dropdownRect.left : 0,
+            visibility: dropdownRect ? "visible" : "hidden",
             background: "rgba(255,255,255,0.95)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: "1px solid rgba(26,47,138,0.08)", boxShadow: "0 20px 50px -12px rgba(26,47,138,0.18)", animation: "dropdownIn 240ms cubic-bezier(0.34,1.56,0.64,1)" }}>
           {showSearch && (
             <div className="px-2 pt-2 pb-1.5 border-b border-gray-50">
@@ -798,8 +803,9 @@ export default function PageHeader({
   activeTab,
   onTabChange,
   filters = [],
-  periodToggle,
+periodToggle,
   compareToggle,
+  currencyToggle,
 aiToggle,
   scopeToggle,
   onBack,
@@ -827,6 +833,8 @@ const { colors } = useSettings();
   const secondaryFilters = showAllFilters ? [] : filters.slice(3);
 
 const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
+const [currencyMenuOpen, setCurrencyMenuOpen] = useState(false);
+  const currencyBtnRef = useRef(null);
   const [moreFiltersClosing, setMoreFiltersClosing] = useState(false);
 const moreFiltersHoverRef = useRef(false);
   const moreFiltersCloseTimerRef = useRef(null);
@@ -1084,7 +1092,7 @@ onMouseLeave={() => {
         <div className="flex-grow" />
 
 {/* Inline toggles (period + compare + AI) + Export/Mappings — collapse when More filters hover is active */}
-        {(periodToggle || compareToggle || aiToggle || onExportPdf || onMappingsClick) && (
+       {(periodToggle || compareToggle || aiToggle || onExportPdf || onMappingsClick || currencyToggle) && (
           <>
             <SoftDivider />
 <div
@@ -1115,6 +1123,79 @@ onMouseLeave={() => {
                   </svg>
                   <span className="text-[10px] font-black text-white uppercase tracking-wider">AI</span>
                 </button>
+              )}
+{currencyToggle && (
+                <div className="relative flex-shrink-0" style={{ zIndex: 40 }}>
+<button
+                    ref={currencyBtnRef}
+                    onClick={() => setCurrencyMenuOpen(v => !v)}
+                    title="Change display currency"
+                    className="flex items-center gap-1.5 px-3 h-9 rounded-full flex-shrink-0"
+                    style={{
+                      background: "rgba(26,47,138,0.06)",
+                      color: colors.primary,
+                      border: "1px solid rgba(26,47,138,0.1)",
+                      boxShadow: "0 1px 3px -1px rgba(26,47,138,0.1)",
+                      transition: `all 240ms ${SMOOTH}`,
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.background = `${colors.primary}12`; e.currentTarget.style.transform = "scale(1.03)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "rgba(26,47,138,0.06)"; e.currentTarget.style.transform = "scale(1)"; }}
+                  >
+                    <Coins size={13} strokeWidth={2.4} />
+                    <span className="text-[10px] font-black uppercase tracking-wider">
+                      {currencyToggle.value}
+                    </span>
+                    <ChevronDown size={11} strokeWidth={2.4} style={{ transform: currencyMenuOpen ? "rotate(180deg)" : "none", transition: `transform 200ms ${SMOOTH}` }} />
+                  </button>
+{currencyMenuOpen && (() => {
+                    const btnRect = currencyBtnRef.current?.getBoundingClientRect();
+                    if (!btnRect) return null;
+                    return (
+                    <>
+                      <div className="fixed inset-0" style={{ zIndex: 9998 }} onClick={() => setCurrencyMenuOpen(false)} />
+                      <div
+                        className="rounded-xl overflow-hidden"
+                        style={{
+                          position: "fixed",
+                          top: btnRect.bottom + 6,
+                          right: window.innerWidth - btnRect.right,
+                          background: "white",
+                          border: "1px solid rgba(26,47,138,0.12)",
+                          boxShadow: "0 8px 24px -6px rgba(26,47,138,0.2), 0 2px 6px -2px rgba(26,47,138,0.1)",
+                          minWidth: "128px",
+                          zIndex: 9999,
+                        }}
+                      >
+                        {currencyToggle.options.map(o => {
+                          const active = o.value === currencyToggle.value;
+                          return (
+                            <button
+                              key={o.value}
+                              onClick={() => { currencyToggle.onChange(o.value); setCurrencyMenuOpen(false); }}
+                              className="w-full flex items-center gap-2 px-3 py-2 text-left"
+                              style={{
+                                background: active ? `${colors.primary}0f` : "transparent",
+                                color: active ? colors.primary : "#334155",
+                                transition: `background 160ms ${SMOOTH}`,
+                              }}
+                              onMouseEnter={e => { if (!active) e.currentTarget.style.background = "rgba(26,47,138,0.04)"; }}
+                              onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
+                            >
+                              <span className="text-[11px] font-black uppercase tracking-wider">{o.value}</span>
+                              {o.label !== o.value && (
+                                <span className="text-[9px] font-medium uppercase tracking-wider opacity-60">
+                                  {o.label.replace(o.value, "").replace(/[()]/g, "").trim()}
+                                </span>
+                              )}
+                              {active && <CheckCircle2 size={11} className="ml-auto" />}
+                            </button>
+                          );
+})}
+                      </div>
+                    </>
+                    );
+                  })()}
+                </div>
               )}
 {periodToggle && (
                 <button

@@ -767,7 +767,7 @@ const { data: links } = await sbAccounts
       onClick={onClose}>
       <div className="w-full overflow-hidden flex flex-col relative"
 style={{
-          maxWidth: "1500px",
+maxWidth: "1800px",
           maxHeight: "95vh",
           background: "linear-gradient(180deg, #3a5cd9 0%, #6a8cf0 50%, #a8c5ff 100%)",
           borderRadius: 32,
@@ -1216,7 +1216,7 @@ style={{
                     const active = u.is_active && u.uc_is_active;
                     const isSelected = selectedUsers.has(u.id);
                     return (
-                      <div key={u.id}
+<div key={u.id}
                         className="group/urow flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all"
                         style={{
                           background: isSelected ? "rgba(232,57,74,0.08)" : "rgba(255,255,255,0.7)",
@@ -1233,16 +1233,21 @@ style={{
                           onClick={() => onEditUser(u)}>
                           {initials(u.username || u.email)}
                         </div>
-<div className="flex-1 min-w-0 cursor-pointer" onClick={() => onEditUser(u)}>
+<div className="min-w-0 cursor-pointer" style={{ maxWidth: 240 }} onClick={() => onEditUser(u)}>
                           <p className="text-xs font-black truncate" style={{ color: C.navyDark }}>{u.username ?? "—"}</p>
                           <p className="text-[10px] truncate" style={{ color: `${C.navy}60` }}>{u.email}</p>
                         </div>
 
-                        {/* Role toggle — admin ↔ regular */}
+                        <div className="flex-1" />
+
+                        <div className="flex items-center gap-2">
+                        {/* Role cycle — regular → admin → consultant → regular */}
                         <button type="button"
                           onClick={async (e) => {
                             e.stopPropagation();
-                            const newRole = u.uc_role === "admin" ? "regular" : "admin";
+                            const order = ["regular", "admin", "consultant"];
+                            const idx = order.indexOf(u.uc_role);
+                            const newRole = order[(idx + 1) % order.length];
                             setCompanyUsers(prev => prev.map(x =>
                               x.id === u.id ? { ...x, uc_role: newRole } : x
                             ));
@@ -1256,17 +1261,25 @@ style={{
                               showToast("error", error.message);
                               return;
                             }
-                            showToast("success", newRole === "admin" ? "Promoted to admin" : "Demoted to regular");
+                            showToast("success", `Role: ${newRole}`);
                             onSaved?.();
                           }}
                           className="flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-wider transition-all hover:scale-105 cursor-pointer"
                           style={{
-                            background: u.uc_role === "admin" ? `${C.amber}22` : "rgba(26,47,138,0.08)",
-                            color: u.uc_role === "admin" ? "#d97706" : `${C.navy}70`,
-                            border: `1px solid ${u.uc_role === "admin" ? `${C.amber}40` : "rgba(26,47,138,0.12)"}`,
+                            background: u.uc_role === "consultant" ? "rgba(124,58,237,0.14)"
+                                     : u.uc_role === "admin" ? `${C.amber}22`
+                                     : "rgba(26,47,138,0.08)",
+                            color: u.uc_role === "consultant" ? "#7c3aed"
+                                 : u.uc_role === "admin" ? "#d97706"
+                                 : `${C.navy}70`,
+                            border: `1px solid ${u.uc_role === "consultant" ? "rgba(124,58,237,0.35)"
+                                                : u.uc_role === "admin" ? `${C.amber}40`
+                                                : "rgba(26,47,138,0.12)"}`,
                           }}
-                          title="Click to toggle admin / regular">
-                          {u.uc_role === "admin" ? <><Crown size={9} /> Admin</> : <>Regular</>}
+                          title="Click to cycle role">
+                          {u.uc_role === "consultant" ? <>⚡ Consultant</>
+                           : u.uc_role === "admin" ? <><Crown size={9} /> Admin</>
+                           : <>Regular</>}
                         </button>
 
 {/* Active toggle — always clickable */}
@@ -1301,12 +1314,13 @@ style={{
                             color: active ? "#047857" : `${C.navy}60`,
                             minWidth: 60,
                           }}
-                          title="Click to toggle active status">
+title="Click to toggle active status">
                           {active ? "● Active" : "○ Inactive"}
                         </button>
+                        </div>
 
-                        {/* Edit + delete — only on hover */}
-                        <div className="flex-shrink-0 flex items-center gap-1 opacity-0 group-hover/urow:opacity-100 transition-opacity pointer-events-none group-hover/urow:pointer-events-auto">
+{/* Edit + delete — only on hover */}
+                        <div className="flex-shrink-0 flex items-center gap-1 opacity-0 group-hover/urow:opacity-100 transition-opacity pointer-events-none group-hover/urow:pointer-events-auto w-0 group-hover/urow:w-auto overflow-hidden">
                           <button type="button"
                             onClick={(e) => { e.stopPropagation(); onEditUser(u); }}
                             className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-blue-50 hover:text-blue-600 transition-all"
@@ -1849,19 +1863,31 @@ return (
                           document.body
                         )}
                       </div>
-{/* Role pill — toggles admin ↔ regular */}
+{/* Role pill — cycles regular → admin → consultant → regular */}
                       <button type="button"
-                        onClick={() => updateLink(idx, { role: l.role === "admin" ? "regular" : "admin" })}
+                        onClick={() => {
+                          const order = ["regular", "admin", "consultant"];
+                          const nextIdx = (order.indexOf(l.role) + 1) % order.length;
+                          updateLink(idx, { role: order[nextIdx] });
+                        }}
                         className="flex items-center gap-1 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all hover:scale-105 flex-shrink-0"
                         style={{
-                          background: l.role === "admin"
-                            ? `linear-gradient(135deg, ${C.amber}25, ${C.amber}15)`
-                            : "rgba(26,47,138,0.08)",
-                          color: l.role === "admin" ? "#d97706" : `${C.navy}70`,
-                          border: `1px solid ${l.role === "admin" ? `${C.amber}50` : "rgba(26,47,138,0.15)"}`,
+                          background: l.role === "consultant"
+                            ? "linear-gradient(135deg, rgba(124,58,237,0.22), rgba(124,58,237,0.12))"
+                            : l.role === "admin"
+                              ? `linear-gradient(135deg, ${C.amber}25, ${C.amber}15)`
+                              : "rgba(26,47,138,0.08)",
+                          color: l.role === "consultant" ? "#7c3aed"
+                               : l.role === "admin" ? "#d97706"
+                               : `${C.navy}70`,
+                          border: `1px solid ${l.role === "consultant" ? "rgba(124,58,237,0.4)"
+                                              : l.role === "admin" ? `${C.amber}50`
+                                              : "rgba(26,47,138,0.15)"}`,
                         }}
-                        title="Click to toggle admin / regular">
-                        {l.role === "admin" ? <><Crown size={9} /> Admin</> : <>Regular</>}
+                        title="Click to cycle role">
+                        {l.role === "consultant" ? <>⚡ Consultant</>
+                         : l.role === "admin" ? <><Crown size={9} /> Admin</>
+                         : <>Regular</>}
                       </button>
 
                       <button type="button" onClick={() => removeLink(idx)}
@@ -2517,20 +2543,29 @@ className="w-full flex items-center gap-3 px-3.5 py-3 rounded-2xl text-[13px] fo
                                     <Crown size={9} /> Super-Admin
                                   </span>
                                 )}
-                                {/* Role badge: shows "Admin" if user is admin in ANY company, else "Regular" */}
-                                {!u.is_super_admin && u._company_links.length > 0 && (
-                                  u._company_links.some(l => l.role === "admin") ? (
+{/* Role badge: highest role across their orgs (consultant > admin > regular) */}
+                                {!u.is_super_admin && u._company_links.length > 0 && (() => {
+                                  const isConsultant = u._company_links.some(l => l.role === "consultant");
+                                  const isAdminAnywhere = u._company_links.some(l => l.role === "admin");
+                                  if (isConsultant) return (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider"
+                                      style={{ background: "rgba(124,58,237,0.14)", color: "#7c3aed" }}>
+                                      ⚡ Consultant
+                                    </span>
+                                  );
+                                  if (isAdminAnywhere) return (
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider"
                                       style={{ background: `${C.amber}22`, color: "#d97706" }}>
                                       <Crown size={9} /> Admin
                                     </span>
-                                  ) : (
+                                  );
+                                  return (
                                     <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider"
                                       style={{ background: "rgba(26,47,138,0.08)", color: `${C.navy}70` }}>
                                       Regular
                                     </span>
-                                  )
-                                )}
+                                  );
+                                })()}
                                 {u.is_active ? (
                                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider"
                                     style={{ background: "#d1fae5", color: "#047857" }}>
