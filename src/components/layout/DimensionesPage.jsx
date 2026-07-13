@@ -538,8 +538,6 @@ function buildSavedMappingLiteral(tree) {
   const sections = []; // [{ label, color, nodes: [literalNode, ...] }]
   let current = { label: null, color: null, nodes: [] };
   sections.push(current);
-  const _debugTree = tree.slice(0, 6).map(n => ({ kind: n?.kind, code: n?.code, name: n?.name, dims: n?.dims, childrenLen: (n?.children||[]).length }));
-  console.log('[buildSavedMappingLiteral input]', _debugTree);
 
 function literal(node, depth, visited = new WeakSet()) {
     if (!node || depth > 50 || visited.has(node)) {
@@ -577,11 +575,6 @@ function literal(node, depth, visited = new WeakSet()) {
     }
   }
 const cleaned = sections.filter((s, i) => i > 0 || s.nodes.length > 0);
-  console.log('[buildSavedMappingLiteral output]', cleaned.map(s => ({
-    label: s.label,
-    nodeCount: s.nodes.length,
-    first600: s.nodes.filter(n => n.code === "600000").map(n => ({ dims: n.dims, isSum: n.isSum }))
-  })));
   return cleaned.length === 0 ? null : cleaned;
 }
 
@@ -832,13 +825,12 @@ function FilterPill({ label, value, onChange, options }) {
   );
 }
 
-const INDENT = 14;
-const DimensionRow = React.memo(function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, getLocalVal = null, getCmpLocalVal = null, localPivot = null, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null, valCache = null, cmpCache = null, isAnimatingData = false, tableJustLoaded = false, cmpRecentlyToggled = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), onToggleDrillAccount = null, statementType = "pl", selGroups = new Set(), selDims = new Set(), sign = -1, groupAccounts = [], masterCompany = "", computeDrillCompanyRows = null, dimNameToCodes = null }) {
-  const subbody2Style = useTypo("subbody2");
+  const INDENT = 14;
+  const DimensionRow = React.memo(function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, getLocalVal = null, getCmpLocalVal = null, localPivot = null, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null, valCache = null, cmpCache = null, isAnimatingData = false, tableJustLoaded = false, cmpRecentlyToggled = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), onToggleDrillAccount = null, statementType = "pl", selGroups = new Set(), selDims = new Set(), sign = -1, groupAccounts = [], masterCompany = "", computeDrillCompanyRows = null, dimNameToCodes = null }) {
+const subbody2Style = useTypo("subbody2");
+  const { locale } = useSettings();
+  const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
   const code = node.AccountCode;
-if (code === "600000") {
-    console.log('[DimRow 600000]', { instId: node._instanceId, dims: node._dims, dimCols: dimCols?.length, dimNameToCodes: dimNameToCodes ? [...dimNameToCodes.keys()].slice(0, 6) : 'null' });
-  }
   const visibleChildren = excludeCodes
     ? (node.children || []).filter(c => !excludeCodes.has(String(c.AccountCode)))
     : (node.children || []);
@@ -852,9 +844,9 @@ if (code === "600000") {
   // AccountCode and its leaf postings, so adding self on top double-counts.
   // Fall back to self's own value only when every child resolves to zero (covers
   // accounts posted directly at the summary level with no separate leaf rows).
-const getNodeVal = (dimKey) => {
-    const nodeDims = node._dims;
-    if (Array.isArray(nodeDims) && nodeDims.length > 0) {
+  const getNodeVal = (dimKey) => {
+  const nodeDims = node._dims;
+  if (Array.isArray(nodeDims) && nodeDims.length > 0) {
       // dimKey is a code ("1", "DK", etc.). node._dims stores names/labels
       // like "Centro de Coste:Producción". Resolve names → codes via
       // dimNameToCodes and match against dimKey.
@@ -891,7 +883,6 @@ const getNodeVal = (dimKey) => {
         v = getVal(n.AccountCode, dimKey);
       }
 if (valCache) valCache.set(k, v);
-     if (n.AccountCode === "D.PL") console.log("[DPL sumNode]", { dimKey, childrenSum: (n.children||[]).map(c => ({code:c.AccountCode, v: sumNode(c, depth+1)})), final: v });
       return v;
     };
     return sumNode(node);
@@ -921,12 +912,6 @@ if (valCache) valCache.set(k, v);
 
 const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 0);
   const rowStyle = depth === 0 ? body1Style : body2Style;
-  // DEBUG: log B.PL parent render to confirm how the parent gets 18.227
-  if (String(code) === "B.PL" || String(code) === "A.PL") {
-    const dimDump = {};
-    dimCols.forEach(d => { dimDump[d.code ?? "__none__"] = getNodeVal(d.code ?? "__none__"); });
-    console.log("[PARENT render]", code, "depth:", depth, "rowTotal:", rowTotal, "perDim:", JSON.stringify(dimDump), "hasChildren:", hasChildren, "childCount:", (node.children || []).length);
-  }
 
   return (
     <>
@@ -994,7 +979,6 @@ const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 
 {!cmpVisible && <DimAmountCell value={rowTotal} typoStyle={rowStyle} animate={isAnimatingData} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
       </tr>
 {drillExpanded.has(code) && (() => {
-        console.log("[drill FLAT path]", code, "this means no literal mapping is active");
         const rows = drillCache.get(code);
         const loading = drillLoadingSet.has(code);
         if (loading || !rows) {
@@ -1002,7 +986,7 @@ const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 
             <tr key={`${code}__drill_loading`} className="bg-[#f8f9ff]">
               <td colSpan={(dimCols?.length ?? 0) * (cmpVisible ? 4 : 1) + 2} className="py-3 text-center">
                 <Loader2 size={14} className="animate-spin inline-block mr-2" style={{ color: colors.primary }} />
-                <span className="text-[11px] text-gray-400 font-bold">Cargando empresas…</span>
+               <span className="text-[11px] text-gray-400 font-bold">{T("dim_drill_loading_companies")}</span>
               </td>
             </tr>
           );
@@ -1028,22 +1012,11 @@ const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 
         const companyRows = computeDrillCompanyRows
           ? computeDrillCompanyRows({ accountCode: code, descSet, targetType, sign, dimCols })
           : [];
-if (!window.__drillFlatDebugged?.has(code)) {
-          window.__drillFlatDebugged = window.__drillFlatDebugged ?? new Set();
-          window.__drillFlatDebugged.add(code);
-          const masterRow = companyRows.find(([co]) => String(co).trim().toLowerCase() === String(masterCompany ?? "").trim().toLowerCase());
-          console.log("[drill FLAT]", code, {
-            companies: companyRows.map(([co]) => co),
-            masterCompany,
-            masterDimsRaw: masterRow ? [...masterRow[1].dims.entries()] : null,
-            allDimCols: dimCols.map(d => d.code ?? "__none__"),
-          });
-        }
         if (companyRows.length === 0) {
           return (
             <tr key={`${code}__drill_empty`} className="bg-[#f8f9ff]">
               <td colSpan={(dimCols?.length ?? 0) * (cmpVisible ? 4 : 1) + 2} className="py-3 text-center">
-                <span className="text-[11px] text-gray-400 font-bold italic">Ninguna empresa con movimiento</span>
+               <span className="text-[11px] text-gray-400 font-bold italic">{T("dim_drill_no_companies")}</span>
               </td>
             </tr>
           );
@@ -1082,14 +1055,6 @@ if (!window.__drillFlatDebugged?.has(code)) {
         });
 })()}
 {isExpanded && (() => {
-        console.log('[LOCAL DEBUG]', code, {
-          isExpanded,
-          hasLocalPivot: !!localPivot,
-          localPivotSize: localPivot?.size,
-          hasGetLocalVal: !!getLocalVal,
-          localsForThisCode: localPivot?.get(String(code)),
-          codeType: typeof code,
-        });
         if (!localPivot || !getLocalVal) return null;
         const localsMap = localPivot.get(String(code));
         if (!localsMap || localsMap.size === 0) return null;
@@ -1256,7 +1221,7 @@ function AccountsTab({ data }) {
 
 /* ── Pivot Tab ────────────────────────────────────────────── */
 function PivotTab({ data, dimensions, groupAccounts = [], selGroups = new Set(), selDims = new Set(), compareMode, statementType = "pl", externalViewMode = null, sources = [], structures = [], companies = [], allowedCompanies = null, token = "", onFilterSnapshotChange = null,masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterCompany = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), drillPrevRows = [], onToggleDrillAccount = () => {}, activeStandardKey = null }) {
-  console.log('[PivotTab.mount]', { statementType, hasCustomMapping, hasPlMap: !!plMapping, hasBsMap: !!bsMapping, plRowsSize: plMapping?.rows?.size, plInstancesLen: plMapping?.instances?.length });
+  
 
 const header2Style = useTypo("header2");
   const body1Style = useTypo("body1");
@@ -1770,7 +1735,7 @@ const fetchCmpData = useCallback(async (yr, mo, src, str, co, setter, loadSetter
     const prevMo = mo === 1 ? 12 : mo - 1;
     const prevYr = mo === 1 ? yr - 1 : yr;
   fetchCmpData(String(prevYr), String(prevMo), masterSource, masterStructure, masterCompany, (d) => { setPrevPivotMain(buildPivot(d)); setPrevLocalPivotMain(buildLocalPivot(d)); }, () => {});
-  }, [viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, fetchCmpData, buildPivot]);
+}, [viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, fetchCmpData, buildPivot, buildLocalPivot]);
 
 
 useEffect(() => {
@@ -1788,7 +1753,7 @@ useEffect(() => {
     const prevMo = mo === 1 ? 12 : mo - 1;
     const prevYr = mo === 1 ? yr - 1 : yr;
 fetchCmpData(String(prevYr), String(prevMo), cmp2Source, cmp2Structure, cmp2Company, (d) => { setPrevPivot2(buildPivot(d)); setPrevLocalPivot2(buildLocalPivot(d));  }, () => {});
-  }, [compareMode, viewMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, fetchCmpData, buildPivot]);
+ }, [compareMode, viewMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, fetchCmpData, buildPivot, buildLocalPivot]);
 
   useEffect(() => {
     if (!compareMode || viewMode !== "monthly" || !cmp3Year || !cmp3Month || !cmp3Source || !cmp3Structure || !cmp3Company) return;
@@ -1836,7 +1801,7 @@ fetchAllCos(String(prevYr), String(prevMo)).then(rows => {
 }).catch(() => {});
     }
     return () => { cancelled = true; };
-  }, [compareMode, drillExpanded, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, viewMode, token]);
+}, [compareMode, drillExpanded, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, viewMode, token, allowedCompanies]);
 
 const cmp2DimGroups = useMemo(() => {
     const seen = new Set();
@@ -1966,7 +1931,7 @@ const displayedTree = useMemo(() => {
     // parent_code from the standard rather than SumAccountCode from the
     // client's chart of accounts.
 const activeStdMapping = statementType === "pl" ? plMapping : bsMapping;
-    console.log("[Dim displayedTree]", statementType, "groupMap size:", groupMap.size, "stdMapping rows:", activeStdMapping?.rows?.size, "has 999:", activeStdMapping?.rows?.has("999"), "has 888:", activeStdMapping?.rows?.has("888"), "has A.01:", activeStdMapping?.rows?.has("A.01"), "A.01 parent:", activeStdMapping?.rows?.get("A.01")?.parent_code);
+    
     return buildTree([...groupMap.values()], activeStdMapping);
  }, [data, groupAccounts, statementType, plMapping, bsMapping]);
 
@@ -1997,15 +1962,7 @@ const displayedTreeIndex = useMemo(() => {
 
 const isCustomMapping = hasCustomMapping;
 const orderedRows = useMemo(() => {
-    console.log('[orderedRows.debug]', {
-      hasActiveMapping: !!activeMapping,
-      hasRows: !!activeMapping?.rows,
-      rowsSize: activeMapping?.rows?.size,
-      hasInstances: !!activeMapping?.instances,
-      instancesLen: activeMapping?.instances?.length,
-      isCustomMapping,
-      firstInstance: activeMapping?.instances?.[0],
-    });
+    
     // CUSTOM standards (CUSTOM-*) use the hierarchical displayedTree directly.
 if (activeMapping?.rows) {
 if (isCustomMapping) {
@@ -2049,10 +2006,7 @@ if (!base) return null;
             };
           })
           .filter(Boolean);
-console.log('[orderedRows.customMapping]',
-          'len:', result.length,
-          '600s:', JSON.stringify(result.filter(n => n.AccountCode === "600000").map(n => ({ instId: n._instanceId, dims: n._dims })))
-        );
+
         return result;
       }
 // Default standard mapping — respect Summary/Detailed toggle
@@ -2437,8 +2391,7 @@ const drillRows = drillCache.get(accountCode);
       dims.set(dk, sumNode(drillNode, dk));
     });
     const anyNonZero = [...dims.values()].some(v => v !== 0);
-    console.log("[drill master math v2]", accountCode, "viewMode:", viewMode,
-      "computedDims:", JSON.stringify([...dims.entries()]));
+    
     if (anyNonZero) result.push([masterCompany, { name: legalName, dims }]);
   }
 
@@ -2504,7 +2457,7 @@ const writeSheetForStatement = (stType, viewLevel = null) => {
       const useLiteral = viewLevel === null;
       const sign = stType === "pl" ? -1 : 1;
       const literal = stType === "pl" ? plLiteral : bsLiteral;
-      const sheetView = isActive ? viewMode : "ytd";
+const sheetView = stType === "bs" ? "ytd" : viewMode;
       const sheetCompare = cmpVisible && (opts.includeCompare !== false);
       const showTotals  = !sheetCompare && (opts.includeTotals !== false);
       const showBreakers = opts.includeBreakers !== false;
@@ -2551,13 +2504,96 @@ const writeSheetForStatement = (stType, viewLevel = null) => {
         if (sheetView === "ytd") return ytd;
         return ytd - (prevCmp.get(code)?.get(dk) ?? 0) * sign;
       };
-const sumTreeForDim = (n, dk, depth = 0) => {
+// Local-account contribution: sums all local postings under a group node
+      // for the given dim. Used as fallback when the group has no direct postings
+      // (data flows in via locals under it). Mirrors on-screen behavior.
+// Build a pivot for the INACTIVE statement so that exporting both PL+BS works
+      // regardless of which panel was on screen. buildSimpleLocalPivot mirrors the
+      // component-scope buildLocalPivot but filtered by the sheet's statement type.
+      const buildLocalPivotForSt = (rows) => {
+        const p = new Map();
+        (rows || []).forEach(r => {
+          const ac  = r.AccountCode ?? r.accountCode ?? "";
+          const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
+          if (!ac || !lac || lac === "—") return;
+          const acType = r.AccountType ?? r.accountType ?? "";
+          const targetType = stType === "bs" ? "B/S" : "P/L";
+          if (acType && acType !== targetType) return;
+          const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+          const lname = r.LocalAccountName ?? r.localAccountName ?? "";
+          if (!p.has(ac)) p.set(ac, new Map());
+          const locals = p.get(ac);
+          if (!locals.has(lac)) locals.set(lac, { name: lname, dims: new Map() });
+          const local = locals.get(lac);
+          if (lname && !local.name) local.name = lname;
+          const pairs = parseDimensions(r.Dimensions);
+          if (pairs.length === 0) {
+            local.dims.set("__none__", (local.dims.get("__none__") ?? 0) + amt);
+            return;
+          }
+          for (const [grp, code] of pairs) {
+            if (selGroups.size > 0 && !selGroups.has(grp)) continue;
+            if (selDims.size > 0 && !selDims.has(code)) continue;
+            local.dims.set(code, (local.dims.get(code) ?? 0) + amt);
+          }
+        });
+        return p;
+      };
+      const localPivotMain    = isActive ? localPivot     : buildLocalPivotForSt(data);
+      const prevLocalMain     = isActive ? prevLocalPivotMain : new Map();
+      const localPivotCmpMain = isActive ? localPivot2    : buildLocalPivotForSt(cmp2Data);
+      const prevLocalCmpMain  = isActive ? prevLocalPivot2 : new Map();
+      // In-sheet local-value lookups (component-scope getLocalVal is bound to the
+      // ACTIVE statement's pivot only — wrong when exporting the inactive one).
+      const getLocalValInSheet = (ac, lac, dk) => {
+        const ytd = (localPivotMain.get(ac)?.get(lac)?.dims.get(String(dk)) ?? 0) * sign;
+        if (sheetView === "ytd") return ytd;
+        const prevYtd = (prevLocalMain?.get(ac)?.get(lac)?.dims.get(String(dk)) ?? 0) * sign;
+        return ytd - prevYtd;
+      };
+      const getCmpLocalValInSheet = (ac, lac, dk) => {
+        const ytd = (localPivotCmpMain.get(ac)?.get(lac)?.dims.get(String(dk)) ?? 0) * sign;
+        if (sheetView === "ytd") return ytd;
+        const prevYtd = (prevLocalCmpMain?.get(ac)?.get(lac)?.dims.get(String(dk)) ?? 0) * sign;
+        return ytd - prevYtd;
+      };
+      const localValForNode = (code, dk) => {
+        if (!code) return 0;
+        const locals = localPivotMain.get(String(code));
+        if (!locals || locals.size === 0) return 0;
+        const prevLocals = prevLocalMain?.get(String(code));
+        let total = 0;
+        locals.forEach((info, lac) => {
+          const ytd = (info.dims.get(String(dk)) ?? 0) * sign;
+          if (sheetView === "ytd") { total += ytd; return; }
+          const prevYtd = (prevLocals?.get(lac)?.dims.get(String(dk)) ?? 0) * sign;
+          total += (ytd - prevYtd);
+        });
+        return total;
+      };
+      const localCmpValForNode = (code, dk) => {
+        if (!code) return 0;
+        const locals = localPivotCmpMain.get(String(code));
+        if (!locals || locals.size === 0) return 0;
+        const prevLocals = prevLocalCmpMain?.get(String(code));
+        let total = 0;
+        locals.forEach((info, lac) => {
+          const ytd = (info.dims.get(String(dk)) ?? 0) * sign;
+          if (sheetView === "ytd") { total += ytd; return; }
+          const prevYtd = (prevLocals?.get(lac)?.dims.get(String(dk)) ?? 0) * sign;
+          total += (ytd - prevYtd);
+        });
+        return total;
+      };
+      const sumTreeForDim = (n, dk, depth = 0) => {
         if (depth > 25) return 0;
         if (n.children && n.children.length > 0) {
           const childSum = n.children.reduce((s, c) => s + sumTreeForDim(c, dk, depth + 1), 0);
           if (childSum !== 0) return childSum;
         }
-        return flatVal(n.code, dk);
+        const own = flatVal(n.code, dk);
+        if (own !== 0) return own;
+        return localValForNode(n.code, dk);
       };
       const sumTreeCmpForDim = (n, dk, depth = 0) => {
         if (depth > 25) return 0;
@@ -2565,7 +2601,9 @@ const sumTreeForDim = (n, dk, depth = 0) => {
           const childSum = n.children.reduce((s, c) => s + sumTreeCmpForDim(c, dk, depth + 1), 0);
           if (childSum !== 0) return childSum;
         }
-        return flatCmpVal(n.code, dk);
+const own = flatCmpVal(n.code, dk);
+        if (own !== 0) return own;
+        return localCmpValForNode(n.code, dk);
       };
 
       const visibleDims = orderedDimCols;
@@ -2690,12 +2728,42 @@ const leafVal = (n, dimKey) => {
         }
         return valFor(n.code, dimKey);
       };
-const sumLitForDim = (n, dimKey, depth = 0) => {
+const isDimAllowedForNode = (n, dkStr) => {
+        if (!n.dims || n.dims.length === 0) return true;
+        const dk = String(dkStr);
+        return n.dims.some(d => {
+          const s = String(d);
+          if (s === dk) return true;
+          const i = s.indexOf(":");
+          const nameOrValue = i === -1 ? s : s.slice(i + 1);
+          const groupHint = i === -1 ? "" : s.slice(0, i);
+          if (nameOrValue === dk) return true;
+          // Resolve name → code via the dimensions catalog (mapping stores names,
+          // pivot columns are keyed by codes).
+          for (const dd of (dimensions || [])) {
+            const gg = String(dd.DimensionGroup ?? dd.dimensionGroup ?? "");
+            const nn = String(dd.DimensionName ?? dd.dimensionName ?? "");
+            const cc = String(dd.DimensionCode ?? dd.dimensionCode ?? "");
+            if (!cc) continue;
+            if (groupHint && groupHint !== gg) continue;
+            if (nn === nameOrValue && cc === dk) return true;
+          }
+          return false;
+        });
+      };
+      const sumLitForDim = (n, dimKey, depth = 0) => {
         if (depth > 50) return 0;
         if (n.children && n.children.length > 0) {
-          return n.children.reduce((s, c) => s + sumLitForDim(c, dimKey, depth + 1), 0);
+          const cs = n.children.reduce((s, c) => s + sumLitForDim(c, dimKey, depth + 1), 0);
+          if (cs !== 0) return cs;
         }
-        return leafVal(n, dimKey);
+        const own = leafVal(n, dimKey);
+        if (own !== 0) return own;
+        // Only fall back to locals if this node's dim filter allows this dimKey.
+        // Without this gate a dim-split mapping row (e.g. "600000 Producción") would
+        // pull in local postings from other dims and duplicate across all entries.
+        if (!isDimAllowedForNode(n, dimKey)) return 0;
+        return localValForNode(n.code, dimKey);
       };
       const leafCmpVal = (n, dimKey) => {
         if (n.dims && n.dims.length > 0) {
@@ -2711,15 +2779,20 @@ const sumLitForDim = (n, dimKey, depth = 0) => {
 const sumLitCmpForDim = (n, dimKey, depth = 0) => {
         if (depth > 50) return 0;
         if (n.children && n.children.length > 0) {
-          return n.children.reduce((s, c) => s + sumLitCmpForDim(c, dimKey, depth + 1), 0);
+          const cs = n.children.reduce((s, c) => s + sumLitCmpForDim(c, dimKey, depth + 1), 0);
+          if (cs !== 0) return cs;
         }
-        return leafCmpVal(n, dimKey);
+        const own = leafCmpVal(n, dimKey);
+        if (own !== 0) return own;
+        if (!isDimAllowedForNode(n, dimKey)) return 0;
+        return localCmpValForNode(n.code, dimKey);
       };
 
       let dataIdx = 0;
       let maxDepth = 0;
 const renderRow = (node, depth, mode = "literal", excludeCodes = null) => {
         if (depth > 50 || !node) return;  // cycle / runaway guard
+        
         const mainSum = mode === "tree" ? sumTreeForDim : sumLitForDim;
         const cmpSum  = mode === "tree" ? sumTreeCmpForDim : sumLitCmpForDim;
         maxDepth = Math.max(maxDepth, depth);
@@ -2779,8 +2852,8 @@ if (node.children && node.children.length > 0) {
         // Also emit rows for local accounts under this node's code (mirrors the on-screen
         // walkLit that pushes descriptors of kind "local"). Respects node.dims filter so
         // dim-filtered mapping rows only show their matching locals.
-        if (localPivot && node.code) {
-          const localsForNode = localPivot.get(String(node.code));
+if (drilldown && localPivotMain && node.code) {
+          const localsForNode = localPivotMain.get(String(node.code));
           if (localsForNode && localsForNode.size > 0) {
             const hasDimFilter = !!(node.dims && node.dims.length > 0);
             const isDimAccepted = (dkStr) => {
@@ -2803,9 +2876,10 @@ if (node.children && node.children.length > 0) {
                 return false;
               });
             };
-            const acceptedDimSet = hasDimFilter
+const acceptedDimSet = hasDimFilter
               ? new Set(visibleDims.map(d => String(d.code ?? "__none__")).filter(dk => isDimAccepted(dk)))
               : null;
+            
             localsForNode.forEach((info, lac) => {
               // Skip locals that have no postings in any accepted dim (matches app filtering)
               if (hasDimFilter) {
@@ -2832,20 +2906,22 @@ if (node.children && node.children.length > 0) {
 
               let localRowTotal = 0;
               visibleDims.forEach((dim, i) => {
-                const dk = dim.code ?? "__none__";
-                const accepted = !acceptedDimSet || acceptedDimSet.has(String(dk));
-                const a = accepted ? (typeof getLocalVal === "function" ? getLocalVal(node.code, lac, dk) : 0) : 0;
+              const dk = dim.code ?? "__none__";
+              const accepted = !acceptedDimSet || acceptedDimSet.has(String(dk));
+                const a = accepted ? getLocalValInSheet(node.code, lac, dk) : 0;
+
                 localRowTotal += a;
                 if (sheetCompare) {
                   const startCol = 2 + i * 4;
-                  const c = accepted && typeof getCmpLocalVal === "function" ? getCmpLocalVal(node.code, lac, dk) : 0;
+   const c = accepted ? getCmpLocalValInSheet(node.code, lac, dk) : 0;
                   const delta    = (Number.isFinite(a) && Number.isFinite(c)) ? a - c : null;
                   const deltaPct = (Number.isFinite(a) && Number.isFinite(c) && Math.abs(c) > 1e-9) ? ((a - c) / Math.abs(c)) * 100 : null;
                   writeNum(curRow, startCol,     a, band);
                   writeNum(curRow, startCol + 1, c, "FFFAFBFF");
                   writeNum(curRow, startCol + 2, delta,    "FFF5F7FF", { colorOverride: (delta == null || delta === 0) ? null : (delta < 0 ? C.red : "FF059669") });
                   writeNum(curRow, startCol + 3, deltaPct, "FFF0F3FF", { percent: true, colorOverride: deltaPct == null ? null : (deltaPct < 0 ? C.red : "FF059669") });
-                } else {
+} else {
+                  
                   writeNum(curRow, 2 + i, a, band);
                 }
               });
@@ -2858,8 +2934,92 @@ if (node.children && node.children.length > 0) {
                 if (locDepth > 0) lrow.hidden = true;
               }
               curRow++;
-            });
+});
           }
+        }
+// Reflect the app's per-company drill state: if user had the drill open on
+        // this account, emit one row per company with its per-dim breakdown.
+        // Respects node.dims filter so dim-split mapping rows only show companies
+        // that actually have postings matching that dim (and only in that dim's cols).
+        if (drilldown && drillExpanded && drillExpanded.has(String(node.code)) && drillCache && drillCache.get(String(node.code)) && typeof computeDrillCompanyRows === "function") {
+          const descSet = new Set([String(node.code)]);
+          const collect = (parentCode) => {
+            (groupAccounts || []).forEach(ga => {
+              const ac = String(ga.AccountCode ?? ga.accountCode ?? "");
+              const sm = String(ga.SumAccountCode ?? ga.sumAccountCode ?? "");
+              if (sm === parentCode && !descSet.has(ac)) { descSet.add(ac); collect(ac); }
+            });
+          };
+          collect(String(node.code));
+          const targetType = stType === "bs" ? "B/S" : "P/L";
+          const companyRows = computeDrillCompanyRows({ accountCode: String(node.code), descSet, targetType, sign, dimCols: visibleDims });
+          // Same dim-filter logic used by the locals block: mask cells outside the
+          // node's accepted dim set, and skip the row entirely if it has nothing
+          // in any accepted dim.
+          const hasDimFilter = !!(node.dims && node.dims.length > 0);
+          const isDimAcceptedDrill = (dkStr) => {
+            if (!hasDimFilter) return true;
+            return node.dims.some(d => {
+              const s = String(d);
+              if (s === dkStr) return true;
+              const i = s.indexOf(":");
+              const nameOrValue = i === -1 ? s : s.slice(i + 1);
+              const groupHint = i === -1 ? "" : s.slice(0, i);
+              if (String(nameOrValue) === dkStr) return true;
+              for (const dd of (dimensions || [])) {
+                const gg = String(dd.DimensionGroup ?? dd.dimensionGroup ?? "");
+                const nn = String(dd.DimensionName ?? dd.dimensionName ?? "");
+                const cc = String(dd.DimensionCode ?? dd.dimensionCode ?? "");
+                if (!cc) continue;
+                if (groupHint && groupHint !== gg) continue;
+                if (nn === nameOrValue && cc === dkStr) return true;
+              }
+              return false;
+            });
+          };
+          const acceptedDrillSet = hasDimFilter
+            ? new Set(visibleDims.map(d => String(d.code ?? "__none__")).filter(dk => isDimAcceptedDrill(dk)))
+            : null;
+          companyRows.forEach(([co, info]) => {
+            // Skip company if it has nothing in any accepted dim.
+            if (hasDimFilter) {
+              let anyMatch = false;
+              for (const [dk, amt] of info.dims.entries()) {
+                if (amt !== 0 && acceptedDrillSet.has(String(dk))) { anyMatch = true; break; }
+              }
+              if (!anyMatch) return;
+            }
+            const cellDepth = Math.min(7, depth + 1);
+            maxDepth = Math.max(maxDepth, depth + 1);
+            const band = dataIdx % 2 === 0 ? C.band1 : C.band2;
+            dataIdx++;
+            const labelCell = ws.getCell(curRow, 1);
+            labelCell.value = { richText: [
+              { text: `${co}  `, font: { name: "Calibri", size: 9, bold: true, color: { argb: toArgbHex(colors.primary) } } },
+              { text: String(info.name || co), font: { name: "Calibri", size: 10, color: { argb: "FF2F3138" } } },
+            ] };
+            labelCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
+            labelCell.alignment = { vertical: "middle", horizontal: "left", indent: cellDepth + 1 };
+            labelCell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+            let rowTotal = 0;
+            visibleDims.forEach((dim, i) => {
+              const dk = dim.code ?? "__none__";
+              const accepted = !acceptedDrillSet || acceptedDrillSet.has(String(dk));
+              const v = accepted ? (info.dims.get(dk) ?? 0) : 0;
+              rowTotal += v;
+              if (sheetCompare) {
+                const startCol = 2 + i * 4;
+                writeNum(curRow, startCol, v, band);
+              } else {
+                writeNum(curRow, 2 + i, v, band);
+              }
+            });
+            if (showTotals) writeNum(curRow, 2 + visibleDims.length, rowTotal, C.highlight);
+            const drow = ws.getRow(curRow);
+            drow.outlineLevel = cellDepth;
+            if (cellDepth > 0) drow.hidden = true;
+            curRow++;
+          });
         }
       };
 
@@ -3075,13 +3235,14 @@ if (wb.worksheets.length === 0) {
 
 saveAs(new Blob([repaired], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
       `Konsolidator_Dimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.xlsx`);
-  }, [T, data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, selGroups, selDims, cmp2Source, cmp2Structure, cmp2Month, cmp2Year, cmp2Company, plMapping, bsMapping, groupAccounts]);
+  }, [T, data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, selGroups, selDims, cmp2Source, cmp2Structure, cmp2Month, cmp2Year, cmp2Company, plMapping, bsMapping, groupAccounts, dimensions, localPivot, localPivot2, prevLocalPivotMain, prevLocalPivot2, drillExpanded, drillCache, computeDrillCompanyRows, colors.primary]);
 
 const handleExportPdf = useCallback((opts = {}) => {
     const includePL = opts.statements?.pl ?? (statementType === "pl");
     const includeBS = opts.statements?.bs ?? (statementType === "bs");
 if (!includePL && !includeBS) { alert(T("export_select_statement_alert")); return; }
     const includeCompareOpt = (opts.includeCompare !== false) && cmpVisible;
+    const drilldown = opts.drilldown !== false;
 
     // Palette
     const NAVY     = [26, 47, 138];
@@ -3134,6 +3295,36 @@ if (!includePL && !includeBS) { alert(T("export_select_statement_alert")); retur
     let pageNum = 1;
     const pageManifest = []; // { displayedPage, title }
     const monthLabel = masterMonth ? T(`month_${parseInt(masterMonth)}`) : masterMonth;
+
+const buildSimpleLocalPivot = (rows, stType) => {
+      const p = new Map();
+      rows.forEach(r => {
+        const ac  = r.AccountCode ?? r.accountCode ?? "";
+        const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
+        if (!ac || !lac || lac === "—") return;
+        const acType = r.AccountType ?? r.accountType ?? "";
+        const targetType = stType === "bs" ? "B/S" : "P/L";
+        if (acType && acType !== targetType) return;
+        const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+        const lname = r.LocalAccountName ?? r.localAccountName ?? "";
+        if (!p.has(ac)) p.set(ac, new Map());
+        const locals = p.get(ac);
+        if (!locals.has(lac)) locals.set(lac, { name: lname, dims: new Map() });
+        const local = locals.get(lac);
+        if (lname && !local.name) local.name = lname;
+        const pairs = parseDimensions(r.Dimensions);
+        if (pairs.length === 0) {
+          local.dims.set("__none__", (local.dims.get("__none__") ?? 0) + amt);
+          return;
+        }
+        for (const [grp, code] of pairs) {
+          if (selGroups.size > 0 && !selGroups.has(grp)) continue;
+          if (selDims.size > 0 && !selDims.has(code)) continue;
+          local.dims.set(code, (local.dims.get(code) ?? 0) + amt);
+        }
+      });
+      return p;
+    };
 
     const buildSimplePivot = (rows, stType) => {
       const p = new Map();
@@ -3289,7 +3480,9 @@ doc.text(stType === "pl" ? T("file_dimensions_pl_upper") : T("file_dimensions_bs
       const prevMain  = isActive ? prevPivotMain : new Map();
       const pivotCmp  = isCompare ? (isActive ? pivot2 : buildSimplePivot(cmp2Data, stType)) : new Map();
       const prevCmp   = isActive ? prevPivot2 : new Map();
-      const sheetView = isActive ? viewMode : "ytd";
+    // PL respects the current viewMode regardless of which panel is active
+      // (BS is always YTD by design, so hardcode that).
+      const sheetView = stType === "bs" ? "ytd" : viewMode;
 
       const sumPivotFor = (p, code, dk) => {
         if (!p || p.size === 0) return 0;
@@ -3324,13 +3517,63 @@ doc.text(stType === "pl" ? T("file_dimensions_pl_upper") : T("file_dimensions_bs
         if (sheetView === "ytd") return ytd;
         return ytd - (prevCmp.get(code)?.get(dk) ?? 0) * sign;
       };
+const localPivotMain = isActive ? localPivot : buildSimpleLocalPivot(data, stType);
+      const prevLocalMain  = isActive ? prevLocalPivotMain : new Map();
+      const localPivotCmpMain = isActive ? localPivot2 : buildSimpleLocalPivot(cmp2Data, stType);
+      const prevLocalCmpMain  = isActive ? prevLocalPivot2 : new Map();
+
+      // In-sheet local-value lookups. Use these instead of the component-scope
+      // getLocalVal/getCmpLocalVal because those read from the ACTIVE statement's
+      // localPivot only — wrong data when exporting the inactive statement.
+      const getLocalValInSheet = (ac, lac, dk) => {
+        const ytd = (localPivotMain.get(ac)?.get(lac)?.dims.get(String(dk)) ?? 0) * sign;
+        if (sheetView === "ytd") return ytd;
+        const prevYtd = (prevLocalMain?.get(ac)?.get(lac)?.dims.get(String(dk)) ?? 0) * sign;
+        return ytd - prevYtd;
+      };
+      const getCmpLocalValInSheet = (ac, lac, dk) => {
+        const ytd = (localPivotCmpMain.get(ac)?.get(lac)?.dims.get(String(dk)) ?? 0) * sign;
+        if (sheetView === "ytd") return ytd;
+        const prevYtd = (prevLocalCmpMain?.get(ac)?.get(lac)?.dims.get(String(dk)) ?? 0) * sign;
+        return ytd - prevYtd;
+      };
+      const localValForNode = (code, dk) => {
+        if (!code) return 0;
+        const locals = localPivotMain.get(String(code));
+        if (!locals || locals.size === 0) return 0;
+        const prevLocals = prevLocalMain?.get(String(code));
+        let total = 0;
+        locals.forEach((info, lac) => {
+          const ytd = (info.dims.get(String(dk)) ?? 0) * sign;
+          if (sheetView === "ytd") { total += ytd; return; }
+          const prevYtd = (prevLocals?.get(lac)?.dims.get(String(dk)) ?? 0) * sign;
+          total += (ytd - prevYtd);
+        });
+        return total;
+      };
+      const localCmpValForNode = (code, dk) => {
+        if (!code) return 0;
+        const locals = localPivotCmpMain.get(String(code));
+        if (!locals || locals.size === 0) return 0;
+        const prevLocals = prevLocalCmpMain?.get(String(code));
+        let total = 0;
+        locals.forEach((info, lac) => {
+          const ytd = (info.dims.get(String(dk)) ?? 0) * sign;
+          if (sheetView === "ytd") { total += ytd; return; }
+          const prevYtd = (prevLocals?.get(lac)?.dims.get(String(dk)) ?? 0) * sign;
+          total += (ytd - prevYtd);
+        });
+        return total;
+      };
       const sumTreeForDim = (n, dk, depth = 0) => {
         if (depth > 25) return 0;
         if (n.children && n.children.length > 0) {
           const cs = n.children.reduce((s, c) => s + sumTreeForDim(c, dk, depth + 1), 0);
           if (cs !== 0) return cs;
         }
-        return flatVal(n.code, dk);
+        const own = flatVal(n.code, dk);
+        if (own !== 0) return own;
+        return localValForNode(n.code, dk);
       };
       const sumTreeCmpForDim = (n, dk, depth = 0) => {
         if (depth > 25) return 0;
@@ -3338,7 +3581,9 @@ doc.text(stType === "pl" ? T("file_dimensions_pl_upper") : T("file_dimensions_bs
           const cs = n.children.reduce((s, c) => s + sumTreeCmpForDim(c, dk, depth + 1), 0);
           if (cs !== 0) return cs;
         }
-        return flatCmpVal(n.code, dk);
+        const own = flatCmpVal(n.code, dk);
+        if (own !== 0) return own;
+        return localCmpValForNode(n.code, dk);
       };
 const isDimAccepted = (nodeDims, dkStr) => {
         if (!nodeDims || nodeDims.length === 0) return true;
@@ -3371,20 +3616,26 @@ const leafCmpVal = (n, dimKey) => {
 const sumLitForDim = (n, dimKey, depth = 0) => {
         if (depth > 50) return 0;
         if (n.children && n.children.length > 0) {
-          return n.children.reduce((s, c) => s + sumLitForDim(c, dimKey, depth + 1), 0);
+          const cs = n.children.reduce((s, c) => s + sumLitForDim(c, dimKey, depth + 1), 0);
+          if (cs !== 0) return cs;
         }
-        return leafVal(n, dimKey);
+        const own = leafVal(n, dimKey);
+        if (own !== 0) return own;
+        return localValForNode(n.code, dimKey);
       };
       const sumLitCmpForDim = (n, dimKey, depth = 0) => {
         if (depth > 50) return 0;
         if (n.children && n.children.length > 0) {
-          return n.children.reduce((s, c) => s + sumLitCmpForDim(c, dimKey, depth + 1), 0);
+          const cs = n.children.reduce((s, c) => s + sumLitCmpForDim(c, dimKey, depth + 1), 0);
+          if (cs !== 0) return cs;
         }
-        return leafCmpVal(n, dimKey);
+        const own = leafCmpVal(n, dimKey);
+        if (own !== 0) return own;
+        return localCmpValForNode(n.code, dimKey);
       };
 
       const rows = [];
-      const renderRow = (node, depth, mode, excludeCodes = null) => {
+const renderRow = (node, depth, mode, excludeCodes = null) => {
         if (depth > 50 || !node) return;
         const mainSum = mode === "tree" ? sumTreeForDim : sumLitForDim;
         const cmpSum  = mode === "tree" ? sumTreeCmpForDim : sumLitCmpForDim;
@@ -3396,6 +3647,114 @@ const sumLitForDim = (n, dimKey, depth = 0) => {
           node.children.forEach(c => {
             if (excludeCodes && excludeCodes.has(String(c.code ?? c.AccountCode ?? ""))) return;
             renderRow(c, depth + 1, mode, excludeCodes);
+          });
+        }
+        // Emit local-account sub-rows (drill-down). Skipped when the user opts out
+        // of drilldown for a briefer report. Mirrors the xlsx block.
+        if (drilldown && localPivotMain && node.code) {
+          const localsForNode = localPivotMain.get(String(node.code));
+          if (localsForNode && localsForNode.size > 0) {
+            const hasDimFilter = !!(node.dims && node.dims.length > 0);
+            const acceptedDimSet = hasDimFilter
+              ? new Set(dimSlice.map(d => String(d.code ?? "__none__")).filter(dk => isDimAccepted(node.dims, dk)))
+              : null;
+            localsForNode.forEach((info, lac) => {
+              if (hasDimFilter) {
+                let anyMatch = false;
+                for (const [dk, amt] of info.dims.entries()) {
+                  if (amt !== 0 && acceptedDimSet.has(String(dk))) { anyMatch = true; break; }
+                }
+                if (!anyMatch) return;
+              }
+              const localValues = dimSlice.map(d => {
+                const dk = d.code ?? "__none__";
+                const accepted = !acceptedDimSet || acceptedDimSet.has(String(dk));
+                return accepted ? getLocalValInSheet(node.code, lac, dk) : 0;
+              });
+              const localCmpValues = isCompare ? dimSlice.map(d => {
+                const dk = d.code ?? "__none__";
+                const accepted = !acceptedDimSet || acceptedDimSet.has(String(dk));
+                return accepted ? getCmpLocalValInSheet(node.code, lac, dk) : 0;
+              }) : [];
+              const localTotal = localValues.reduce((s, v) => s + v, 0);
+              const nameRaw = String(info.name ?? lac);
+              const capName = nameRaw ? nameRaw.charAt(0).toUpperCase() + nameRaw.slice(1).toLowerCase() : "";
+              rows.push({
+                code: lac,
+                name: capName,
+                values: localValues,
+                cmpValues: localCmpValues,
+                total: localTotal,
+                isSum: false,
+                depth: depth + 1,
+              });
+});
+          }
+        }
+// Reflect the app's per-company drill state (mirrors xlsx block).
+        // Respects node.dims filter so dim-split mapping rows only show companies
+        // that actually have postings matching that dim (and only in that dim's cols).
+        if (drilldown && drillExpanded && drillExpanded.has(String(node.code)) && drillCache && drillCache.get(String(node.code)) && typeof computeDrillCompanyRows === "function") {
+          const descSet = new Set([String(node.code)]);
+          const collect = (parentCode) => {
+            (groupAccounts || []).forEach(ga => {
+              const ac = String(ga.AccountCode ?? ga.accountCode ?? "");
+              const sm = String(ga.SumAccountCode ?? ga.sumAccountCode ?? "");
+              if (sm === parentCode && !descSet.has(ac)) { descSet.add(ac); collect(ac); }
+            });
+          };
+          collect(String(node.code));
+          const targetType = stType === "bs" ? "B/S" : "P/L";
+          const companyRows = computeDrillCompanyRows({ accountCode: String(node.code), descSet, targetType, sign, dimCols: dimSlice });
+          const hasDimFilter = !!(node.dims && node.dims.length > 0);
+          const isDimAcceptedDrill = (dkStr) => {
+            if (!hasDimFilter) return true;
+            return node.dims.some(d => {
+              const s = String(d);
+              if (s === dkStr) return true;
+              const i = s.indexOf(":");
+              const nameOrValue = i === -1 ? s : s.slice(i + 1);
+              const groupHint = i === -1 ? "" : s.slice(0, i);
+              if (String(nameOrValue) === dkStr) return true;
+              for (const dd of (dimensions || [])) {
+                const gg = String(dd.DimensionGroup ?? dd.dimensionGroup ?? "");
+                const nn = String(dd.DimensionName ?? dd.dimensionName ?? "");
+                const cc = String(dd.DimensionCode ?? dd.dimensionCode ?? "");
+                if (!cc) continue;
+                if (groupHint && groupHint !== gg) continue;
+                if (nn === nameOrValue && cc === dkStr) return true;
+              }
+              return false;
+            });
+          };
+          const acceptedDrillSet = hasDimFilter
+            ? new Set(dimSlice.map(d => String(d.code ?? "__none__")).filter(dk => isDimAcceptedDrill(dk)))
+            : null;
+          companyRows.forEach(([co, info]) => {
+            if (hasDimFilter) {
+              let anyMatch = false;
+              for (const [dk, amt] of info.dims.entries()) {
+                if (amt !== 0 && acceptedDrillSet.has(String(dk))) { anyMatch = true; break; }
+              }
+              if (!anyMatch) return;
+            }
+            const drillValues = dimSlice.map(d => {
+              const dk = String(d.code ?? "__none__");
+              const accepted = !acceptedDrillSet || acceptedDrillSet.has(dk);
+              return accepted ? (info.dims.get(d.code ?? "__none__") ?? 0) : 0;
+            });
+            const drillCmpValues = isCompare ? dimSlice.map(() => 0) : [];
+            const drillTotal = drillValues.reduce((s, v) => s + v, 0);
+            rows.push({
+              code: String(co),
+              name: String(info.name || co),
+              values: drillValues,
+              cmpValues: drillCmpValues,
+              total: drillTotal,
+              isSum: false,
+              depth: depth + 1,
+              isCompanyDrill: true,
+            });
           });
         }
       };
@@ -3587,9 +3946,20 @@ dimSlice.forEach(() => {
         },
         columnStyles,
         alternateRowStyles: { fillColor: OFFWHITE },
-        didParseCell: d => {
+didParseCell: d => {
           if (d.section === "head" && d.column.index === 0) {
             d.cell.styles.fillColor = NAVYDK; d.cell.styles.halign = "left";
+          }
+          // Frame each dimension "block" with a stronger left border so groups
+          // visually separate (mirrors the xlsx medium-left-border treatment).
+          const colIdx = d.column.index;
+          const isDimStart = isCompare
+            ? colIdx >= 1 && ((colIdx - 1) % 4 === 0)                     // start of A/B/Diff/Diff% group
+            : colIdx >= 1 && colIdx <= dimSlice.length;                    // one col per dim
+          const isTotalDivider = !isCompare && showTotals && colIdx === (dimSlice.length + 1);
+          if (isDimStart || isTotalDivider) {
+            d.cell.styles.lineWidth  = { ...(d.cell.styles.lineWidth  || {}), left: 0.5 };
+            d.cell.styles.lineColor  = { ...(d.cell.styles.lineColor  || {}), left: [110, 120, 145] };
           }
         },
         didDrawPage: () => drawFooter(stType, viewLevel, chunkInfo),
@@ -3709,7 +4079,7 @@ doc.text(T("file_dimensions_report"), 10, H - 4.5);
     doc.text("1", W - 10, H - 4.5, { align: "right" });
 
 doc.save(`Konsolidator_Dimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.pdf`);
-}, [T, data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, plMapping, bsMapping, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, selGroups, selDims, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, groupAccounts]);
+}, [T, data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, plMapping, bsMapping, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterCompany, selGroups, selDims, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2Company, groupAccounts, dimensions, localPivot, localPivot2, prevLocalPivotMain, prevLocalPivot2, drillExpanded, drillCache, computeDrillCompanyRows]);
 
 
 // Wire export functions to the ref so DimensionesPage FAB can call them
@@ -4021,14 +4391,7 @@ onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary
                 // walks the literal tree (with breakers, sum nodes, dim filters),
                 // indents by tree depth, and rolls up via own + descendants.
 const literal = statementType === "pl" ? plLiteral : bsLiteral;
-                console.log('[render-literal-check]', {
-                  hasLiteral: !!literal,
-                  literalLen: literal?.length,
-                  hasPlLiteral: !!plLiteral,
-                  plLiteralLen: plLiteral?.length,
-                  statementType,
-                  firstSection: literal?.[0] ? { label: literal[0].label, nodeCount: literal[0].nodes?.length, first600s: literal[0].nodes?.filter(n => n.code === "600000").map(n => ({ dims: n.dims, isSum: n.isSum })) } : null,
-                });
+                
                 if (literal && literal.length > 0) {
                   const ROW_H = 44;
                   const BUFFER = 10;
@@ -4091,14 +4454,10 @@ const walkLit = (node, depth, parentPath, secIdx) => {
                     const hasKids = node.children && node.children.length > 0;
                     const localsForNode = (localPivot && node.code) ? localPivot.get(String(node.code)) : null;
                     const hasLocals = localsForNode && localsForNode.size > 0;
-if (depth === 0 && node.code === 'B') {
-                      console.log('[walkLit BS ALL KEYS]', [...(localPivot?.keys() || [])]);
-                    }
+
                     const expanded = expandedSet.has(rowKey) || (searchExpansionSet?.has(rowKey) ?? false);
                     descriptors.push({ kind: "row", rowKey, node, depth, hasKids: hasKids || hasLocals, expanded });
-                    if (secIdx === 0) {
-                      console.log('[walkLit trace]', 'd='+depth, 'code='+node.code, 'name='+node.name, 'hasKids='+hasKids, 'expanded='+expanded, 'hasLocals='+hasLocals);
-                    }
+                    
                     if (expanded && hasKids) {
                       node.children.forEach(c => walkLit(c, depth + 1, `${parentPath}-${node.id}`, secIdx));
                     }
@@ -4379,14 +4738,9 @@ if (perCoCur.size === 0) {
                     }
                     const { node, depth, hasKids, expanded, rowKey } = d;
                     const rowStyle = depth === 0 ? body1Style : body2Style;
-const rowTotal = orderedDimCols.reduce((s, dim) => s + sumLitForDim(node, dim.code ?? "__none__"), 0);
+                    const rowTotal = orderedDimCols.reduce((s, dim) => s + sumLitForDim(node, dim.code ?? "__none__"), 0);
                     const isMatch = !!q && (String(node.code ?? "").toLowerCase().includes(q) || String(node.name ?? "").toLowerCase().includes(q));
-                    if (String(node.code) === "B.PL" || String(node.code) === "A.PL") {
-                      const dimDump = {};
-                      orderedDimCols.forEach(dim => { dimDump[dim.code ?? "__none__"] = sumLitForDim(node, dim.code ?? "__none__"); });
-                      console.log("[LITERAL PARENT render]", node.code, "rowTotal:", rowTotal, "perDim:", JSON.stringify(dimDump), "isSum:", node.isSum, "childCount:", (node.children || []).length);
-                    }
-const rowAnim = tableJustLoaded && i < 25
+                    const rowAnim = tableJustLoaded && i < 25
                       ? { animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(i, 25) * 35 + 50}ms both` }
                       : null;
                     out.push(
@@ -4682,11 +5036,7 @@ const coRolledCmp = cmpVisible
 const levelByCode = (hasCustomMapping && activeMapping?.rows)
                   ? new Map([...activeMapping.rows.entries()].map(([code, info]) => [String(code), info.level ?? 0]))
                   : null;                         
-console.log('[render-map]',
-                  'total:', orderedRows.length,
-                  '600s:', orderedRows.filter(n => n.AccountCode === "600000").length,
-                  'first10:', orderedRows.slice(0, 10).map(n => n.AccountCode).join(","),
-                );
+
                 return orderedRows.map((node, idx) => {
                   const divider = dividerMap[String(node._instanceId ?? node.AccountCode)];
                   const depth = levelByCode?.get(String(node.AccountCode)) ?? 0;
@@ -4731,7 +5081,7 @@ drillExpanded={drillExpanded} drillCache={drillCache} drillLoadingSet={drillLoad
 
 /* ── Main ─────────────────────────────────────────────────── */
 /* ── Main ─────────────────────────────────────────────────── */
-const PeriodChip = ({ letter, color, label, filters, MONTHS, t = (k) => k, companies = [] }) => {
+const PeriodChip = ({ letter, color, label, filters, MONTHS, companies = [] }) => {
   if (!filters) return null;
   const moLabel = MONTHS.find(m => String(m.value) === String(filters.month))?.label ?? filters.month;
   const resolveCompany = (code) => {
@@ -4882,7 +5232,7 @@ if (!fn) {
 }, [exportOpts, T]);
 
 const handleApplyMapping = useCallback((m, kind = "structure") => {
-  console.log("[handleApplyMapping DIM] m.is_hidden:", m?.is_hidden, "m:", m);
+  
     setActiveMapping({
       mapping_id:  m.mapping_id,
       kind,
@@ -5164,7 +5514,7 @@ const defaultPlMapping = pgcPlMapping ?? danishPlMapping ?? spIfrsEsPlMapping;
 const mergeMappings = (override, base) => {
     if (!override) return base;
     if (!base) return override;
-    console.log("[mergeMappings]", "override rows:", override.rows?.size, "override A.01:", override.rows?.get("A.01"), "base A.01:", base.rows?.get("A.01"), "override 999:", override.rows?.get("999"));
+    
     const rows = new Map(base.rows);
     override.rows.forEach((info, code) => { rows.set(code, { ...(base.rows.get(code) ?? {}), ...info }); });
     const sections = new Map(base.sections);
@@ -5357,7 +5707,7 @@ if (probeKey && prevProbeKey !== probeKey) {
       }
     })();
     return () => ctrl.abort();
-  }, [fetchKey, year, month, source, structure, company, authHeaders]);
+}, [fetchKey, year, month, source, structure, company, authHeaders, setRawData]);
 
 // Drill-by-company fetch: ONE shared fetch per period (drops the company
 // filter so the response covers every company). Each drilled account reads
@@ -5608,16 +5958,16 @@ mappingsQuickAccess={viewsMode ? [] : recentMappings.filter(m => isAllowed(m, "m
             console.error("[quick apply mapping]", err);
           }
         }}
-onExportXlsx={(viewsMode || drillExpanded.size > 0) ? undefined : () => {
+onExportXlsx={viewsMode ? undefined : () => {
           setExportOpts(o => ({ ...o, format: "xlsx" }));
           setExportModal(true);
         }}
-        onExportPdf={(viewsMode || drillExpanded.size > 0) ? undefined : () => {
+        onExportPdf={viewsMode ? undefined : () => {
           setExportOpts(o => ({ ...o, format: "pdf" }));
           setExportModal(true);
         }}
       />
-{console.log("[GREEN CARD RENDER]", activeMapping?.is_hidden, activeMapping)}
+
 {activeMapping && !activeMapping.is_hidden && activeMapping.name !== "__custom_override__" && (
         <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm flex-shrink-0">
           <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
