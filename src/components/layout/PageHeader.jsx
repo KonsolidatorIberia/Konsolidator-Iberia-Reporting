@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useLayoutEffect } from "react";
+import React, { useState, useEffect, useRef, useLayoutEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, MoreHorizontal, GitCompareArrows, Calendar, CalendarRange, Search, X, Coins, CheckCircle2 } from "lucide-react";
 import { useSettings, useTypo, useT } from "./SettingsContext.jsx";
@@ -428,39 +428,60 @@ export function TabSwitcher({ tabs, activeTab, onChange, onHoverChange }) {
   // Per-frame lerp: pill smoothly chases the active tab's current position.
   // Direct DOM writes (not setState) + no CSS transition on left/width means
   // there's never a stacked in-flight transition chasing a stale target.
-  useLayoutEffect(() => {
-    let rafId;
-    let curLeft = null;
-    let curWidth = null;
+// Pill follows the active tab. The rAF loop is idle when the pill is
+  // already parked on target — no layout reads happen. It wakes up only
+  // when activeTab or hoveredId changes (via the effect below), tweens
+  // for a handful of frames, then goes back to sleep. This avoids the
+  // forced synchronous layout that was thrashing the page every frame.
+  const curPosRef = useRef({ left: null, width: null });
+  const rafActiveRef = useRef(false);
 
+  const startTicker = useCallback(() => {
+    if (rafActiveRef.current) return;
+    rafActiveRef.current = true;
     const tick = () => {
       const container = containerRef.current;
       const pill = pillRef.current;
-      if (container && pill) {
-        const btn = container.querySelector(`[data-tab="${activeTabRef.current}"]`);
-        if (btn) {
-          const targetLeft = btn.offsetLeft;
-          const targetWidth = btn.offsetWidth;
-          if (curLeft === null) {
-            curLeft = targetLeft;
-            curWidth = targetWidth;
-          } else {
-            const k = 0.22;
-            curLeft += (targetLeft - curLeft) * k;
-            curWidth += (targetWidth - curWidth) * k;
-            if (Math.abs(targetLeft - curLeft) < 0.3) curLeft = targetLeft;
-            if (Math.abs(targetWidth - curWidth) < 0.3) curWidth = targetWidth;
-          }
-          pill.style.left = `${curLeft}px`;
-          pill.style.width = `${curWidth}px`;
-          pill.style.opacity = "1";
-        }
+      if (!container || !pill) { rafActiveRef.current = false; return; }
+      const btn = container.querySelector(`[data-tab="${activeTabRef.current}"]`);
+      if (!btn) { rafActiveRef.current = false; return; }
+      const targetLeft = btn.offsetLeft;
+      const targetWidth = btn.offsetWidth;
+      const cur = curPosRef.current;
+      let curLeft = cur.left;
+      let curWidth = cur.width;
+      let atTarget = false;
+      if (curLeft === null) {
+        curLeft = targetLeft;
+        curWidth = targetWidth;
+        atTarget = true;
+      } else {
+        const k = 0.22;
+        curLeft += (targetLeft - curLeft) * k;
+        curWidth += (targetWidth - curWidth) * k;
+        const dl = Math.abs(targetLeft - curLeft);
+        const dw = Math.abs(targetWidth - curWidth);
+        if (dl < 0.3) curLeft = targetLeft;
+        if (dw < 0.3) curWidth = targetWidth;
+        atTarget = dl < 0.3 && dw < 0.3;
       }
-      rafId = requestAnimationFrame(tick);
+      curPosRef.current = { left: curLeft, width: curWidth };
+      pill.style.left = `${curLeft}px`;
+      pill.style.width = `${curWidth}px`;
+      pill.style.opacity = "1";
+      if (atTarget) {
+        // Parked — stop the loop. It'll wake up next time the target changes.
+        rafActiveRef.current = false;
+        return;
+      }
+      requestAnimationFrame(tick);
     };
-    rafId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafId);
+    requestAnimationFrame(tick);
   }, []);
+
+  useLayoutEffect(() => {
+    startTicker();
+  }, [activeTab, hoveredId, startTicker]);
 
   // Geometry-based hover detection. Single source of truth (mousemove on the
   // container) replaces per-tab onMouseEnter/onMouseLeave — same cursor x →
@@ -818,14 +839,27 @@ onExportPdf,
 onMappingsClick,
   mappingsQuickAccess = [],   // [{ id, name, kind: "structure" | "report", updated_at }]
   onQuickApplyMapping,        // (mapping) => void
-  showAllFilters = false,
+showAllFilters = false,
   collapseTabsOnFilterHover = false,
+  collapseAllOnFilterHover = false,
 }) {
 const { colors } = useSettings();
   const headerStyle = useTypo("header1");
   const t = useT();
   const activeTabObj = tabs?.find(t => t.id === activeTab);
   const displayTitle = activeTabObj?.label ?? title;
+
+  const [isLaptop, setIsLaptop] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+   const mq = window.matchMedia("(max-width: 1799px)");
+    const on = () => setIsLaptop(mq.matches);
+    on();
+    mq.addEventListener ? mq.addEventListener("change", on) : mq.addListener(on);
+    return () => { mq.removeEventListener ? mq.removeEventListener("change", on) : mq.removeListener(on); };
+  }, []);
+  const collapseAll = collapseAllOnFilterHover && isLaptop;
+  const collapseTabs = collapseTabsOnFilterHover || collapseAll;
 
 // Always show the first 3 filters (Year, Month, Company by convention); rest go behind "More filters"
   // When showAllFilters is true, render every filter inline with no overflow.
@@ -918,8 +952,15 @@ style={{
           paddingRight: 6,
         }}>
 
-        {/* Brand block — title morphs based on hovered tab */}
-<div className="flex items-center gap-2.5 min-w-0 pr-4">
+{/* Brand block — title morphs based on hovered tab */}
+<div className="flex items-center gap-2.5 min-w-0 pr-4 overflow-hidden"
+          style={collapseAll ? {
+            maxWidth: moreFiltersOpen ? 0 : 1200,
+            opacity: moreFiltersOpen ? 0 : 1,
+            paddingRight: moreFiltersOpen ? 0 : undefined,
+            transition: `max-width 420ms ${SPRING}, opacity 240ms ${SMOOTH}, padding 320ms ${SMOOTH}`,
+            pointerEvents: moreFiltersOpen ? "none" : "auto",
+          } : undefined}>
           {onBack && (
             <button
               onClick={onBack}
@@ -959,9 +1000,9 @@ style={{
         {/* Divider */}
         {titleSuffix && (<><SoftDivider /><div className="px-3 flex items-center"><span className="text-sm font-bold" style={{ color: colors.primary, opacity: 0.65 }}>{titleSuffix}</span></div></>)}
 {((tabs?.length > 0) || filters.length > 0) && <SoftDivider />}
-        {/* Tabs — optionally collapse when More filters hover is active */}
+{/* Tabs — optionally collapse when More filters hover is active */}
         {tabs?.length > 0 && (
-          collapseTabsOnFilterHover ? (
+          collapseTabs ? (
             <div
               className="flex items-center overflow-hidden flex-shrink-0"
               style={{
@@ -983,7 +1024,7 @@ style={{
         )}
 {/* Divider — collapses with tabs only when the tabs do */}
         {tabs?.length > 0 && filters.length > 0 && (
-          collapseTabsOnFilterHover ? (
+          collapseTabs ? (
             <div
               className="flex-shrink-0 self-stretch flex items-center overflow-hidden"
               style={{
@@ -1433,6 +1474,13 @@ onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareTog
           </>
         )}
 
+<div style={collapseAll ? {
+          display: "flex", alignItems: "center", overflow: "hidden",
+          maxWidth: moreFiltersOpen ? 0 : 1200,
+          opacity: moreFiltersOpen ? 0 : 1,
+          transition: `max-width 420ms ${SPRING}, opacity 240ms ${SMOOTH}`,
+          pointerEvents: moreFiltersOpen ? "none" : "auto",
+        } : { display: "contents" }}>
 {/* Header search */}
         {headerSearch && (
           <>
@@ -1471,7 +1519,7 @@ onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareTog
             </div>
           </>
         )}
-        
+        </div>
       </div>
 
 <style>{`

@@ -104,7 +104,14 @@ const { can, loaded: permsLoaded } = useCurrentUserPermissions();
   const rowRefs    = useRef({});
   const closeTimer = useRef(null);
 
-  const isOpen = hovered;
+const isOpen = hovered;
+
+  // Expose sidebar state on <body> so other components (large tables) can
+  // apply a compensating transform during the width transition. Avoids reflow.
+  useEffect(() => {
+    document.body.dataset.sidebar = isOpen ? "open" : "closed";
+    return () => { delete document.body.dataset.sidebar; };
+  }, [isOpen]);
 
   const activeParent = NAV.find(n =>
     n.key === activePage || n.children?.some(c => c.key === activePage)

@@ -734,7 +734,6 @@ let v;
         v = selfVal;
       }
 if (valCache) valCache.set(k, v);
-      if (n.AccountCode === "D.PL") console.log("[DPL sumNode]", { dimKey, selfVal, childrenSum: (n.children||[]).map(c => ({code:c.AccountCode, v: sumNode(c, depth+1)})), final: v });
       return v;
     };
     return sumNode(node);
@@ -791,8 +790,11 @@ const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 
                   {isExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
                 </span>
               : <span className="inline-block mr-2" style={{ width: 12 }} />}
-            <span className="flex-shrink-0 mr-2" style={subbody2Style}>{code}</span>
-            <span className="truncate max-w-[280px]" style={rowStyle}>{node.AccountName ?? node.accountName ?? ""}</span>
+<span className="flex-shrink-0 mr-2 font-mono text-gray-400" style={subbody2Style}>{code}</span>
+            <span className="truncate max-w-[280px]" style={rowStyle}>{(() => {
+              const n = String(node.AccountName ?? node.accountName ?? "");
+              return n ? n.charAt(0).toUpperCase() + n.slice(1).toLowerCase() : "";
+            })()}</span>
 {onToggleDrillAccount && !compareMode && (() => {
               const isDrilled = drillExpanded.has(code);
               return (
@@ -1037,7 +1039,7 @@ function AccountsTab({ data }) {
 
 
 /* ── Pivot Tab ────────────────────────────────────────────── */
-function PivotTab({ data, dimensions, groupAccounts = [], selGroups = new Set(), selDims = new Set(), compareMode, statementType = "pl", externalViewMode = null, sources = [], structures = [], companies = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterTopParent = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), drillPrevRows = [], onToggleDrillAccount = () => {} }) {
+function PivotTab({ data, dimensions, groupAccounts = [], selGroups = new Set(), selDims = new Set(), compareMode, statementType = "pl", externalViewMode = null, sources = [], structures = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterTopParent = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), drillPrevRows = [], onToggleDrillAccount = () => {} }) {
 
 // Shared: check if a literal-node's `dims` matches a dimension column key.
 // Mapping instances store dims as "Group:Name" but columns use codes ("1", etc.)
@@ -1377,9 +1379,13 @@ const [cmp2Source, setCmp2Source]       = useState(masterSource);
   const [cmp2Year, setCmp2Year]           = useState(masterYear);
   const [cmp2Month, setCmp2Month]         = useState(masterMonth);
   const [cmp2Structure, setCmp2Structure] = useState(masterStructure);
-  const [cmp2TopParent, setCmp2TopParent]     = useState(masterTopParent);
-  const [cmp2SelGroups, setCmp2SelGroups] = useState(new Set());
-  const [cmp2SelDims,   setCmp2SelDims]   = useState(new Set());
+// La perspectiva de compare SIEMPRE coincide con la del filtro general — no es
+  // elegible por separado. Alias derivado (reactivo) en vez de estado propio.
+  const cmp2TopParent = masterTopParent;
+// Grupos/dimensiones de compare SIEMPRE heredan del filtro general — no se
+  // eligen aparte. Alias derivados (memoizados para conservar identidad estable).
+  const cmp2SelGroups = useMemo(() => new Set(selGroups), [selGroups]);
+  const cmp2SelDims   = useMemo(() => new Set(selDims),   [selDims]);
 const [cmp3Source]    = useState(masterSource);
   const [cmp3Year]      = useState(masterYear);
   const [cmp3Month]     = useState(masterMonth);
@@ -1506,26 +1512,10 @@ useEffect(() => {
     fetchCmpData(String(prevYr), String(prevMo), cmp3Source, cmp3Structure, cmp3TopParent, (d) => setPrevPivot3(buildPivot(d)), () => {});
   }, [compareMode, viewMode, cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3TopParent, fetchCmpData, buildPivot]);
 
-const cmp2DimGroups = useMemo(() => {
-    const seen = new Set();
-    cmp2Data.forEach(r => parseDimensions(r.Dimensions).forEach(([g]) => { if (g) seen.add(g); }));
-    return [...seen].sort().map(v => ({ value: v, label: v }));
-  }, [cmp2Data]);
-
-  const cmp2AllDims = useMemo(() => {
-    if (cmp2SelGroups.size === 0) return [];
-    const seen = new Set();
-    cmp2Data.forEach(r => parseDimensions(r.Dimensions).forEach(([g, code]) => { if (cmp2SelGroups.has(g)) seen.add(code); }));
-    return [...seen].sort().map(v => ({ value: v, label: v }));
-  }, [cmp2Data, cmp2SelGroups]);
-
   const cmpSources    = [...new Set(sources.map(s => typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
   const cmpYears      = YEARS.map(y => ({ value: String(y), label: String(y) }));
   const cmpMonths     = MONTHS.map(m => ({ value: String(m.value), label: T(`month_${m.value}`) }));
   const cmpStructures = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
-const cmpHoldings  = companies.length > 0 && typeof companies[0] === "object"
-    ? companies.map(c => ({ value: c.companyShortName ?? c.CompanyShortName ?? String(c), label: c.CompanyLegalName ?? c.companyLegalName ?? c.companyShortName ?? c.CompanyShortName ?? String(c) })).filter(o => o.value)
-    : [...new Set(companies.map(c => String(c)).filter(Boolean))].map(v => ({ value: v, label: v }));
 const ACOL = 480, TCOL = 150;
   const CMP_COL = 140, DELTA_COL = 110, PCT_COL = 90;
   const MIN_DCOL = 140;
@@ -1633,30 +1623,6 @@ const displayedTree = useMemo(() => {
     });
 
 const tree = buildTree([...groupMap.values()]);
-    if (statementType === "pl") {
-      const findNode = (nodes, code) => {
-        for (const n of nodes) {
-          if (n.AccountCode === code) return n;
-          if (n.children) { const f = findNode(n.children, code); if (f) return f; }
-        }
-        return null;
-      };
-      const dpl = findNode(tree, "D.PL");
-      console.log("[DPL tree]", dpl ? { code: dpl.AccountCode, childCodes: (dpl.children || []).map(c => c.AccountCode) } : "not found");
-      console.log("[groupMap has]", { "D.PL": groupMap.has("D.PL"), "C.PL": groupMap.has("C.PL"), "D.01": groupMap.has("D.01"), "D.02": groupMap.has("D.02"), "D.01 parent": groupMap.get("D.01")?.SumAccountCode, "D.02 parent": groupMap.get("D.02")?.SumAccountCode });
-const leaves = ["692000","771000","772000","666300","900000","940000"];
-      const perLeaf = {};
-      leaves.forEach(c => {
-        const rows = data.filter(r => (r.AccountCode ?? r.accountCode) === c);
-        perLeaf[c] = { count: rows.length, sample: rows.slice(0,3).map(r => ({ co: r.CompanyShortName, amt: r.AmountYTD, dim: r.DimensionCode, role: r.CompanyRole })) };
-      });
-      console.log("[DPL leaves in data]", perLeaf);
-      const cplRows = data.filter(r => (r.AccountCode ?? r.accountCode) === "C.PL");
-      const dplRows = data.filter(r => (r.AccountCode ?? r.accountCode) === "D.PL");
-      console.log("[C.PL rows]", cplRows.length, cplRows.slice(0,3).map(r => ({ co: r.CompanyShortName, amt: r.AmountYTD, role: r.CompanyRole })));
-      console.log("[D.PL rows]", dplRows.length, dplRows.slice(0,3).map(r => ({ co: r.CompanyShortName, amt: r.AmountYTD, role: r.CompanyRole })));
-      
-    }
     return tree;
  }, [data, groupAccounts, statementType]);
 const treeIndex = useMemo(() => {
@@ -1848,16 +1814,7 @@ const { parentOf } = useMemo(() => {
       applyOverride(code, info.parent_code);
     });
   }
-  console.log("[parentOf check]", { hasPlMapping: !!plMapping?.rows, plMappingSize: plMapping?.rows?.size, hasBsMapping: !!bsMapping?.rows });
-  console.log("[parentOf I.PL children]", childrenByParent.get("I.PL"));
-  console.log("[parentOf F.PL children]", childrenByParent.get("F.PL"));
-  console.log("[parentOf F.PL parent]", parentOf.get("F.PL"));
-  console.log("[parentOf 999 children]", childrenByParent.get("999"));
-  console.log("[parentOf 999 parent]", parentOf.get("999"));
-  console.log("[parentOf A.PL parent]", parentOf.get("A.PL"));
-  console.log("[parentOf B.PL parent]", parentOf.get("B.PL"));
-  console.log("[parentOf D.PL parent]", parentOf.get("D.PL"));
-  return { childrenByParent, parentOf };
+return { childrenByParent, parentOf };
 }, [groupAccounts, data, plMapping, bsMapping]);
 
 // Precompute rolled-up pivots: walk the source pivot ONCE; for each posting,
@@ -1897,11 +1854,7 @@ const rolledPrevPivot2 = useMemo(() => rollUpPivot(prevPivot2),    [prevPivot2, 
 const getValWithDescendants = useCallback((code, dk) => {
   const ytd = (rolledPivot.get(code)?.get(dk) ?? 0) * sign;
   const prevYtd = (rolledPrevPivot.get(code)?.get(dk) ?? 0) * sign;
-  const final = viewMode === "ytd" ? ytd : ytd - prevYtd;
-  if ((code === "D.PL" || code === "C.PL" || code === "B.PL" || code === "B.04") && dk === "DK") {
-    console.log("[gvwd DK]", code, "viewMode:", viewMode, "ytd:", ytd, "prev:", prevYtd, "final:", final);
-  }
-  return final;
+return viewMode === "ytd" ? ytd : ytd - prevYtd;
 }, [rolledPivot, rolledPrevPivot, viewMode, sign]);
 
 const getCmpValWithDescendants = useCallback((code, dk) => {
@@ -2255,12 +2208,13 @@ const acc = sup.getCell(1);
         const hRow = ws.getRow(curRow); hRow.height = 24;
 const headers = [T("file_col_account"), ...visibleDims.map(d => d.name ?? d.code ?? "—")];
         if (showTotals) headers.push(T("file_col_total"));
-        headers.forEach((h, i) => {
+headers.forEach((h, i) => {
           const c = hRow.getCell(i + 1);
           c.value = h;
           c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
           c.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
-          c.alignment = { vertical: "middle", horizontal: i === 0 ? "left" : "right", indent: i === 0 ? 1 : 0 };
+c.alignment = { vertical: "middle", horizontal: "center" };
+          if (i >= 1) c.border = { left: { style: "medium", color: { argb: C.white } } };
         });
         curRow++;
       }
@@ -2278,9 +2232,14 @@ const headers = [T("file_col_account"), ...visibleDims.map(d => d.name ?? d.code
             color: { argb: opts2.colorOverride ?? (val < 0 ? C.red : "FF1A2F8A") },
           };
         }
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fillArgb } };
+cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fillArgb } };
         cell.alignment = { vertical: "middle", horizontal: "center" };
-        cell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+        // Borde izquierdo en cada columna de datos (dimensión / total) para
+        // dividirlas verticalmente. La columna 1 (Account) no lleva.
+        cell.border = {
+          bottom: { style: "thin", color: { argb: "FFE5E7EB" } },
+          ...(colN >= 2 ? { left: { style: "medium", color: { argb: toArgbHex(colors.primary) } } } : {}),
+        };
       };
 
 const leafVal = (n, dimKey) => {
@@ -2357,9 +2316,12 @@ const renderRow = (node, depth, mode = "literal", excludeCodes = null) => {
           row.outlineLevel = cappedDepth;
           if (cappedDepth > 0) row.hidden = true;
         }
-        curRow++;
+curRow++;
 
-if (node.children && node.children.length > 0) {
+        // drilldown OFF = informe resumido: solo el nivel superior (depth 0),
+        // sin recorrer los hijos. Con drilldown ON se emiten todos los niveles
+        // (con outline/acordeón).
+        if (drilldown && node.children && node.children.length > 0) {
           node.children.forEach(c => {
             // Skip children that will render at the top level as their own row
             // (mirrors on-screen DimensionRow's excludeCodes behavior). Values
@@ -2370,7 +2332,6 @@ if (node.children && node.children.length > 0) {
           });
         }
       };
-
 const treeAsLit = (n, depth, visited = new WeakSet()) => {
         if (!n || depth > 50 || visited.has(n)) {
           return {
@@ -2388,23 +2349,32 @@ const treeAsLit = (n, depth, visited = new WeakSet()) => {
         };
       };
 
-      const renderSectionBar = (label, colorArgb) => {
+const renderSectionBar = (label, colorArgb) => {
         ws.mergeCells(curRow, 1, curRow, totalCols);
         const cell = ws.getCell(curRow, 1);
         cell.value = String(label).toUpperCase();
         cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: colorArgb } };
         cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: C.white } };
         cell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+        // Marco medium en primario arriba y abajo para delimitar cada sección.
+        // En celdas combinadas hay que fijar el borde en TODAS las columnas del
+        // rango para que el borde exterior se pinte.
+        const secBorder = toArgbHex(colors.primary);
+        for (let cc = 1; cc <= totalCols; cc++) {
+          const bc = ws.getCell(curRow, cc);
+          bc.border = {
+            top:    { style: "medium", color: { argb: secBorder } },
+            bottom: { style: "medium", color: { argb: secBorder } },
+          };
+        }
         ws.getRow(curRow).height = 22;
         curRow++;
         dataIdx = 0;
-      };
+};
 
-console.log('[export-xlsx-path]', { useLiteral, hasLiteral: !!literal, literalLen: literal?.length, stType, drilldown, showBreakers });
       if (useLiteral && literal && literal.length > 0) {
         // Custom mapping literal mode — matches on-screen literal renderer
-        console.log('[export-xlsx-literal]', literal.map(s => ({ label: s.label, color: s.color, nodeCount: s.nodes.length })));
-// Palette matches in-app dividerMap
+        // Palette matches in-app dividerMap
         const inAppPaletteLit = [
           toArgbHex(colors.primary),
           toArgbHex(colors.secondary),
@@ -2412,16 +2382,17 @@ console.log('[export-xlsx-path]', { useLiteral, hasLiteral: !!literal, literalLe
         ];
         let litSectionIdx = 0;
         literal.forEach(section => {
-          if (section.label && showBreakers) {
-            const barColor = inAppPaletteLit[litSectionIdx % inAppPaletteLit.length]
-              ?? toArgbHex(section.color);
+if (section.label && showBreakers) {
+            // Usa el color REAL del breaker (igual que la app en modo override);
+            // la paleta cíclica queda solo como último recurso.
+            const barColor = toArgbHex(section.color)
+              || inAppPaletteLit[litSectionIdx % inAppPaletteLit.length];
             renderSectionBar(section.label, barColor);
             litSectionIdx++;
           }
           section.nodes.forEach(n => renderRow(n, 0, "literal"));
         });
-      } else {
-        console.log('[export-xlsx-nolit]', { mappingForStExists: !!(stType === "pl" ? plMapping : bsMapping) });
+} else {
         // No-literal mode (Summary or Detailed view): rebuild a tree from groupAccounts
         // + the statement's mapping. Same logic as the on-screen Summary/Detailed toggle.
         const mappingForSt = stType === "pl" ? plMapping : bsMapping;
@@ -2524,7 +2495,9 @@ if (mappingForSt?.rows && mappingForSt?.sections) {
               isSum: !!info.isSum,
               children: [],
             };
-            const depth = Math.max(0, (info.level ?? 0) - minLevel);
+const depth = Math.max(0, (info.level ?? 0) - minLevel);
+            // drilldown OFF = informe resumido: solo el nivel superior.
+            if (!drilldown && depth > 0) return;
             renderRow(singleNode, depth, "tree");
           });
         } else {
@@ -3338,11 +3311,8 @@ table td, table th { vertical-align: middle; }
 {cmpSources.length > 0    && <HeaderFilterPill label={T("filter_source")}    value={cmp2Source}    onChange={setCmp2Source}    options={cmpSources} />}
             {cmpYears.length > 0      && <HeaderFilterPill label={T("filter_year")}      value={cmp2Year}      onChange={setCmp2Year}      options={cmpYears} />}
             {cmpMonths.length > 0     && <HeaderFilterPill label={T("filter_month")}     value={cmp2Month}     onChange={setCmp2Month}     options={cmpMonths} />}
-            {cmpStructures.length > 0 && <HeaderFilterPill label={T("filter_structure")} value={cmp2Structure} onChange={setCmp2Structure} options={cmpStructures} />}
-            {cmpHoldings.length > 0  && <HeaderFilterPill label={T("filter_company")}   value={cmp2TopParent}   onChange={setCmp2TopParent}   options={cmpHoldings} />}
-            {cmp2DimGroups.length > 0 && <MultiFilterPill label={T("filter_dim_group")} values={cmp2SelGroups.size === 0 ? null : [...cmp2SelGroups]} onChange={next => { setCmp2SelGroups(next ? new Set(next) : new Set()); setCmp2SelDims(new Set()); }} options={cmp2DimGroups} />}
-{cmp2SelGroups.size > 0 && cmp2AllDims.length > 0 && <MultiFilterPill label={T("filter_dimension")} values={cmp2SelDims.size === 0 ? null : [...cmp2SelDims]} onChange={next => setCmp2SelDims(next ? new Set(next) : new Set())} options={cmp2AllDims} />}
-          </div>
+{cmpStructures.length > 0 && <HeaderFilterPill label={T("filter_structure")} value={cmp2Structure} onChange={setCmp2Structure} options={cmpStructures} />}
+</div>
         </div>
       )}
       </div>
@@ -4045,7 +4015,8 @@ bsLiteral:   buildSavedMappingLiteral(m.bs_tree),
   // Auto-apply the user's saved standard mapping once per page load. Mirrors
   // the same flow used by AccountsDashboard / KpiIndividualesPage so jumping
   // between tabs doesn't lose your default view.
-  const autoMappingAppliedRef = useRef(false);
+const autoMappingAppliedRef = useRef(false);
+  const initialMappingRef = useRef(null); // estructura custom aplicada al abrir; a ella se vuelve al limpiar
   useEffect(() => {
     if (autoMappingAppliedRef.current) return;
     autoMappingAppliedRef.current = true;
@@ -4068,8 +4039,9 @@ bsLiteral:   buildSavedMappingLiteral(m.bs_tree),
         const allMappings = await listMappings({ companyId: cid, includeHidden: true });
         const match = (allMappings || []).find(m => String(m.mapping_id) === String(mid));
         if (!match) return;
-        // Fetch the full mapping (with pl_tree / bs_tree) — list endpoint omits them
+// Fetch the full mapping (with pl_tree / bs_tree) — list endpoint omits them
         const full = await getMapping(match.mapping_id);
+        initialMappingRef.current = full ?? match;
         handleApplyMapping(full ?? match, "structure");
       } catch (err) { console.error("[auto-mapping] error:", err); }
     })();
@@ -4682,12 +4654,11 @@ const dimGroups = useMemo(() => {
   }, [rawData]);
 
 const allDimsForGroups = useMemo(() => {
-    if (selGroups.size === 0) return [];
+    // Opciones = TODAS las dimensiones siempre. Así, al desactivar un grupo,
+    // sus dimensiones quedan visibles pero desmarcadas (no desaparecen).
     const seen = new Set();
     rawData.forEach(r => {
-      parseDimensions(r.Dimensions).forEach(([grp, code]) => {
-        if (selGroups.has(grp)) seen.add(code);
-      });
+      parseDimensions(r.Dimensions).forEach(([, code]) => { if (code) seen.add(code); });
     });
     const dimNameLookup = new Map();
     (dimensions || []).forEach(d => {
@@ -4696,7 +4667,42 @@ const allDimsForGroups = useMemo(() => {
       if (code) dimNameLookup.set(String(code), name);
     });
     return [...seen].sort().map(code => ({ value: code, label: dimNameLookup.get(code) ?? code }));
-  }, [rawData, selGroups, dimensions]);
+  }, [rawData, dimensions]);
+
+  // Mapa grupo → set de códigos de dimensión (para acoplar ambos filtros).
+  const groupToDims = useMemo(() => {
+    const m = new Map();
+    rawData.forEach(r => {
+      parseDimensions(r.Dimensions).forEach(([grp, code]) => {
+        if (!grp || !code) return;
+        if (!m.has(grp)) m.set(grp, new Set());
+        m.get(grp).add(code);
+      });
+    });
+    return m;
+  }, [rawData]);
+
+  // Total de dimensiones (para saber cuándo "todas" = selDims vacío).
+  const totalDimCount = useMemo(() => {
+    const all = new Set();
+    groupToDims.forEach(s => s.forEach(c => all.add(c)));
+    return all.size;
+  }, [groupToDims]);
+
+  // Estado MARCADO del pill de grupo, DERIVADO de las dimensiones activas: un
+  // grupo aparece activo solo si conserva ≥1 dimensión activa (selDims vacío =
+  // todas). null = todos activos. Así, al apagar todas las dims de un grupo,
+  // el grupo se muestra desactivado.
+  const activeGroupsDisplay = useMemo(() => {
+    if (dimGroups.length === 0) return null;
+    const dimActive = (code) => selDims.size === 0 || selDims.has(code);
+    const active = dimGroups.filter(g => {
+      const dims = groupToDims.get(g);
+      if (!dims || dims.size === 0) return true;
+      return [...dims].some(dimActive);
+    });
+    return active.length === dimGroups.length ? null : active;
+  }, [dimGroups, groupToDims, selDims]);
 
 const dimDashProgress = useMemo(() => {
     let pct = 0;
@@ -4764,12 +4770,35 @@ kicker={viewsMode ? T("dim_kicker_views_consolidated", "Consolidated · Views") 
             ? [{ label: T("filter_perspective", "Perspective"), value: topParent, onChange: setTopParent, options: companyOpts }]
             : []),
 ...(dimGroups.length > 0
-            ? [{ label: T("filter_dim_group"), multiselect: true, values: selGroups.size === 0 ? null : [...selGroups], onChange: (next) => {
-                setSelGroups(next ? new Set(next) : new Set());
-                setSelDims(new Set());
+            ? [{ label: T("filter_dim_group"), multiselect: true, values: activeGroupsDisplay, onChange: (next) => {
+                // Togglear un grupo enciende/apaga sus dimensiones. Fuente de
+                // verdad = selDims; selGroups solo espeja el scope.
+                const chosen = next && next.length ? new Set(next) : new Set(dimGroups); // null/vacío = todos
+                const allChosen = chosen.size === dimGroups.length;
+                setSelGroups(allChosen ? new Set() : new Set(chosen));
+                if (allChosen) { setSelDims(new Set()); return; }
+                const wasActive = (code) => selDims.size === 0 || selDims.has(code);
+                const groupWasActive = (g) => {
+                  const dims = groupToDims.get(g) || new Set();
+                  if (dims.size === 0) return true;
+                  return [...dims].some(wasActive);
+                };
+                const nextDims = new Set();
+                dimGroups.forEach(g => {
+                  if (!chosen.has(g)) return;            // grupo off → sus dims fuera
+                  const dims = groupToDims.get(g) || new Set();
+                  if (!groupWasActive(g)) {
+                    // transición off→on: enciende TODAS sus dims
+                    dims.forEach(c => nextDims.add(c));
+                  } else {
+                    // seguía on: conserva las deselecciones por-dimensión previas
+                    dims.forEach(c => { if (wasActive(c)) nextDims.add(c); });
+                  }
+                });
+                setSelDims(nextDims.size === totalDimCount ? new Set() : nextDims);
               }, options: dimGroups.map(g => ({ value: g, label: g })) }]
             : []),
-...(selGroups.size > 0 && allDimsForGroups.length > 0
+...(allDimsForGroups.length > 0
             ? [{ label: T("filter_dimension"), multiselect: true, values: selDims.size === 0 ? null : [...selDims], onChange: (next) => {
                 setSelDims(next ? new Set(next) : new Set());
               }, options: allDimsForGroups }]
@@ -4828,7 +4857,11 @@ title={T("edit_mapping_title")}
             {T("btn_edit")}
           </button>
           <button
-            onClick={() => setActiveMapping(null)}
+onClick={() => {
+              // Volver a la estructura custom inicial (no al standard PGCM/IFRS…).
+              if (initialMappingRef.current) handleApplyMapping(initialMappingRef.current, "structure");
+              else setActiveMapping(null);
+            }}
             className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
 title={T("clear_mapping_title")}
           >

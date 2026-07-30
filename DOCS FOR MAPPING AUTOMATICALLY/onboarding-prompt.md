@@ -1,4 +1,4 @@
-## Konsolidator Client Onboarding — Standard Generation Prompt (v4)
+## Konsolidator Client Onboarding — Standard Generation Prompt (v6)
 
 Paste this ENTIRE prompt when generating a client custom standard. Attach the client's export JSON as a file. Do not modify the prompt.
 
@@ -24,7 +24,7 @@ The standard drives Contributive, ConsolidationSheet, and every consolidated vie
    - Uses the **client's actual `accountCode`** byte-for-byte (never invented codes).
    - Assigns each row a **statement** (`PL`, `BS`, `CF`) derived from the input's `AccountType` field.
    - Assigns each row a **section_code** (or `null` for cross-section grand totals).
-   - Assigns **cc_tag** to P/L leaves for KPI resolution.
+   - Assigns **cc_tag** to P/L leaves (from the `CC_NN` catalog) AND to B/S leaves (from the `BS_NN` catalog) for KPI resolution.
    - Preserves the **parent hierarchy** exactly as in the input's `SumAccountCode`.
    - Assigns **sort_order** so rows read narratively (Revenue at top of PL, Net Result at bottom of PL, grand totals at the head of the block they open, etc.).
 
@@ -92,9 +92,31 @@ Read each account NAME in its actual language. Do not pattern-match on codes. Cl
 
 If the name is truly ambiguous (`999`, `TEST`, `varios`) or a placeholder, inherit section from parent and set `cc_tag: null` — don't guess.
 
-### 8. cc_tag on P/L leaves
+### 8. cc_tag on P/L and B/S leaves
 
-Every P/L leaf gets a `cc_tag` from the catalog when the name is semantically clear. Aim for ≥70% coverage of P/L leaves. Sum accounts do not get cc_tags. B/S and CF accounts do not get cc_tags.
+Every **P/L leaf** gets a `cc_tag` from the **`CC_NN` catalog** when the name is semantically clear. Aim for ≥70% coverage of P/L leaves.
+
+Every **B/S leaf** gets a `cc_tag` from the **`BS_NN` catalog** when the name is semantically clear. Aim for ≥70% coverage of B/S leaves. The `BS_NN` tag must be consistent with the row's `section_code` (e.g. a `BS_07-Cash and equivalents` leaf lives in section `CA`; a `BS_14-Share capital` leaf lives in section `EQ`). See the "BS classification — semantic guide" and the `BS_NN` catalog for the section→tag mapping.
+
+**Sum accounts do not get cc_tags** (neither P/L nor B/S) — aggregates are computed by the KPI engine from the leaves via `ref`, so tagging a sum account would double-count.
+
+**CF accounts do not get cc_tags** — no KPI resolves against cash-flow tags. CF rows get `cc_tag: null`.
+
+### 8a. Balance-sheet rollforward leaves — tag the WHOLE branch with the same tag
+
+Many clients track fixed assets (and equity, and provisions) as a **rollforward**: one asset is split into many movement leaves — "Coste al inicio del ejercicio", "Adquisiciones", "Enajenaciones", "Ajustes por tipo de cambio", "Depreciación del ejercicio", "Revalorización", "Bajas", "Altas"… These names are generic and say nothing on their own. **Do not leave them untagged.**
+
+The rule: every movement leaf inherits the `BS_NN` of the asset/branch it belongs to. If a branch is "Propiedad, planta y equipo" (`BS_02`), then ALL its leaves — cost, accumulated depreciation, revaluation, additions, disposals, FX — get `BS_02`. The KPI engine sums them, so cost minus depreciation plus revaluation nets to the correct carrying amount. Tagging only "Coste al inicio" and skipping "Depreciación" would overstate the asset; tagging none leaves the KPI at zero.
+
+Concretely: walk up `parent_code` to the nearest named branch anchor (e.g. `B.2 Propiedad planta y equipo`, `B.1 Activos Intangibles`, `E.2 Préstamos`), decide that anchor's `BS_NN` once, and stamp it on every non-sum descendant. Depreciation/impairment contra-movements stay in the SAME tag as their asset (they reduce it — that's correct).
+
+### 8b. Non-controlling interests override — "minoritarios" always wins
+
+Any equity leaf whose name contains **"minoritari"**, **"no controlado"**, or **"non-controlling"** gets `BS_17-Non controlling interests` — **even if it sits under a reserves branch**. Equity rollforwards routinely nest minority-interest movements (e.g. "OCI Intereses minoritarios - ajustes del tipo de cambio") inside reserve or FX sub-trees. Those belong to NCI, not to `BS_15-Reserves`. Getting this wrong inflates owners' equity and understates NCI, breaking ROE and the equity split. This name rule overrides the branch rule in 8a for equity only.
+
+### 8c. Sum-account code suffixes (`s`)
+
+Some clients emit intermediate sum accounts with codes ending in a literal `s` (e.g. `430000s`, `200200s`, `114100s`) alongside dotted anchors (`D.1.1`, `B.2`). Treat these exactly like any other sum: `is_sum: true`, `cc_tag: null`. Never tag an `…s`-suffixed code; its children (the real movement leaves) carry the tags. The `s` is not a data code — it's a roll-up node.
 
 ### 9. Sort order = narrative reading order, with disjoint ranges per statement
 
@@ -132,6 +154,8 @@ Why: consolidated views (Contributive, ConsolidationSheet) render PL + BS + CF i
 7. `2500000–2599999` — NCL rows
 8. `2600000–2699999` — CL rows
 9. `2700000+` — any remaining BS grand totals
+
+Note: grand-total `account_code`s are often **alphabetic**, not numeric (e.g. `C` = Total de activos, `H` = Total de pasivo y capital, `G` = Total de pasivo). That's fine — copy the code verbatim from the input, set `is_sum: true`, `section_code: null`, `cc_tag: null`, and place it at the sort_order slot above. The alphabetic code is not an error.
 
 **CF sections and their sort_order ranges:**
 
@@ -196,14 +220,52 @@ Sub-sections beyond these are allowed when the client's chart has intermediate s
 | CC_09-Impairment Gain (Loss) on Fixed Assets | Impairments, write-downs |
 | CC_10-Depreciation and Amotization | Depreciation charge, amortization charge (P&L, not BS contra) |
 | CC_11-Other Operating Expenses | Utilities, insurance, transport, other opex catch-all |
+| CC_12-Share of profit (loss) from associates | Equity-method share of associates' results (P&L) |
 | CC_13-Interest Income | Interest income earned |
 | CC_14-Other financial income | Dividends received, gains on financial assets |
 | CC_15-Interest expense | Interest paid on debt |
 | CC_16-Other financial expense | Losses on financial assets, financial fees |
 | CC_17-Foreign Exchange | FX gains and losses |
 | CC_18-Income Tax | Corporate income tax expense |
+| CC_19-Profit (loss) from discontinued operations | Results of operations held for sale / discontinued |
 
-B/S and CF accounts get `cc_tag: null`.
+### B/S tag catalog — exact strings
+
+Assign these to **B/S leaves** (`is_sum: false`). Each tag maps to exactly one `section_code` (shown in the "sec" column). The tag you assign must be consistent with the row's section.
+
+| cc_tag | sec | What accounts belong here |
+|--------|-----|---------------------------|
+| BS_01-Intangible assets | NCA | Patents, licenses, software, concessions (not goodwill) |
+| BS_02-PP&E | NCA | Land, buildings, machinery, equipment + their accumulated depreciation contras |
+| BS_03-Goodwill | NCA | Goodwill / Fondo de comercio de consolidación |
+| BS_04-Investments in associates | NCA | Long-term equity-method investments in associates |
+| BS_05-Investments | NCA | Other long-term financial investments (non-associate) |
+| BS_06-Deferred tax assets | NCA | Deferred tax assets (asset side) |
+| BS_07-Cash and equivalents | CA | Cash, bank, short-term deposits, cash equivalents |
+| BS_08-Accounts receivable | CA | Trade receivables (Clientes, Deudores, Trade debtors) |
+| BS_09-Inventories | CA | Stock, raw materials, WIP, finished goods |
+| BS_10-Short term investments and financial receivables | CA | ST financial investments and financial receivables |
+| BS_11-Available for sale investments | CA | AFS financial assets |
+| BS_12-Short term investments in associates | CA | ST investments in associates |
+| BS_13-Other current assets | CA | Prepayments, other current assets, sundry debtors |
+| BS_14-Share capital | EQ | Capital, Capital social, Kapital, Aktiekapital |
+| BS_15-Reserves | EQ | Reserves, legal reserve, share premium, FX translation reserve |
+| BS_15.1-Other equity instruments | EQ | Other equity instruments (hybrid/compound, treasury-linked) |
+| BS_16-Retained earnings | EQ | Retained earnings, prior-year results, current-year result |
+| BS_17-Non controlling interests | EQ | Minority / non-controlling interests |
+| BS_18-Provisions | NCL | Long-term provisions |
+| BS_19-Long term debt | NCL | Long-term bank debt, long-term leases, bonds |
+| BS_20-Long term debt with associates | NCL | Long-term intercompany / associate debt |
+| BS_21-Deferred tax liabilities | NCL | Deferred tax liabilities |
+| BS_22-Other non current liabilities | NCL | Other long-term obligations |
+| BS_23-Accounts payable | CL | Trade payables (Proveedores, Kreditorer) |
+| BS_24-Short term debt | CL | Short-term bank debt, current portion of long-term debt |
+| BS_25-Short term debt with associates | CL | Short-term intercompany / associate debt |
+| BS_26-Short term provisions | CL | Short-term provisions |
+| BS_27-income tax liabilities | CL | Income tax payable |
+| BS_28-Other current liabilities | CL | Tax payables, payroll payables, other current obligations |
+
+CF accounts get `cc_tag: null`.
 
 ---
 
@@ -277,6 +339,8 @@ Owner claims:
 
 Rule of thumb: if the name contains {Reserva, Capital, Prima de emisión, Resultado del ejercicio, Utilidad, Ajustes por tipo de cambio, Diferencias de conversión, Overført, Kapital} → EQ. No exceptions.
 
+Tags: `BS_14-Share capital` (capital), `BS_15-Reserves` (reserves/premium/FX-reserve), `BS_15.1-Other equity instruments`, `BS_16-Retained earnings` (retained + current/prior-year result), `BS_17-Non controlling interests` (minorities).
+
 ### NCA (Non-Current Assets)
 
 Long-term owned things (useful life > 1 year):
@@ -288,6 +352,8 @@ Long-term owned things (useful life > 1 year):
 
 Depreciation/impairment contra-accounts DO belong here — they reduce gross NCA.
 
+Tags: `BS_01-Intangible assets`, `BS_02-PP&E` (tangibles + their accumulated depreciation contras), `BS_03-Goodwill`, `BS_04-Investments in associates`, `BS_05-Investments` (other LT financial), `BS_06-Deferred tax assets`.
+
 ### CA (Current Assets)
 
 Owned/receivable within 1 year:
@@ -296,12 +362,16 @@ Owned/receivable within 1 year:
 - Inventory
 - Short-term financial investments
 
+Tags: `BS_07-Cash and equivalents`, `BS_08-Accounts receivable`, `BS_09-Inventories`, `BS_10-Short term investments and financial receivables`, `BS_11-Available for sale investments`, `BS_12-Short term investments in associates`, `BS_13-Other current assets`.
+
 ### NCL (Non-Current Liabilities)
 
 Obligations > 1 year:
 - Long-term bank debt, long-term leases
 - Long-term provisions, deferred tax **liabilities**
 - Long-term intercompany debt
+
+Tags: `BS_18-Provisions` (LT), `BS_19-Long term debt`, `BS_20-Long term debt with associates`, `BS_21-Deferred tax liabilities`, `BS_22-Other non current liabilities`.
 
 ### CL (Current Liabilities)
 
@@ -311,11 +381,13 @@ Obligations < 1 year:
 - Tax payables, payroll payables
 - Short-term intercompany debt
 
+Tags: `BS_23-Accounts payable`, `BS_24-Short term debt`, `BS_25-Short term debt with associates`, `BS_26-Short term provisions`, `BS_27-income tax liabilities`, `BS_28-Other current liabilities`.
+
 ### BS sanity check
 
 After classifying, count:
 
-- **> 60% in one section** → suspicious. Real balance sheets distribute roughly 30% NCA, 25% CA, 20% EQ, 15% NCL, 10% CL (with variance). Lopsidedness > 60% is acceptable ONLY if the client tracks fixed assets at per-asset granularity (rollforward: opening, additions, disposals, FX, depreciation…). State it explicitly in `meta.notes` with the sub-account count.
+- **Section-share sanity (rollforward-aware).** Real balance sheets distribute roughly 30% NCA, 25% CA, 20% EQ, 15% NCL, 10% CL *by carrying amount* — but NOT by row count when the client uses rollforwards. A client tracking fixed assets per-asset (cost/depreciation/revaluation/additions/disposals/FX movement leaves) will legitimately put 75–85%+ of BS ROWS in NCA. That is normal and expected — do NOT flag it. The real red flags are: (a) `CA` holding > 40% of BS rows (cash/receivables/inventory don't rollforward, so a fat CA means misclassification — likely NCA assets dumped into CA), or (b) `EQ` > 40% of rows without an equity rollforward. When NCA is the fat section AND its bulk is movement leaves, just state the rollforward in `meta.notes` with the sub-account count and move on.
 - **Zero in any of NCA/CA/EQ/NCL/CL** → almost certainly wrong. Virtually every real group has all five.
 
 If off, re-read especially for equity-side accounts (Reservas, Capital, Ajustes por tipo de cambio, Utilidad del ejercicio) that MUST go to EQ.
@@ -325,6 +397,12 @@ If off, re-read especially for equity-side accounts (Reservas, Capital, Ajustes 
 - **< 3 accounts tagged CC_01-Revenue** → suspicious for any real business. Revenue lines multiply because clients track by product line, region, entity.
 - **> 60% of P/L leaves untagged** → too conservative. Almost every P&L account has a semantic home.
 - **Zero in CC_02-Cost Of Sales** for a client whose entity samples show COGS-like activity → wrong.
+
+### BS tag sanity check
+
+- **> 30% of B/S leaves untagged** → too conservative. Most balance-sheet accounts map cleanly to a `BS_NN` tag. Re-read especially cash, receivables, payables, debt, capital and reserves.
+- **Zero in `BS_07-Cash and equivalents`** → almost certainly wrong; every real group holds cash.
+- **A `BS_NN` tag inconsistent with its `section_code`** (e.g. `BS_14-Share capital` on a row whose section is `CA`) → wrong. Tag and section must agree per the catalog's "sec" column.
 
 ---
 
@@ -435,6 +513,21 @@ Handle each:
       "sort_order": 1000010,
       "level": 3,
       "show_in_summary": true
+    },
+    {
+      "statement": "BS",
+      "account_code": "<COPY FROM INPUT accountCode>",
+      "account_name": "<COPY FROM INPUT accountName>",
+      "account_name_en": "<English translation if reasonable, else null>",
+      "account_name_da": null,
+      "account_name_es": "<Spanish original if input was Spanish, else translation or null>",
+      "parent_code": "<COPY FROM INPUT SumAccountCode, or null>",
+      "section_code": "CA",
+      "cc_tag": "BS_07-Cash and equivalents",
+      "is_sum": false,
+      "sort_order": 2000010,
+      "level": 3,
+      "show_in_summary": true
     }
   ],
   "kpi_overrides": []
@@ -462,15 +555,18 @@ Set `meta.based_on_standard` to the closest match by structure and coding shape.
 - Every `row.statement ∈ {PL, BS, CF}`
 - Every `row.section_code` exists in `sections[]` for the same statement (or is null)
 - Every non-null `row.parent_code` exists as another row's `account_code` in the same statement
-- Every non-null `row.cc_tag` is from the catalog above
+- Every non-null `row.cc_tag` is from the catalog above — `CC_NN` tags only on PL rows, `BS_NN` tags only on BS rows
+- Every non-null `BS_NN` cc_tag sits on a row whose `section_code` matches the tag's "sec" column in the catalog
+- Every `cc_tag` sits on a leaf (`is_sum: false`) — sum accounts must have `cc_tag: null`
 - No duplicate `(statement, account_code)` pairs
 - Every row from input `group_accounts` appears in output `rows[]`
 
 ## Soft validation — surfaces warnings
 
 - < 70% of P/L leaves have cc_tag
+- < 70% of B/S leaves have cc_tag
 - < 3 CC_01-Revenue accounts
-- > 60% of BS in one section without justification in `meta.notes`
+- `CA` or `EQ` holding > 40% of BS rows (misclassification signal — NCA is allowed to be large due to rollforwards, CA/EQ are not); or NCA > 85% without a rollforward note in `meta.notes`
 - Any sort_order outside disjoint ranges (PL 1M-2M, BS 2M-3M, CF 3M-4M)
 - Missing coverage vs input group_accounts
 
@@ -575,9 +671,11 @@ After you've drafted the standard, execute these checks mentally on the drafted 
 
 7. **Section anchor placement**: for each of the 15 sections, find the FIRST row (lowest sort_order) with that section_code. Its sort_order must be at the low end of the section's sub-range. That row IS the section anchor.
 
-8. **BS distribution**: count rows per BS section. Compute % of BS total in each. If any section > 60%, either it's justified (granular fixed-asset rollforward — say so in `meta.notes`) or you misclassified (recheck NCA vs CA, recheck EQ candidates hiding in NCA).
+8. **BS distribution (rollforward-aware)**: count rows per BS section, compute % of BS total. NCA being 75–85%+ is NORMAL with per-asset rollforwards — note it in `meta.notes` and don't flag. Flag only if `CA` > 40% or `EQ` > 40% of rows (those sections don't rollforward, so a large share means NCA assets were misclassified into them), or NCA > 85% with no rollforward note.
 
 9. **PL cc_tag coverage**: count P/L `is_sum: false` rows. Count those with non-null cc_tag. Ratio ≥ 70%. If below, you were too conservative — most PL accounts have a semantic home.
+
+9b. **BS cc_tag coverage + consistency**: count B/S `is_sum: false` rows. Count those with non-null cc_tag. Ratio ≥ 70%. Then, for every tagged BS leaf, verify its `BS_NN` tag's section (catalog "sec" column) equals the row's `section_code`. Any mismatch → fix the tag or the section so they agree.
 
 10. **Grand total descendants**: for each `section_code: null` sum, list its immediate children. Their section_codes should span multiple different values (that's WHY the sum is section=null). If all children share one section, you misassigned null — assign the shared section.
 
@@ -591,7 +689,8 @@ After you've drafted the standard, execute these checks mentally on the drafted 
 - [ ] `parent_code` copied from input's `SumAccountCode`
 - [ ] Every `section_code` referenced by rows exists in `sections[]`
 - [ ] Every parent_code exists as another row's account_code in the same statement
-- [ ] Every cc_tag is from the catalog
+- [ ] Every cc_tag is from the catalog (`CC_NN` on PL leaves, `BS_NN` on BS leaves, never on sum accounts, never on CF)
+- [ ] Every `BS_NN` tag's section matches the row's `section_code` (catalog "sec" column)
 - [ ] No duplicate `(statement, account_code)` pairs
 - [ ] PL rows in [1000000, 1999999]; BS rows in [2000000, 2999999]; CF rows in [3000000, 3999999]
 - [ ] Section anchor sums appear BEFORE their leaves within their section's sort_order range
@@ -602,6 +701,7 @@ After you've drafted the standard, execute these checks mentally on the drafted 
 - [ ] All accounts with "no circulante" / "non-current" / "largo plazo" / "long-term" in NCA, not CA
 - [ ] All accounts with "circulante" (without "no") / "current" / "corto plazo" in CA, not NCA
 - [ ] ≥ 70% of P/L leaves have cc_tag
+- [ ] ≥ 70% of B/S leaves have cc_tag
 - [ ] ≥ 3 CC_01-Revenue
 - [ ] Placeholder accounts (TEST, Nuevo, KON_x, TBD, corrupt names) have `cc_tag: null`
 - [ ] Intercompany variants carry SAME cc_tag as their non-IC counterpart

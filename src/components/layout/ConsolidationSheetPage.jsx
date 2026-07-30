@@ -17,9 +17,9 @@ const MONTHS = [
 
 const fmt = (n) => {
   if (n == null || n === "") return "—";
-  const rounded = Math.round(Number(n));
-  if (rounded === 0) return "—";
-  return new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 }).format(rounded);
+  const v = Number(n);
+  if (!Number.isFinite(v) || Math.abs(v) < 0.005) return "—";
+  return new Intl.NumberFormat("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
 };
 
 const TYPE_ORDER = { "P/L": 0, "DIS": 0, "B/S": 1, "C/F": 2, "CFS": 2 };
@@ -143,21 +143,21 @@ function useCountUp(target, duration = 900) {
 }
 
 const AnimatedValueCell = React.memo(function AnimatedValueCell({ value, className, style, onClick }) {
-  const animated = useCountUp(value ?? 0, 900);
-  const rounded = Math.round(value ?? 0);
+const animated = useCountUp(value ?? 0, 900);
+  const isZero = Math.abs(Number(value) || 0) < 0.005;
   return (
     <td className={className} style={style} onClick={onClick}>
-      {rounded === 0 ? <span className="text-gray-200">—</span> : fmt(animated)}
+      {isZero ? <span className="text-gray-200">—</span> : fmt(animated)}
     </td>
   );
 });
 
 const AnimatedDeltaCell = React.memo(function AnimatedDeltaCell({ value, className, style }) {
-  const animated = useCountUp(value ?? 0, 900);
-  const rounded = Math.round(value ?? 0);
+const animated = useCountUp(value ?? 0, 900);
+  const v = Number(value) || 0;
   return (
     <td className={className} style={style}>
-      {rounded === 0 ? "—" : `${rounded > 0 ? "+" : ""}${fmt(animated)}`}
+      {Math.abs(v) < 0.005 ? "—" : `${v > 0 ? "+" : ""}${fmt(animated)}`}
     </td>
   );
 });
@@ -185,7 +185,7 @@ const SheetRow = React.memo(function SheetRow({
   pivot, uploadedPivot, elimPivot,
   contributionCompanies, topParent,
   elimExpanded, elimHeaders, elimColsExiting = false,
-  compareMode, cmpPivot,
+compareMode, cmpPivot, cmpPivotPrev = null,
   body1Style, body2Style, subbody1Style, colors = { primary: "#1a2f8a" },
   cmpColsExiting = false, cmpColsVisible = false,
   rowIndex = 0,
@@ -196,8 +196,14 @@ const SheetRow = React.memo(function SheetRow({
 const hasChildren = node.children?.length > 0;
   const rowKey = node._instanceId ?? node.AccountCode;
   const isExpanded  = expanded.has(rowKey);
+  // A node reads as a "parent/total" (bold name) if it has children OR is a
+  // sum account (explicit _isSum flag, or the ".S" code convention).
+const isBoldName = hasChildren || !!node._isSum || /\.S$/i.test(String(node.AccountCode ?? ""));
 
-  const rowStyle = !hasChildren ? subbody1Style : (depth === 0 ? body1Style : body2Style);
+// Match Contributive: style by DEPTH, not by hasChildren — depth-0 rows use
+  // body1 (bold), deeper rows body2. This makes top-level accounts bold even
+  // when they have no children.
+  const rowStyle = depth === 0 ? body1Style : body2Style;
   const cellStyle = (v) => {
     const baseColor = v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : "#000000";
     return { ...rowStyle, color: baseColor };
@@ -211,9 +217,7 @@ const hasChildren = node.children?.length > 0;
     return rowMatchesDims(r, nodeDims);
   };
 
-const byCompany = pivot.get(node.AccountCode) || {};
-
-  // Collect all descendant leaf codes for rollup on sum nodes
+// Collect all descendant leaf codes for rollup on sum nodes
   const collectLeafCodes = (n) => {
     if (n.children && n.children.length > 0) {
       const out = [];
@@ -258,22 +262,43 @@ const nodeAccountType = node.AccountType ?? node.accountType ?? "";
     return currV - getContribFrom(pivotPrev, company);
   };
 
-  const contribSum = contributionCompanies.reduce((s, c) => s + getContrib(c), 0);
+const contribSum = contributionCompanies.reduce((s, c) => s + getContrib(c), 0);
   const elimTotal = consTotal - contribSum;
 
-  // ── Compare-period totals (mirrors current-period derivation) ──
-  const cmpByCompany = cmpPivot?.get(node.AccountCode) || {};
-
-  const cmpConsTotal = (cmpByCompany[topParent] ?? [])
-    .filter(r => r.CompanyRole === "Group")
-    .filter(r => !r.OriginCompanyShortName?.trim() && !r.CounterpartyShortName?.trim())
-    .reduce((s, r) => s + -getRowAmount(r), 0);
-
-  const cmpGetContrib = (company) => {
-    const role = company === topParent ? "Parent" : "Contribution";
-    return (cmpByCompany[company] ?? [])
-      .filter(r => r.CompanyRole === role)
+// ── Compare-period totals (mirrors current-period derivation) ──
+  // Same rollup as the current period (so SUM nodes aggregate children), and
+  // the same monthly-delta treatment: when not YTD, subtract the period before
+  // B (cmpPivotPrev) for P/L accounts.
+  const cmpConsFrom = (piv) => rollupCodes.reduce((acc, leafCode) => {
+    const bc = piv?.get(leafCode);
+    if (!bc) return acc;
+    return acc + (bc[topParent] ?? [])
+      .filter(r => r.CompanyRole === "Group")
+      .filter(r => !r.OriginCompanyShortName?.trim() && !r.CounterpartyShortName?.trim())
+      .filter(dimFilter)
       .reduce((s, r) => s + -getRowAmount(r), 0);
+  }, 0);
+
+  const cmpApplyDelta = !ytdOnly && cmpPivotPrev && (nodeAccountType === "P/L" || nodeAccountType === "DIS");
+
+  const cmpConsCurr = cmpConsFrom(cmpPivot);
+  const cmpConsTotal = cmpApplyDelta ? cmpConsCurr - cmpConsFrom(cmpPivotPrev) : cmpConsCurr;
+
+  const cmpGetContribFrom = (piv, company) => {
+    const role = company === topParent ? "Parent" : "Contribution";
+    return rollupCodes.reduce((acc, leafCode) => {
+      const bc = piv?.get(leafCode);
+      if (!bc) return acc;
+      return acc + (bc[company] ?? [])
+        .filter(r => r.CompanyRole === role)
+        .filter(dimFilter)
+        .reduce((s, r) => s + -getRowAmount(r), 0);
+    }, 0);
+  };
+  const cmpGetContrib = (company) => {
+    const currV = cmpGetContribFrom(cmpPivot, company);
+    if (!cmpApplyDelta) return currV;
+    return currV - cmpGetContribFrom(cmpPivotPrev, company);
   };
 
   const cmpContribSum = contributionCompanies.reduce((s, c) => s + cmpGetContrib(c), 0);
@@ -282,11 +307,13 @@ const nodeAccountType = node.AccountType ?? node.accountType ?? "";
 // Render two cells (compare value + delta) for any given pair (current, compare)
 const renderCompareCells = (current, compare, key) => {
     const delta = current - compare;
-    const pct = compare !== 0 ? (delta / Math.abs(compare)) * 100 : null;
+    // Guard against absurd percentages when the compare base is a rounding
+    // residual (e.g. 0.0001): treat sub-unit magnitudes as zero for the % only.
+    const pct = Math.abs(compare) >= 1 ? (delta / Math.abs(compare)) * 100 : null;
     const baseColor = compare === 0 ? "#D1D5DB" : compare < 0 ? "#EF4444" : "#000000";
     const deltaColor = delta === 0 ? "#D1D5DB" : delta < 0 ? "#EF4444" : "#10B981";
     const pctColor = pct === null ? "#D1D5DB" : pct > 0 ? "#059669" : pct < 0 ? "#EF4444" : "#D1D5DB";
-const anim = (delay) => `${cmpColsExiting ? "cmpColOut" : "cmpColIn"} 320ms cubic-bezier(0.34,1.56,0.64,1) ${delay}ms both`;
+const anim = (delay) => (rowIndex >= 30 && !cmpColsExiting) ? undefined : `${cmpColsExiting ? "cmpColOut" : "cmpColIn"} 320ms cubic-bezier(0.34,1.56,0.64,1) ${delay}ms both`;
     return [
       <AnimatedValueCell key={`${key}-cmp`} value={compare}
         className="px-3 py-2.5 text-center whitespace-nowrap"
@@ -304,10 +331,10 @@ const anim = (delay) => `${cmpColsExiting ? "cmpColOut" : "cmpColIn"} 320ms cubi
   // For depth>0 rows (expanded children), use an "accordion" effect on each <td>
   // because scaleY on <tr> doesn't render correctly in most browsers.
   const isChildRow = depth > 0;
-  const rowAnimation = isChildRow
-    ? undefined  // children: animate cells, not the row
+const rowAnimation = (isChildRow || rowIndex >= 30)
+    ? undefined  // children animate cells; rows beyond 30 render static to avoid an animation storm
     : `sheetRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 25) * 35 + 50}ms both`;
-  const cellAccordionAnim = isChildRow
+  const cellAccordionAnim = (isChildRow && rowIndex < 30)
     ? `sheetCellAccordion 320ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 15) * 30}ms both`
     : undefined;
 
@@ -332,18 +359,23 @@ const [isHovered, setIsHovered] = useState(false);
             background: isHovered ? "#f5f6f8" : "#ffffff",
             transition: "background 150ms ease",
           }}>
-          <div className="flex items-center gap-1.5 cursor-pointer select-none" onClick={() => hasChildren && onToggle(node.AccountCode)}>
+          <div className="flex items-center gap-1.5 cursor-pointer select-none" onClick={() => hasChildren && onToggle(rowKey)}>
             {hasChildren
               ? <span className={`text-[#1a2f8a] flex-shrink-0 transition-transform duration-150 ${isExpanded ? "rotate-90" : ""}`}>
                   <ChevronRight size={11} />
                 </span>
               : <span className="w-3 flex-shrink-0" />}
-<span className="flex-shrink-0 mr-2" style={rowStyle}>
+<span className="flex-shrink-0 mr-2" style={subbody1Style}>
   {node.AccountCode}
 </span>
-<span className="truncate" style={{ ...rowStyle, maxWidth: 240 }} title={node.AccountName}>
+<span className="truncate max-w-[280px]" style={{ ...rowStyle, fontWeight: isBoldName ? 800 : rowStyle.fontWeight }} title={node.AccountName}>
   {node.AccountName}
 </span>
+{Array.isArray(node._dims) && node._dims.length > 0 && (
+  <span className="ml-2 text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded flex-shrink-0">
+    {node._dims.length === 1 ? node._dims[0] : `${node._dims.length} dims`}
+  </span>
+)}
           </div>
         </td>
 
@@ -400,12 +432,26 @@ pivotPrev={pivotPrev} ytdOnly={ytdOnly}
     topParent={topParent}
     elimExpanded={elimExpanded} elimHeaders={elimHeaders}
     elimColsExiting={elimColsExiting}
-    compareMode={compareMode} cmpPivot={cmpPivot}
+compareMode={compareMode} cmpPivot={cmpPivot} cmpPivotPrev={cmpPivotPrev}
     body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style}
     colors={colors} cmpColsExiting={cmpColsExiting} cmpColsVisible={cmpColsVisible} />
 ))}
 </>
   );
+}, (prev, next) => {
+  // Solo re-renderiza esta fila si SU propia expansión cambió. Ignora la
+  // identidad del Set `expanded` (que cambia en cada toggle de cualquier fila
+  // y, si no, forzaría a recalcular el rollup de TODAS las filas).
+  const key = next.node._instanceId ?? next.node.AccountCode;
+  if (prev.expanded.has(key) !== next.expanded.has(key)) return false;
+  const P = [
+    "node","depth","rowIndex","onToggle","pivot","uploadedPivot","elimPivot",
+    "contributionCompanies","topParent","elimExpanded","elimHeaders","elimColsExiting",
+    "compareMode","cmpPivot","cmpPivotPrev","pivotPrev","ytdOnly","getRowAmount",
+    "body1Style","body2Style","subbody1Style","colors","cmpColsExiting","cmpColsVisible","rowMatchesDims",
+  ];
+  for (const k of P) if (prev[k] !== next[k]) return false;
+  return true;
 });
 
 // ── Loading Spinner ───────────────────────────────────────────────────────────
@@ -533,7 +579,10 @@ const {
     effectiveCompanies, topParent,
     getLegal, isRootView, displayCurrency,
     source, structure, year, monthLabel,
-    compareMode, cmpPivot, cmpYear, cmpMonth, cmpMoLabel,
+compareMode, cmpPivot, cmpPivotPrev, cmpYear, cmpMonth, cmpMoLabel,
+pivotPrev = null, ytdOnly = true,
+rowMatchesDims = null,
+    getRowAmount = null,
     activeMapping, mappingDerived, colors,
     perspectiveLegal,
     drillDown, elimDetail,
@@ -562,30 +611,91 @@ const ws = wb.addWorksheet(sheetName);
   const NEG_RED      = "FFEF4444";
   const POS_GREEN    = "FF10B981";
 
-  // ── Compute totals per row (mirrors SheetRow math) ───────────────────────
-  const getConsTotal = (code, p) => {
-    const byCo = p?.get(code) || {};
-    return (byCo[topParent] ?? [])
+// ── Compute totals per row (mirrors SheetRow math EXACTLY) ───────────────
+  // Build code → node and code → leaf codes from the export tree, so SUM rows
+  // roll up their descendants' leaves (same as the on-screen rollupCodes).
+  const nodeByCode = new Map();
+  const codeTypeMap = new Map();
+  {
+    const walkNodes = (ns) => (ns || []).forEach(n => {
+      if (n.AccountCode) { nodeByCode.set(n.AccountCode, n); codeTypeMap.set(n.AccountCode, n.AccountType); }
+      walkNodes(n.children);
+    });
+    walkNodes(tree);
+  }
+  const collectLeafCodes = (n) => {
+    if (!n) return [];
+    if (n.children && n.children.length > 0) {
+      const out = [];
+      n.children.forEach(c => out.push(...collectLeafCodes(c)));
+      return out;
+    }
+    return [n.AccountCode];
+  };
+  const leafCodesFor = (code) => {
+    const n = nodeByCode.get(code);
+    if (!n) return [code];
+    return (n.children && n.children.length > 0) ? collectLeafCodes(n) : [code];
+  };
+let curNodeDims = null; // set per row before the value helpers run
+  const dimOk = (r) => {
+    if (!curNodeDims || curNodeDims.length === 0) return true;
+    if (typeof rowMatchesDims !== "function") return true;
+    return rowMatchesDims(r, curNodeDims);
+  };
+const amt = (r) => -(typeof getRowAmount === "function" ? Number(getRowAmount(r) || 0) : Number(r.AmountYTD ?? 0));
+  const getConsTotal = (code, p) => leafCodesFor(code).reduce((acc, leaf) => {
+    const byCo = p?.get(leaf) || {};
+    return acc + (byCo[topParent] ?? [])
       .filter(r => r.CompanyRole === "Group")
       .filter(r => !r.OriginCompanyShortName?.trim() && !r.CounterpartyShortName?.trim())
-     .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
-  };
+      .filter(dimOk)
+      .reduce((s, r) => s + amt(r), 0);
+  }, 0);
   const getContrib = (code, company, p) => {
-    const byCo = p?.get(code) || {};
     const role = company === topParent ? "Parent" : "Contribution";
-    return (byCo[company] ?? [])
-      .filter(r => r.CompanyRole === role)
-     .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
+    return leafCodesFor(code).reduce((acc, leaf) => {
+      const byCo = p?.get(leaf) || {};
+      return acc + (byCo[company] ?? [])
+        .filter(r => r.CompanyRole === role)
+        .filter(dimOk)
+        .reduce((s, r) => s + amt(r), 0);
+    }, 0);
   };
-  const getContribSum = (code, p) =>
-    effectiveCompanies.reduce((s, c) => s + getContrib(code, c, p), 0);
 
-  // ── Flatten tree fully, capturing depth for outline levels ───────────────
+  const isPLCode = (code) => {
+    const t = codeTypeMap.get(code) ?? "";
+    return t === "P/L" || t === "DIS";
+  };
+  const consVal = (code, p, pPrev) => {
+    const curr = getConsTotal(code, p);
+    if (ytdOnly || !pPrev || !isPLCode(code)) return curr;
+    return curr - getConsTotal(code, pPrev);
+  };
+  const contribVal = (code, company, p, pPrev) => {
+    const curr = getContrib(code, company, p);
+    if (ytdOnly || !pPrev || !isPLCode(code)) return curr;
+    return curr - getContrib(code, company, pPrev);
+  };
+  const contribSumVal = (code, p, pPrev) =>
+    effectiveCompanies.reduce((s, c) => s + contribVal(code, c, p, pPrev), 0);
+  const cons  = (code) => consVal(code, pivot, pivotPrev);
+  const consC = (code) => consVal(code, cmpPivot, cmpPivotPrev);
+  const contrib  = (code, co) => contribVal(code, co, pivot, pivotPrev);
+  const contribC = (code, co) => contribVal(code, co, cmpPivot, cmpPivotPrev);
+  const contribSumV  = (code) => contribSumVal(code, pivot, pivotPrev);
+  const contribSumCV = (code) => contribSumVal(code, cmpPivot, cmpPivotPrev);
+
+// ── Flatten tree, capturing depth for outline levels ─────────────────────
+  // When drillDown is OFF, produce a SUMMARISED report: only top-level (depth 0)
+  // rows are emitted, so parents show as roll-up totals with no children.
   const flat = [];
   const walk = (nodes, depth) => {
     for (const n of nodes) {
-      flat.push({ node: n, depth });
-      if (n.children?.length) walk(n.children, depth + 1);
+      if (n._breakerOnly || depth === 0 || drillDown) {
+        flat.push({ node: n, depth });
+      }
+      if (n.children?.length && drillDown) walk(n.children, depth + 1);
     }
   };
   walk(tree, 0);
@@ -594,7 +704,7 @@ const ws = wb.addWorksheet(sheetName);
   const consCmpCols    = compareMode ? 3 : 0;
   const elimCmpCols    = compareMode ? 3 : 0;
   const contribCmpCols = compareMode ? 3 : 0;
-  const perCompanyCols = compareMode ? 4 : 1;
+const perCompanyCols = compareMode ? 4 : 1;
 
   let colCursor = 1;
   const codeCol       = colCursor++;
@@ -603,13 +713,21 @@ const ws = wb.addWorksheet(sheetName);
   colCursor += consCmpCols;
   const elimCol       = colCursor++;
   colCursor += elimCmpCols;
+const elimSubHeaders = elimDetail ? elimHeaders : [];
   const elimStartSubCol = colCursor;
-  colCursor += elimHeaders.length;
+  colCursor += elimSubHeaders.length;
   const elimEndSubCol = colCursor - 1; // last elim sub col (may be < start if 0 headers)
   const contribCol    = colCursor++;
   colCursor += contribCmpCols;
-  const companiesStartCol = colCursor;
+const companiesStartCol = colCursor;
   const totalCols = companiesStartCol + effectiveCompanies.length * perCompanyCols - 1;
+
+  // Columns that OPEN a section — they get a thicker left divider so the sheet
+  // reads as: Consolidated | Eliminations | Contribution | Company1 | Company2…
+  const sectionStartCols = new Set([consCol, elimCol, contribCol]);
+  for (let i = 0; i < effectiveCompanies.length; i++) {
+    sectionStartCols.add(companiesStartCol + i * perCompanyCols);
+  }
 
   // ── Title rows ───────────────────────────────────────────────────────────
 // Top row — accent strip
@@ -664,7 +782,7 @@ if (viewLabel) subParts.push(`View: ${viewLabel}`);
   };
   band(codeCol, 2, "ACCOUNT", PRIMARY);
   band(consCol, 1 + consCmpCols, isRootView ? "CONSOLIDATED" : "SUBGROUP", PRIMARY);
-  band(elimCol, 1 + elimCmpCols + elimHeaders.length, "ELIMINATIONS", PRIMARY_DARK);
+band(elimCol, 1 + elimCmpCols + elimSubHeaders.length, "ELIMINATIONS", PRIMARY_DARK);
   band(contribCol, 1 + contribCmpCols, "CONTRIBUTION SUM", "FF4B5563");
   if (effectiveCompanies.length > 0) {
     band(companiesStartCol, effectiveCompanies.length * perCompanyCols, "PER-COMPANY CONTRIBUTIONS", ACCENT);
@@ -687,7 +805,7 @@ if (viewLabel) subParts.push(`View: ${viewLabel}`);
     ws.getCell(headRow, elimCol + 2).value = "Δ";
     ws.getCell(headRow, elimCol + 3).value = "Δ%";
   }
-  elimHeaders.forEach((h, i) => {
+elimSubHeaders.forEach((h, i) => {
     ws.getCell(headRow, elimStartSubCol + i).value = h;
   });
   ws.getCell(headRow, contribCol).value = "Contrib. Sum";
@@ -698,13 +816,13 @@ if (viewLabel) subParts.push(`View: ${viewLabel}`);
   }
   effectiveCompanies.forEach((c, i) => {
     const baseCol = companiesStartCol + i * perCompanyCols;
-    ws.getCell(headRow, baseCol).value = getLegal(c);
+ws.getCell(headRow, baseCol).value = getLegal(c);
     if (compareMode) {
       ws.getCell(headRow, baseCol + 1).value = "CMP";
       ws.getCell(headRow, baseCol + 2).value = "Δ";
       ws.getCell(headRow, baseCol + 3).value = "Δ%";
     }
-  });
+});
 
 for (let col = 1; col <= totalCols; col++) {
     const c = ws.getCell(headRow, col);
@@ -731,39 +849,43 @@ const numBorder = {
     left:   { style: "hair", color: { argb: GREY_BORDER } },
     right:  { style: "hair", color: { argb: GREY_BORDER } },
   };
+  // Same as numBorder but with a strong left divider — used on section-start cols.
+  const borderFor = (col) => sectionStartCols.has(col)
+    ? { ...numBorder, left: { style: "medium", color: { argb: PRIMARY } } }
+    : numBorder;
 
   const writeNum = (row, col, val, isParent) => {
     const cell = ws.getCell(row, col);
-    const n = Number(val) || 0;
-    if (Math.round(n) === 0) {
+const n = Number(val) || 0;
+    if (Math.abs(n) < 0.005) {
       cell.value = null;
     } else {
       cell.value = n;
-      cell.numFmt = '#,##0;[Red]-#,##0;""';
+      cell.numFmt = '#,##0.00;[Red]-#,##0.00;""';
     }
     cell.alignment = { horizontal: "right", vertical: "middle", indent: 1 };
     cell.font = {
       name: "Calibri", size: 10,
       bold: !!isParent,
-      color: { argb: n < 0 ? NEG_RED : GREY_DEEP },
+color: { argb: n < 0 ? NEG_RED : GREY_DEEP },
     };
-    cell.border = numBorder;
+    cell.border = borderFor(col);
   };
 
   const writeDelta = (row, col, current, compare) => {
     const cell = ws.getCell(row, col);
     const delta = (Number(current) || 0) - (Number(compare) || 0);
-    if (Math.round(delta) === 0) { cell.value = null; }
-    else { cell.value = delta; cell.numFmt = '+#,##0;-#,##0;""'; }
+if (Math.abs(delta) < 0.005) { cell.value = null; }
+    else { cell.value = delta; cell.numFmt = '+#,##0.00;-#,##0.00;""'; }
     cell.alignment = { horizontal: "right", vertical: "middle", indent: 1 };
-    cell.font = { name: "Calibri", size: 10, color: { argb: delta < 0 ? NEG_RED : POS_GREEN } };
-    cell.border = numBorder;
+cell.font = { name: "Calibri", size: 10, color: { argb: delta < 0 ? NEG_RED : POS_GREEN } };
+    cell.border = borderFor(col);
   };
 
   const writePct = (row, col, current, compare) => {
     const cell = ws.getCell(row, col);
     const c = Number(compare) || 0;
-    if (c === 0) { cell.value = null; }
+    if (Math.abs(c) < 1) { cell.value = null; }
     else {
       const pct = ((current - c) / Math.abs(c));
       cell.value = pct;
@@ -771,7 +893,7 @@ const numBorder = {
     }
     cell.alignment = { horizontal: "right", vertical: "middle", indent: 1 };
     cell.font = { name: "Calibri", size: 10, italic: true, color: { argb: GREY_MID } };
-    cell.border = numBorder;
+    cell.border = borderFor(col);
   };
 
 // ── Breaker config (matches UI logic) ───────────────────────────────────
@@ -816,17 +938,22 @@ if (breaker) {
         top:    { style: "medium", color: { argb: hexToArgb(breaker.color) } },
         bottom: { style: "medium", color: { argb: hexToArgb(breaker.color) } },
       };
-      ws.getRow(rowIdx).height = 22;
+ws.getRow(rowIdx).height = 22;
       // Breakers never get outlineLevel — they stay visible always
       rowIdx++;
     }
 
-    const consTotal     = getConsTotal(code, pivot);
-    const cmpConsTotal  = compareMode ? getConsTotal(code, cmpPivot) : 0;
-    const contribSum    = getContribSum(code, pivot);
-    const cmpContribSum = compareMode ? getContribSum(code, cmpPivot) : 0;
-    const elimTotal     = consTotal - contribSum;
+    // Placeholder rows only carry a trailing breaker header — no data row.
+    if (node._breakerOnly) return;
+
+curNodeDims = node._dims && node._dims.length > 0 ? node._dims : null;
+    const consTotal     = cons(code);
+    const cmpConsTotal  = compareMode ? consC(code) : 0;
+    const contribSumTot = contribSumV(code);
+    const cmpContribSum = compareMode ? contribSumCV(code) : 0;
+    const elimTotal     = consTotal - contribSumTot;
     const cmpElimTotal  = cmpConsTotal - cmpContribSum;
+    const contribSum    = contribSumTot;
 
 // Code + Name. Code col uses small grey monospace-ish. Name col indents
     // by depth so children visually sit under their parents.
@@ -859,8 +986,8 @@ if (breaker) {
       writeDelta(rowIdx, elimCol + 2, elimTotal, cmpElimTotal);
       writePct(rowIdx, elimCol + 3, elimTotal, cmpElimTotal);
     }
-    const elimBucket = elimPivot.get(code) ?? {};
-    elimHeaders.forEach((h, i) => {
+const elimBucket = elimPivot.get(code) ?? {};
+    elimSubHeaders.forEach((h, i) => {
       writeNum(rowIdx, elimStartSubCol + i, elimBucket[h] ?? 0, isParent);
     });
     writeNum(rowIdx, contribCol, contribSum, isParent);
@@ -871,15 +998,15 @@ if (breaker) {
     }
     effectiveCompanies.forEach((co, i) => {
       const baseCol = companiesStartCol + i * perCompanyCols;
-      const val = getContrib(code, co, pivot);
+const val = contrib(code, co);
       writeNum(rowIdx, baseCol, val, isParent);
-      if (compareMode) {
-        const cmpVal = getContrib(code, co, cmpPivot);
+if (compareMode) {
+        const cmpVal = contribC(code, co);
         writeNum(rowIdx, baseCol + 1, cmpVal, isParent);
         writeDelta(rowIdx, baseCol + 2, val, cmpVal);
         writePct(rowIdx, baseCol + 3, val, cmpVal);
       }
-    });
+});
 
 // Row banding: top-level parents get a heavier fill, regular rows get
     // alternating bands so the eye can track across the wide table.
@@ -906,7 +1033,7 @@ if (breaker) {
   });
 
 // ── Column-level outline for elim subcolumns ─────────────────────────────
-  if (elimDetail && elimHeaders.length > 0) {
+if (elimDetail && elimSubHeaders.length > 0) {
     for (let col = elimStartSubCol; col <= elimEndSubCol; col++) {
       const c = ws.getColumn(col);
       c.outlineLevel = 1;
@@ -920,7 +1047,7 @@ if (breaker) {
   for (let col = consCol; col <= totalCols; col++) {
     if (col === codeCol || col === nameCol) continue;
     const isSubElim = col >= elimStartSubCol && col <= elimEndSubCol;
-    ws.getColumn(col).width = isSubElim ? 16 : 15;
+   ws.getColumn(col).width = isSubElim ? 18 : 17;
   }
 
 // ── Outline behaviour: summary above (the parent row is ABOVE children) ──
@@ -942,7 +1069,10 @@ async function generateSheetXlsxMulti({
   effectiveCompanies, topParent, rootParent,
   getLegal, isRootView, displayCurrency,
   source, structure, year, month, monthLabel,
-  compareMode, cmpPivot, cmpYear, cmpMonth, cmpMoLabel,
+compareMode, cmpPivot, cmpPivotPrev, cmpYear, cmpMonth, cmpMoLabel,
+pivotPrev = null, ytdOnly = true,
+rowMatchesDims = null,
+  getRowAmount = null,
   activeMapping, mappingDerivedAll, mappingDerivedPL, mappingDerivedBS,
   treeAll, treePL, treeBS,
   colors, perspectiveLegal,
@@ -975,7 +1105,10 @@ async function generateSheetXlsxMulti({
       effectiveCompanies, topParent, rootParent,
       getLegal, isRootView, displayCurrency,
       source, structure, year, month, monthLabel,
-      compareMode, cmpPivot, cmpYear, cmpMonth, cmpMoLabel,
+compareMode, cmpPivot, cmpPivotPrev, cmpYear, cmpMonth, cmpMoLabel,
+pivotPrev, ytdOnly,
+rowMatchesDims,
+      getRowAmount,
       activeMapping, mappingDerived: spec.derived, colors,
       perspectiveLegal,
       drillDown, elimDetail,
@@ -1000,7 +1133,10 @@ async function generateSheetPdf({
   effectiveCompanies, topParent,
   getLegal, isRootView, displayCurrency,
   source, structure, year, month, monthLabel,
-  compareMode, cmpPivot, cmpYear, cmpMonth, cmpMoLabel,
+  compareMode, cmpPivot, cmpPivotPrev, cmpYear, cmpMonth, cmpMoLabel,
+pivotPrev = null, ytdOnly = true,
+rowMatchesDims = null, drillDown = true,
+  getRowAmount = null,
   activeMapping,
   treeAll, treePL, treeBS,
   mappingDerivedAll, mappingDerivedPL, mappingDerivedBS,
@@ -1031,35 +1167,96 @@ async function generateSheetPdf({
   const WHITE    = [255, 255, 255];
 
   // ── Compute totals (mirrors UI math) ───────────────────────────────────
-  const getConsTotal = (code, p) => {
-    const byCo = p?.get(code) || {};
-    return (byCo[topParent] ?? [])
+// ── Compute totals per row (mirrors SheetRow math EXACTLY) ───────────────
+  // Build code → node & code → leaf codes from the export tree so SUM rows roll
+  // up their descendants' leaves (like the on-screen rollupCodes). A per-row
+  // dimension filter (curNodeDims) narrows rows to a mapping instance's dims.
+const nodeByCode = new Map();
+  const codeTypeMap = new Map();
+  // Se reconstruyen por vista (igual que el xlsx, que los arma desde el árbol
+  // de SU hoja) para que un P/L con mapping no contamine la vista All.
+  const setTreeContext = (t) => {
+    nodeByCode.clear();
+    codeTypeMap.clear();
+    const walkN = (ns) => (ns || []).forEach(n => {
+      if (n.AccountCode) { nodeByCode.set(n.AccountCode, n); codeTypeMap.set(n.AccountCode, n.AccountType); }
+      walkN(n.children);
+    });
+    walkN(t);
+  };
+  const collectLeafCodes = (n) => {
+    if (!n) return [];
+    if (n.children && n.children.length > 0) {
+      const out = [];
+      n.children.forEach(c => out.push(...collectLeafCodes(c)));
+      return out;
+    }
+    return [n.AccountCode];
+  };
+  const leafCodesFor = (code) => {
+    const n = nodeByCode.get(code);
+    if (!n) return [code];
+    return (n.children && n.children.length > 0) ? collectLeafCodes(n) : [code];
+  };
+  let curNodeDims = null; // set per row before calling the value helpers
+  const dimOk = (r) => {
+    if (!curNodeDims || curNodeDims.length === 0) return true;
+    if (typeof rowMatchesDims !== "function") return true;
+    return rowMatchesDims(r, curNodeDims);
+  };
+const amt = (r) => -(typeof getRowAmount === "function" ? Number(getRowAmount(r) || 0) : Number(r.AmountYTD ?? 0));
+
+  const getConsTotal = (code, p) => leafCodesFor(code).reduce((acc, leaf) => {
+    const byCo = p?.get(leaf) || {};
+    return acc + (byCo[topParent] ?? [])
       .filter(r => r.CompanyRole === "Group")
       .filter(r => !r.OriginCompanyShortName?.trim() && !r.CounterpartyShortName?.trim())
-    .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
-  };
+      .filter(dimOk)
+      .reduce((s, r) => s + amt(r), 0);
+  }, 0);
   const getContrib = (code, company, p) => {
-    const byCo = p?.get(code) || {};
     const role = company === topParent ? "Parent" : "Contribution";
-    return (byCo[company] ?? [])
-      .filter(r => r.CompanyRole === role)
-    .reduce((s, r) => s + -(Number(r.AmountYTD ?? 0)), 0);
+    return leafCodesFor(code).reduce((acc, leaf) => {
+      const byCo = p?.get(leaf) || {};
+      return acc + (byCo[company] ?? [])
+        .filter(r => r.CompanyRole === role)
+        .filter(dimOk)
+        .reduce((s, r) => s + amt(r), 0);
+    }, 0);
   };
-  const getContribSum = (code, p) =>
-    effectiveCompanies.reduce((s, c) => s + getContrib(code, c, p), 0);
 
+  // Monthly vs YTD: for P/L accounts in monthly mode, current period = YTD(curr)
+  // - YTD(prev). B/S stays YTD. Type comes from the export tree node.
+const isPLCode = (code) => {
+    const t = codeTypeMap.get(code) ?? "";
+    return t === "P/L" || t === "DIS";
+  };
+  const consMonthly = (code) => {
+    const curr = getConsTotal(code, pivot);
+    if (ytdOnly || !pivotPrev || !isPLCode(code)) return curr;
+    return curr - getConsTotal(code, pivotPrev);
+  };
+  const contribMonthly = (code, company) => {
+    const curr = getContrib(code, company, pivot);
+    if (ytdOnly || !pivotPrev || !isPLCode(code)) return curr;
+    return curr - getContrib(code, company, pivotPrev);
+  };
+  const contribSumMonthly = (code) =>
+    effectiveCompanies.reduce((s, c) => s + contribMonthly(code, c), 0);
+
+const DEC = { minimumFractionDigits: 2, maximumFractionDigits: 2 };
   const fmt = (v) => {
     const n = Number(v) || 0;
-    if (Math.round(n) === 0) return "—";
-    return Math.round(n).toLocaleString("de-DE");
+    if (Math.abs(n) < 0.005) return "—";
+    return n.toLocaleString("de-DE", DEC);
   };
   const fmtDelta = (v) => {
     const n = Number(v) || 0;
-    if (Math.round(n) === 0) return "—";
-    return (n > 0 ? "+" : "") + Math.round(n).toLocaleString("de-DE");
+    if (Math.abs(n) < 0.005) return "—";
+    return (n > 0 ? "+" : "") + n.toLocaleString("de-DE", DEC);
   };
-  const fmtPct = (cur, cmp) => {
-    if (!cmp || cmp === 0) return "—";
+const fmtPct = (cur, cmp) => {
+    if (!cmp || Math.abs(cmp) < 1) return "—";
     const p = ((cur - cmp) / Math.abs(cmp)) * 100;
     return (p >= 0 ? "+" : "") + p.toFixed(1) + "%";
   };
@@ -1127,11 +1324,13 @@ async function generateSheetPdf({
 
   // ── Flatten tree to rows (with breakers) ───────────────────────────────
   const flattenForPdf = (tree, mappingDerived) => {
-    const flat = [];
+const flat = [];
+    // drillDown OFF = informe resumido: solo depth 0 (más los placeholders
+    // _breakerOnly, que arrastran la cabecera final). Igual que el walk del xlsx.
     const walk = (nodes, depth) => {
       for (const n of nodes) {
-        flat.push({ node: n, depth });
-        if (n.children?.length) walk(n.children, depth + 1);
+        if (n._breakerOnly || depth === 0 || drillDown) flat.push({ node: n, depth });
+        if (n.children?.length && drillDown) walk(n.children, depth + 1);
       }
     };
     walk(tree, 0);
@@ -1155,9 +1354,11 @@ async function generateSheetPdf({
       const breakerLabel = mappingDerived
         ? (mappingBk ? String(mappingBk.label).toUpperCase() : null)
         : (mappingBk ? String(mappingBk.label).toUpperCase() : typeBk);
-      if (breakerLabel) {
-        rows.push({ isBreaker: true, label: breakerLabel });
+if (breakerLabel) {
+        rows.push({ isBreaker: true, label: breakerLabel, color: mappingBk?.color || null });
       }
+      // Los placeholders solo llevan la cabecera del breaker — sin fila de datos.
+      if (node._breakerOnly) return;
       rows.push({ node, depth, isBreaker: false });
     });
     return rows;
@@ -1168,23 +1369,37 @@ async function generateSheetPdf({
   const buildColumnGroups = () => {
     const groups = [];
     // Group 1: Consolidated (+ compare cols)
+// Compare-period monthly helper (YTD(cmp) - YTD(cmpPrev) for P/L).
+    const consMonthlyCmp = (code) => {
+      const curr = getConsTotal(code, cmpPivot);
+      if (ytdOnly || !cmpPivotPrev || !isPLCode(code)) return curr;
+      return curr - getConsTotal(code, cmpPivotPrev);
+    };
+    const contribSumMonthlyCmp = (code) =>
+      effectiveCompanies.reduce((s, c) => {
+        const curr = getContrib(code, c, cmpPivot);
+        if (ytdOnly || !cmpPivotPrev || !isPLCode(code)) return s + curr;
+        return s + (curr - getContrib(code, c, cmpPivotPrev));
+      }, 0);
+
     const g1 = { label: "Consolidated", cols: [
-      { key: "cons", header: getLegal(topParent), value: (code) => getConsTotal(code, pivot) },
+      { key: "cons", header: getLegal(topParent), value: (code) => consMonthly(code) },
     ]};
     if (compareMode) {
-      g1.cols.push({ key: "cons-cmp",   header: "CMP",   value: (code) => getConsTotal(code, cmpPivot), isCompare: true });
-      g1.cols.push({ key: "cons-delta", header: "Δ",     value: (code) => getConsTotal(code, pivot) - getConsTotal(code, cmpPivot), isDelta: true });
-      g1.cols.push({ key: "cons-pct",   header: "Δ%",    valueText: (code) => fmtPct(getConsTotal(code, pivot), getConsTotal(code, cmpPivot)), isPct: true });
+      g1.cols.push({ key: "cons-cmp",   header: "CMP",   value: (code) => consMonthlyCmp(code), isCompare: true });
+      g1.cols.push({ key: "cons-delta", header: "Δ",     value: (code) => consMonthly(code) - consMonthlyCmp(code), isDelta: true });
+      g1.cols.push({ key: "cons-pct",   header: "Δ%",    valueText: (code) => fmtPct(consMonthly(code), consMonthlyCmp(code)), isPct: true });
     }
     groups.push(g1);
 
     // Group 2: Eliminations
     const g2 = { label: "Eliminations", cols: [
-      { key: "elim", header: "Elim. Total", value: (code) => getConsTotal(code, pivot) - getContribSum(code, pivot) },
+      { key: "elim", header: "Elim. Total", value: (code) => consMonthly(code) - contribSumMonthly(code) },
     ]};
-    if (compareMode) {
-      g2.cols.push({ key: "elim-cmp",   header: "CMP", value: (code) => getConsTotal(code, cmpPivot) - getContribSum(code, cmpPivot), isCompare: true });
-      g2.cols.push({ key: "elim-delta", header: "Δ",   value: (code) => (getConsTotal(code, pivot) - getContribSum(code, pivot)) - (getConsTotal(code, cmpPivot) - getContribSum(code, cmpPivot)), isDelta: true });
+if (compareMode) {
+      g2.cols.push({ key: "elim-cmp",   header: "CMP", value: (code) => consMonthlyCmp(code) - contribSumMonthlyCmp(code), isCompare: true });
+      g2.cols.push({ key: "elim-delta", header: "Δ",   value: (code) => (consMonthly(code) - contribSumMonthly(code)) - (consMonthlyCmp(code) - contribSumMonthlyCmp(code)), isDelta: true });
+      g2.cols.push({ key: "elim-pct",   header: "Δ%",  valueText: (code) => fmtPct(consMonthly(code) - contribSumMonthly(code), consMonthlyCmp(code) - contribSumMonthlyCmp(code)), isPct: true });
     }
     if (elimDetail) {
       elimHeaders.forEach(h => {
@@ -1193,19 +1408,27 @@ async function generateSheetPdf({
     }
     groups.push(g2);
 
+// Per-company compare monthly helper.
+    const contribMonthlyCmp = (code, company) => {
+      const curr = getContrib(code, company, cmpPivot);
+      if (ytdOnly || !cmpPivotPrev || !isPLCode(code)) return curr;
+      return curr - getContrib(code, company, cmpPivotPrev);
+    };
     // Group 3: Contribution sum + per-company columns
     const g3 = { label: "Per-Company Contributions", cols: [
-      { key: "contrib", header: "Contrib. Sum", value: (code) => getContribSum(code, pivot) },
+      { key: "contrib", header: "Contrib. Sum", value: (code) => contribSumMonthly(code) },
     ]};
-    if (compareMode) {
-      g3.cols.push({ key: "contrib-cmp",   header: "CMP", value: (code) => getContribSum(code, cmpPivot), isCompare: true });
-      g3.cols.push({ key: "contrib-delta", header: "Δ",   value: (code) => getContribSum(code, pivot) - getContribSum(code, cmpPivot), isDelta: true });
+if (compareMode) {
+      g3.cols.push({ key: "contrib-cmp",   header: "CMP", value: (code) => contribSumMonthlyCmp(code), isCompare: true });
+      g3.cols.push({ key: "contrib-delta", header: "Δ",   value: (code) => contribSumMonthly(code) - contribSumMonthlyCmp(code), isDelta: true });
+      g3.cols.push({ key: "contrib-pct",   header: "Δ%",  valueText: (code) => fmtPct(contribSumMonthly(code), contribSumMonthlyCmp(code)), isPct: true });
     }
-    effectiveCompanies.forEach(co => {
-      g3.cols.push({ key: `co-${co}`, header: getLegal(co), value: (code) => getContrib(code, co, pivot) });
+effectiveCompanies.forEach(co => {
+      g3.cols.push({ key: `co-${co}`, header: getLegal(co), value: (code) => contribMonthly(code, co) });
       if (compareMode) {
-        g3.cols.push({ key: `co-${co}-cmp`,   header: `${getLegal(co)} · CMP`, value: (code) => getContrib(code, co, cmpPivot), isCompare: true });
-        g3.cols.push({ key: `co-${co}-delta`, header: `${getLegal(co)} · Δ`,   value: (code) => getContrib(code, co, pivot) - getContrib(code, co, cmpPivot), isDelta: true });
+        g3.cols.push({ key: `co-${co}-cmp`,   header: `${getLegal(co)} · CMP`, value: (code) => contribMonthlyCmp(code, co), isCompare: true });
+        g3.cols.push({ key: `co-${co}-delta`, header: `${getLegal(co)} · Δ`,   value: (code) => contribMonthly(code, co) - contribMonthlyCmp(code, co), isDelta: true });
+        g3.cols.push({ key: `co-${co}-pct`,   header: `${getLegal(co)} · Δ%`,  valueText: (code) => fmtPct(contribMonthly(code, co), contribMonthlyCmp(code, co)), isPct: true });
       }
     });
     groups.push(g3);
@@ -1213,42 +1436,38 @@ async function generateSheetPdf({
     return groups;
   };
 
-  // Split column groups into chunks that fit a page. Target ~10 numeric cols.
-  const TARGET_COLS_PER_PAGE = 10;
+// ── Geometría de página (A3 apaisado) ──────────────────────────────────
+  // El chunker anterior vaciaba la página en cuanto aparecía un grupo grande
+  // (elim. detail), dejando páginas con una sola columna estirada. Ahora las
+  // columnas se empaquetan hasta llenar el ancho útil.
+  const PAGE_INNER = W - 16;   // ancho de página menos márgenes (8 + 8)
+  const CODE_W     = 18;
+  const NAME_W_MIN = 58;
+  const NUM_W_MIN  = 24;       // cabe "-3.860.600,00" a 7pt con padding
+  const NUM_W_MAX  = 34;
+  const TARGET_COLS_PER_PAGE = Math.max(
+    4,
+    Math.floor((PAGE_INNER - CODE_W - NAME_W_MIN) / NUM_W_MIN)
+  );
+
+  // Aplana los grupos en un solo flujo ordenado (cada col conserva su grupo)
+  // y lo corta por capacidad, de modo que ninguna página queda a medias.
   const chunkColumnGroups = (groups) => {
+    const stream = [];
+    groups.forEach(g => g.cols.forEach(c => stream.push({ col: c, group: g.label })));
     const chunks = [];
-    let current = { label: "", cols: [], parts: [] };
-    let count = 0;
-    const flush = () => {
-      if (current.cols.length > 0) chunks.push(current);
-      current = { label: "", cols: [], parts: [] };
-      count = 0;
-    };
-    groups.forEach(g => {
-      // If this group alone exceeds target, split it but keep cols sequential
-      if (g.cols.length > TARGET_COLS_PER_PAGE) {
-        flush();
-        let i = 0;
-        while (i < g.cols.length) {
-          const slice = g.cols.slice(i, i + TARGET_COLS_PER_PAGE);
-          chunks.push({ label: g.label, cols: slice, parts: [g.label] });
-          i += TARGET_COLS_PER_PAGE;
-        }
-        return;
-      }
-      if (count + g.cols.length > TARGET_COLS_PER_PAGE && current.cols.length > 0) {
-        flush();
-      }
-      current.cols.push(...g.cols);
-      current.parts.push(g.label);
-      count += g.cols.length;
-    });
-    flush();
+    for (let i = 0; i < stream.length; i += TARGET_COLS_PER_PAGE) {
+      const slice = stream.slice(i, i + TARGET_COLS_PER_PAGE);
+      const parts = [];
+      slice.forEach(s => { if (!parts.includes(s.group)) parts.push(s.group); });
+      chunks.push({ label: parts[0], cols: slice.map(s => s.col), parts });
+    }
     return chunks;
   };
 
   // ── Build pages for a given view ───────────────────────────────────────
-  const buildPagesForView = (viewLabel, tree, mappingDerived) => {
+const buildPagesForView = (viewLabel, tree, mappingDerived) => {
+    setTreeContext(tree);
     const groups = buildColumnGroups();
     const chunks = chunkColumnGroups(groups);
     const flatRows = flattenForPdf(tree, mappingDerived);
@@ -1268,7 +1487,7 @@ async function generateSheetPdf({
         { content: "Account", styles: { halign: "left" } },
       ];
       chunk.cols.forEach(c => {
-        headRow.push({ content: c.header, styles: { halign: "center", fontSize: c.isElimDetail ? 6 : 7 } });
+headRow.push({ content: c.header, styles: { halign: "center", fontSize: c.isElimDetail ? 6 : 7 } });
       });
       const head = [headRow];
 
@@ -1281,14 +1500,17 @@ async function generateSheetPdf({
             content: r.label,
             colSpan: totalCols,
             styles: {
-              fillColor: NAVY_DK, textColor: WHITE, fontStyle: "bold",
+       fillColor: r.color ? hexToRgb(r.color, NAVY_DK) : NAVY_DK, textColor: WHITE, fontStyle: "bold",
               halign: "left", fontSize: 8, cellPadding: { top: 2, bottom: 2, left: 4, right: 4 },
             },
           }]);
           return;
         }
-        const { node, depth } = r;
+const { node, depth } = r;
         const code = node.AccountCode;
+        // Acota la matemática de TODAS las columnas a los dims de esta instancia
+        // antes de evaluarlas (dimOk cierra sobre curNodeDims).
+        curNodeDims = node._dims && node._dims.length > 0 ? node._dims : null;
         const isParent = !!(node.children && node.children.length > 0);
         const indent = "  ".repeat(Math.min(depth, 6));
         const row = [
@@ -1310,13 +1532,21 @@ async function generateSheetPdf({
               color = v < 0 ? RED : TEXT_DK;
             }
           }
-          row.push({ content: txt, styles: { halign: "right", textColor: color, fontSize: c.isElimDetail ? 6 : undefined } });
+       row.push({ content: txt, styles: { halign: "right", textColor: color, fontSize: c.isElimDetail ? 6 : undefined } });
         });
         body.push(row);
       });
 
-      // Adaptive font sizing
+// Adaptive font sizing
       const bodyFontSize = totalCols <= 8 ? 8 : totalCols <= 12 ? 7.5 : 7;
+
+      // Anchos explícitos: las numéricas reparten el espacio a partes iguales
+      // (con tope) y Account absorbe el resto, así nada se estira.
+      const nNum  = chunk.cols.length;
+      const numW  = Math.min(NUM_W_MAX, Math.max(NUM_W_MIN, (PAGE_INNER - CODE_W - NAME_W_MIN) / nNum));
+      const nameW = Math.max(NAME_W_MIN, PAGE_INNER - CODE_W - numW * nNum);
+      const colStyles = { 0: { halign: "left", cellWidth: CODE_W }, 1: { halign: "left", cellWidth: nameW } };
+      chunk.cols.forEach((c, i) => { colStyles[i + 2] = { halign: "right", cellWidth: numW }; });
 
       autoTable(doc, {
         startY, head, body,
@@ -1329,10 +1559,8 @@ async function generateSheetPdf({
           fillColor: NAVY, textColor: WHITE, fontStyle: "bold", fontSize: bodyFontSize, halign: "center",
           minCellHeight: 10,
         },
-        columnStyles: {
-          0: { halign: "left", cellWidth: 20 },
-          1: { halign: "left", cellWidth: 70 },
-        },
+tableWidth: "wrap",
+        columnStyles: colStyles,
         alternateRowStyles: { fillColor: OFFWHITE },
         didDrawPage: () => drawFooter(viewLabel),
       });
@@ -1759,6 +1987,7 @@ const [cmpMonth,     setCmpMonth]     = useState("");
 const [cmpSource,    setCmpSource]    = useState("");
 const [cmpStructure, setCmpStructure] = useState("");
 const [cmpRawData,   setCmpRawData]   = useState([]);
+const [cmpRawDataPrev, setCmpRawDataPrev] = useState([]);
 const [cmpLoading,   setCmpLoading]   = useState(false);
 const [cmpVisible,   setCmpVisible]   = useState(false);
   const [cmpExiting,   setCmpExiting]   = useState(false);
@@ -1828,8 +2057,14 @@ const [breakerSortOrder, setBreakerSortOrder] = useState(new Map());
 
 
 // ── Mappings state — single shared mapping for both P/L and B/S ──────────
-  const [activeMapping, setActiveMapping] = useState(null);
-  const [viewsMode, setViewsMode] = useState(null); // null | "landing" | "structure" | "report"
+const [activeMapping, setActiveMapping] = useState(null);
+  // System hidden-override mapping (the client's custom default). Applied on
+  // entry so "All" shows the custom structure instead of the raw standard,
+  // and restored when the user clears their own mapping.
+  const [hiddenOverride, setHiddenOverride] = useState(null);
+const overrideAppliedRef = useRef(false);
+
+const [viewsMode, setViewsMode] = useState(null);
   const [savedMappings, setSavedMappings] = useState([]);
   const [mappingsLoading, setMappingsLoading] = useState(false);
   const [mappingsError, setMappingsError] = useState(null);
@@ -1842,9 +2077,9 @@ const [recentMappings, setRecentMappings] = useState([]);
     sheetAll: true,   // include "All" view as one sheet
     sheetPL:  true,   // include P/L view as one sheet
     sheetBS:  true,   // include B/S view as one sheet
-    drillDown: true,  // include row drill-down outlines
+drillDown: true,  // include row drill-down outlines
     elimDetail: true, // include per-JournalHeader elim columns
-  });
+});
 
 // Mappings only available on P/L and B/S tabs (not on All)
   const mappingTab = typeFilter === "P/L" ? "pl"
@@ -1907,6 +2142,8 @@ const convertMappingTree = useCallback((tree) => {
   }, []);
 
 const handleApplyMapping = useCallback((m, kind = "structure") => {
+    const plConverted = convertMappingTree(m.pl_tree ?? []);
+    const bsConverted = convertMappingTree(m.bs_tree ?? []);
     setActiveMapping({
       mapping_id: m.mapping_id,
       kind,
@@ -1914,15 +2151,53 @@ const handleApplyMapping = useCallback((m, kind = "structure") => {
       standard: m.standard,
       plTreeRaw: m.pl_tree ?? [],
       bsTreeRaw: m.bs_tree ?? [],
-      plTreeConverted: convertMappingTree(m.pl_tree ?? []),
-      bsTreeConverted: convertMappingTree(m.bs_tree ?? []),
+      plTreeConverted: plConverted,
+      bsTreeConverted: bsConverted,
     });
+    // "All" can't represent a single-statement mapping, so land the user on the
+    // tab the mapping actually covers — but only if they're currently on "All"
+    // (functional update reads the latest typeFilter without a dep on it).
+    const hasPL = !!(plConverted && plConverted.rows.size > 0);
+    const hasBS = !!(bsConverted && bsConverted.rows.size > 0);
+    setTypeFilter(prev => (prev === "" ? (hasPL ? "P/L" : hasBS ? "B/S" : prev) : prev));
     setViewsMode(null);
   }, [convertMappingTree]);
 
-  const clearActiveMapping = useCallback(() => {
+const clearActiveMapping = useCallback(() => {
+    // Just clear the user's mapping. With no active mapping, the override
+    // render branch takes over and shows the custom default automatically —
+    // applying the override as a mapping would instead route it through the
+    // flat mapping branch and lose the custom structure.
     setActiveMapping(null);
   }, []);
+
+// Load the client's hidden-override mapping (the custom default) from Supabase.
+  // Only runs for CUSTOM- keys; the cleanup resets on key change / unmount so a
+  // non-custom key never carries a stale override (no synchronous setState here).
+  useEffect(() => {
+    const isCustom = activeStandardKey && String(activeStandardKey).startsWith("CUSTOM-");
+    if (!isCustom) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { supabase } = await import("../../lib/supabaseClient");
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) return;
+        const { getActiveCompanyId, getHiddenOverrideMapping } = await import("../../lib/mappingsApi");
+        const cid = await getActiveCompanyId(uid);
+        if (!cid) return;
+        const hidden = await getHiddenOverrideMapping({ companyId: cid, standard: activeStandardKey });
+        if (!cancelled) setHiddenOverride(hidden ?? null);
+      } catch (e) { console.warn("[ConsolidationSheet] hidden override load failed:", e); }
+    })();
+    return () => {
+      cancelled = true;
+      setHiddenOverride(null);
+      overrideAppliedRef.current = false;
+    };
+  }, [activeStandardKey]);
+
   // P/L + B/S use the same mappings API (mappingsApi / reportMappingsApi)
   const pickMappingApi = useCallback(async (_tab, kind) => {
     const mod = kind === "report"
@@ -2245,8 +2520,6 @@ const consFilter = `Year eq ${year} and Month eq ${month} and Source eq '${sourc
       }).then(r => r.json()).then(d => d.value || []),
 ])
 .then(([cons, uploaded, journals, consPrev]) => {
-        console.log("[SAMPLE consolidated row]", cons[0]);
-        console.log("[SAMPLE consolidated keys]", cons[0] ? Object.keys(cons[0]) : "empty");
         setRawData([]);
         setUploadedData([]);
         setJournalData([]);
@@ -2323,7 +2596,7 @@ useEffect(() => {
           if (sec) out[r.account_code] = { label: sec.label, color: sec.color };
         });
         const breakerOrder = new Map();
-        rowsArr.forEach(r => breakerOrder.set(r.account_code, r.sort_order));
+rowsArr.forEach(r => breakerOrder.set(r.account_code, r.sort_order));
         setBreakers(out);
         setBreakerSortOrder(breakerOrder);
         setCodeToSectionInfo(codeSecMap);
@@ -2380,9 +2653,21 @@ useEffect(() => {
   fetch(`${BASE}/reports/consolidated-accounts?$filter=${encodeURIComponent(filter)}`, {
     headers: { Authorization: `Bearer ${token}` }
   })
-    .then(r => r.json())
+.then(r => r.json())
     .then(d => { setCmpRawData(d.value || []); setCmpLoading(false); })
     .catch(() => { setCmpRawData([]); setCmpLoading(false); });
+
+  // Previous period of B (for monthly delta on the compare column).
+  const pM = Number(cmpMonth) - 1;
+  const pY = pM >= 1 ? Number(cmpYear) : Number(cmpYear) - 1;
+  const pMonth = pM >= 1 ? pM : 12;
+  const prevFilter = `Year eq ${pY} and Month eq ${pMonth} and Source eq '${cmpSource}' and GroupStructure eq '${cmpStructure}' and GroupShortName eq '${topParent}'`;
+  fetch(`${BASE}/reports/consolidated-accounts?$filter=${encodeURIComponent(prevFilter)}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  })
+    .then(r => r.json())
+    .then(d => setCmpRawDataPrev(d.value || []))
+    .catch(() => setCmpRawDataPrev([]));
 }, [token, compareMode, cmpYear, cmpMonth, cmpSource, cmpStructure, topParent]);
 
   // ── Derived data ──────────────────────────────────────────────────────────
@@ -2500,15 +2785,27 @@ const cmpPivot = useMemo(() => {
   return m;
 }, [cmpRawData]);
 
+const cmpPivotPrev = useMemo(() => {
+  const m = new Map();
+  cmpRawDataPrev.forEach(r => {
+    if (!passesDimFilter(r)) return;
+    if (!m.has(r.AccountCode)) m.set(r.AccountCode, {});
+    const c = m.get(r.AccountCode);
+    if (!c[r.CompanyShortName]) c[r.CompanyShortName] = [];
+    c[r.CompanyShortName].push(r);
+  });
+  return m;
+}, [cmpRawDataPrev, passesDimFilter]);
+
 // ── Elimination rollup by JournalHeader ───────────────────────────────────
   // Each elimination journal has a meaningful Header describing what it does.
   // We collect every distinct header that appears at Group level, bucket per
   // header per account, and roll up the tree. Sub-columns are derived
   // dynamically from the data — order is stable (alphabetical, with empty
   // headers last).
-  const { elimPivot, elimHeaders } = useMemo(() => {
+const { elimPivot, elimHeaders } = useMemo(() => {
     // 1. Collect Group-level journals only (these are the consolidation engine's postings)
-    const groupJournals = journalData.filter(r => r.CompanyShortName === topParent);
+const groupJournals = journalData.filter(r => r.CompanyShortName === topParent);
 
     // 2. Discover all distinct headers
     const headerSet = new Set();
@@ -2530,7 +2827,7 @@ const cmpPivot = useMemo(() => {
       if (!ac) return;
       const h = String(r.JournalHeader ?? "").trim() || "(no header)";
       if (!detail.has(ac)) detail.set(ac, empty());
-      detail.get(ac)[h] += -(Number(r.AmountYTD ?? 0));
+  detail.get(ac)[h] += -Number(getRowAmount(r) || 0);
     });
 
     // 4. Roll up the tree (parent inherits sum of all child journal entries)
@@ -2570,7 +2867,7 @@ const cmpPivot = useMemo(() => {
     const nonEmptyHeaders = headers.filter(h => headerTotals[h] >= 1);
 
 return { elimPivot: m, elimHeaders: nonEmptyHeaders };
-  }, [journalData, rawData, topParent]);
+  }, [journalData, rawData, topParent, getRowAmount]);
 
   const uploadedPivot = useMemo(() => {
     const m = new Map();
@@ -2593,30 +2890,47 @@ return { elimPivot: m, elimHeaders: nonEmptyHeaders };
   // showing an empty table.
 const mappingDerived = useMemo(() => {
     if (!activeMapping) return null;
+
+// The "All" tab shows the client's custom override structure and NEVER a
+    // user mapping (a mapping is single-statement and can't represent the mixed
+    // All view) — so mappingDerived is null there. Mappings apply only on their
+    // own P/L or B/S tab.
     if (!mappingTab) return null;
-    const converted = mappingTab === "pl"
-      ? activeMapping.plTreeConverted
-      : activeMapping.bsTreeConverted;
-    if (!converted || converted.rows.size === 0) return null;
-    const { rows, sections } = converted;
-    // rows is keyed by instance id, each entry has { code, name, dims, section, sortOrder, isSum, ... }
-    const instances = [];       // ordered list of instances
-    const sortOrder = new Map(); // instanceId → sortOrder
-    const codeSection = new Map(); // instanceId → sectionId
-    const mappedCodes = new Set(); // code strings that appear in any instance
-    rows.forEach((info, instanceId) => {
-      instances.push({ instanceId, ...info });
-      sortOrder.set(instanceId, info.sortOrder);
-      codeSection.set(instanceId, info.section);
-      if (!info.isSum) mappedCodes.add(info.code);
-    });
-    instances.sort((a, b) => a.sortOrder - b.sortOrder);
+    const parts = [[mappingTab, mappingTab === "pl" ? activeMapping.plTreeConverted : activeMapping.bsTreeConverted]];
+
+    const usable = parts.filter(([, c]) => c && c.rows.size > 0);
+    if (usable.length === 0) return null;
+
+    const instances = [];
+    const sortOrder = new Map();
+    const codeSection = new Map();
+    const mappedCodes = new Set();
     const sectionMeta = {};
-    sections.forEach((secInfo, secId) => {
-      if (secInfo && secInfo.label) {
-        sectionMeta[secId] = { label: secInfo.label, color: secInfo.color || "#1a2f8a" };
-      }
+    let sortBase = 0;
+
+    usable.forEach(([ns, converted]) => {
+      const { rows, sections } = converted;
+      const nsId = (id) => usable.length > 1 ? `${ns}:${id}` : String(id);
+      let localMax = 0;
+      rows.forEach((info, instanceId) => {
+        const iid = nsId(instanceId);
+        const so = sortBase + (info.sortOrder ?? 0);
+        const secNs = nsId(info.section);
+        instances.push({ instanceId: iid, ...info, section: secNs, sortOrder: so });
+        sortOrder.set(iid, so);
+        codeSection.set(iid, secNs);
+        if (!info.isSum) mappedCodes.add(info.code);
+        if ((info.sortOrder ?? 0) > localMax) localMax = info.sortOrder ?? 0;
+      });
+      sections.forEach((secInfo, secId) => {
+        if (secInfo && secInfo.label) {
+          sectionMeta[nsId(secId)] = { label: secInfo.label, color: secInfo.color || "#1a2f8a" };
+        }
+      });
+      sortBase += localMax + 1000; // BS strictly after PL
     });
+
+    instances.sort((a, b) => a.sortOrder - b.sortOrder);
     return { instances, sortOrder, codeSection, sectionMeta, mappedCodes };
   }, [activeMapping, mappingTab]);
 
@@ -2643,6 +2957,107 @@ if (!accountMap.size) return { accountMap, tree: [], mappingBreakersOverride: nu
     // Render EVERY mapped code regardless of whether it has data. Codes that
     // exist in the API response get real names/types/values; codes that only
     // live in the mapping render with the code as the name and zero values.
+// ── "All" from hidden override ─────────────────────────────────────────
+    // In the mixed All view (no tab), render the client's custom structure
+    // straight from the override's native pl_tree + bs_tree — preserving order,
+    // nesting and breakers, exactly like Contributive's "Todos". Sort-based
+    // reconstruction from the standard can't place override-only custom
+    // accounts (999/888/777), so we walk the override tree directly instead.
+// Applies to All (both trees) and to the P/L or B/S tabs (their single
+    // tree) — but only when the user has NOT activated their own mapping for
+    // that tab (in which case the mapping branch below takes over).
+    const userMappingActive = !!(mappingDerived && mappingDerived.instances && mappingDerived.instances.length > 0);
+    const overrideForTab =
+      mappingTab === "pl" ? { pl: true, bs: false } :
+      mappingTab === "bs" ? { pl: false, bs: true } :
+      !mappingTab        ? { pl: true, bs: true } : null;
+    if (overrideForTab && !userMappingActive && hiddenOverride &&
+        ((overrideForTab.pl && hiddenOverride.pl_tree?.length > 0) ||
+         (overrideForTab.bs && hiddenOverride.bs_tree?.length > 0))) {
+const breakersOverride = {};
+      let synthCounter = 0;
+// Build a subtree (children keep their own nesting, no section handling —
+      // breakers only exist at the top level of pl_tree/bs_tree).
+      const buildNode = (n, stmtType) => {
+        const code = String(n.code ?? "");
+        if (!code) return null;
+        const existing = accountMap.get(code);
+        const stmt = codeToStatementFromStd.get(code);
+        const resolvedType = existing?.AccountType
+          || (stmt === "BS" ? "B/S" : stmt === "PL" ? "P/L" : null)
+          || stmtType || "P/L";
+        const instanceId = String(n.id ?? `ov-${code}-${synthCounter++}`);
+        const kids = (n.children || [])
+          .filter(c => c && c.kind !== "breaker" && !String(c.code ?? "").startsWith("__breaker__"))
+          .map(c => buildNode(c, stmtType))
+          .filter(Boolean);
+        return {
+          AccountCode: code,
+          AccountName: n.name || existing?.AccountName || code,
+          AccountType: resolvedType,
+          SumAccountCode: existing?.SumAccountCode ?? null,
+          children: kids,
+          _instanceId: instanceId,
+          _dims: Array.isArray(n.dims) ? n.dims.map(String).filter(Boolean) : [],
+          _isSum: !!n.isSum,
+        };
+      };
+      // Top-level walk: a breaker opens a section that runs until the NEXT
+      // breaker. Its meta attaches to the first top-level node that follows —
+      // exactly like Contributive's buildMappingLiteral. Nodes NOT wrapped by a
+      // breaker (siblings after the breaker's own children, e.g. I.PL) still
+      // belong to the currently-open section.
+const buildFromOverride = (nodes, _unused, stmtType) => {
+        const out = [];
+        let currentSectionMeta = null;
+        let sectionOpenNeedsAnchor = false;
+        const emit = (rawNode) => {
+          const built = buildNode(rawNode, stmtType);
+          if (!built) return;
+          if (sectionOpenNeedsAnchor && currentSectionMeta) {
+            breakersOverride[built._instanceId] = currentSectionMeta;
+            sectionOpenNeedsAnchor = false;
+          }
+          out.push(built);
+        };
+        const walkTop = (list) => {
+          for (const n of list || []) {
+            if (!n) continue;
+            if (n.kind === "breaker" || String(n.code ?? "").startsWith("__breaker__")) {
+              currentSectionMeta = { label: String(n.name ?? ""), color: n.color || "#1a2f8a" };
+              sectionOpenNeedsAnchor = true;
+              walkTop(n.children);
+              continue;
+            }
+            emit(n);
+          }
+        };
+        walkTop(nodes);
+        // A breaker with no following account (e.g. an empty "NEW BREAKER" at the
+        // end) never got anchored — surface it as a standalone header row via a
+        // placeholder node so it still renders.
+        if (sectionOpenNeedsAnchor && currentSectionMeta) {
+          const phId = `ov-emptybreaker-${synthCounter++}`;
+          breakersOverride[phId] = currentSectionMeta;
+          out.push({
+            AccountCode: "", AccountName: "", AccountType: stmtType || "P/L",
+            SumAccountCode: null, children: [], _instanceId: phId, _dims: [],
+            _isSum: false, _breakerOnly: true,
+          });
+        }
+        return out;
+      };
+// Clona los árboles del override (valores de estado) a datos locales antes de
+      // construir, para no derivar la estructura de render directamente del estado.
+      const plSrc = overrideForTab.pl ? structuredClone(hiddenOverride.pl_tree ?? []) : [];
+      const bsSrc = overrideForTab.bs ? structuredClone(hiddenOverride.bs_tree ?? []) : [];
+      const treeOut = [
+        ...buildFromOverride(plSrc, null, "P/L"),
+        ...buildFromOverride(bsSrc, null, "B/S"),
+      ];
+      return { accountMap, tree: treeOut, mappingBreakersOverride: breakersOverride };
+    }
+
 if (mappingDerived && mappingDerived.instances && mappingDerived.instances.length > 0) {
       // Each mapping instance becomes its own tree node. Multiple instances
       // of the same account code (with different dims) do NOT collide —
@@ -2699,8 +3114,95 @@ if (mappingDerived && mappingDerived.instances && mappingDerived.instances.lengt
           AccountName: fromMap?.AccountName ?? codeToNameFromStd.get(code) ?? code,
           AccountType: accountType,
          SumAccountCode: (isCustomStd ? codeToParentFromStd.get(code) : null) ?? fromMap?.SumAccountCode ?? codeToParentFromStd.get(code) ?? "",
-          children: [],
+children: [],
         });
+}
+
+      // ── Inject custom accounts that live ONLY in the hidden override ───────
+      // (e.g. 999/888/777). Absent from the standard, so walk the override's
+      // native pl_tree/bs_tree and add each missing code with its real parent
+      // (from the override nesting), a section inherited from the enclosing
+      // breaker, and a sortOrder anchored just after the nearest preceding
+      // standard sibling — so they land in the right section AND nest (888
+      // under 999, 777 under 888).
+if (hiddenOverride) {
+        // Minimum sortOrder per section among EXISTING standard codes, so when
+        // we enter a breaker whose custom codes precede any standard sibling
+        // (e.g. RESULT → 999 before E.PL), we anchor to the section's start
+        // instead of leaving the anchor in the previous section.
+const sectionMinSort = new Map();
+        for (const [code, so] of effectiveSortOrder.entries()) {
+          if (!Number.isInteger(so)) continue; // skip already-injected custom codes
+          if (stdNodes.get(code)?._fromOverride) continue;
+          const sec = codeToSectionInfo.get(code)?.section;
+          if (!sec) continue;
+          const cur = sectionMinSort.get(sec);
+          if (cur == null || so < cur) sectionMinSort.set(sec, so);
+        }
+// Find the sortOrder of the next EXISTING standard code at or after a
+        // given index among siblings — custom codes anchor just before it.
+        const nextStdSort = (siblings, startIdx) => {
+          for (let i = startIdx; i < siblings.length; i++) {
+            const s = siblings[i];
+            if (!s) continue;
+            if (s.kind === "breaker" || String(s.code ?? "").startsWith("__breaker__")) continue;
+            const c = String(s.code ?? "");
+            if (c && stdNodes.has(c)) {
+              const so = effectiveSortOrder.get(c);
+              if (Number.isInteger(so)) return so;
+            }
+          }
+          return null;
+        };
+        const injectOverrideTree = (nodes, parentCode, sectionInfo, anchorRef) => {
+          const siblings = nodes || [];
+          for (let idx = 0; idx < siblings.length; idx++) {
+            const n = siblings[idx];
+            if (!n) continue;
+            if (n.kind === "breaker" || String(n.code ?? "").startsWith("__breaker__")) {
+              const secCode = n.sectionCode || n.code;
+              const secInfo = (secCode && codeToSectionInfo.get(secCode))
+                || { section: secCode || sectionInfo?.section, label: n.name, color: n.color || "#1a2f8a" };
+              injectOverrideTree(n.children, parentCode, secInfo, anchorRef);
+              continue;
+            }
+            const code = String(n.code ?? "");
+            if (!code) continue;
+
+if (stdNodes.has(code)) {
+              const so = effectiveSortOrder.get(code);
+              if (so != null) anchorRef.sort = so;
+            } else {
+              // Interpolate between the previous and next EXISTING standard
+              // siblings so custom codes land exactly where the override nests
+              // them — between anchorRef.sort (prev std) and the next std sort.
+              const prevStd = anchorRef.sort;
+              const nextStd = nextStdSort(siblings, idx + 1);
+              const upper = (nextStd != null && nextStd > prevStd) ? nextStd : (prevStd + 1);
+              anchorRef.sort = prevStd + (upper - prevStd) / 1000;
+              const stmt = codeToStatementFromStd.get(code);
+              stdNodes.set(code, {
+                AccountCode: code,
+                AccountName: n.name || code,
+                AccountType: stmt === "BS" ? "B/S" : "P/L",
+                SumAccountCode: parentCode || "",
+                children: [],
+                _fromOverride: true,
+              });
+              effectiveSortOrder.set(code, anchorRef.sort);
+              if (sectionInfo && !codeToSectionInfo.has(code)) {
+                codeToSectionInfo.set(code, sectionInfo);
+              }
+if (parentCode && !codeToParentFromStd.get(code)) {
+                codeToParentFromStd.set(code, parentCode);
+              }
+            }
+            injectOverrideTree(n.children, code, sectionInfo, anchorRef);
+          }
+        };
+        const anchorRef = { sort: 0 };
+        injectOverrideTree(hiddenOverride.pl_tree, "", null, anchorRef);
+        injectOverrideTree(hiddenOverride.bs_tree, "", null, anchorRef);
       }
 
       // Wire parent-child links, SKIP if parent is grand total OR cross-section
@@ -2758,7 +3260,7 @@ if (mappingDerived && mappingDerived.instances && mappingDerived.instances.lengt
           const sB = effectiveSortOrder.get(b.AccountCode) ?? 9999999;
           return sA - sB;
         });
-      roots.forEach(sortRec);
+roots.forEach(sortRec);
       return { accountMap, tree: roots, mappingBreakersOverride: null };
     }
 
@@ -2792,7 +3294,7 @@ if (mappingDerived && mappingDerived.instances && mappingDerived.instances.lengt
       return tA - tB;
     });
     return { accountMap, tree, mappingBreakersOverride: null };
-  }, [rawData, breakerSortOrder, typeFilter, mappingDerived, activeStandardKey, codeToSectionInfo, codeToNameFromStd, codeToParentFromStd, codeToStatementFromStd]);
+}, [rawData, breakerSortOrder, typeFilter, mappingTab, mappingDerived, hiddenOverride, activeStandardKey, codeToSectionInfo, codeToNameFromStd, codeToParentFromStd, codeToStatementFromStd]);
 
 // ── Pre-built trees for each export view ─────────────────────────────────
   // The on-screen `tree` uses the user's current typeFilter. The Excel export
@@ -2890,16 +3392,100 @@ const getDerivedFor = (tab) => {
       return { sortOrder, codeSection, sectionMeta, mappedCodes, breakers: {} };
     };
 
-    const derivedPL = getDerivedFor("pl");
+const derivedPL = getDerivedFor("pl");
     const derivedBS = getDerivedFor("bs");
 
-    return {
-      all: buildFiltered("", null),
-      pl:  buildFiltered("P/L", derivedPL),
-      bs:  buildFiltered("B/S", derivedBS),
-      derivedPL, derivedBS,
+    // When no user mapping is active but the client has a hidden override,
+    // export must mirror the on-screen custom structure (the standard path only
+    // has the ~8 top-level accountMap codes, so it would export almost nothing).
+// Build an export tree straight from a raw structure tree (override OR a
+    // user mapping — both share the same {code,name,children,breaker} shape),
+    // preserving nesting and section breakers. Replaces the old flat
+    // accountMap-filtered path that dropped custom accounts missing from
+    // rawData (which left P/L & B/S empty when a mapping was active).
+    const buildFromStructureTree = (plTree, bsTree, which) => {
+      const usePl = (which === "all" || which === "pl") && Array.isArray(plTree) && plTree.length > 0;
+      const useBs = (which === "all" || which === "bs") && Array.isArray(bsTree) && bsTree.length > 0;
+      if (!usePl && !useBs) return null;
+      const nodes = [];
+      const breakers = {};
+      let phCounter = 0;
+      const buildOne = (n, stmtType) => {
+        const code = String(n.code ?? "");
+        if (!code) return null;
+        const existing = accountMap.get(code);
+        const stmt = codeToStatementFromStd.get(code);
+        const type = existing?.AccountType || (stmt === "BS" ? "B/S" : stmt === "PL" ? "P/L" : null) || stmtType || "P/L";
+        const kids = (n.children || [])
+          .filter(c => c && c.kind !== "breaker" && !String(c.code ?? "").startsWith("__breaker__"))
+          .map(c => buildOne(c, stmtType)).filter(Boolean);
+return {
+          AccountCode: code,
+          AccountName: n.name || existing?.AccountName || code,
+          AccountType: type,
+          SumAccountCode: existing?.SumAccountCode ?? null,
+          children: kids,
+          _dims: Array.isArray(n.dims) ? n.dims.map(String).filter(Boolean) : [],
+        };
+      };
+      const walkExport = (list, stmtType) => {
+        let curMeta = null, needAnchor = false;
+        const doWalk = (items) => {
+          for (const n of items || []) {
+            if (!n) continue;
+            if (n.kind === "breaker" || String(n.code ?? "").startsWith("__breaker__")) {
+              curMeta = { label: String(n.name ?? ""), color: n.color || "#1a2f8a" };
+              needAnchor = true;
+              doWalk(n.children);
+              continue;
+            }
+            const built = buildOne(n, stmtType);
+            if (!built) continue;
+            if (needAnchor && curMeta) { breakers[built.AccountCode] = curMeta; needAnchor = false; }
+            nodes.push(built);
+          }
+        };
+        doWalk(list);
+        if (needAnchor && curMeta) {
+          const phCode = `__breaker_ph_${phCounter++}__`;
+          breakers[phCode] = curMeta;
+          nodes.push({ AccountCode: phCode, AccountName: "", AccountType: stmtType || "P/L", SumAccountCode: null, children: [], _breakerOnly: true });
+        }
+      };
+      if (usePl) walkExport(plTree, "P/L");
+      if (useBs) walkExport(bsTree, "B/S");
+      return { nodes, breakers };
     };
-}, [rawData, breakerSortOrder, activeMapping]);
+
+// Clona árboles de estado (activeMapping / hiddenOverride) a datos locales
+    // antes de construir, para no derivar la salida directamente del estado.
+    const mapPl = activeMapping?.plTreeRaw ? structuredClone(activeMapping.plTreeRaw) : null;
+    const mapBs = activeMapping?.bsTreeRaw ? structuredClone(activeMapping.bsTreeRaw) : null;
+    const ovPl  = hiddenOverride?.pl_tree ? structuredClone(hiddenOverride.pl_tree) : null;
+    const ovBs  = hiddenOverride?.bs_tree ? structuredClone(hiddenOverride.bs_tree) : null;
+
+    // "All" always uses the override (never a mapping). P/L and B/S use the
+    // mapping on their own tab if active, else the override.
+    const overrideAll = buildFromStructureTree(ovPl, ovBs, "all");
+    const overridePL  = (activeMapping && Array.isArray(mapPl) && mapPl.length > 0)
+      ? buildFromStructureTree(mapPl, null, "pl")
+      : buildFromStructureTree(ovPl, null, "pl");
+    const overrideBS  = (activeMapping && Array.isArray(mapBs) && mapBs.length > 0)
+      ? buildFromStructureTree(null, mapBs, "bs")
+      : buildFromStructureTree(null, ovBs, "bs");
+
+    return {
+      all: overrideAll ? overrideAll.nodes : buildFiltered("", null),
+      pl:  overridePL ? overridePL.nodes : buildFiltered("P/L", derivedPL),
+      bs:  overrideBS ? overrideBS.nodes : buildFiltered("B/S", derivedBS),
+      overrideBreakers: {
+        all: overrideAll?.breakers ?? null,
+        pl:  overridePL?.breakers ?? null,
+        bs:  overrideBS?.breakers ?? null,
+      },
+derivedPL, derivedBS,
+    };
+}, [rawData, breakerSortOrder, activeMapping, hiddenOverride, codeToStatementFromStd]);
 
 const toggleExpand = useCallback((code) => setExpanded(prev => {
     const next = new Set(prev); next.has(code) ? next.delete(code) : next.add(code); return next;
@@ -2919,8 +3505,9 @@ const baseEffectiveCompanies = useMemo(() => (
     if (colOrder.length === 0) return baseEffectiveCompanies;
     const ordered = colOrder.filter(c => baseEffectiveCompanies.includes(c));
     const rest = baseEffectiveCompanies.filter(c => !ordered.includes(c));
-    return [...ordered, ...rest];
-  }, [baseEffectiveCompanies, colOrder]);
+return [...ordered, ...rest];
+}, [baseEffectiveCompanies, colOrder]);
+
 return (
    <div className="flex flex-col gap-4 h-full min-h-0" style={{ overflow: "visible" }}>
 <style>{`
@@ -3043,7 +3630,7 @@ kicker={viewsMode ? T("mappings") : T("tab_consolidated")}
         }}
         onMappingsClick={viewsMode ? undefined : (mappingsEnabled ? () => setViewsMode("landing") : undefined)}
 tabs={viewsMode ? [] : [
-          { id: "",    label: T("all"),          icon: Filter    },
+          { id: "",    label: T("all"),          icon: Filter, disabled: !!activeMapping },
           { id: "P/L", label: T("tab_pl"),       icon: TrendingUp },
           { id: "B/S", label: T("tab_bs_short"), icon: BarChart2 },
         ]}
@@ -3573,20 +4160,22 @@ className={`text-center px-3 select-none cursor-grab sheet-area-cos ${isFirstCom
           </div>
         </th>
       );
-    })}
-{cmpColsVisible && effectiveCompanies.map(c => (
-      <React.Fragment key={`${c}-cmp-headers`}>
-        <th className="text-center px-3" style={{ background: `${colors.primary}08`, borderLeft: `2px solid ${colors.primary}15`, minWidth: 110, animation: `${cmpColsExiting ? "cmpColOut" : "cmpColIn"} 320ms cubic-bezier(0.34,1.56,0.64,1) 60ms both`, transformOrigin: "left center" }}>
+    }).flatMap((companyTh, ci) => {
+      const c = effectiveCompanies[ci];
+      if (!cmpColsVisible) return [companyTh];
+      return [
+        companyTh,
+        <th key={`${c}-cmp`} className="text-center px-3" style={{ background: `${colors.primary}08`, borderLeft: `2px solid ${colors.primary}15`, minWidth: 110, animation: `${cmpColsExiting ? "cmpColOut" : "cmpColIn"} 320ms cubic-bezier(0.34,1.56,0.64,1) 60ms both`, transformOrigin: "left center" }}>
           <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>CMP</span>
-        </th>
-        <th className="text-center px-3" style={{ background: `${colors.primary}12`, minWidth: 110, animation: `${cmpColsExiting ? "cmpColOut" : "cmpColIn"} 320ms cubic-bezier(0.34,1.56,0.64,1) 80ms both`, transformOrigin: "left center" }}>
+        </th>,
+        <th key={`${c}-delta`} className="text-center px-3" style={{ background: `${colors.primary}12`, minWidth: 110, animation: `${cmpColsExiting ? "cmpColOut" : "cmpColIn"} 320ms cubic-bezier(0.34,1.56,0.64,1) 80ms both`, transformOrigin: "left center" }}>
           <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>Δ</span>
-        </th>
-        <th className="text-center px-3" style={{ background: `${colors.primary}1e`, minWidth: 80, animation: `${cmpColsExiting ? "cmpColOut" : "cmpColIn"} 320ms cubic-bezier(0.34,1.56,0.64,1) 100ms both`, transformOrigin: "left center" }}>
+        </th>,
+        <th key={`${c}-pct`} className="text-center px-3" style={{ background: `${colors.primary}1e`, minWidth: 80, animation: `${cmpColsExiting ? "cmpColOut" : "cmpColIn"} 320ms cubic-bezier(0.34,1.56,0.64,1) 100ms both`, transformOrigin: "left center" }}>
           <span className="font-black py-4 block" style={{ color: colors.primary, fontSize: 12, opacity: 0.7 }}>Δ%</span>
-        </th>
-      </React.Fragment>
-    ))}
+</th>,
+      ];
+    })}
   </tr>
 </thead>
 <tbody>
@@ -3621,7 +4210,11 @@ const effectiveBreakers = mappingBreakersOverride ?? mappingDerived?.breakers ??
   // otherwise fall back to account code (standard render).
   const breakerKey = node._instanceId ?? node.AccountCode;
   const mappingBreaker = effectiveBreakers[breakerKey] ?? null;
-  const breaker = mappingDerived
+  // When the override or a mapping owns the structure, ONLY its breakers may
+  // show — never the standard type-dividers (Profit & Loss / Distribution of
+  // Result / Balance Sheet), which belong to a different structure entirely.
+  const structureOwned = !!mappingBreakersOverride || !!mappingDerived;
+  const breaker = structureOwned
     ? mappingBreaker
     : (mappingBreaker || (typeChanged && TYPE_LABELS[type] ? TYPE_LABELS[type] : null));
 const totalCols = 1 // account col
@@ -3632,7 +4225,7 @@ const totalCols = 1 // account col
     + effectiveCompanies.length * (compareMode ? 4 : 1); // per-company
   return (
    <React.Fragment key={node._instanceId ?? node.AccountCode}>
-      {breaker && (
+{breaker && (
 <tr>
           <td className="sticky left-0 z-10 px-5 py-1.5"
             style={{ backgroundColor: breaker.color }}>
@@ -3643,6 +4236,7 @@ const totalCols = 1 // account col
           <td colSpan={totalCols - 1} style={{ backgroundColor: breaker.color, minWidth: 0 }} />
         </tr>
       )}
+      {!node._breakerOnly && (
 <SheetRow node={node} depth={0}
         rowIndex={i}
         expanded={expanded} onToggle={toggleExpand}
@@ -3653,10 +4247,11 @@ pivotPrev={pivotPrev} ytdOnly={ytdOnly}
         topParent={topParent}
         elimExpanded={elimColsVisible} elimHeaders={elimHeaders}
         elimColsExiting={elimColsExiting}
-        compareMode={cmpColsVisible} cmpPivot={cmpPivot}
+compareMode={cmpColsVisible} cmpPivot={cmpPivot} cmpPivotPrev={cmpPivotPrev}
         body1Style={body1Style} body2Style={body2Style} subbody1Style={subbody1Style}
-        colors={colors} cmpColsExiting={cmpColsExiting} cmpColsVisible={cmpColsVisible}
+colors={colors} cmpColsExiting={cmpColsExiting} cmpColsVisible={cmpColsVisible}
         rowMatchesDims={rowMatchesDims} />
+      )}
     </React.Fragment>
   );
 })}
@@ -3686,47 +4281,49 @@ pivotPrev={pivotPrev} ytdOnly={ytdOnly}
               animation: "plRowSlideIn 340ms cubic-bezier(0.34,1.56,0.64,1)",
             }}>
 
-            {/* Header */}
-            <div className="relative px-7 pt-7 pb-5 flex-shrink-0 flex items-start justify-between gap-4">
-              <div className="flex items-start gap-3">
-                <div className="w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0"
-                  style={{
-                    background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.primary}dd 100%)`,
-                    boxShadow: `0 8px 20px -6px ${colors.primary}60`,
-                  }}>
-                  <Download size={17} strokeWidth={2.5} color="white" />
-                </div>
-                <div>
-<h2 className="font-black" style={{ color: colors.primary, fontSize: 20, letterSpacing: "-0.02em" }}>
-                    {T("export_report")}
-                  </h2>
-                  <div className="flex items-center gap-1.5 mt-1.5">
-<span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
-                      style={{ background: `${colors.primary}10`, color: colors.primary }}>
-                      {exportOpts.format === "pdf" ? T("badge_pdf") : T("badge_excel")}
-                    </span>
-                    {compareMode && (
-                      <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
-                        style={{ background: "#CF305D15", color: "#CF305D" }}>
-                        {T("badge_compare")}
+{/* Header — branded banner */}
+            <div className="relative flex-shrink-0 px-7 pt-7 pb-6 overflow-hidden"
+              style={{ background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.primary}e6 52%, #CF305D 168%)` }}>
+              <div className="absolute inset-0 pointer-events-none"
+                style={{ backgroundImage: "radial-gradient(circle at 88% 10%, rgba(255,255,255,0.18) 0%, transparent 42%)" }} />
+              <div className="relative flex items-start justify-between gap-4">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0"
+                    style={{ background: "rgba(255,255,255,0.16)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.22)", backdropFilter: "blur(6px)" }}>
+                    <Download size={19} strokeWidth={2.5} color="white" />
+                  </div>
+                  <div>
+                    <h2 className="font-black text-white" style={{ fontSize: 21, letterSpacing: "-0.02em" }}>
+                      {T("export_report")}
+                    </h2>
+                    <div className="flex items-center gap-1.5 mt-2">
+                      <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md text-white"
+                        style={{ background: "rgba(255,255,255,0.18)" }}>
+                        {exportOpts.format === "pdf" ? T("badge_pdf") : T("badge_excel")}
                       </span>
-                    )}
-                    {activeMapping && (
-                      <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
-                        style={{ background: "#10b98115", color: "#059669" }}>
-                        {T("badge_mapped")}
-                      </span>
-                    )}
+                      {compareMode && (
+                        <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md text-white"
+                          style={{ background: "rgba(255,255,255,0.18)" }}>
+                          {T("badge_compare")}
+                        </span>
+                      )}
+                      {activeMapping && (
+                        <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md text-white"
+                          style={{ background: "rgba(16,185,129,0.38)" }}>
+                          {T("badge_mapped")}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
+                <button onClick={() => setExportModal(false)}
+                  className="w-9 h-9 rounded-xl flex items-center justify-center transition-all hover:scale-[1.05] text-white"
+                  style={{ background: "rgba(255,255,255,0.14)" }}
+                  onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.28)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.14)"; }}>
+                  <X size={14} strokeWidth={2.5} />
+                </button>
               </div>
-              <button onClick={() => setExportModal(false)}
-                className="w-9 h-9 rounded-xl flex items-center justify-center transition-all hover:scale-[1.05]"
-                style={{ background: "#f3f4f6", color: "#6b7280" }}
-                onMouseEnter={e => { e.currentTarget.style.background = "#e5e7eb"; e.currentTarget.style.color = "#111827"; }}
-                onMouseLeave={e => { e.currentTarget.style.background = "#f3f4f6"; e.currentTarget.style.color = "#6b7280"; }}>
-                <X size={14} strokeWidth={2.5} />
-              </button>
             </div>
 
             {/* Body */}
@@ -3828,27 +4425,30 @@ pivotPrev={pivotPrev} ytdOnly={ytdOnly}
                  <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">{T("export_layout_options")}</p>
                   <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
                 </div>
-                <div className="grid grid-cols-2 gap-2">
+<div className="grid grid-cols-2 gap-2">
                   {[
-{ key: "drillDown",  label: T("export_opt_drilldown") },
-                    { key: "elimDetail", label: T("sheet_opt_elim_breakdown", "Elim. breakdown") },
+                    { key: "drillDown",  label: T("export_opt_drilldown"), desc: T("export_opt_drilldown_desc", "Expande cada subcuenta. Off = resumen de primer nivel."), accent: colors.primary },
+                    { key: "elimDetail", label: T("sheet_opt_elim_breakdown", "Elim. breakdown"), desc: T("export_opt_elim_desc", "Una columna por diario de eliminación."), accent: "#4B5563" },
                   ].map(opt => {
                     const checked = !!exportOpts[opt.key];
                     return (
-                      <label key={opt.key}
-                        className="flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all hover:bg-gray-50"
-                        style={{ borderColor: checked ? `${colors.primary}40` : "#f3f4f6", background: checked ? `${colors.primary}06` : "white" }}
+                      <button key={opt.key} type="button"
+                        className="text-left p-3 rounded-xl border transition-all hover:shadow-sm"
+                        style={{ borderColor: checked ? `${opt.accent}55` : "#f3f4f6", background: checked ? `${opt.accent}08` : "white" }}
                         onClick={() => setExportOpts(o => ({ ...o, [opt.key]: !o[opt.key] }))}>
-                        <div className="w-4 h-4 rounded border-2 flex items-center justify-center transition-all flex-shrink-0"
-                          style={{ background: checked ? colors.primary : "transparent", borderColor: checked ? colors.primary : "#d1d5db" }}>
-                          {checked && (
-                            <svg width="8" height="8" viewBox="0 0 8 8">
-                              <path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round" />
-                            </svg>
-                          )}
+                        <div className="flex items-center gap-2">
+                          <div className="w-4 h-4 rounded border-2 flex items-center justify-center transition-all flex-shrink-0"
+                            style={{ background: checked ? opt.accent : "transparent", borderColor: checked ? opt.accent : "#d1d5db" }}>
+                            {checked && (
+                              <svg width="8" height="8" viewBox="0 0 8 8">
+                                <path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+                              </svg>
+                            )}
+                          </div>
+                          <span className="text-[11px] font-bold text-gray-700 leading-tight">{opt.label}</span>
                         </div>
-                        <span className="text-xs font-bold text-gray-700">{opt.label}</span>
-                      </label>
+                        <p className="text-[9.5px] text-gray-400 leading-snug mt-1.5">{opt.desc}</p>
+                      </button>
                     );
                   })}
                 </div>
@@ -3882,16 +4482,47 @@ pivotPrev={pivotPrev} ytdOnly={ytdOnly}
 try {
 const monthLabel = T(`month_${Number(month)}`, String(month));
                     const cmpMoLabel = T(`month_${Number(cmpMonth)}`, String(cmpMonth));
+                    const L = {
+                      code: T("exp_col_code"), account: T("exp_col_account"), cmp: T("exp_col_cmp"),
+                      delta: "Δ", deltaPct: "Δ%",
+                      elimTotal: T("exp_col_elim_total"), contribSum: T("exp_col_contrib_sum"),
+                      bandAccount: T("exp_band_account"), bandConsolidated: T("exp_band_consolidated"),
+                      bandSubgroup: T("exp_band_subgroup"), bandEliminations: T("exp_band_eliminations"),
+                      bandContribSum: T("exp_band_contrib_sum"), bandPerCompany: T("exp_band_per_company"),
+                      grpConsolidated: T("exp_grp_consolidated"), grpEliminations: T("exp_grp_eliminations"),
+                      grpPerCompany: T("exp_grp_per_company"),
+                      sheetConsolidated: T("exp_sheet_consolidated"), sheetSubgroup: T("exp_sheet_subgroup"),
+                      sheetWord: T("exp_sheet_word"),
+                      viewAll: T("exp_view_all"), viewPL: T("exp_view_pl"), viewBS: T("exp_view_bs"),
+                      reportTitle: T("exp_report_title"), contents: T("exp_contents"), part: T("exp_part"),
+                      ctxSource: T("exp_ctx_source"), ctxStructure: T("exp_ctx_structure"), ctxMapping: T("exp_ctx_mapping"),
+                      ctxVs: T("exp_ctx_vs"), ctxGenerated: T("exp_ctx_generated"),
+                      comparedWith: T("exp_compared_with"), footerIndex: T("exp_footer_index"),
+                      types: {
+                        "P/L": T("exp_type_pl"), "DIS": T("exp_type_dis"),
+                        "B/S": T("exp_type_bs"), "C/F": T("exp_type_cf"), "CFS": T("exp_type_cf"),
+                      },
+                    };
                     const sharedArgs = {
                       pivot, elimPivot, elimHeaders,
                       effectiveCompanies, topParent, rootParent,
                       getLegal, isRootView, displayCurrency,
                       source, structure, year, month, monthLabel,
-                      compareMode: cmpColsVisible, cmpPivot, cmpYear, cmpMonth, cmpMoLabel,
+compareMode: cmpColsVisible, cmpPivot, cmpPivotPrev, cmpYear, cmpMonth, cmpMoLabel,
+pivotPrev, ytdOnly,
+rowMatchesDims,
+                      getRowAmount,
+                      L,
                       activeMapping,
-                      mappingDerivedAll: null,
-                      mappingDerivedPL:  exportTrees.derivedPL,
-                      mappingDerivedBS:  exportTrees.derivedBS,
+                      mappingDerivedAll: exportTrees.overrideBreakers?.all
+                        ? { breakers: exportTrees.overrideBreakers.all }
+                        : null,
+                      mappingDerivedPL: exportTrees.overrideBreakers?.pl
+                        ? { breakers: exportTrees.overrideBreakers.pl }
+                        : exportTrees.derivedPL,
+                      mappingDerivedBS: exportTrees.overrideBreakers?.bs
+                        ? { breakers: exportTrees.overrideBreakers.bs }
+                        : exportTrees.derivedBS,
                       treeAll: exportTrees.all,
                       treePL:  exportTrees.pl,
                       treeBS:  exportTrees.bs,

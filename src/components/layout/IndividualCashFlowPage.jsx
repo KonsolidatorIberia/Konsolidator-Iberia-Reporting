@@ -1,6 +1,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { useState, useEffect, useRef, useMemo, Fragment, useCallback, useDeferredValue } from "react";
-import { ChevronDown, Loader2, Layers, FileText, Library, CheckCircle2, Pencil, X } from "lucide-react";
+import { createPortal } from "react-dom";
+import { ChevronDown, Loader2, Layers, FileText, Library, CheckCircle2, Pencil, X, Download } from "lucide-react";
 import { useTypo, useSettings } from "./SettingsContext";
 import PageHeader, { MultiFilterPill, FilterPill as HeaderFilterPill } from "./PageHeader.jsx";
 import { useCurrentUserResourceAccess } from "../../lib/userPermissionsApi";
@@ -273,6 +274,8 @@ function MsCheckbox({ checked, indeterminate, color }) {
 }
 
 function MultiSelectPill({ label, values, onChange, options, filterStyle, colors }) {
+  const { locale } = useSettings();
+  const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -282,12 +285,12 @@ function MultiSelectPill({ label, values, onChange, options, filterStyle, colors
   }, []);
   const allSelected = !values || values.length === options.length;
   const display = allSelected
-    ? `All (${options.length})`
+    ? `${T("filter_all")} (${options.length})`
     : values.length === 0
-      ? "None"
+      ? T("filter_none")
       : values.length === 1
-        ? options.find(o => o.value === values[0])?.label ?? "1 selected"
-        : `${values.length} selected`;
+        ? options.find(o => o.value === values[0])?.label ?? `1 ${T("filter_selected")}`
+        : `${values.length} ${T("filter_selected")}`;
   const toggle = (v) => {
     const current = values || options.map(o => o.value);
     const next = current.includes(v) ? current.filter(x => x !== v) : [...current, v];
@@ -309,7 +312,7 @@ function MultiSelectPill({ label, values, onChange, options, filterStyle, colors
             <button onClick={() => onChange(allSelected ? [] : null)}
               className="w-full text-left px-3 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all flex items-center gap-3 text-[#1a2f8a] hover:bg-[#eef1fb] border-b border-gray-100 mb-1">
               <MsCheckbox checked={allSelected} indeterminate={someSelected} color={colors?.primary} />
-              <span>{allSelected ? "Deselect all" : "Select all"}</span>
+           <span>{allSelected ? T("filter_deselect_all") : T("filter_select_all")}</span>
             </button>
             {options.map(o => {
               const selected = (values ?? options.map(x => x.value)).includes(o.value);
@@ -554,13 +557,30 @@ function MappedSheetRow({
   compareMode = false, cmpPivot = new Map(), colors, rowIndex = 0,
   uploadedData = [], journalEntries = [], groupToCf, nameFor, T,
   cmpUploadedData = [], cmpJournalEntries = [],
-  expandAllVersion = 0, expandAllState = false,
+expandAllVersion = 0, expandAllState = false,
+  onExpandedChange = null,
   searchQuery = "",
 }) {
+  const hasMappingChildren = node.children && node.children.length > 0;
   const [expanded, setExpanded] = useState(false);
+  const wasOpenRef = useRef(false);
   useEffect(() => {
+    // Expand-all only opens SUM nodes (mapping structure). Leaves that drill
+    // into raw ERP accounts stay closed — user opens them individually.
+    if (expandAllState && !hasMappingChildren) return;
     setExpanded(expandAllState);
-  }, [expandAllVersion, expandAllState]);
+    wasOpenRef.current = expandAllState;
+  }, [expandAllVersion, expandAllState, hasMappingChildren]);
+  const toggleExpanded = () => {
+    setExpanded(prev => {
+      const next = !prev;
+      if (onExpandedChange && next !== wasOpenRef.current) {
+        onExpandedChange(next ? 1 : -1);
+        wasOpenRef.current = next;
+      }
+      return next;
+    });
+  };
 
   const searchActive = !!searchQuery.trim();
   const effectiveExpanded = expanded || searchActive;
@@ -569,7 +589,6 @@ function MappedSheetRow({
     String(node.code).toLowerCase().includes(q) ||
     String(node.name || nameFor(node.code) || "").toLowerCase().includes(q)
   );
-  const hasMappingChildren = node.children && node.children.length > 0;
 
   // Collect all leaf codes under this node (recursive) — used for rollup.
   // If node has children: it's a sum, value = sum of all descendant leaves.
@@ -716,12 +735,31 @@ const cmpDrillMap = useMemo(() => {
 }, [effectiveExpanded, hasMappingChildren, compareMode, cmpUploadedData, cmpJournalEntries, groupToCf, node.code]);
 
   const totalCols = 1 + visibleCompanies.length * (compareMode ? 4 : 1);
-  const isExpandable = hasMappingChildren || true; // leaves can drill too
+// Cheap scan to know upfront if this row has any underlying drill data.
+  // Independent of expansion state so the chevron/toggle can be hidden
+  // BEFORE the user clicks. Sum nodes with mapping children stay expandable.
+  const hasAnyUnderlying = useMemo(() => {
+    if (hasMappingChildren) return true;
+    for (const r of uploadedData) {
+      const gc = String(r.AccountCode ?? r.accountCode ?? "");
+      if (!gc) continue;
+      const cfs = groupToCf?.get(gc) ?? [];
+      if (cfs.includes(node.code)) return true;
+    }
+    for (const j of journalEntries) {
+      const gc = String(j.AccountCode ?? j.accountCode ?? "");
+      if (!gc) continue;
+      const cfs = groupToCf?.get(gc) ?? [];
+      if (cfs.includes(node.code)) return true;
+    }
+    return false;
+  }, [hasMappingChildren, uploadedData, journalEntries, groupToCf, node.code]);
+  const isExpandable = hasAnyUnderlying;
 
   return (
     <>
-<tr className="group border-b border-gray-100 transition-colors hover:bg-[#eef1fb] cursor-pointer"
-        onClick={() => setExpanded(e => !e)}
+<tr className={`group border-b border-gray-100 transition-colors hover:bg-[#eef1fb] ${isExpandable ? "cursor-pointer" : ""}`}
+        onClick={isExpandable ? toggleExpanded : undefined}
         style={{ background: isMatchSelf ? "#fef3c7" : undefined, animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 25) * 35 + 50}ms both` }}>
         <td className="sticky left-0 z-10 py-2.5 pr-6 border-r border-gray-100 group-hover:bg-[#eef1fb]"
           style={{ paddingLeft: `${24 + depth * 16}px`, minWidth: 260, width: 260, background: isMatchSelf ? "#fef3c7" : "#fff" }}>
@@ -791,7 +829,7 @@ const cmpDrillMap = useMemo(() => {
       ))}
 
 {/* Leaf node expanded → drill into ERP / journal entries */}
-      {effectiveExpanded && !hasMappingChildren && drillGroups.length === 0 && (
+{effectiveExpanded && !hasMappingChildren && drillGroups.length === 0 && hasAnyUnderlying && (
         <tr>
 <td colSpan={totalCols} className="px-8 py-2 text-[10px] font-black uppercase tracking-widest text-gray-300">
             {T ? T("cf_no_underlying") : "No underlying accounts"}
@@ -816,14 +854,29 @@ function SheetRow({
   isSubtotal, compareMode = false, cmpPivot = new Map(), colors, rowIndex = 0,
   uploadedData = [], journalEntries = [], groupToCf, T,
   cmpUploadedData = [], cmpJournalEntries = [],
-  expandAllVersion = 0, expandAllState = false,
+expandAllVersion = 0, expandAllState = false,
+  onExpandedChange = null,
   searchQuery = "",
 }) {
   const [expanded, setExpanded] = useState(false);
+  const wasOpenRef = useRef(false);
   useEffect(() => {
     if (isSubtotal) return;
-    setExpanded(expandAllState);
+    // Expand-all skips leaves (they drill into ERP). Collapse-all still closes.
+    if (expandAllState) return;
+    setExpanded(false);
+    wasOpenRef.current = false;
   }, [expandAllVersion, expandAllState, isSubtotal]);
+  const toggleExpanded = () => {
+    setExpanded(prev => {
+      const next = !prev;
+      if (onExpandedChange && next !== wasOpenRef.current) {
+        onExpandedChange(next ? 1 : -1);
+        wasOpenRef.current = next;
+      }
+      return next;
+    });
+  };
 
   // When searching, force-open this row so user sees matches inside drill
   const searchActive = !!searchQuery.trim();
@@ -964,17 +1017,37 @@ const cmpDrillMap = useMemo(() => {
     return m;
 }, [effectiveExpanded, compareMode, cmpUploadedData, cmpJournalEntries, groupToCf, node.AccountCode]);
 
-  const totalCols = 1 + visibleCompanies.length * (compareMode ? 4 : 1);
+const totalCols = 1 + visibleCompanies.length * (compareMode ? 4 : 1);
+  // Whether this CF row has any underlying group accounts. Sum-labeled
+  // subtotals never expand; leaves only get the toggle if they'd render
+  // something meaningful on drill.
+  const hasAnyUnderlying = useMemo(() => {
+    if (isSubtotal) return false;
+    for (const r of uploadedData) {
+      const gc = String(r.AccountCode ?? r.accountCode ?? "");
+      if (!gc) continue;
+      const cfs = groupToCf?.get(gc) ?? [];
+      if (cfs.includes(node.AccountCode)) return true;
+    }
+    for (const j of cmpUploadedData) {
+      const gc = String(j.AccountCode ?? j.accountCode ?? "");
+      if (!gc) continue;
+      const cfs = groupToCf?.get(gc) ?? [];
+      if (cfs.includes(node.AccountCode)) return true;
+    }
+    return false;
+  }, [isSubtotal, uploadedData, cmpUploadedData, groupToCf, node.AccountCode]);
+  const isExpandable = hasAnyUnderlying;
 
   return (
     <>
-<tr className={`group border-b border-gray-100 transition-colors hover:bg-[#eef1fb] ${isSubtotal ? "" : "cursor-pointer"}`}
-        onClick={isSubtotal ? undefined : () => setExpanded(e => !e)}
+<tr className={`group border-b border-gray-100 transition-colors hover:bg-[#eef1fb] ${isExpandable ? "cursor-pointer" : ""}`}
+        onClick={isExpandable ? toggleExpanded : undefined}
         style={{ background: isMatchSelf ? "#fef3c7" : undefined, animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 25) * 35 + 50}ms both` }}>
         <td className="sticky left-0 z-10 py-2.5 pr-6 border-r border-gray-100 group-hover:bg-[#eef1fb]"
           style={{ paddingLeft: `${24 + depth * 16}px`, minWidth: 260, width: 260, background: isMatchSelf ? "#fef3c7" : "#fff" }}>
           <div className="flex items-center gap-2 select-none">
-            {isSubtotal ? (
+{!isExpandable ? (
               <span className="flex-shrink-0" style={{ width: 10 }} />
             ) : (
               <ChevronDown size={10} className="flex-shrink-0 transition-transform duration-200"
@@ -1024,7 +1097,7 @@ const cmpDrillMap = useMemo(() => {
           );
         })()}
       </tr>
-{effectiveExpanded && drillGroups.length === 0 && (
+{effectiveExpanded && drillGroups.length === 0 && hasAnyUnderlying && (
         <tr>
           <td colSpan={totalCols} className="px-8 py-2 text-[10px] font-black uppercase tracking-widest text-gray-300">
             {T ? T("cf_no_underlying") : "No underlying accounts"}
@@ -1151,9 +1224,14 @@ const loadCfStandardMapping = (table_rows, table_sections, setter) => {
     ]).then(([rowsArr, secsArr]) => {
       if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
       const rows = new Map();
-      rowsArr.forEach(r => rows.set(String(r.account_code), {
+rowsArr.forEach(r => rows.set(String(r.account_code), {
         section: String(r.section_code), sortOrder: Number(r.sort_order),
         isSum: !!r.is_sum, showInSummary: !!r.show_in_summary, level: Number(r.level ?? 0),
+        // Preserve parent_code + account_name so buildTree() can use them uniformly
+        // across CUSTOM and legacy standards. If the legacy table doesn't carry
+        // these columns, both fall through to "" harmlessly.
+        parent_code: r.parent_code ? String(r.parent_code) : "",
+        account_name: r.account_name ?? "",
       }));
       const sections = new Map();
       secsArr.forEach(s => sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) }));
@@ -1250,7 +1328,21 @@ const contributionCompanies = useMemo(() => {
     const set = resourceAccess?.company;
     if (!set) return contributionCompanies;
     return contributionCompanies.filter(c => set.has(String(c)));
-  }, [contributionCompanies, resourceAccess]);
+}, [contributionCompanies, resourceAccess]);
+
+useEffect(() => {
+    if (!resourceAccess) return;
+    setSource(prev => {
+      if (!prev || effectiveSources.length === 0) return prev;
+      const allowed = effectiveSources.some(s => (s.Source ?? s) === prev);
+      return allowed ? prev : (effectiveSources[0].Source ?? effectiveSources[0]);
+    });
+    setStructure(prev => {
+      if (!prev || effectiveStructures.length === 0) return prev;
+      const allowed = effectiveStructures.some(s => (s.GroupStructure ?? s) === prev);
+      return allowed ? prev : (effectiveStructures[0].GroupStructure ?? effectiveStructures[0]);
+    });
+  }, [resourceAccess, effectiveSources, effectiveStructures]);
 
 const visibleCompanies = useMemo(() => {
     if (!selectedCompanies) return effectiveContributionCompanies;
@@ -1262,11 +1354,18 @@ const [colOrder, setColOrder] = useState(null);
   const [dragOverCol, setDragOverCol] = useState(null);
 
 // Expand/collapse-all: bump version to re-sync every row to expandAllState
-  const [expandAllVersion, setExpandAllVersion] = useState(0);
+const [expandAllVersion, setExpandAllVersion] = useState(0);
   const [expandAllState, setExpandAllState] = useState(false);
+  const [openCount, setOpenCount] = useState(0);
+  const bumpOpenCount = useCallback((delta) => {
+    setOpenCount(c => Math.max(0, c + delta));
+  }, []);
+  const anyRowOpen = expandAllState || openCount > 0;
   const toggleExpandAll = () => {
-    setExpandAllState(s => !s);
+    const next = !anyRowOpen;
+    setExpandAllState(next);
     setExpandAllVersion(v => v + 1);
+    if (!next) setOpenCount(0);
   };
 
 // Search
@@ -1548,7 +1647,7 @@ const nameFor = (code) => {
   }, [activeCfMapping, bySection]);
 
   const availableYears  = [...new Set(periods.map(p => p.Year))].sort((a,b) => b-a).map(y => ({ value: String(y), label: String(y) }));
-  const availableMonths = [...new Set(periods.map(p => p.Month))].sort((a,b) => a-b).map(m => ({ value: String(m), label: MONTHS.find(x => x.value === m)?.label ?? String(m) }));
+const availableMonths = [...new Set(periods.map(p => p.Month))].sort((a,b) => a-b).map(m => ({ value: String(m), label: T(`month_${m}`) || MONTHS.find(x => x.value === m)?.label || String(m) }));
 
  const getLegal = co => companies.find(c => c.CompanyShortName === co)?.CompanyLegalName || co;
   const hasData = uploadedData.length > 0;
@@ -1578,10 +1677,22 @@ const dimGroups = useMemo(() => {
     return dims.sort((a, b) => a.code.localeCompare(b.code));
 }, [uploadedData, upDimGroups]);
 
-const [, setExporting] = useState(false);
+const [exporting, setExporting] = useState(false);
+
+  // Pre-download modal state (mirrors Dimensiones / Individuales pattern)
+  const [exportModal, setExportModal] = useState(false);
+  const [exportOpts, setExportOpts] = useState({
+    format: "xlsx",       // "xlsx" | "pdf"
+    includeBreakers: true,
+    includeTotals: true,
+    includeCompare: true,
+    drilldown: true,
+  });
 
   // ── Cash flow mappings ────────────────────────────────────────────────
-  const [activeMapping, setActiveMapping] = useState(null);
+const [activeMapping, setActiveMapping] = useState(null);
+  // System hidden-override mapping, kept so "clear" restores the initial default.
+  const hiddenOverrideRef = useRef(null);
   const [recentMappings, setRecentMappings] = useState([]);
   const [viewsMode, setViewsMode] = useState(null); // null | "landing" | "structure" | "report"
   const [savedMappings, setSavedMappings] = useState([]);
@@ -1681,8 +1792,9 @@ useEffect(() => { if (viewsMode === "structure") fetchSavedMappings(); }, [views
         const { getActiveCompanyId, getHiddenOverrideMapping } = await import("../../lib/mappingsApi");
         const cid = await getActiveCompanyId(uid);
         if (!cid) return;
-        const hidden = await getHiddenOverrideMapping({ companyId: cid, standard: activeStandardKey });
+const hidden = await getHiddenOverrideMapping({ companyId: cid, standard: activeStandardKey });
         if (cancelled || !hidden) return;
+        hiddenOverrideRef.current = hidden;
         if (Array.isArray(hidden.cf_tree) && hidden.cf_tree.length > 0) {
           handleApplyMapping(hidden, "structure");
         }
@@ -1707,7 +1819,17 @@ const [compareMode, setCompareMode] = useState(false);
   const [cmpExiting, setCmpExiting] = useState(false);
   const [cmpYear,  setCmpYear]  = useState("");
   const [cmpMonth, setCmpMonth] = useState("");
-  const [cmpSource, setCmpSource] = useState("");
+const [cmpSource, setCmpSource] = useState("");
+
+  useEffect(() => {
+    if (!resourceAccess) return;
+    setCmpSource(prev => {
+      if (!prev || effectiveSources.length === 0) return prev;
+      const allowed = effectiveSources.some(s => (s.Source ?? s) === prev);
+      return allowed ? prev : (effectiveSources[0].Source ?? effectiveSources[0]);
+    });
+  }, [resourceAccess, effectiveSources]);
+
 const [cmpPivot, setCmpPivot] = useState(new Map());
   const [cmpUploadedData, setCmpUploadedData] = useState([]);
   const [cmpJournalEntries, setCmpJournalEntries] = useState([]);
@@ -1789,7 +1911,11 @@ rows.forEach(r => {
     if (!cmpMonth)  setCmpMonth(month);
   }, [compareMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-const handleExportXlsx = async () => {
+const handleExportXlsx = async (opts = {}) => {
+    const includeBreakers   = opts.includeBreakers   !== false;
+    const includeTotalsOpt  = opts.includeTotals     !== false;
+    const includeCompareOpt = opts.includeCompare    !== false;
+    const drilldown         = opts.drilldown         !== false;
     const C = {
       primary: "FF1A2F8A", white: "FFFFFFFF", highlight: "FFEEF1FB",
       band1: "FFFFFFFF", band2: "FFF8F9FF",
@@ -1803,9 +1929,9 @@ const monthLabel = (m) => T(`month_${parseInt(m)}`);
     const wb = new ExcelJS.Workbook();
     wb.creator = "Konsolidator";
 
-    const visCo = orderedVisibleCompanies;
-    const sheetCompare = cmpVisible;
-    const showTotals = !sheetCompare;
+const visCo = orderedVisibleCompanies;
+    const sheetCompare = cmpVisible && includeCompareOpt;
+    const showTotals = !sheetCompare && includeTotalsOpt;
     const subColsPerCo = sheetCompare ? 4 : 1;
     const totalCols = 1 + visCo.length * subColsPerCo + (showTotals ? 1 : 0);
 
@@ -1898,13 +2024,38 @@ const headers = [T("col_account"), ...visCo.map(co => getLegal(co))];
     }
 
     // Cell writer
+// Convert a 1-based column index to Excel letters (1→A, 26→Z, 27→AA, ...).
+    const colLetter = (n) => {
+      let s = "";
+      let x = n;
+      while (x > 0) {
+        const m = (x - 1) % 26;
+        s = String.fromCharCode(65 + m) + s;
+        x = Math.floor((x - 1) / 26);
+      }
+      return s;
+    };
+    const cellRef = (rowN, colN) => `${colLetter(colN)}${rowN}`;
+
     const writeNum = (rowN, colN, val, fillArgb, opts = {}) => {
       const cell = ws.getCell(rowN, colN);
-      if (val == null || !Number.isFinite(val) || Math.round(val) === 0) {
+      // "Empty" test: for currency use rounded value (matches numFmt truncation);
+      // for percent use the raw value so tiny non-zero pcts (e.g. -0.03%) still render.
+      const isEmpty = val == null || !Number.isFinite(val) || (opts.percent
+        ? Math.abs(val) < 0.05        // shown as "0.0%" → treat as empty
+        : Math.round(val) === 0);
+      if (isEmpty) {
         cell.value = "—";
         cell.font = { name: "Calibri", size: 10, color: { argb: C.gray400 }, bold: !!opts.bold };
-      } else {
-        cell.value = Math.round(val);
+} else {
+        // Store the RAW value; let Excel's numFmt handle the display rounding.
+        // When opts.formula is given, write the formula with cached result so
+        // Excel shows the correct value even before recalculation.
+        if (opts.formula) {
+          cell.value = { formula: opts.formula, result: val };
+        } else {
+          cell.value = val;
+        }
         cell.numFmt = opts.percent ? '0.0"%"' : '#,##0;[Red]-#,##0';
         cell.font = {
           name: "Calibri", size: 10, bold: !!opts.bold,
@@ -2015,7 +2166,7 @@ const writeAccountRow = ({ code, name, depth, isBold }) => {
       labelCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 + Math.min(depth, 6) };
       labelCell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
 
-      let rowTotal = 0;
+let rowTotal = 0;
       visCo.forEach((co, i) => {
         const a = getValAt(code, co);
         rowTotal += a;
@@ -2024,26 +2175,42 @@ const writeAccountRow = ({ code, name, depth, isBold }) => {
           const delta = a - b;
           const deltaPct = Math.abs(b) > 1e-9 ? ((a - b) / Math.abs(b)) * 100 : null;
           const startCol = 2 + i * 4;
+          const aRef = cellRef(curRow, startCol);
+          const bRef = cellRef(curRow, startCol + 1);
           writeNum(curRow, startCol,     a,        band,        { bold: isBold });
           writeNum(curRow, startCol + 1, b,        "FFFAFBFF",  { bold: isBold });
           writeNum(curRow, startCol + 2, delta,    "FFF5F7FF", {
             bold: isBold,
+            formula: `${aRef}-${bRef}`,
             colorOverride: (delta == null || Math.round(delta) === 0) ? null : (delta < 0 ? C.red : C.green),
           });
           writeNum(curRow, startCol + 3, deltaPct, "FFF0F3FF", {
             bold: isBold, percent: true,
+            formula: `IF(ABS(${bRef})<0.0001,NA(),(${aRef}-${bRef})/ABS(${bRef})*100)`,
             colorOverride: deltaPct == null ? null : (deltaPct < 0 ? C.red : C.green),
           });
         } else {
           writeNum(curRow, 2 + i, a, band, { bold: isBold });
         }
       });
-      if (showTotals) writeNum(curRow, 2 + visCo.length, rowTotal, C.highlight, { bold: true });
+if (showTotals) {
+        const firstRef = cellRef(curRow, 2);
+        const lastRef  = cellRef(curRow, 2 + visCo.length - 1);
+        writeNum(curRow, 2 + visCo.length, rowTotal, C.highlight, {
+          bold: true,
+          formula: `SUM(${firstRef}:${lastRef})`,
+        });
+      }
 
-      const row = ws.getRow(curRow);
+const row = ws.getRow(curRow);
       const cappedDepth = Math.min(7, depth);
-      row.outlineLevel = cappedDepth;
-      if (cappedDepth > 0) row.hidden = true;
+      // Only apply outline collapse when drilldown is enabled. When the user
+      // opts out of drilldown they want a flat brief report where every
+      // structural row is visible — not a collapsed skeleton.
+      if (drilldown) {
+        row.outlineLevel = cappedDepth;
+        if (cappedDepth > 0) row.hidden = true;
+      }
       curRow++;
       return rowTotal;
     };
@@ -2071,15 +2238,32 @@ const writeDrillGroupRow = ({ groupCode, groupName, depth, localRows, cmpMap }) 
           const delta = v - cmpV;
           const pct = Math.abs(cmpV) > 1e-9 ? ((v - cmpV) / Math.abs(cmpV)) * 100 : null;
           const startCol = 2 + i * 4;
+const aRef = cellRef(curRow, startCol);
+          const bRef = cellRef(curRow, startCol + 1);
           writeNum(curRow, startCol,     v,     "FFF4F6FB", { bold: true });
           writeNum(curRow, startCol + 1, cmpV,  "FFFAFBFF", { bold: true });
-          writeNum(curRow, startCol + 2, delta, "FFF5F7FF", { bold: true, colorOverride: delta === 0 ? null : (delta < 0 ? C.red : C.green) });
-          writeNum(curRow, startCol + 3, pct,   "FFF0F3FF", { bold: true, percent: true, colorOverride: pct === null ? null : (pct < 0 ? C.red : C.green) });
+          writeNum(curRow, startCol + 2, delta, "FFF5F7FF", {
+            bold: true,
+            formula: `${aRef}-${bRef}`,
+            colorOverride: delta === 0 ? null : (delta < 0 ? C.red : C.green),
+          });
+          writeNum(curRow, startCol + 3, pct,   "FFF0F3FF", {
+            bold: true, percent: true,
+            formula: `IF(ABS(${bRef})<0.0001,NA(),(${aRef}-${bRef})/ABS(${bRef})*100)`,
+            colorOverride: pct === null ? null : (pct < 0 ? C.red : C.green),
+          });
         } else {
           writeNum(curRow, 2 + i, v, "FFF4F6FB", { bold: true });
         }
       });
-      if (showTotals) writeNum(curRow, 2 + visCo.length, rowTotal, C.highlight, { bold: true });
+if (showTotals) {
+          const firstRef = cellRef(curRow, 2);
+          const lastRef  = cellRef(curRow, 2 + visCo.length - 1);
+          writeNum(curRow, 2 + visCo.length, rowTotal, C.highlight, {
+            bold: true,
+            formula: `SUM(${firstRef}:${lastRef})`,
+          });
+        }
 
       const row = ws.getRow(curRow);
       row.outlineLevel = Math.min(7, depth);
@@ -2105,15 +2289,30 @@ const writeLocalRow = ({ localCode, localName, isJournal, co, amt, depth, groupC
           const delta = v - cmpV;
           const pct = Math.abs(cmpV) > 1e-9 ? ((v - cmpV) / Math.abs(cmpV)) * 100 : null;
           const startCol = 2 + i * 4;
+const aRef = cellRef(curRow, startCol);
+          const bRef = cellRef(curRow, startCol + 1);
           writeNum(curRow, startCol,     v,     "FFF9FAFD");
           writeNum(curRow, startCol + 1, cmpV,  "FFFAFBFF");
-          writeNum(curRow, startCol + 2, delta, "FFF5F7FF", { colorOverride: delta === 0 ? null : (delta < 0 ? C.red : C.green) });
-          writeNum(curRow, startCol + 3, pct,   "FFF0F3FF", { percent: true, colorOverride: pct === null ? null : (pct < 0 ? C.red : C.green) });
+          writeNum(curRow, startCol + 2, delta, "FFF5F7FF", {
+            formula: `${aRef}-${bRef}`,
+            colorOverride: delta === 0 ? null : (delta < 0 ? C.red : C.green),
+          });
+          writeNum(curRow, startCol + 3, pct,   "FFF0F3FF", {
+            percent: true,
+            formula: `IF(ABS(${bRef})<0.0001,NA(),(${aRef}-${bRef})/ABS(${bRef})*100)`,
+            colorOverride: pct === null ? null : (pct < 0 ? C.red : C.green),
+          });
         } else {
           writeNum(curRow, 2 + i, v, "FFF9FAFD");
         }
       });
-      if (showTotals) writeNum(curRow, 2 + visCo.length, amt, C.highlight);
+     if (showTotals) {
+        const firstRef = cellRef(curRow, 2);
+        const lastRef  = cellRef(curRow, 2 + visCo.length - 1);
+        writeNum(curRow, 2 + visCo.length, amt, C.highlight, {
+          formula: `SUM(${firstRef}:${lastRef})`,
+        });
+      }
 
       const row = ws.getRow(curRow);
       row.outlineLevel = Math.min(7, depth);
@@ -2135,6 +2334,7 @@ const writeLocalRow = ({ localCode, localName, isJournal, co, amt, depth, groupC
 
 const writeLeafWithDrill = (code, name, depth, isBold) => {
       writeAccountRow({ code, name, depth, isBold });
+      if (!drilldown) return;
       const groups = buildDrillGroups(code);
       const cmpMap = sheetCompare ? buildCmpDrillMap(code) : null;
       groups.forEach(g => {
@@ -2149,27 +2349,98 @@ const writeLeafWithDrill = (code, name, depth, isBold) => {
       });
     };
 
-    // ── RENDER: custom mapping literal OR default standard ─────────────
+// ── RENDER: custom mapping literal OR default standard ─────────────
     if (activeMapping?.cfLiteral) {
+      // Sum nodes need a descendant rollup (matches MappedSheetRow.getContrib).
+      // getValAt is a flat pivot lookup — right for leaves, wrong for sums whose
+      // own pivot row is empty because postings live on their descendants.
+      const collectLeafCodes = (n, acc = []) => {
+        if (!n.children || n.children.length === 0) {
+          acc.push(n.code);
+        } else {
+          n.children.forEach(c => collectLeafCodes(c, acc));
+        }
+        return acc;
+      };
+      const writeSumRow = (node, depth) => {
+        const leaves = collectLeafCodes(node);
+        maxDepth = Math.max(maxDepth, depth);
+        const band = dataIdx % 2 === 0 ? C.band1 : C.band2;
+        dataIdx++;
+        const labelCell = ws.getCell(curRow, 1);
+        const codeStr = String(node.code ?? "").trim();
+        const nameStr = String(node.name || nameFor(node.code) || "").trim() || "—";
+        const runs = [];
+        if (codeStr) runs.push({ text: `${codeStr}  `, font: { name: "Calibri", size: 9, color: { argb: "FF6B7280" } } });
+        runs.push({ text: nameStr, font: { name: "Calibri", size: 11, bold: true, color: { argb: "FF1A2F8A" } } });
+        labelCell.value = runs.length === 1 ? nameStr : { richText: runs };
+        labelCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
+        labelCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 + Math.min(depth, 6) };
+        labelCell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+        let rowTotal = 0;
+visCo.forEach((co, i) => {
+          let a = 0;
+          for (const lc of leaves) a += getValAt(lc, co);
+          rowTotal += a;
+          if (sheetCompare) {
+            let b = 0;
+            for (const lc of leaves) b += getCmpValAt(lc, co);
+            const delta = a - b;
+            const deltaPct = Math.abs(b) > 1e-9 ? ((a - b) / Math.abs(b)) * 100 : null;
+            const startCol = 2 + i * 4;
+            const aRef = cellRef(curRow, startCol);
+            const bRef = cellRef(curRow, startCol + 1);
+            writeNum(curRow, startCol,     a,        band,        { bold: true });
+            writeNum(curRow, startCol + 1, b,        "FFFAFBFF",  { bold: true });
+            writeNum(curRow, startCol + 2, delta,    "FFF5F7FF", {
+              bold: true,
+              formula: `${aRef}-${bRef}`,
+              colorOverride: (delta == null || Math.round(delta) === 0) ? null : (delta < 0 ? C.red : C.green),
+            });
+            writeNum(curRow, startCol + 3, deltaPct, "FFF0F3FF", {
+              bold: true, percent: true,
+              formula: `IF(ABS(${bRef})<0.0001,NA(),(${aRef}-${bRef})/ABS(${bRef})*100)`,
+              colorOverride: deltaPct == null ? null : (deltaPct < 0 ? C.red : C.green),
+            });
+          } else {
+            writeNum(curRow, 2 + i, a, band, { bold: true });
+          }
+        });
+ if (showTotals) {
+        const firstRef = cellRef(curRow, 2);
+        const lastRef  = cellRef(curRow, 2 + visCo.length - 1);
+        writeNum(curRow, 2 + visCo.length, rowTotal, C.highlight, {
+          bold: true,
+          formula: `SUM(${firstRef}:${lastRef})`,
+        });
+      }
+const row = ws.getRow(curRow);
+        const cappedDepth = Math.min(7, depth);
+        if (drilldown) {
+          row.outlineLevel = cappedDepth;
+          if (cappedDepth > 0) row.hidden = true;
+        }
+        curRow++;
+      };
       const renderNode = (node, depth) => {
         const hasChildren = node.children && node.children.length > 0;
         if (hasChildren) {
-          writeAccountRow({ code: node.code, name: node.name || nameFor(node.code), depth, isBold: true });
+          writeSumRow(node, depth);
           node.children.forEach(c => renderNode(c, depth + 1));
         } else {
           writeLeafWithDrill(node.code, node.name || nameFor(node.code), depth, false);
         }
       };
-      activeMapping.cfLiteral.forEach(section => {
-        if (section.label) writeSectionBar(section.label, toArgbHex(section.color));
+activeMapping.cfLiteral.forEach(section => {
+        if (section.label && includeBreakers) writeSectionBar(section.label, toArgbHex(section.color));
         section.nodes.forEach(n => renderNode(n, 0));
       });
     } else {
       sectionOrder.forEach(sec => {
         const codes = bySection.get(sec);
         if (!codes?.length) return;
-        const secInfo = activeCfMapping?.sections?.get(sec);
-        writeSectionBar(secInfo?.label || sec, toArgbHex(secInfo?.color || "#1a2f8a"));
+const secInfo = activeCfMapping?.sections?.get(sec);
+        if (includeBreakers) writeSectionBar(secInfo?.label || sec, toArgbHex(secInfo?.color || "#1a2f8a"));
         codes.forEach(code => {
           const isSubtotal = subtotalCodes.has(code);
           if (isSubtotal) {
@@ -2192,11 +2463,35 @@ const writeLeafWithDrill = (code, name, depth, isBold) => {
       }
     } else {
       for (let i = 0; i < visCo.length; i++) ws.getColumn(2 + i).width = 18;
-      if (showTotals) ws.getColumn(2 + visCo.length).width = 18;
+if (showTotals) ws.getColumn(2 + visCo.length).width = 18;
     }
 
-    ws.properties.outlineLevelRow = Math.min(7, Math.max(1, maxDepth));
-    ws.properties.summaryBelow = false;
+    // Frame each company block with a medium left border so groups visually separate.
+    // In compare mode each company spans 4 sub-columns (A / Σcmp / Δ / Δ%); outside
+    // compare mode each company is a single column. The Total column (if shown)
+    // also gets a divider.
+    {
+      const subCols = sheetCompare ? 4 : 1;
+      const borderStyle = { style: 'medium', color: { argb: 'FF6B7280' } };
+      const boundaries = [];
+      for (let i = 0; i < visCo.length; i++) {
+        boundaries.push(2 + i * subCols); // start column of company i
+      }
+      if (showTotals) boundaries.push(2 + visCo.length * subCols); // divider before Total
+      const lastRow = ws.lastRow?.number ?? 0;
+      for (let r = 1; r <= lastRow; r++) {
+        const row = ws.getRow(r);
+        boundaries.forEach(colIdx => {
+          const cell = row.getCell(colIdx);
+          cell.border = { ...(cell.border || {}), left: borderStyle };
+        });
+      }
+    }
+
+if (drilldown) {
+      ws.properties.outlineLevelRow = Math.min(7, Math.max(1, maxDepth));
+      ws.properties.summaryBelow = false;
+    }
 
 let buffer;
     try { buffer = await wb.xlsx.writeBuffer(); }
@@ -2212,7 +2507,11 @@ let buffer;
     );
   };
 
-const handleExportPdf = () => {
+const handleExportPdf = (opts = {}) => {
+    const includeBreakers   = opts.includeBreakers   !== false;
+    const includeTotalsOpt  = opts.includeTotals     !== false;
+    const includeCompareOpt = opts.includeCompare    !== false;
+    const drilldown         = opts.drilldown         !== false;
     const NAVY     = [26, 47, 138];
     const NAVYMID  = [40, 64, 168];
     const NAVYDK   = [10, 20, 70];
@@ -2228,8 +2527,9 @@ const handleExportPdf = () => {
     const SUBBG    = [244, 246, 251];
     const LOCALBG  = [249, 250, 253];
 
-    const visCo = orderedVisibleCompanies;
-    const includeCompare = cmpVisible;
+const visCo = orderedVisibleCompanies;
+    const includeCompare = cmpVisible && includeCompareOpt;
+    const showTotals = !includeCompare && includeTotalsOpt;
     const TARGET_PER_PAGE = includeCompare ? 2 : 3;
 
     // Chunk companies — each chunk is a self-contained section that renders
@@ -2381,7 +2681,7 @@ const getCmpValAt = (code, co) => {
             cells.push({ content: fmt(a), styles: { fontStyle: isBold ? "bold" : "normal", textColor: a < 0 ? RED : TEXTDK } });
           }
         });
-        if (!includeCompare) {
+if (showTotals) {
           const total = chunkCompanies.reduce((s, co) => s + getValAt(code, co), 0);
           cells.push({ content: fmt(total), styles: { fontStyle: "bold", fillColor: LIGHT, textColor: total < 0 ? RED : TEXTDK } });
         }
@@ -2464,6 +2764,7 @@ const pushLocalRow = ({ localCode, localName, isJournal, co, amt, depth, groupCo
 
 const pushLeafWithDrill = (code, name, depth, isBold) => {
         pushAccountRow({ code, name, depth, isBold });
+        if (!drilldown) return;
         const groups = buildDrillForCode(code);
         const cmpMap = includeCompare ? buildCmpDrillForCode(code) : null;
         groups.forEach(g => {
@@ -2478,26 +2779,71 @@ const pushLeafWithDrill = (code, name, depth, isBold) => {
         });
       };
 
-      if (activeMapping?.cfLiteral) {
+if (activeMapping?.cfLiteral) {
+        // Sum nodes need a descendant rollup (matches MappedSheetRow.getContrib).
+        // getValAt is a flat pivot lookup — right for leaves, wrong for sums whose
+        // own pivot row is empty because postings live on their descendants.
+        const collectLeafCodes = (n, acc = []) => {
+          if (!n.children || n.children.length === 0) {
+            acc.push(n.code);
+          } else {
+            n.children.forEach(c => collectLeafCodes(c, acc));
+          }
+          return acc;
+        };
+        const pushSumRow = (node, depth) => {
+          const leaves = collectLeafCodes(node);
+          const indent = "  ".repeat(Math.min(depth, 6));
+          const codeStr = String(node.code ?? "").trim();
+          const nameStr = String(node.name || nameFor(node.code) || "").trim() || "—";
+          const label = `${indent}${codeStr ? codeStr + "  " : ""}${nameStr}`;
+          const cells = [{ content: label, styles: { fontStyle: "bold", halign: "left" } }];
+          chunkCompanies.forEach(co => {
+            let a = 0;
+            for (const lc of leaves) a += getValAt(lc, co);
+            if (includeCompare) {
+              let b = 0;
+              for (const lc of leaves) b += getCmpValAt(lc, co);
+              const delta = a - b;
+              const pct = Math.abs(b) > 1e-9 ? ((a - b) / Math.abs(b)) * 100 : null;
+              const dColor = (delta == null || Math.round(delta) === 0) ? GRAY : (delta > 0 ? GRN : RED);
+              cells.push({ content: fmt(a),     styles: { fontStyle: "bold", textColor: a < 0 ? RED : TEXTDK } });
+              cells.push({ content: fmt(b),     styles: { fontStyle: "bold", textColor: REDDK } });
+              cells.push({ content: fmt(delta), styles: { fontStyle: "bold", textColor: dColor } });
+              cells.push({ content: fmtPct(pct),styles: { fontStyle: "bold", textColor: dColor } });
+            } else {
+              cells.push({ content: fmt(a), styles: { fontStyle: "bold", textColor: a < 0 ? RED : TEXTDK } });
+            }
+          });
+          if (showTotals) {
+            let total = 0;
+            for (const co of chunkCompanies) for (const lc of leaves) total += getValAt(lc, co);
+            cells.push({ content: fmt(total), styles: { fontStyle: "bold", fillColor: LIGHT, textColor: total < 0 ? RED : TEXTDK } });
+          }
+          rows.push(cells);
+          rowTags.push({ cfCode: node.code, cfName: node.name || nameFor(node.code) });
+          currentCfCode = node.code;
+          currentCfName = node.name || nameFor(node.code);
+        };
         const renderNode = (node, depth) => {
           const hasChildren = node.children && node.children.length > 0;
           if (hasChildren) {
-            pushAccountRow({ code: node.code, name: node.name || nameFor(node.code), depth, isBold: true });
+            pushSumRow(node, depth);
             node.children.forEach(c => renderNode(c, depth + 1));
           } else {
             pushLeafWithDrill(node.code, node.name || nameFor(node.code), depth, false);
           }
         };
         activeMapping.cfLiteral.forEach(section => {
-          if (section.label) pushBreaker(section.label, section.color);
+          if (section.label && includeBreakers) pushBreaker(section.label, section.color);
           section.nodes.forEach(n => renderNode(n, 0));
         });
       } else {
         sectionOrder.forEach(sec => {
           const codes = bySection.get(sec);
           if (!codes?.length) return;
-          const secInfo = activeCfMapping?.sections?.get(sec);
-          pushBreaker(secInfo?.label || sec, secInfo?.color);
+const secInfo = activeCfMapping?.sections?.get(sec);
+          if (includeBreakers) pushBreaker(secInfo?.label || sec, secInfo?.color);
           codes.forEach(code => {
             const isSubtotal = subtotalCodes.has(code);
             if (isSubtotal) {
@@ -2595,7 +2941,8 @@ doc.text(T("nav_cashflow").toUpperCase(), 10, H - 4.5);
     const renderChunk = (chunkInfo) => {
       const { companies: chunkCompanies } = chunkInfo;
       const subColsPerCo = includeCompare ? 4 : 1;
-      const totalColCount = 1 + chunkCompanies.length * subColsPerCo + (includeCompare ? 0 : 1);
+   const showTotals = !includeCompare && includeTotalsOpt;
+      const totalColCount = 1 + chunkCompanies.length * subColsPerCo + (showTotals ? 1 : 0);
 
       let head;
       if (includeCompare) {
@@ -2612,7 +2959,7 @@ const top = [{ content: T("col_account"), rowSpan: 2, styles: { halign: "left", 
         });
         head = [top, bot];
       } else {
-        head = [[T("col_account"), ...chunkCompanies.map(co => getLegal(co)), T("col_total")]];
+       head = [[T("col_account"), ...chunkCompanies.map(co => getLegal(co)), ...(showTotals ? [T("col_total")] : [])]];
       }
 
       const { rows: body, rowTags } = buildRowsForChunk(chunkCompanies);
@@ -2678,10 +3025,22 @@ const top = [{ content: T("col_account"), rowSpan: 2, styles: { halign: "left", 
         },
         columnStyles,
         alternateRowStyles: { fillColor: OFFWHITE },
-        didParseCell: d => {
+didParseCell: d => {
           if (d.section === "head" && d.column.index === 0) {
             d.cell.styles.fillColor = NAVYDK;
             d.cell.styles.halign = "left";
+          }
+          // Frame each company block with a stronger left border so groups
+          // visually separate (mirrors the xlsx medium-left-border treatment).
+          // In compare mode each company spans 4 cols (A/Σcmp/Δ/Δ%). Otherwise
+          // one col per company. The Total column (if shown) also gets a divider.
+          const subCols = includeCompare ? 4 : 1;
+          const colIdx = d.column.index;
+          const isCompanyStart = colIdx >= 1 && ((colIdx - 1) % subCols === 0) && colIdx <= chunkCompanies.length * subCols;
+          const isTotalDivider = showTotals && colIdx === (chunkCompanies.length * subCols + 1);
+          if (isCompanyStart || isTotalDivider) {
+            d.cell.styles.lineWidth = { ...(d.cell.styles.lineWidth || {}), left: 0.5 };
+            d.cell.styles.lineColor = { ...(d.cell.styles.lineColor || {}), left: [110, 120, 145] };
           }
         },
         didDrawCell: d => {
@@ -3047,12 +3406,18 @@ const meta = dimensionsMeta.find(m =>
                 }) }]
             : []),
         ]}
-compareToggle={viewsMode ? null : { active: compareMode, onChange: setCompareMode }}
-        onExportPdf={viewsMode ? undefined : handleExportPdf}
-        onExportXlsx={viewsMode ? undefined : async () => {
-          setExporting(true);
-          try { await handleExportXlsx(); }
-          finally { setExporting(false); }
+compareToggle={viewsMode ? null : {
+          active: compareMode,
+          onChange: setCompareMode,
+          disabled: effectiveSources.length === 0 || effectiveStructures.length === 0,
+        }}
+onExportPdf={viewsMode ? undefined : () => {
+          setExportOpts(o => ({ ...o, format: "pdf" }));
+          setExportModal(true);
+        }}
+        onExportXlsx={viewsMode ? undefined : () => {
+          setExportOpts(o => ({ ...o, format: "xlsx" }));
+          setExportModal(true);
         }}
         onMappingsClick={viewsMode ? undefined : () => setViewsMode("landing")}
         mappingsQuickAccess={viewsMode ? [] : recentMappings}
@@ -3089,8 +3454,17 @@ title={T("edit_mapping_title")}
             <Pencil size={11} />
             {T("btn_edit")}
           </button>
-          <button
-            onClick={() => setActiveMapping(null)}
+<button
+            onClick={() => {
+              // Restore the initial default (system hidden override) instead of
+              // dropping to the raw standard. Fall back to null if none loaded.
+              const ho = hiddenOverrideRef.current;
+              if (ho && Array.isArray(ho.cf_tree) && ho.cf_tree.length > 0) {
+                handleApplyMapping(ho, "structure");
+              } else {
+                setActiveMapping(null);
+              }
+            }}
             className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
             title={T("clear_mapping_title")}
           >
@@ -3116,13 +3490,13 @@ title={T("edit_mapping_title")}
 <span className="text-[9px] font-black uppercase tracking-[0.22em]" style={{ color: "#CF305D" }}>{T("btn_compare_with")}</span>
           </div>
           <HeaderFilterPill label={T("filter_source")} value={cmpSource} onChange={setCmpSource}
-            options={sources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s }))} />
+          options={effectiveSources.map(s => ({ value: s.Source ?? s, label: s.Source ?? s }))} />
           <HeaderFilterPill label={T("filter_year")} value={cmpYear} onChange={setCmpYear}
             options={availableYears} />
           <HeaderFilterPill label={T("filter_month")} value={cmpMonth} onChange={setCmpMonth}
             options={availableMonths.map(o => ({ value: o.value, label: T(`month_${o.value}`) }))} />
           <HeaderFilterPill label={T("filter_structure")} value={structure} onChange={() => {}}
-            options={structures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s }))} />
+       options={effectiveStructures.map(s => ({ value: s.GroupStructure ?? s, label: s.GroupStructure ?? s }))} />
 {cmpLoading && <Loader2 size={11} className="animate-spin ml-2" style={{ color: colors.primary }} />}
 </div></div>}
 
@@ -3344,13 +3718,13 @@ handleApplyMapping(full ?? m, "report");
                           </div>
                           <button
                             onClick={toggleExpandAll}
-                            title={expandAllState ? T("pl_collapse_all") : T("pl_expand_all")}
+                          title={anyRowOpen ? T("pl_collapse_all") : T("pl_expand_all")}
                             className="flex-shrink-0 p-1 transition-colors duration-[240ms]"
                             style={{ color: "#94a3b8" }}
                             onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
                             onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
                           >
-                            <span key={expandAllState ? "collapse" : "expand"} style={{ display: "inline-flex", animation: "iconMorph 360ms cubic-bezier(0.34,1.56,0.64,1) both" }}>
+                            <span key={anyRowOpen ? "collapse" : "expand"} style={{ display: "inline-flex", animation: "iconMorph 360ms cubic-bezier(0.34,1.56,0.64,1) both" }}>
 {expandAllState ? (
                                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                                   <path d="M3 3 L13 13" />
@@ -3423,7 +3797,7 @@ handleApplyMapping(full ?? m, "report");
                       })}
                       {!compareMode && (
                         <th className="sticky right-0 z-30 text-center px-4" style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", borderLeft: "1px solid #f0f0f0" }}>
-                          <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 13, letterSpacing: "-0.01em" }}>Total</span>
+                        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 13, letterSpacing: "-0.01em" }}>{T("col_total")}</span>
                         </th>
                       )}
                     </tr>
@@ -3459,7 +3833,8 @@ handleApplyMapping(full ?? m, "report");
                                 compareMode={compareMode} cmpPivot={cmpPivot} colors={colors} rowIndex={idx}
                                 uploadedData={filteredUploadedData} journalEntries={journalEntries} groupToCf={groupToCf} nameFor={nameFor} T={T}
                                 cmpUploadedData={cmpUploadedData} cmpJournalEntries={cmpJournalEntries}
-                                expandAllVersion={expandAllVersion} expandAllState={expandAllState}
+                               expandAllVersion={expandAllVersion} expandAllState={expandAllState}
+      onExpandedChange={bumpOpenCount}
                                 searchQuery={searchQuery} />
                             ))}
                           </Fragment>
@@ -3516,8 +3891,162 @@ handleApplyMapping(full ?? m, "report");
               </div>
 </div>
           )}
-        </div>
+</div>
       </div>
+      )}
+      {exportModal && createPortal(
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4"
+          style={{ background: "rgba(15,23,42,0.55)", backdropFilter: "blur(10px)" }}
+          onClick={() => setExportModal(false)}>
+          <div onClick={e => e.stopPropagation()}
+            className="bg-white rounded-3xl w-full max-w-lg"
+            style={{ boxShadow: "0 32px 80px -12px rgba(26,47,138,0.32)" }}>
+            {/* Header */}
+            <div className="flex items-start justify-between px-6 py-5 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl flex items-center justify-center"
+                  style={{ background: `linear-gradient(135deg, ${colors.primary} 0%, #3b54b8 100%)` }}>
+                  <Download size={16} className="text-white" />
+                </div>
+                <div>
+                  <h3 className="font-black text-gray-800 tracking-tight" style={{ fontSize: 17 }}>
+                    {T("export_cf_title") || "Exportar Cash Flow"}
+                  </h3>
+                  <div className="flex items-center gap-1.5 mt-1">
+                    <span className="text-[9px] font-black px-2 py-0.5 rounded-md tracking-wider uppercase"
+                      style={{ background: `${colors.primary}18`, color: colors.primary }}>
+                      {exportOpts.format === "pdf" ? T("badge_pdf") || "PDF" : T("badge_excel") || "EXCEL"}
+                    </span>
+                    {activeMapping && !activeMapping.is_hidden && activeMapping.name !== "__custom_override__" && (
+                      <span className="text-[9px] font-black px-2 py-0.5 rounded-md tracking-wider uppercase bg-emerald-50 text-emerald-700">
+                        {T("badge_mapped") || "MAPEADO"}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <button onClick={() => setExportModal(false)}
+                className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-all">
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="px-6 py-5 space-y-5">
+              {/* Design options */}
+              <div>
+                <p className="text-[10px] font-black text-gray-400 tracking-widest uppercase mb-3">
+                  {T("export_design_opts") || "Opciones de diseño"}
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    ["includeBreakers", T("export_opt_breakers") || "Cabeceras de sección"],
+                    ["drilldown",       T("export_opt_drilldown") || "Drill-down (colapsado)"],
+                    ["includeTotals",   T("export_opt_totals") || "Totales de fila"],
+                    ["includeCompare",  T("export_opt_compare") || "Columnas de comparación"],
+                  ].map(([key, label]) => {
+                    const isCompare = key === "includeCompare";
+                    const disabled = isCompare && !cmpVisible;
+                    const isTotals = key === "includeTotals";
+                    const totalsDisabledByCompare = isTotals && cmpVisible && exportOpts.includeCompare;
+                    const isDisabled = disabled || totalsDisabledByCompare;
+                    const checked = !!exportOpts[key] && !isDisabled;
+                    return (
+                      <button key={key}
+                        onClick={() => !isDisabled && setExportOpts(o => ({ ...o, [key]: !o[key] }))}
+                        disabled={isDisabled}
+                        className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border text-[11px] font-bold text-left transition-all ${
+                          isDisabled
+                            ? "border-gray-100 bg-gray-50 text-gray-300 cursor-not-allowed"
+                            : checked
+                              ? "border-transparent text-gray-800"
+                              : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"
+                        }`}
+                        style={checked ? { background: `${colors.primary}12`, borderColor: `${colors.primary}40` } : undefined}>
+                        <div className={`w-4 h-4 rounded-md flex items-center justify-center flex-shrink-0 border ${
+                          checked ? "text-white" : "border-gray-300 bg-white"
+                        }`}
+                          style={checked ? { background: colors.primary, borderColor: colors.primary } : undefined}>
+                          {checked && <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2.5 6L5 8.5L9.5 3.5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        </div>
+                        <span className="truncate">{label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Period chip */}
+              <div>
+                <p className="text-[10px] font-black text-gray-400 tracking-widest uppercase mb-2">
+                  {T("primary_period") || "Periodo"}
+                </p>
+                <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl border border-gray-200 bg-gray-50/50">
+                  <div className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0"
+                    style={{ background: colors.primary, color: "white", fontSize: 10, fontWeight: 900 }}>A</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[10px] font-black text-gray-400 uppercase tracking-wider">
+                      {T("period_a") || "Periodo A"}
+                    </div>
+                    <div className="text-xs font-bold text-gray-700 truncate">
+                      {year && month ? `${T(`month_${parseInt(month)}`) || month} ${year}` : "—"}
+                      {source ? ` · ${source}` : ""}
+                    </div>
+                  </div>
+                </div>
+                {cmpVisible && exportOpts.includeCompare && (
+                  <div className="flex items-center gap-2 px-3 py-2.5 mt-2 rounded-xl border border-gray-200 bg-gray-50/50">
+                    <div className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0"
+                      style={{ background: "#7c3aed", color: "white", fontSize: 10, fontWeight: 900 }}>B</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[10px] font-black text-gray-400 uppercase tracking-wider">
+                        {T("period_b") || "Periodo B"}
+                      </div>
+                      <div className="text-xs font-bold text-gray-700 truncate">
+                        {cmpYear && cmpMonth ? `${T(`month_${parseInt(cmpMonth)}`) || cmpMonth} ${cmpYear}` : "—"}
+                        {cmpSource ? ` · ${cmpSource}` : ""}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between gap-3 px-6 py-4 border-t border-gray-100 bg-gray-50/40 rounded-b-3xl">
+              {/* Format toggle */}
+              <div className="inline-flex rounded-xl p-1 bg-white border border-gray-200">
+                {["xlsx", "pdf"].map(f => (
+                  <button key={f}
+                    onClick={() => setExportOpts(o => ({ ...o, format: f }))}
+                    className="px-3 py-1.5 text-[10px] font-black tracking-wider uppercase rounded-lg transition-all"
+                    style={{
+                      background: exportOpts.format === f ? `${colors.primary}15` : "transparent",
+                      color: exportOpts.format === f ? colors.primary : "#9ca3af",
+                    }}>
+                    {f}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={async () => {
+                  const fn = exportOpts.format === "pdf" ? handleExportPdf : handleExportXlsx;
+                  setExportModal(false);
+                  setExporting(true);
+                  try { await fn(exportOpts); }
+                  finally { setExporting(false); }
+                }}
+                disabled={exporting}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-[11px] font-black text-white tracking-wider uppercase transition-all disabled:opacity-40"
+                style={{ background: `linear-gradient(135deg, ${colors.primary} 0%, #3b54b8 100%)` }}>
+                {exporting
+                  ? <><Loader2 size={12} className="animate-spin" /><span>{T("btn_exporting") || "Exportando…"}</span></>
+                  : <><Download size={12} /><span>{T("btn_download") || "Download"}</span></>}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );
