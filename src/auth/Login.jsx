@@ -863,25 +863,13 @@ className={`login-card relative flex flex-col p-10 max-w-[440px] w-full justify-
                 )}
               </button>
 
-<button
-                type="button"
-                onClick={() => navigate("/signup")}
-                disabled={loading}
-                className="w-full font-black py-3.5 transition-all text-sm tracking-wide disabled:opacity-50"
-                style={{
-                  borderRadius: 18,
-                  background: "rgba(255,255,255,0.45)",
-                  border: "1px solid rgba(26,47,138,0.15)",
-                  color: "#1a2f8a",
-                  backdropFilter: "blur(8px)",
-                }}
-              >
-                Create an account →
-              </button>
-            </div>
+</div>
 
-            <p className="text-[10px] text-[#1a2f8a]/55 font-bold tracking-widest text-center mt-6">
+<p className="text-[10px] text-[#1a2f8a]/55 font-bold tracking-widest text-center mt-6">
               IFRS · MULTI-CURRENCY · EU HOSTED
+            </p>
+            <p className="text-[9px] text-[#1a2f8a]/40 font-bold tracking-widest text-center mt-1.5">
+              VERSION 1.0 · SPRINT
             </p>
           </div>
         </div>

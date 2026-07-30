@@ -43,7 +43,7 @@ function PageFallback() {
 }
 
 function AppRoutesInner({ token, user, activePage, onNavigate, preloadedData }) {
-  const rawData = preloadedData ?? {};
+const rawData = useMemo(() => preloadedData ?? {}, [preloadedData]);
   const { can, loaded } = useCurrentUserPermissions();
   const { loaded: accessLoaded, access } = useCurrentUserResourceAccess();
 

@@ -23,7 +23,7 @@ function UserPage({ user, onLogout }) {
   );
 }
 
-export default function Shell({ user, onRefresh, onLogout, children }) {
+export default function Shell({ user, onLogout, children }) {
 
   const [activePage, setActivePage] = useState("home");
   const asideWrapRef = useRef(null);
