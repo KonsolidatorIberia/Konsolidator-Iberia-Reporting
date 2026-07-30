@@ -418,11 +418,12 @@ const [importErrors, setImportErrors]     = useState([]);
       const uid = session?.user?.id;
       setUserId(uid);
       if (!uid) { setIsAdmin(false); setLoading(false); return; }
-      const { data } = await supabase.schema("accounts").from("user_companies")
+const { data } = await supabase.schema("accounts").from("user_companies")
         .select("role").eq("user_id", uid).eq("is_active", true);
-      const admin = (data ?? []).some(r => r.role === "admin");
-      setIsAdmin(admin);
-      if (!admin) setLoading(false);
+      // Onboarding is CONSULTANT-only (Konsolidator staff). Admins do NOT get in.
+      const ok = (data ?? []).some(r => String(r.role ?? "").toLowerCase() === "consultant");
+      setIsAdmin(ok);
+      if (!ok) setLoading(false);
     })();
   }, []);
 

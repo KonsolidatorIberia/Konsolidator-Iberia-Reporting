@@ -16,7 +16,8 @@ const NAV_KEYS = [
       { key: "individual-kpis",         labelKey: "nav_kpis",         icon: BarChart3  },
       { key: "individual-dimensiones",  labelKey: "nav_dimensions",   icon: Filter     },
       { key: "individual-cashflow",     labelKey: "nav_cashflow",     icon: TrendingUp },
-      { key: "individual-memory-notes", labelKey: "nav_memory_notes", icon: BookOpen   },
+  // Temporalmente desactivada: página Cuadro de memoria (individual).
+      // { key: "individual-memory-notes", labelKey: "nav_memory_notes", icon: BookOpen   },
     ],
   },
   {
@@ -27,7 +28,8 @@ const NAV_KEYS = [
       { key: "consolidated-kpis",        labelKey: "nav_kpis",          icon: BarChart3  },
       { key: "consolidated-dimensiones", labelKey: "nav_dimensions",    icon: Filter     },
       { key: "consolidated-cashflow",    labelKey: "nav_cashflow",      icon: TrendingUp },
-      { key: "consolidated-notes",       labelKey: "nav_memory_notes",  icon: BookOpen   },
+// Temporalmente desactivada: página Cuadro de memoria (consolidado).
+      // { key: "consolidated-notes",       labelKey: "nav_memory_notes",  icon: BookOpen   },
 ],
   },
   {
@@ -59,7 +61,7 @@ export default function Sidebar({ activePage, onNavigate, user, height = "100vh"
   const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
   const t = useT();
-const { can, loaded: permsLoaded } = useCurrentUserPermissions();
+const { can } = useCurrentUserPermissions();
 
 // Async consultant check — user has role='consultant' on any active
   // user_companies row. Consultants are Konsolidator staff and get access
@@ -101,8 +103,12 @@ const { can, loaded: permsLoaded } = useCurrentUserPermissions();
 
   const [hovered, setHovered]       = useState(false);
   const [hoveredKey, setHoveredKey] = useState(null);
-  const rowRefs    = useRef({});
+const rowRefs    = useRef({});
+  const btnRefs    = useRef({});
+  const navBoxRef  = useRef(null);
   const closeTimer = useRef(null);
+  // Sliding active-indicator geometry (measured from the active row).
+  const [indicator, setIndicator] = useState({ top: 0, height: 0, visible: false });
 
 const isOpen = hovered;
 
@@ -113,9 +119,33 @@ const isOpen = hovered;
     return () => { delete document.body.dataset.sidebar; };
   }, [isOpen]);
 
-  const activeParent = NAV.find(n =>
+const activeParent = NAV.find(n =>
     n.key === activePage || n.children?.some(c => c.key === activePage)
   )?.key;
+
+  // Measure the active row so the sliding indicator can align to it. Re-runs
+  // when the active item, the NAV list, or the open/closed width changes.
+  useEffect(() => {
+const row = activeParent ? btnRefs.current[activeParent] : null;
+    const box = navBoxRef.current;
+    if (!row || !box) { setIndicator(i => ({ ...i, visible: false })); return; }
+const measure = () => {
+      const rowRect = row.getBoundingClientRect();
+      const boxRect = box.getBoundingClientRect();
+      setIndicator({ top: rowRect.top - boxRect.top, height: rowRect.height, visible: true });
+    };
+    // Follow the active row in real time for ~420ms so the pill stays glued to
+    // it while the submenu expands/collapses above (which shifts its position).
+    // Per-frame measurement keeps it perfectly in sync instead of lagging.
+    let raf;
+    const start = performance.now();
+    const loop = (now) => {
+      measure();
+      if (now - start < 420) raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [activeParent, isOpen, NAV.length, hoveredKey]);
 
   const handleNavMouseEnter = (key, hasChildren) => {
     if (!hasChildren) { setHoveredKey(null); return; }
@@ -179,8 +209,29 @@ const adminOnlyKeys = new Set(NAV_KEYS.filter(n => n.adminOnly).map(n => n.key))
             style={{ opacity: isOpen ? 0 : 1, transition: `opacity ${TRANSITION}`, pointerEvents: "none" }} />
         </div>
 
-        {/* ── Nav ── */}
-        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 flex-1 flex flex-col py-3 overflow-visible">
+{/* ── Nav ── */}
+        <div ref={navBoxRef} className="bg-white rounded-2xl shadow-xl border border-gray-100 flex-1 flex flex-col py-3 overflow-visible relative">
+          {/* Sliding active indicator — square when collapsed, rounded rect when open */}
+<div
+            aria-hidden
+            style={{
+              position: "absolute",
+              // Left edge is FIXED in both states so the pill only grows to the
+              // RIGHT when the sidebar expands (no re-centering, no dual-side
+              // stretch). 22px aligns with the collapsed icon's left edge.
+left: 10,
+              top: indicator.top,
+              width: isOpen ? "calc(100% - 20px)" : 40,
+              height: indicator.height ? Math.min(indicator.height, 44) : 40,
+              marginTop: indicator.height ? (indicator.height - Math.min(indicator.height, 44)) / 2 : 0,
+              background: colors.primary,
+              borderRadius: isOpen ? 14 : 12,
+              opacity: indicator.visible ? 1 : 0,
+transition: `width ${TRANSITION}, border-radius ${TRANSITION}, opacity 200ms ease`,
+              pointerEvents: "none",
+              zIndex: 0,
+            }}
+          />
           {NAV.map((item) => {
             const isActiveParent = activeParent === item.key;
             const hasChildren    = !!item.children?.length;
@@ -194,25 +245,28 @@ const adminOnlyKeys = new Set(NAV_KEYS.filter(n => n.adminOnly).map(n => n.key))
                 onMouseEnter={() => { clearTimeout(closeTimer.current); handleNavMouseEnter(item.key, hasChildren); }}
                 onMouseLeave={() => { closeTimer.current = setTimeout(() => setHoveredKey(null), 150); }}
               >
-                <button
+<button
+                  ref={el => { btnRefs.current[item.key] = el; }}
                   onClick={() => !hasChildren ? handleNavigate(item.key) : undefined}
                   onMouseEnter={(e) => { if (!isActiveParent) { e.currentTarget.style.backgroundColor = `${colors.primary}10`; e.currentTarget.style.color = colors.primary; } }}
                   onMouseLeave={(e) => { if (!isActiveParent) { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = body1Style?.color ?? "#2f3138"; } }}
 className="w-full flex items-center py-2.5 transition-all duration-200"
                   style={{
+                    position: "relative",
+                    zIndex: 1,
 justifyContent: "flex-start",
                     paddingLeft: "1.25rem",
                     paddingRight: "1rem",
-                    color: isActiveParent ? colors.primary : (body1Style?.color ?? "#2f3138"),
+                    color: isActiveParent ? "#fff" : (body1Style?.color ?? "#2f3138"),
                     backgroundColor: "transparent",
                   }}
                 >
-                  <item.icon size={20} className="flex-shrink-0" style={{ minWidth: 16 }} />
+                  <item.icon size={20} className="flex-shrink-0" style={{ minWidth: 16, color: isActiveParent ? "#fff" : undefined }} />
                   <span
                     className="text-left overflow-hidden whitespace-nowrap"
                     style={{
                       ...body1Style,
-                      color: isActiveParent ? colors.primary : body1Style?.color,
+                      color: isActiveParent ? "#fff" : body1Style?.color,
 maxWidth:   isOpen ? 140 : 0,
                       opacity:    isOpen ? 1 : 0,
                       marginLeft: isOpen ? "0.75rem" : 0,
@@ -222,7 +276,7 @@ maxWidth:   isOpen ? 140 : 0,
                     {item.label}
                   </span>
                   {isActiveParent && isOpen && (
-                    <span className="ml-2 w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: colors.primary }} />
+                    <span className="ml-2 w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: "#fff" }} />
                   )}
                 </button>
 

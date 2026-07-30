@@ -478,13 +478,7 @@ function computeKpiById(id, pivot, kpiList, ccTagToCodes, sectionCodes, cache) {
   const kpi = kpiList.find(k => k.id === id);
   if (!kpi) { cache.set(id, 0); return 0; }
   pivot.__currentKpiVariations = kpi.variations ?? null;
-  const val = evalFormulaWithCcTags(kpi.formula, pivot, cache, kpiList, ccTagToCodes, sectionCodes);
-if (val === 0 && kpi.formula && pivot?.size > 0 && kpi.label === "KPI VARIACION") {
-    const keys = [...pivot.keys()];
-    const ipl = keys.filter(k => String(k).startsWith("I.PL"));
-    const ipl2 = keys.filter(k => String(k).toUpperCase().includes("PL"));
-    console.log("[home-zero-detail]", "keys sample:", keys.slice(0, 20), "startsWithIPL:", ipl, "hasPL:", ipl2.slice(0, 10));
-  }
+const val = evalFormulaWithCcTags(kpi.formula, pivot, cache, kpiList, ccTagToCodes, sectionCodes);
   pivot.__currentKpiVariations = null;
   cache.set(id, val);
   return val;
@@ -1794,6 +1788,8 @@ style={{ opacity: a.hasData ? 1 : 0.4 }}>
 /* ═══════════════════════════════════════════════════════════════
    MAIN
 ═══════════════════════════════════════════════════════════════ */
+const DEFAULT_SLOTS = ["revenue", "ebitda", "ebit", "net_result"];
+
 export default function HomePage({ token, initialData = {}, user = {} }) {
 const { colors } = useSettings();
   const headerStyle = useTypo("header1");
@@ -1949,7 +1945,11 @@ const {
   } = useResolvedKpiList(groupAccounts, settingsCompanyId, initialData?.activeStandardKey);
 
   // viewScope must be declared before any effect that reads it.
-  const [viewScope, setViewScope] = useState("consolidated"); // "consolidated" | "individual"
+const [viewScope, setViewScope] = useState("consolidated"); // "consolidated" | "individual"
+  const [valueMode, setValueMode] = useState("monthly"); // "monthly" | "ytd"
+  // Saved company from preferences, applied once holdings/companies resolve.
+  const [savedCompany, setSavedCompany] = useState(null);
+  const [savedCompanyApplied, setSavedCompanyApplied] = useState(false);
 
 const [companyKpis, setCompanyKpis] = useState([]);
   useEffect(() => {
@@ -2005,7 +2005,6 @@ const [companyKpis, setCompanyKpis] = useState([]);
 const { setDetectedLocale } = useSettingsControls();
 
 // ── KPI slot configuration ───────────────────────────────────────
-  const DEFAULT_SLOTS = ["revenue", "ebitda", "ebit", "net_result"];
   // Keep BOTH scope slot lists in state so switching is instant and each
   // scope remembers its own last selection independently.
   const [slotsIndividual,   setSlotsIndividual]   = useState(DEFAULT_SLOTS);
@@ -2045,13 +2044,33 @@ const { setDetectedLocale } = useSettingsControls();
         ? prefs.home_kpi_slots : null;
       const ind = Array.isArray(prefs.home_kpi_slots_individual)   && prefs.home_kpi_slots_individual.length   === 4
         ? prefs.home_kpi_slots_individual   : (legacy ?? DEFAULT_SLOTS);
-      const con = Array.isArray(prefs.home_kpi_slots_consolidated) && prefs.home_kpi_slots_consolidated.length === 4
+const con = Array.isArray(prefs.home_kpi_slots_consolidated) && prefs.home_kpi_slots_consolidated.length === 4
         ? prefs.home_kpi_slots_consolidated : (legacy ?? DEFAULT_SLOTS);
       setSlotsIndividual(ind);
       setSlotsConsolidated(con);
-    })();
-  }, [userId]);
 
+      // Restore Home view filters (scope / value mode / company / trend).
+      // Period (year/month/compare) is intentionally NOT restored — it always
+      // auto-picks the latest month with data and its comparison.
+      if (prefs.home_view_scope === "consolidated" || prefs.home_view_scope === "individual") {
+        setViewScope(prefs.home_view_scope);
+      }
+      if (prefs.home_value_mode === "monthly" || prefs.home_value_mode === "ytd") {
+        setValueMode(prefs.home_value_mode);
+      }
+      if ([12, 24, 36, 48].includes(prefs.home_trend_window)) {
+        setTrendWindow(prefs.home_trend_window);
+      }
+      if (["monthly", "6months", "yearly"].includes(prefs.home_trend_interval)) {
+        setTrendInterval(prefs.home_trend_interval);
+      }
+      // Company is a single saved value; apply it to whichever scope is active
+      // once holdings/companies have resolved (handled by a dedicated effect).
+if (typeof prefs.home_company === "string" && prefs.home_company) {
+        setSavedCompany(prefs.home_company);
+      }
+    })();
+  }, [userId]);  // DEFAULT_SLOTS is a module-level constant (stable), not needed here
 const saveKpiSlots = useCallback(async (slots, scope) => {
     if (!userId) return;
     const { data } = await supabase
@@ -2061,11 +2080,31 @@ const saveKpiSlots = useCallback(async (slots, scope) => {
       .single();
     const current = data?.preferences ?? {};
     const key = scope === "consolidated" ? "home_kpi_slots_consolidated" : "home_kpi_slots_individual";
-    await supabase.from("user_settings").upsert({
+await supabase.from("user_settings").upsert({
       user_id: userId,
       preferences: { ...current, [key]: slots },
       updated_at: new Date().toISOString(),
     });
+  }, [userId]);
+
+  // Generic per-user preference writer: merges a single key into
+  // user_settings.preferences. Used for the Home view filters (scope, value
+  // mode, company, trend window/interval) so they survive re-login.
+  const savePref = useCallback(async (key, value) => {
+    if (!userId) return;
+    try {
+      const { data } = await supabase
+        .from("user_settings")
+        .select("preferences")
+        .eq("user_id", userId)
+        .single();
+      const current = data?.preferences ?? {};
+      await supabase.from("user_settings").upsert({
+        user_id: userId,
+        preferences: { ...current, [key]: value },
+        updated_at: new Date().toISOString(),
+      });
+    } catch { /* non-critical */ }
   }, [userId]);
 
   const updateSlot = useCallback((slotIdx, kpiId) => {
@@ -2079,18 +2118,16 @@ const saveKpiSlots = useCallback(async (slots, scope) => {
 // When scope changes, any slot ID that isn't present in the (new)
   // kpiList — because it was a custom KPI scoped to the other view —
   // falls back to a default so cards never render empty.
-  useEffect(() => {
-    if (!resolverReady || kpiList.length === 0) return;
+// Cards must never render empty. If a saved slot id isn't in the CURRENT
+  // kpiList we substitute a default FOR DISPLAY ONLY — we never persist that
+  // substitution, because the id may simply not have loaded yet (custom KPIs
+  // arrive after the base list). Persisting here previously clobbered the
+  // user's real selection with defaults on every reload.
+  const displaySlots = useMemo(() => {
+    if (!resolverReady || kpiList.length === 0) return kpiSlots;
     const validIds = new Set(kpiList.map(k => k.id));
-    const patched = kpiSlots.map((id, i) =>
-      validIds.has(id) ? id : (DEFAULT_SLOTS[i] ?? DEFAULT_SLOTS[0])
-    );
-    if (patched.some((id, i) => id !== kpiSlots[i])) {
-      setKpiSlots(patched);
-      saveKpiSlots(patched, viewScope);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewScope, kpiList, resolverReady]);
+    return kpiSlots.map((id, i) => (validIds.has(id) ? id : (DEFAULT_SLOTS[i] ?? DEFAULT_SLOTS[0])));
+  }, [kpiSlots, kpiList, resolverReady]);
 
   // Visual config per slot (colours stay fixed, icons stay fixed)
   const SLOT_COLORS = useMemo(() => [
@@ -2204,8 +2241,7 @@ return {
 
 const [year, setYear]     = useState(prefetch?.year  ? String(prefetch.year)  : "");
   const [month, setMonth]   = useState(prefetch?.month ? String(prefetch.month) : "");
-  const [valueMode, setValueMode]           = useState("monthly"); // "monthly" | "ytd"
-  const [pickerOpen, setPickerOpen]         = useState(false);
+const [pickerOpen, setPickerOpen]         = useState(false);
   const pickerRef = useRef(null);
 
   useEffect(() => {
@@ -2243,8 +2279,8 @@ const source = useMemo(() => {
 
 const [structureOverride] = useState(null);
   // Two independent overrides — one per scope. Switching scope clears the other.
-  const [consolidatedCompanyOverride, setConsolidatedCompanyOverride] = useState(null);
-  const [individualCompanyOverride,   setIndividualCompanyOverride]   = useState(null);
+const [consolidatedCompanyOverride, setConsolidatedCompanyOverride] = useState(null);
+const [individualCompanyOverride,   setIndividualCompanyOverride]   = useState(null);
   const structure = structureOverride ?? defaultStructure;
 
   // Holdings: companies that act as parent (have children) plus the root.
@@ -2284,10 +2320,76 @@ return shortNames
     return defaultIndividualCompany;
   }, [holdings, defaultIndividualCompany]);
 
-  // Active company = override-for-scope ?? default-for-scope
+// Active company = override-for-scope ?? default-for-scope
   const company = viewScope === "consolidated"
     ? (consolidatedCompanyOverride ?? defaultConsolidatedCompany)
     : (individualCompanyOverride   ?? defaultIndividualCompany);
+
+  // Apply the saved company (single value) to the active scope's override,
+  // once — after companies/holdings have resolved so we can validate it.
+  useEffect(() => {
+    if (savedCompanyApplied || !savedCompany) return;
+    const holdingNames = new Set(holdings.map(h => h.shortName));
+    const companyNames = new Set(visibleCompanies.map(c =>
+      typeof c === "object" ? (c.companyShortName ?? c.CompanyShortName ?? "") : String(c)
+    ));
+    // Wait until the relevant list for the active scope has loaded.
+    const pool = viewScope === "consolidated" ? holdingNames : companyNames;
+if (pool.size === 0) return;
+    // Defer the state writes to a microtask so we don't setState synchronously
+    // in the effect body (avoids the cascading-render lint + the runtime cost).
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      if (pool.has(savedCompany)) {
+        if (viewScope === "consolidated") setConsolidatedCompanyOverride(savedCompany);
+        else                              setIndividualCompanyOverride(savedCompany);
+      }
+      setSavedCompanyApplied(true);
+    });
+    return () => { cancelled = true; };
+  }, [savedCompany, savedCompanyApplied, viewScope, holdings, visibleCompanies]);
+
+  // ── Persist Home view filters whenever they change ──────────────────
+  // A "loaded" gate prevents writing during the initial restore pass (which
+  // would clobber saved prefs with defaults before they're read).
+  const prefsLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!userId) return;
+    // mark loaded on the first run after userId is known + a tick
+    const id = setTimeout(() => { prefsLoadedRef.current = true; }, 0);
+    return () => clearTimeout(id);
+  }, [userId]);
+
+  useEffect(() => {
+    if (!prefsLoadedRef.current) return;
+    savePref("home_view_scope", viewScope);
+  }, [viewScope, savePref]);
+
+  useEffect(() => {
+    if (!prefsLoadedRef.current) return;
+    savePref("home_value_mode", valueMode);
+  }, [valueMode, savePref]);
+
+  useEffect(() => {
+    if (!prefsLoadedRef.current) return;
+    savePref("home_trend_window", trendWindow);
+  }, [trendWindow, savePref]);
+
+  useEffect(() => {
+    if (!prefsLoadedRef.current) return;
+    savePref("home_trend_interval", trendInterval);
+  }, [trendInterval, savePref]);
+
+  // Company: single saved value. Only persist once the saved company has been
+  // applied (or there was none), so we don't overwrite it with the default.
+  useEffect(() => {
+    if (!prefsLoadedRef.current) return;
+    if (savedCompany && !savedCompanyApplied) return;
+    if (!company) return;
+    savePref("home_company", company);
+  }, [company, savedCompany, savedCompanyApplied, savePref]);
+
   const [compareYear, setCompareYear]   = useState("");
   const [compareMonth, setCompareMonth] = useState("");
   const [compareTouched, setCompareTouched] = useState(false);
@@ -2295,11 +2397,15 @@ return shortNames
     if (compareTouched) return;
     if (!year || !month) return;
     const y = Number(year), m = Number(month);
-    let pm = m - 1, py = y;
+let pm = m - 1, py = y;
     if (pm < 1) { pm = 12; py -= 1; }
-// eslint-disable-next-line react-hooks/set-state-in-effect
-    setCompareYear(String(py));
-setCompareMonth(String(pm));
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setCompareYear(String(py));
+      setCompareMonth(String(pm));
+    });
+    return () => { cancelled = true; };
   }, [year, month, compareTouched]);
   const compareLabel = useMemo(() => {
     if (!compareYear || !compareMonth) return "—";
@@ -2372,19 +2478,27 @@ const trendCacheRef = useRef(new Map());
     if (!source || !structure || !company || !token) return;
     probedRef.current = true;
 
-    const cacheKey = `home_latest_period_${source}_${structure}_${company}`;
+const cacheKey = `home_latest_period_${source}_${structure}_${company}`;
     const cached = sessionStorage.getItem(cacheKey);
     if (cached) {
       try {
         const p = extractPeriod(JSON.parse(cached));
-       // eslint-disable-next-line react-hooks/set-state-in-effect
-        if (p) { setYear(String(p.year)); setMonth(String(p.month)); return; }
+        if (p) {
+          let cancelled = false;
+          Promise.resolve().then(() => {
+            if (cancelled) return;
+            setYear(String(p.year));
+            setMonth(String(p.month));
+          });
+          return () => { cancelled = true; };
+        }
         sessionStorage.removeItem(cacheKey);
       } catch { sessionStorage.removeItem(cacheKey); }
     }
 
-    setProbing(true);
+let cancelled = false;
     (async () => {
+      setProbing(true);
       const now = new Date();
       let y = now.getFullYear();
       let m = now.getMonth() + 1;
@@ -2405,15 +2519,17 @@ const trendCacheRef = useRef(new Map());
             return rows.length > 0 ? { y, m } : null;
           } catch { return null; }
         }));
-        const found = probes.find(Boolean);
+const found = probes.find(Boolean);
         if (found) {
-          setYear(String(found.y)); setMonth(String(found.m));
+          if (!cancelled) { setYear(String(found.y)); setMonth(String(found.m)); }
           try { sessionStorage.setItem(cacheKey, JSON.stringify({ year: found.y, month: found.m })); } catch { /* storage unavailable */ }
-          setProbing(false); return;
+          if (!cancelled) setProbing(false);
+          return;
         }
       }
-      setProbing(false);
+      if (!cancelled) setProbing(false);
     })();
+    return () => { cancelled = true; };
   }, [source, structure, company, token, year, month, headers]);
 
 // Fetch current (anchor period)
@@ -2514,10 +2630,10 @@ const anchorY = Number(year), anchorM = Number(month);
 
 
 // Resolve the 4 configured slot KPIs from the library
-  const slottedKpis = useMemo(() => {
+const slottedKpis = useMemo(() => {
     if (!resolverReady || kpiList.length === 0) return null;
-    return kpiSlots.map(id => kpiList.find(k => k.id === id) ?? null);
-  }, [kpiList, resolverReady, kpiSlots]);
+    return displaySlots.map(id => kpiList.find(k => k.id === id) ?? null);
+  }, [kpiList, resolverReady, displaySlots]);
 
   // Keep heroKpis for backwards compat (trend needs the net_result id)
   const heroKpis = useMemo(() => {
@@ -2542,9 +2658,12 @@ const anchorY = Number(year), anchorM = Number(month);
   const [monthBeforeAnchorRows, setMonthBeforeAnchorRows] = useState([]);
   useEffect(() => {
     if (!year || !month || !source || !structure || !company) return;
-    const m = Number(month);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (m === 1 || valueMode === "ytd") { setMonthBeforeAnchorRows([]); return; }
+const m = Number(month);
+    if (m === 1 || valueMode === "ytd") {
+      let cancelledEarly = false;
+      Promise.resolve().then(() => { if (!cancelledEarly) setMonthBeforeAnchorRows([]); });
+      return () => { cancelledEarly = true; };
+    }
     const beforeM = m - 1;
     const beforeY = Number(year);
     let cancelled = false;
@@ -2657,7 +2776,6 @@ const prevMonthlyPivot = useMemo(() => {
   }, [prevRows, trendRows, compareYear, compareMonth, valueMode]);
 
 const kpiValues = useMemo(() => {
-    console.log("[home-kpiValues]", "slottedKpis:", slottedKpis?.map(k => k?.id), "kpiListLen:", kpiList.length, "viewScope:", viewScope, "company:", company);
     if (!slottedKpis || kpiList.length === 0) return null;
     const cacheCur = new Map();
     const cachePrev = new Map();
@@ -2801,7 +2919,7 @@ const trendSeriesDisplay = useMemo(() => {
       out.push(entry);
     }
     return out;
-  }, [trendSeries, trendWindow, trendInterval, valueMode, kpiSlots, year, MONTHS_ABBR]);
+}, [trendSeries, trendWindow, trendInterval, kpiSlots, year, MONTHS_ABBR]);
 
   const sparklines = useMemo(() => {
     const last12 = trendSeries.slice(-12);
@@ -3155,8 +3273,12 @@ return () => { cancelled = true; };
         }
       }
     });
-    return items.length ? { id: "standard_mapping", name: standardMappingData.name, description: "From your standard mapping", items } : null;
-  }, [standardMappingData]);
+   const rawName = standardMappingData.name;
+    const cleanName = (!rawName || /^__.*__$/.test(String(rawName).trim()))
+      ? t("breakdown_standard_mapping", "Standard mapping")
+      : rawName;
+return items.length ? { id: "standard_mapping", name: cleanName, description: "From your standard mapping", items } : null;
+  }, [standardMappingData, t]);
 
   const activeCustomStructure = useMemo(() => {
     const fromCustom = customStructures.find(s => s.id === activeBreakdownView);
@@ -3168,10 +3290,14 @@ return () => { cancelled = true; };
 // When the standard mapping loads, switch to it if still on a preset view
 useEffect(() => {
     if (!standardMappingStructure) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setActiveBreakdownView(prev =>
-      BREAKDOWN_VIEWS.some(v => v.id === prev) ? "standard_mapping" : prev
-    );
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setActiveBreakdownView(prev =>
+        BREAKDOWN_VIEWS.some(v => v.id === prev) ? "standard_mapping" : prev
+      );
+    });
+    return () => { cancelled = true; };
   }, [standardMappingStructure, BREAKDOWN_VIEWS]);
 
   const activeView = BREAKDOWN_VIEWS.find(v => v.id === activeBreakdownView) ?? BREAKDOWN_VIEWS[0];
@@ -3745,19 +3871,7 @@ selectedCompany={company}
               </div>
             )}
 
-            {/* AI Assistant button */}
-            <button
-              onClick={() => setAiPanelOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 hover:scale-[1.02]"
-              style={{
-                background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.secondary ?? "#CF305D"} 100%)`,
-                boxShadow: `0 4px 14px -4px ${colors.primary}80`,
-              }}
-            >
-  <Sparkles size={11} className="text-white" />
-              <span className="text-[11px] font-black text-white uppercase tracking-wider">{t("ai_button")}</span>
-            </button>
-          </div>
+</div>
 
           <style>{`
             @keyframes titleMorph {
@@ -4329,7 +4443,11 @@ interval={trendSeriesDisplay.length <= 12 ? 0 : Math.floor(trendSeriesDisplay.le
             <div className="mb-3 flex-shrink-0 flex items-start justify-between gap-2">
 <div>
 <p className="text-[12px] font-black uppercase tracking-widest text-gray-400">
-                  {activeCustomStructure ? activeCustomStructure.name : activeView.label}
+                {activeCustomStructure
+                    ? (/^__.*__$/.test(String(activeCustomStructure.name ?? "").trim())
+                        ? t("breakdown_standard_mapping", "Standard mapping")
+                        : activeCustomStructure.name)
+                    : activeView.label}
                 </p>
                 <p className="text-[11px] text-gray-400 mt-0.5">
                   {activeCustomStructure ? (activeCustomStructure.description || "Custom breakdown") : activeView.description}

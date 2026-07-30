@@ -482,9 +482,11 @@ const [users, setUsers]         = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
 
   // Current user's role on this company — drives who can change roles.
-  // Super-admin (global) overrides everything; admin (per-link) can also edit.
+// Super-admin (global) overrides everything; consultant sits ABOVE admin
+  // (Konsolidator staff) and admin (per-link) can also edit.
   const me = users.find(u => u.id === myUserId);
-  const canEditRoles = !!(me?.is_super_admin || me?.uc_role === "admin");
+  const myRole = String(me?.uc_role ?? "").toLowerCase();
+  const canEditRoles = !!(me?.is_super_admin || myRole === "consultant" || myRole === "admin");
 
 const [companies,      setCompanies]      = useState(() => preloadedData.companies  ?? []);
   const [structures,     setStructures]     = useState(() => preloadedData.structures ?? []);

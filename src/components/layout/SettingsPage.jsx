@@ -458,15 +458,33 @@ export default function SettingsPage({ token, preloadedData = {} }) {
   useEffect(() => {
     setSettings(serverSettings);
   }, [serverSettings]);
-
 const [activeTab, setActiveTab] = useState("typography");
 const [userMgmtCard, setUserMgmtCard] = useState(null);
 const { can } = useCurrentUserPermissions();
 
+  // Typography & Colors are CONSULTANT-only (Konsolidator staff). Regular/admin
+  // clients don't theme the workspace. Language stays open to everyone.
+  const [isConsultant, setIsConsultant] = useState(false);
   useEffect(() => {
-    const allowed = {
-      typography:  can("settings-personalization"),
-      colors:      can("settings-personalization"),
+    let cancelled = false;
+    (async () => {
+      try {
+        const { supabase } = await import("../../lib/supabaseClient");
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) return;
+        const { data } = await supabase.schema("accounts").from("user_companies")
+          .select("role").eq("user_id", uid).eq("is_active", true);
+        if (!cancelled) setIsConsultant((data ?? []).some(r => String(r.role ?? "").toLowerCase() === "consultant"));
+      } catch { /* silent */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+const allowed = {
+      typography:  can("settings-personalization") && isConsultant,
+      colors:      can("settings-personalization") && isConsultant,
       language:    can("settings-personalization"),
       permissions: can("settings-security"),
     };
@@ -474,8 +492,8 @@ const { can } = useCurrentUserPermissions();
       const fallback = Object.entries(allowed).find(([, ok]) => ok)?.[0];
       if (fallback) setActiveTab(fallback);
     }
-    if (activeTab !== "permissions") setUserMgmtCard(null);
-  }, [activeTab, can]);
+if (activeTab !== "permissions") setUserMgmtCard(null);
+  }, [activeTab, can, isConsultant]);
   const [saved, setSaved]   = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -528,9 +546,11 @@ return (
         title="Settings"
 onBack={undefined}
 tabs={[
-          ...(can("settings-personalization") ? [
+...(can("settings-personalization") && isConsultant ? [
             { id: "typography", label: "Typography", icon: Type },
             { id: "colors",     label: "Colors",     icon: Palette },
+          ] : []),
+          ...(can("settings-personalization") ? [
             { id: "language",   label: "Language",   icon: Globe },
           ] : []),
           ...(can("settings-security") ? [
