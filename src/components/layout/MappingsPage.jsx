@@ -88,8 +88,7 @@ function getField(obj, ...names) {
   }
   return undefined;
 }
-// eslint-disable-next-line react-refresh/only-export-components
-export function detectStandard(groupAccounts = []) {
+function detectStandard(groupAccounts = []) {
   if (!groupAccounts.length) return null;
   const codes = groupAccounts.map(n => String(n.accountCode ?? n.AccountCode ?? ""));
   if (codes.some(c => /[a-zA-Z]/.test(c) && c.endsWith(".S"))) return "PGC";
@@ -304,8 +303,7 @@ function filterTree(tree, predicate) { function walk(nodes) { return nodes.map(n
 function filterTreeTpl(tree, q) { function walk(nodes) { return nodes.map(n => { const kids = walk(n.children || []); const matches = n.code.toLowerCase().includes(q) || (n.name ?? "").toLowerCase().includes(q); return (matches || kids.length > 0) ? { ...n, children: kids } : null; }).filter(Boolean); } return walk(tree); }
 
 // ─── Main export ─────────────────────────────────────────────
-export default function MappingsPage({ token, preloadedData, onNavigate, onPendingEditConsumed, activeStandardKey = null }) {
-  console.log("[MappingsPage] activeStandardKey =", activeStandardKey);
+export default function MappingsPage({ token, preloadedData, activeStandardKey = null }) {
   const { colors } = useSettings();
   const t = useT();
 const groupAccounts = preloadedData.groupAccounts ?? [];
@@ -733,36 +731,42 @@ const [sortBy, setSortBy] = useState("desc");
       if (uid) { const cid = await getActiveCompanyId(uid); setCompanyId(cid); }
     })();
   }, []);
-
 useEffect(() => {
     if (view !== "list" || !companyId) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setMappingsLoading(true);
-    api.list({ companyId }).then(rows => setMappings(rows)).finally(() => setMappingsLoading(false));
+    let cancelled = false;
+    Promise.resolve().then(() => { if (!cancelled) setMappingsLoading(true); });
+    api.list({ companyId })
+      .then(rows => { if (!cancelled) setMappings(rows); })
+      .finally(() => { if (!cancelled) setMappingsLoading(false); });
+    return () => { cancelled = true; };
   }, [view, companyId, api]);
 
 // Auto-open the requested mapping once the list has loaded
-  useEffect(() => {
+useEffect(() => {
     if (!pendingEdit) return;
+    let cancelled = false;
     // Direct-open the CUSTOM editor without needing a specific mapping_id.
     if (pendingEdit.openCustom && pendingEdit.standard) {
-      /* eslint-disable react-hooks/set-state-in-effect */
-      setEditingMapping(null);
-      setSelectedStandard(pendingEdit.standard);
-      setView("mapper");
-      /* eslint-enable react-hooks/set-state-in-effect */
-      onPendingEditConsumed?.();
-      return;
+      Promise.resolve().then(() => {
+        if (cancelled) return;
+        setEditingMapping(null);
+        setSelectedStandard(pendingEdit.standard);
+        setView("mapper");
+        onPendingEditConsumed?.();
+      });
+      return () => { cancelled = true; };
     }
     if (!mappings.length) return;
     const m = mappings.find(x => String(x.mapping_id) === String(pendingEdit.mapping_id));
     if (!m) return;
-    /* eslint-disable react-hooks/set-state-in-effect */
-    setEditingMapping(m);
-    setSelectedStandard(m.standard);
-    setView("mapper");
-    /* eslint-enable react-hooks/set-state-in-effect */
-    onPendingEditConsumed?.();
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setEditingMapping(m);
+      setSelectedStandard(m.standard);
+      setView("mapper");
+      onPendingEditConsumed?.();
+    });
+    return () => { cancelled = true; };
   }, [pendingEdit, mappings, onPendingEditConsumed]);
 
 useEffect(() => {
@@ -889,9 +893,13 @@ const rows = json.value ?? (Array.isArray(json) ? json : []);
   // Previous-month YTD (used to derive monthly amount = YTD_curr - YTD_prev)
   useEffect(() => {
     if (!token) return;
-    if (!filterYear || !filterMonth || !filterSource || !filterStructure || !filterCompany) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (filterMonth === 1) { setPreviousUploadedAccounts([]); return; } // January: monthly == YTD
+if (!filterYear || !filterMonth || !filterSource || !filterStructure || !filterCompany) return;
+    let cancelled = false;
+    if (filterMonth === 1) {
+      // January: monthly == YTD, so there's no previous month to fetch.
+      Promise.resolve().then(() => { if (!cancelled) setPreviousUploadedAccounts([]); });
+      return () => { cancelled = true; };
+    }
     const prevY = filterYear;
     const prevM = filterMonth - 1;
     const h = { Authorization: `Bearer ${token}`, Accept: "application/json" };
@@ -899,23 +907,23 @@ const rows = json.value ?? (Array.isArray(json) ? json : []);
     (async () => {
       try {
         const res = await fetch(`/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h });
+        if (cancelled) return;
         if (!res.ok) { setPreviousUploadedAccounts([]); return; }
         const json = await res.json();
         const rows = json.value ?? (Array.isArray(json) ? json : []);
-        setPreviousUploadedAccounts(rows);
-      } catch { setPreviousUploadedAccounts([]); }
+        if (!cancelled) setPreviousUploadedAccounts(rows);
+      } catch { if (!cancelled) setPreviousUploadedAccounts([]); }
     })();
+    return () => { cancelled = true; };
   }, [token, filterYear, filterMonth, filterSource, filterStructure, filterCompany]);
 
 const handleMapperBack = () => {
-    console.log("[handleMapperBack] mapperDirty:", mapperDirty);
     if (mapperDirty) { setShowBackConfirm(true); return; }
     setEditingMapping(null); setSelectedStandard(null); setView("list");
   };
 
 useEffect(() => {
-    window.__navGuard = (go) => {
-      console.log("[__navGuard] view:", view, "mapperDirty:", mapperDirty);
+window.__navGuard = (go) => {
       if (view !== "mapper" || !mapperDirty) { go(); return; }
       setPendingNav(() => go);
       setShowBackConfirm(true);
@@ -1401,9 +1409,8 @@ function SelectStandardView({ detectedStandard, activeStandardKey, mappingKind =
   // If this tenant has a CUSTOM-* standard bound, show it as an extra card
   // (marked recommended, using their brand colour).
 const hasCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-") && mappingKind !== "report";
-  console.log("[SelectStandardView] activeStandardKey =", activeStandardKey, "hasCustom =", hasCustom);
 
-  if (loading) return <div className="flex-1 flex items-center justify-center text-xs text-gray-400">{t("am_loading_templates")}</div>;
+  if (loading) return<div className="flex-1 flex items-center justify-center text-xs text-gray-400">{t("am_loading_templates")}</div>;
 
   return (
     <div className="flex-1 flex flex-col min-h-0 p-5">
@@ -1763,11 +1770,15 @@ return map;
   const [tplStatement, setTplStatement] = useState(null);
   const [clientTreeBy, setClientTreeBy] = useState({ PL: null, BS: null });
 const [templateTreeBy, setTemplateTreeBy] = useState({ PL: null, BS: null });
+  // Mirror of templateTreeBy for effects that must READ it without depending on
+  // it (reading via this ref keeps the tpl-load effect from re-running—and
+  // overwriting user edits—every time the tree changes).
+  const templateTreeByRef = useRef(templateTreeBy);
+  templateTreeByRef.current = templateTreeBy;
 const [tplRefreshTick, setTplRefreshTick] = useState(0);
-  useEffect(() => {
-    const handler = () => { console.log("[tpl-listener] event received"); setTplRefreshTick(v => v + 1); };
+useEffect(() => {
+    const handler = () => { setTplRefreshTick(v => v + 1); };
     window.addEventListener("custom-standard-updated", handler);
-    console.log("[tpl-listener] attached");
     return () => window.removeEventListener("custom-standard-updated", handler);
   }, []);
 const [activeMultiSide, setActiveMultiSide] = useState(null);
@@ -1785,15 +1796,20 @@ const [showSaveChoice, setShowSaveChoice] = useState(false);
   const [currentDescription, setCurrentDescription] = useState(editingMapping?.description ?? "");
 
 useEffect(() => {
-    const ac = new AbortController();
-    if (templateTreeBy[statement]) return;
-console.log("[tpl-effect] fired", { standard, statement, tplRefreshTick });
+const ac = new AbortController();
+   if (templateTreeByRef.current[statement]) return;
+let cancelled = false;
 if (standard === "Scratch") {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setTplRows([]); setTplSections([]); setTplStatement(statement); setTplLoading(false);
-      return;
+      Promise.resolve().then(() => {
+        if (cancelled) return;
+        setTplRows([]); setTplSections([]); setTplStatement(statement); setTplLoading(false);
+      });
+      return () => { cancelled = true; };
     }
-    setTplLoading(true); setTplRows([]); setTplSections([]); setTplStatement(null);
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setTplLoading(true); setTplRows([]); setTplSections([]); setTplStatement(null);
+    });
 
     // CUSTOM-* standards live in the unified standard_statement_* tables.
     // Built-in standards (PGC/SpanishIFRS/DanishIFRS) still come from the
@@ -1820,8 +1836,7 @@ if (standard === "Scratch") {
       } catch (e) { if (e.name !== "AbortError") { setTplRows([]); setTplSections([]); } }
       finally { if (!ac.signal.aborted) setTplLoading(false); }
     })();
-return () => ac.abort();
-// eslint-disable-next-line react-hooks/exhaustive-deps
+return () => { cancelled = true; ac.abort(); };
   }, [standard, statement, tplRefreshTick]);
 
   const baseClientTree = useMemo(() => {
@@ -1846,7 +1861,6 @@ useEffect(() => {
   }, [standard]);
 useEffect(() => {
   if (!editingMapping) return;
-  console.log("[editingMapping effect] fired, will overwrite templateTreeBy with", { pl: editingMapping.pl_tree?.length, bs: editingMapping.bs_tree?.length });
   const plTree = Array.isArray(editingMapping.pl_tree) ? editingMapping.pl_tree : [];
   const bsTree = Array.isArray(editingMapping.bs_tree) ? editingMapping.bs_tree : [];
 setTemplateTreeBy({ PL: plTree, BS: bsTree });
@@ -1890,31 +1904,66 @@ setTemplateTreeBy({ PL: plTree, BS: bsTree });
   // Uses baseTemplateTree directly (already loaded, same codes as right panel)
   // and accumulates with a functional update so switching PL↔BS doesn't
   // overwrite codes from the other statement.
-  useEffect(() => {
-    if (editingMapping || standard === "Scratch" || !baseTemplateTree.length || !groupAccounts.length) return;
-    const templateCodes = new Set();
+useEffect(() => {
+    if (editingMapping || standard === "Scratch" || !groupAccounts.length) return;
+    // Pre-mark client accounts that exist in the CURRENT right-side tree (the
+    // one with the user's edits), NOT the pristine baseTemplateTree — otherwise
+    // deleting an account and switching tabs would re-mark it as mapped because
+    // the base template still contains it.
+    const currentTree = templateTreeBy[statement] ?? baseTemplateTree;
+    if (!currentTree || !currentTree.length) return;
+// Whole-account codes (nodes WITHOUT dims) vs dim-split codes (nodes WITH
+    // dims). A node that carries node.dims is only PARTIALLY mapped — it must
+    // NOT be marked as a whole-account mapping, otherwise deleting one of its
+    // dims would still show the account fully mapped on the left.
+    const wholeCodes = new Set();
+    const dimCodes = new Map(); // code -> Set(dims)
     const walkTemplate = nodes => {
       nodes.forEach(n => {
-        if (n.kind !== "breaker" && n.code && !String(n.code).startsWith("__"))
-          templateCodes.add(String(n.code));
+        if (n.kind !== "breaker" && n.code && !String(n.code).startsWith("__")) {
+          const code = String(n.code);
+          if (Array.isArray(n.dims) && n.dims.length > 0) {
+            const s = dimCodes.get(code) ?? new Set();
+            n.dims.forEach(d => s.add(d));
+            dimCodes.set(code, s);
+          } else {
+            wholeCodes.add(code);
+          }
+        }
         walkTemplate(n.children || []);
       });
     };
-walkTemplate(baseTemplateTree);
-    if (!templateCodes.size) return;
+    walkTemplate(currentTree);
+
+    const belongsHere = (at) => statement === "PL" ? ["P/L", "DIS"].includes(at) : at === "B/S";
+    const thisStatementAccountCodes = new Set();
+    groupAccounts.forEach(ga => {
+      const code = String(ga.AccountCode ?? ga.accountCode ?? "");
+      const at = String(ga.AccountType ?? ga.accountType ?? "");
+      if (code && belongsHere(at)) thisStatementAccountCodes.add(code);
+    });
+
+    // movedClientCodes: keep other-statement codes; for THIS statement, only the
+    // whole-account (dim-less) nodes count.
     setMovedClientCodes(prev => {
-      const next = new Set(prev);
-      groupAccounts.forEach(ga => {
-        const code = String(ga.AccountCode ?? ga.accountCode ?? "");
-        if (code && templateCodes.has(code)) next.add(code);
-      });
+      const next = new Set();
+      prev.forEach(c => { if (!thisStatementAccountCodes.has(c)) next.add(c); });
+      thisStatementAccountCodes.forEach(c => { if (wholeCodes.has(c)) next.add(c); });
       return next;
     });
-  }, [editingMapping, standard, baseTemplateTree, groupAccounts]);
+
+    // movedDimsByCode: keep other-statement codes; for THIS statement, rebuild
+    // from the dim-split nodes present in the current tree.
+    setMovedDimsByCode(prev => {
+      const next = new Map();
+      prev.forEach((dims, code) => { if (!thisStatementAccountCodes.has(code)) next.set(code, dims); });
+      dimCodes.forEach((dims, code) => { if (thisStatementAccountCodes.has(code)) next.set(code, dims); });
+      return next;
+    });
+  }, [editingMapping, standard, baseTemplateTree, templateTreeBy, statement, groupAccounts]);
 
 const clientTree = clientTreeBy[statement] ?? baseClientTree;
 const templateTree = templateTreeBy[statement] ?? baseTemplateTree;
-  console.log("[render] templateTree source:", templateTreeBy[statement] ? "override" : "base", "size:", templateTree?.length, "base size:", baseTemplateTree?.length, "tplRows:", tplRows?.length);
   const templateAmountsById = useMemo(() => {
     const out = new Map();
     const walk = node => {
@@ -1944,9 +1993,8 @@ let amt;
   const sectionByCode = useMemo(() => { const m = new Map(); tplSections.forEach(s => m.set(s.section_code, { label: s.label, color: s.color })); return m; }, [tplSections]);
 
 const handleSave = async ({ asNew = false } = {}) => {
-console.log("[handleSave]", "isCustomEditor:", isCustomEditor, "asNew:", asNew, "companyId:", !!companyId, "authUserId:", !!authUserId);
-if (!companyId || !authUserId) { console.log("[handleSave] EXIT: no auth"); setSaveError(t("am_err_not_auth")); return; }
-    if (!isCustomEditor && !currentName.trim()) { console.log("[handleSave] EXIT: no name"); setSaveError(t("am_err_name_required")); setShowSaveForm(true); return; }
+if (!companyId || !authUserId) { setSaveError(t("am_err_not_auth")); return; }
+    if (!isCustomEditor && !currentName.trim()) { setSaveError(t("am_err_name_required")); setShowSaveForm(true); return; }
 // Re-derive moved state from BOTH template trees (safeguard against stale state)
     const effectiveMoved = new Set();
     const dimsSeenByCode = new Map();
@@ -2002,39 +2050,31 @@ if (!isCustomEditor) {
       String(m.name ?? "").trim().toLowerCase() === trimmedName &&
       (asNew || !editingMapping || m.mapping_id !== editingMapping.mapping_id)
     );
-    if (nameConflict) { setSaveError(t("am_err_name_exists").replace("{name}", currentName.trim())); setShowSaveForm(true); return; }
+if (nameConflict) { setSaveError(t("am_err_name_exists").replace("{name}", currentName.trim())); setShowSaveForm(true); return; }
 }
-console.log("[handleSave] reaching save block");
     setSaving(true); setSaveError(null);
     try {
 const plTree = templateTreeBy.PL ?? templateTree ?? [], bsTree = templateTreeBy.BS ?? [];
       const highlightedArr = [...highlightedIds];
-      console.log("[handleSave] payload sizes:", "plTree:", plTree?.length, "bsTree:", bsTree?.length, "highlighted:", highlightedArr.length);
 if (isCustomEditor) {
-        console.log("[handleSave] entering CUSTOM branch");
         let saved;
         try {
           saved = await upsertHiddenOverrideMapping({
             companyId, userId: authUserId, standard,
             plTree, bsTree, highlightedIds: highlightedArr,
           });
-          console.log("[handleSave] upsertHiddenOverrideMapping returned:", saved);
         } catch (up) {
           console.error("[handleSave] upsertHiddenOverrideMapping THREW:", up);
           throw up;
         }
         if (saved?.mapping_id) {
           try {
-            const ok = await setActiveMappingSilently({ userId: authUserId, mappingId: saved.mapping_id });
-            console.log("[handleSave] setActiveMappingSilently ok:", ok);
+            await setActiveMappingSilently({ userId: authUserId, mappingId: saved.mapping_id });
           } catch (sa) {
             console.error("[handleSave] setActiveMappingSilently THREW:", sa);
           }
-        } else {
-          console.warn("[handleSave] saved has no mapping_id:", saved);
         }
         onSaved?.(saved);
-        console.log("[handleSave] onSaved called with:", saved);
       } else if (editingMapping && !asNew) { const updated = await api.update({ mappingId: editingMapping.mapping_id, userId: authUserId, name: currentName.trim(), description: currentDescription.trim() || null, plTree, bsTree, highlightedIds: highlightedArr }); onSaved?.(updated); }
       else { const created = await api.create({ companyId, userId: authUserId, name: currentName.trim(), description: currentDescription.trim() || null, standard, plTree, bsTree, highlightedIds: highlightedArr }); onSaved?.(created); }
 
@@ -2048,8 +2088,7 @@ if (isCustomEditor) {
             liveRows: customLiveRows,
             liveSections: customLiveSections,
           });
-          const hasAnyChange = Object.values(changes).some(arr => Array.isArray(arr) && arr.length > 0);
-console.log("[custom-save] changes:", JSON.stringify(changes, null, 2));
+const hasAnyChange = Object.values(changes).some(arr => Array.isArray(arr) && arr.length > 0);
           if (hasAnyChange) {
             await saveCustomStandard({
               standardKey: standard,
@@ -2071,14 +2110,12 @@ console.log("[custom-save] changes:", JSON.stringify(changes, null, 2));
         }
       }
 
-console.log("[handleSave] calling onDirtyChange(false)");
-      onDirtyChange?.(false);
+onDirtyChange?.(false);
       setShowSaveForm(false);
     } catch (e) { setSaveError(e.message); } finally { setSaving(false); }
   };
 useEffect(() => {
-    if (saveRef) saveRef.current = () => {
-      console.log("[saveRef.current fired]", "isCustomEditor:", isCustomEditor, "editingMapping:", !!editingMapping);
+if (saveRef) saveRef.current = () => {
       if (isCustomEditor) { handleSave(); }
       else if (!editingMapping) { setShowSaveForm(true); }
       else { setShowSaveChoice(true); }
@@ -2089,7 +2126,59 @@ useEffect(() => {
     };
   });
 
-const handleReset = () => { pushHistory(); setClientTreeBy({ ...clientTreeBy, [statement]: baseClientTree }); setTemplateTreeBy({ ...templateTreeBy, [statement]: baseTemplateTree }); setMovedClientCodes(new Set()); setMovedTemplateIds(new Set()); setHighlightedIds(new Set()); onDirtyChange?.(false); };
+const handleReset = () => {
+    pushHistory();
+    setClientTreeBy({ ...clientTreeBy, [statement]: baseClientTree });
+    // Only reset the template side to its base if that base is actually loaded
+    // for the CURRENT statement. baseTemplateTree returns [] when tplStatement
+    // hasn't caught up with statement yet — resetting to that would wipe the
+    // whole right side (the P/L blank-out bug). In that case leave the template
+    // as-is; the tpl-load effect will repopulate it.
+const templateBaseReady = tplStatement === statement && baseTemplateTree.length > 0;
+    let restoredTemplate;
+    if (templateBaseReady) {
+      // Base template for this statement is loaded — restore the full original.
+      restoredTemplate = baseTemplateTree;
+      setTemplateTreeBy({ ...templateTreeBy, [statement]: baseTemplateTree });
+    } else {
+      // Base not ready in memory: clear this statement's template so the loader
+      // effect (guarded by `if (templateTreeBy[statement]) return`) re-fetches
+      // the pristine template from Supabase and rebuilds it from scratch — as if
+      // the page had just opened. Also bump the refresh tick to force the fetch.
+      restoredTemplate = [];
+      setTemplateTreeBy(prev => ({ ...prev, [statement]: null }));
+      setTplRefreshTick(v => v + 1);
+    }
+// Rebuild the "mapped" state from BOTH statements' template trees, so
+    // resetting one statement (e.g. P/L) doesn't wipe the other's (e.g. BS)
+    // mapped badges. moved* sets are global across statements, so we must walk
+    // the reset statement's RESTORED tree plus the OTHER statement's CURRENT one.
+    const movedCodes = new Set();
+    const movedDims = new Map();
+    const walkRebuild = (nodes) => {
+      (nodes || []).forEach(n => {
+        if (n.kind === "breaker") { walkRebuild(n.children); return; }
+        const code = String(n.code ?? "");
+        if (!code) { walkRebuild(n.children); return; }
+        if (Array.isArray(n.dims) && n.dims.length > 0) {
+          const ex = movedDims.get(code) ?? new Set();
+          n.dims.forEach(d => ex.add(d));
+          movedDims.set(code, ex);
+        } else {
+          movedCodes.add(code);
+        }
+        walkRebuild(n.children);
+      });
+    };
+    const otherStatement = statement === "PL" ? "BS" : "PL";
+    walkRebuild(restoredTemplate);                        // reset statement (restored)
+    walkRebuild(templateTreeBy[otherStatement] ?? []);    // other statement (unchanged)
+    setMovedClientCodes(movedCodes);
+    setMovedDimsByCode(movedDims);
+    setMovedTemplateIds(new Set());
+    setHighlightedIds(new Set());
+    onDirtyChange?.(false);
+  };
   const handleAddBreaker = ({ name, color }) => { pushHistory(); const nb = { id: `brk-${Date.now()}`, kind: "breaker", code: `__breaker__custom_${Date.now()}`, sectionCode: `custom_${Date.now()}`, name, color, children: [] }; setTemplateTreeBy(prev => ({ ...prev, [statement]: [...(prev[statement] ?? templateTree), nb] })); };
 const handleAddRow = ({ code, name, isSum, parentId = null }) => {
     pushHistory();
@@ -2160,13 +2249,20 @@ const handleDelete = (side, target) => {
 
     setTemplateTreeBy(prev => {
       let t = prev[statement] ?? templateTree;
-      dimTargets.forEach(targetId => {
+dimTargets.forEach(targetId => {
         const parts = targetId.slice(7).split("__");
         const nodeId = parts[0];
         const dimToRemove = parts.slice(1).join("__");
         t = walkTransform(t, n => {
           if ((n.id ?? n.code) !== nodeId) return n;
-          const newDims = (n.dims ?? []).filter(d => d !== dimToRemove);
+          // If the node has no explicit dims it was mapped as a WHOLE account
+          // but is being shown split by dimension. Seed dims with ALL of the
+          // account's dimensions so that removing one leaves the rest visible
+          // (the row becomes a real dim-split minus the deleted dimension).
+          const baseDims = (Array.isArray(n.dims) && n.dims.length > 0)
+            ? n.dims
+            : [...(dimsByGroupCodeWithResidual.get(n.code) ?? new Set())];
+          const newDims = baseDims.filter(d => d !== dimToRemove);
           return { ...n, dims: newDims.length > 0 ? newDims : null };
         });
       });
@@ -2174,21 +2270,47 @@ const handleDelete = (side, target) => {
       return { ...prev, [statement]: t };
     });
 
-    if (dimTargets.length > 0) {
-      setMovedDimsByCode(prev => {
-        const next = new Map(prev);
-        dimTargets.forEach(targetId => {
-          const parts = targetId.slice(7).split("__");
-          const nodeId = parts[0];
-          const dimToRemove = parts.slice(1).join("__");
-          const nodeCode = findNodeById(treeBefore, nodeId)?.code ?? nodeId;
-          const existing = next.get(nodeCode) ?? new Set();
-          existing.delete(dimToRemove);
-          if (existing.size === 0) next.delete(nodeCode);
-          else next.set(nodeCode, existing);
+if (dimTargets.length > 0) {
+      // Rebuild mapped state from the RESULTING tree (after the dim removal +
+      // whole-account→dim-split seeding done in setTemplateTreeBy above), so the
+      // left side reflects the change exactly. Mirror the normalTargets rebuild.
+      const otherTree = statement === "PL" ? (templateTreeBy.BS ?? []) : (templateTreeBy.PL ?? []);
+      let finalTree = treeBefore;
+      dimTargets.forEach(targetId => {
+        const parts = targetId.slice(7).split("__");
+        const nodeId = parts[0];
+        const dimToRemove = parts.slice(1).join("__");
+        finalTree = walkTransform(finalTree, n => {
+          if ((n.id ?? n.code) !== nodeId) return n;
+          const baseDims = (Array.isArray(n.dims) && n.dims.length > 0)
+            ? n.dims
+            : [...(dimsByGroupCodeWithResidual.get(n.code) ?? new Set())];
+          const newDims = baseDims.filter(d => d !== dimToRemove);
+          return { ...n, dims: newDims.length > 0 ? newDims : null };
         });
-        return next;
       });
+      const remFull = new Set();
+      const remDims = new Map();
+      const walkCollect = (nodes) => {
+        (nodes || []).forEach(n => {
+          if (n.kind === "breaker") { walkCollect(n.children); return; }
+          const code = String(n.code ?? "");
+          if (code) {
+            if (Array.isArray(n.dims) && n.dims.length > 0) {
+              const s = remDims.get(code) ?? new Set();
+              n.dims.forEach(d => s.add(d));
+              remDims.set(code, s);
+            } else {
+              remFull.add(code);
+            }
+          }
+          walkCollect(n.children);
+        });
+      };
+      walkCollect(finalTree);
+      walkCollect(otherTree);
+      setMovedClientCodes(() => remFull);
+      setMovedDimsByCode(() => remDims);
     }
 
     if (normalTargets.length > 0) {
@@ -2231,8 +2353,7 @@ const handleDelete = (side, target) => {
 const handleDrop = ({ sourceNode, sourceSide, targetId, position, destSide }) => {
   
 if (sourceSide === "template" && destSide === "client" && mappingKind !== "report") return;
-    pushHistory();
-    console.log("[handleDrop]", { code: sourceNode.code, sourceSide, destSide, targetId, position, children: sourceNode.children?.length, dims: sourceNode.dims });
+pushHistory();
 
     // ── Failsafe (structure mode, client → template) ──────────────
     // Block any drop whose code is already represented on the template side,
@@ -2275,8 +2396,7 @@ if (sourceSide === "template" && destSide === "client" && mappingKind !== "repor
       const targetNode = findNodeById(targetTree, targetId);
       if (targetNode && targetNode.kind !== "breaker") {
         const targetIsSum = !!(targetNode.isSum || targetNode.isSumAccount);
-        if (!targetIsSum) {
-          console.log("[drop-demote] target not sum, converting inside → after");
+if (!targetIsSum) {
           position = "after";
         }
       }
@@ -2335,7 +2455,6 @@ if (destSide === "client") setClientTreeBy({ ...clientTreeBy, [statement]: newTr
       return;
     }
 if (sourceSide === destSide) {
-      console.log("[same-side drop]", { sourceSide, destSide, sourceId: sourceNode.id ?? sourceNode.code, targetId });
       const tree = destSide === "client" ? clientTree : templateTree;
       const sourceId = sourceNode.id ?? sourceNode.code;
       if (sourceId === targetId || isDescendantOf(tree, sourceId, targetId)) return;
@@ -2348,7 +2467,6 @@ if (sourceSide === destSide) {
 const destTree = destSide === "client" ? clientTree : templateTree;
 
 // Dim-only drag handling
-    console.log("[pre-dim-check]", { hasDims: !!(sourceNode.dims && sourceNode.dims.length), destSide, code: sourceNode.code });
 if (sourceNode.dims && sourceNode.dims.length > 0 && destSide === "template") {
       const dim = sourceNode.dims[0];
       // Block if this exact dim was already moved
@@ -2374,7 +2492,6 @@ const cloned = cloneSubtree(sourceNode, sourceSide);
       function collectDimCopies(nodes) { nodes.forEach(n => { if (n.code === sourceNode.code && Array.isArray(n.dims)) existingDimCopies.push(n.id ?? n.code); collectDimCopies(n.children || []); }); }
       collectDimCopies(destTree);
 if (existingDimCopies.length > 0) {
-        console.log("[dim-conflict] found", existingDimCopies.length, "existing dim copies:", existingDimCopies, "targetId:", targetId);
         setConflict({ duplicates: [sourceNode.name], onResolve: choice => {
           setConflict(null);
           if (choice === "cancel") return;
@@ -2391,8 +2508,9 @@ if (choice === "replace-existing") {
             setMovedDimsByCode(prev => {
               const next = new Map(prev);
               next.delete(sourceNode.code);
-              // Mark all dims as moved since full account is now mapped
-              const accountDims = dimsByGroupCode.get(sourceNode.code);
+// Mark all dims as moved since full account is now mapped —
+              // include the no-dimension residual so every part counts.
+              const accountDims = dimsByGroupCodeWithResidual.get(sourceNode.code);
               if (accountDims) { const s = new Set(); accountDims.forEach(d => s.add(d)); next.set(sourceNode.code, s); }
               return next;
             });
@@ -2415,9 +2533,11 @@ if (sourceSide === "client") {
         function collectCodes(n) { const out = [n.code]; (n.children||[]).forEach(c => collectCodes(c).forEach(x => out.push(x))); return out; }
         const codes = collectCodes(sourceNode);
         setMovedClientCodes(prev => new Set([...prev, ...codes]));
-        // Also mark all dims of this account as moved
+// Also mark all dims of this account as moved, INCLUDING the synthetic
+        // no-dimension residual, so dragging the whole account marks every part
+        // (dims + "Sin dimensión") as mapped — not just the real dimensions.
         codes.forEach(code => {
-          const accountDims = dimsByGroupCode.get(code);
+          const accountDims = dimsByGroupCodeWithResidual.get(code);
           if (accountDims && accountDims.size > 0) {
             setMovedDimsByCode(prev => {
               const next = new Map(prev);
@@ -2440,17 +2560,21 @@ if (sourceSide === "client") {
 <div className="flex-1 grid grid-cols-2 gap-4 p-4 overflow-hidden">
 <ClientPanel mappingKind={mappingKind} amountsByCode={amountsByCode} amountsByCodeDim={amountsByCodeDim} onCopy={id => handleCopy("client", id)} tree={clientTree} statement={statement} movedIds={(() => {
   const effective = new Set(movedClientCodes);
-  dimsByGroupCode.forEach((dims, code) => {
+  // Use the residual-aware dim map: a dimensioned account is only "fully
+  // mapped" when ALL its parts are moved, INCLUDING the no-dimension residual
+  // ("Sin dimensión"). Using the plain dimsByGroupCode counted only the real
+  // dimensions, so the account was marked mapped before its no-dim part was.
+  dimsByGroupCodeWithResidual.forEach((dims, code) => {
     const moved = movedDimsByCode.get(code);
     if (moved && dims.size > 0 && moved.size >= dims.size) effective.add(code);
   });
   movedDimsByCode.forEach((moved, code) => {
-    if (moved.size > 0 && !dimsByGroupCode.has(code)) effective.add(code);
+    if (moved.size > 0 && !dimsByGroupCodeWithResidual.has(code)) effective.add(code);
   });
 
   return effective;
 })()} movedDimsByCode={movedDimsByCode} onDrop={p => handleDrop({ ...p, destSide: "client" })} onRename={(id, name) => handleRename("client", id, name)} onDelete={id => handleDelete("client", id)} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} dimsByGroupCode={dimsByGroupCodeWithResidual} />
-<TemplatePanel mappingKind={mappingKind} templateAmountsById={templateAmountsById} amountsByCodeDim={amountsByCodeDim} onCopy={id => handleCopy("template", id)} tree={templateTree} sectionByCode={sectionByCode} loading={tplLoading} accent={meta.accent} standardLabel={stdLabel(t, standard)} movedIds={movedTemplateIds} onDrop={p => handleDrop({ ...p, destSide: "template" })} onRename={(id, name) => handleRename("template", id, name)} onColorChange={handleColorChange} onDelete={id => handleDelete("template", id)} onAddRow={handleAddRow} onAddBreaker={handleAddBreaker} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} highlightedIds={highlightedIds} onToggleHighlight={id => { pushHistory(); setHighlightedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; }); }} isCustomEditor={isCustomEditor} onRestoreBaseline={isCustomEditor ? () => setShowRestoreBaselineConfirm(true) : null}/>
+<TemplatePanel mappingKind={mappingKind} templateAmountsById={templateAmountsById} amountsByCodeDim={amountsByCodeDim} dimsByGroupCode={dimsByGroupCodeWithResidual} onCopy={id => handleCopy("template", id)} tree={templateTree} sectionByCode={sectionByCode} loading={tplLoading} accent={meta.accent} standardLabel={stdLabel(t, standard)} movedIds={movedTemplateIds} onDrop={p => handleDrop({ ...p, destSide: "template" })} onRename={(id, name) => handleRename("template", id, name)} onColorChange={handleColorChange} onDelete={id => handleDelete("template", id)} onAddRow={handleAddRow} onAddBreaker={handleAddBreaker} activeMultiSide={activeMultiSide} onSetMultiSide={setActiveMultiSide} highlightedIds={highlightedIds} onToggleHighlight={id => { pushHistory(); setHighlightedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; }); }} isCustomEditor={isCustomEditor} onRestoreBaseline={isCustomEditor ? () => setShowRestoreBaselineConfirm(true) : null}/>
       </div>
       {conflict && <ConflictModal duplicates={conflict.duplicates} onResolve={conflict.onResolve} />}
       {showSaveForm && <SaveMappingForm name={currentName} setName={setCurrentName} description={currentDescription} setDescription={setCurrentDescription} error={saveError} saving={saving} asNew={!!editingMapping} accent={meta.accent} onCancel={() => { setShowSaveForm(false); setSaveError(null); }} onSave={() => handleSave({ asNew: !!editingMapping })} />}
@@ -2459,11 +2583,11 @@ if (sourceSide === "client") {
           <div className="absolute inset-0 bg-black/50 backdrop-blur-md" />
           <div className="relative bg-white rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
             <div className="px-6 pt-6 pb-5" style={{ background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)" }}>
-              <p className="text-white font-black text-lg leading-tight">Restaurar versión original</p>
-              <p className="text-white/70 text-[11px] mt-0.5">Esto revertirá el standard al snapshot generado por la IA en el onboarding.</p>
+<p className="text-white font-black text-lg leading-tight">{t("am_restore_original_title")}</p>
+              <p className="text-white/70 text-[11px] mt-0.5">{t("am_restore_original_desc")}</p>
             </div>
             <div className="p-5 space-y-3">
-              <p className="text-xs text-gray-600 leading-relaxed">Se borrarán todas las filas y secciones que hayas añadido, y se restablecerán etiquetas y colores originales de las secciones. Los cambios que hayas hecho en la tabla `mappings` no se tocan.</p>
+<p className="text-xs text-gray-600 leading-relaxed">{t("am_restore_original_body")}</p>
               <div className="flex gap-2">
                 <button
                   onClick={() => setShowRestoreBaselineConfirm(false)}
@@ -2904,14 +3028,14 @@ const unmappedToggleBtn = (
   }
   lastSelectedRef.current = id;
 setSelectedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
-}} dimsByGroupCode={dimsByGroupCode} movedDimsByCode={movedDimsByCode} />)}
+}} dimsByGroupCode={dimsByGroupCode} />)}
       </div>
     </Panel>
   );
 }
 
 // ─── TemplatePanel ────────────────────────────────────────────
-function TemplatePanel({ mappingKind = "structure", templateAmountsById = new Map(), amountsByCodeDim = new Map(), onCopy, tree, sectionByCode, loading, accent, standardLabel, movedIds, onDrop, onRename, onColorChange, onDelete, onAddRow, onAddBreaker, activeMultiSide, onSetMultiSide, highlightedIds, onToggleHighlight, isCustomEditor = false, onRestoreBaseline = null }) {
+function TemplatePanel({ mappingKind = "structure", templateAmountsById = new Map(), amountsByCodeDim = new Map(), dimsByGroupCode = new Map(), onCopy, tree, sectionByCode, loading, accent, standardLabel, movedIds, onDrop, onRename, onColorChange, onDelete, onAddRow, onAddBreaker, activeMultiSide, onSetMultiSide, highlightedIds, onToggleHighlight, isCustomEditor = false, onRestoreBaseline = null }) {
   const t = useT();
   const [pendingParentId, setPendingParentId] = useState(null);
 const [showBreakerForm, setShowBreakerForm] = useState(false);
@@ -3001,7 +3125,7 @@ const multiToggleBtn = (
   );
   return (
 <Panel title={`${standardLabel} ${t("am_panel_template_suffix")}`} subtitle={loading ? t("am_loading_ellipsis") : `${totalCount} ${t("am_rows_suffix")}`} accent={accent} onExpandAll={() => setExpanded(Object.fromEntries(allKeys.map(k => [k, true])))} onCollapseAll={() => setExpanded({})} isExpanded={isExpanded} extra={<div className="flex items-center gap-1">{isCustomEditor && onRestoreBaseline && (
-  <button onClick={onRestoreBaseline} title="Restaurar versión original"
+  <button onClick={onRestoreBaseline}title={t("am_restore_original_title")}
     className="group rounded-md flex items-center justify-center overflow-hidden transition-all flex-shrink-0"
     style={{ height: TOGGLE_HEIGHT, paddingLeft: TOGGLE_PADDING_X, paddingRight: TOGGLE_PADDING_X, background: "#f59e0b10", color: "#b45309" }}>
     <svg width={TOGGLE_ICON_SIZE} height={TOGGLE_ICON_SIZE} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
@@ -3028,7 +3152,7 @@ const multiToggleBtn = (
   }
 lastSelectedRef.current = id;
   setSelectedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
-}} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} />)}
+}} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} dimsByGroupCode={dimsByGroupCode} />)}
       </div>
     </Panel>
   );
@@ -3116,7 +3240,16 @@ const dimUid = useId();
     return () => window.removeEventListener("dim-popover-open", handler);
   }, []);
   const editInputRef = useRef(null);
-  const dims = side === "client" ? (dimsByGroupCode?.get(node.code) ?? new Set()) : (node.dims ? new Set(node.dims) : new Set());
+// Left (client): always show all of the account's dimensions.
+  // Right (template): if this row is a dim-specific copy (node.dims set, e.g.
+  // mapped by dimension or already split), show just those. Otherwise show ALL
+  // the account's dimensions so the user can still split it by dimension even
+  // when the whole account was mapped.
+  const dims = side === "client"
+    ? (dimsByGroupCode?.get(node.code) ?? new Set())
+    : (node.dims && node.dims.length > 0
+        ? new Set(node.dims)
+        : (dimsByGroupCode?.get(node.code) ?? new Set()));
   const hasDims = dims.size > 0;
   const movedDims = movedDimsByCode?.get(node.code) ?? new Set();
   useEffect(() => { if (editing && editInputRef.current) { editInputRef.current.focus(); editInputRef.current.select(); } }, [editing]);
@@ -3147,8 +3280,7 @@ if (multiMode && selectedIds?.size > 0 && selectedIds.has(nodeId)) {
       collect(sourceTree ?? []);
       if (selected.length === 0) { e.preventDefault(); return; }
 if (selected.length > 0) {
-        const multiNode = { id: `multi-${Date.now()}`, code: "__multi__", name: `${selected.length} accounts`, isSum: false, isSumAccount: false, children: selected };
-        console.log("[multi-drag] packaging", selected.length, "nodes", selected.map(n => n.code));
+const multiNode = { id: `multi-${Date.now()}`, code: "__multi__", name: `${selected.length} accounts`, isSum: false, isSumAccount: false, children: selected };
         e.dataTransfer.setData("application/json", JSON.stringify({ sourceSide: side, node: multiNode }));
         return;
       }
@@ -3162,21 +3294,45 @@ const handleDragOver = e => {
     const rect = e.currentTarget.getBoundingClientRect();
     const y = e.clientY - rect.top;
     const h = rect.height;
+    const r = y / h; // 0 (top) .. 1 (bottom)
     const canHaveInside = isSum || node.kind === "breaker";
-    if (canHaveInside) {
-      if (y < h * 0.2) setDropZone("before");
-      else if (y > h * 0.8) setDropZone("after");
-      else setDropZone("inside");
-    } else {
-      setDropZone(y < h * 0.5 ? "before" : "after");
-    }
+    // Hysteresis dead-band: near a boundary, keep the zone we already committed
+    // to instead of recomputing. Kills the flicker when the cursor jitters right
+    // on a split line. Only switch once the cursor clearly crosses.
+    const HB = 0.08;
+    setDropZone(prev => {
+      if (canHaveInside) {
+        // Centre 40% = inside; big top/bottom 30% gap targets.
+        const inTop = r < 0.30, inBot = r > 0.70;
+        if (prev === "inside") {
+          // stay inside unless we clearly leave the centre band
+          if (r < 0.30 - HB) return "before";
+          if (r > 0.70 + HB) return "after";
+          return "inside";
+        }
+        if (prev === "before" && r < 0.30 + HB) return "before";
+        if (prev === "after" && r > 0.70 - HB) return "after";
+        if (inTop) return "before";
+        if (inBot) return "after";
+        return "inside";
+      }
+      // Non-sum: only before / after, magnetised to the nearest gap with a
+      // dead-band around the midpoint so it never flickers.
+      if (prev === "before" && r < 0.5 + HB) return "before";
+      if (prev === "after"  && r > 0.5 - HB) return "after";
+      return r < 0.5 ? "before" : "after";
+    });
   };
   const handleDrop = e => { e.preventDefault(); e.stopPropagation(); const zone = dropZone; setDropZone(null); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); onDrop({ sourceNode: data.node, sourceSide: data.sourceSide, targetId: node.id ?? node.code, position: zone ?? "after" }); } catch { /* ignore parse */ } };
 const accent = side === "client" ? "#1a2f8a" : "#374151";
-  const dropLine = (
-    <div className="relative my-0.5 pointer-events-none" style={{ marginLeft: 8 + depth * 14, marginRight: 8 }}>
-      <div style={{ height: 3, background: accent, borderRadius: 2, boxShadow: `0 0 14px ${accent}, 0 0 4px ${accent}` }} />
-      <div className="absolute top-1/2 -translate-y-1/2" style={{ left: -3, width: 9, height: 9, borderRadius: "50%", background: accent, boxShadow: `0 0 8px ${accent}, 0 0 2px ${accent}` }} />
+const dropLine = (
+    // Zero-height overlay: the bar is absolutely positioned so showing/hiding
+    // the indicator never shifts the row layout. Layout shift was causing the
+    // cursor to leave the row (dragleave) the instant the line appeared, which
+    // made the indicator flicker on/off — the "can't decide" glitch.
+    <div className="relative pointer-events-none" style={{ height: 0, marginLeft: 8 + depth * 14, marginRight: 8 }}>
+      <div className="absolute left-0 right-0" style={{ top: -1.5, height: 3, background: accent, borderRadius: 2, boxShadow: `0 0 14px ${accent}, 0 0 4px ${accent}` }} />
+      <div className="absolute" style={{ top: -4.5, left: -3, width: 9, height: 9, borderRadius: "50%", background: accent, boxShadow: `0 0 8px ${accent}, 0 0 2px ${accent}` }} />
     </div>
   );
 
@@ -3195,11 +3351,11 @@ const accent = side === "client" ? "#1a2f8a" : "#374151";
           {hasChildren && <span className="text-white/70 flex-shrink-0">{isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>}
           {editing ? <input ref={editInputRef} type="text" value={editValue} onChange={e => setEditValue(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} onKeyDown={e => { e.stopPropagation(); if (e.key === "Enter") commitEdit(); if (e.key === "Escape") cancelEdit(); }} onBlur={commitEdit} className="text-xs flex-1 min-w-0 px-2 py-0.5 rounded border border-white/40 outline-none focus:border-white bg-white/15 text-white placeholder:text-white/50 uppercase tracking-widest font-black" />
           : <span className="text-xs flex-1 min-w-0 truncate font-black uppercase tracking-widest text-white">{node.name}</span>}
-         {!editing && (hovering || showColorPicker) && <div className="flex items-center gap-0.5 flex-shrink-0"><button onClick={startEdit} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white transition-colors"><Pencil size={13} /></button>{onColorChange && (<div ref={colorPickerRef} className="relative" onMouseDown={e => e.stopPropagation()}><button onClick={e => { e.stopPropagation(); setShowColorPicker(v => !v); }} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white transition-colors" title="Cambiar color"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg></button>{showColorPicker && (<div className="absolute top-full right-0 mt-1 z-50 bg-white rounded-xl shadow-2xl p-2.5 border border-gray-100" style={{ minWidth: 200 }} onClick={e => e.stopPropagation()}><div className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-2 px-1">Color de sección</div><div className="grid grid-cols-6 gap-1.5">{PRESET_COLORS.map(c => (<button key={c} onClick={() => { onColorChange(node.id ?? node.code, c); setShowColorPicker(false); }} className="w-7 h-7 rounded-lg transition-all hover:scale-110" style={{ backgroundColor: c, boxShadow: (node.color || "").toLowerCase() === c.toLowerCase() ? `0 0 0 2px white, 0 0 0 3.5px ${c}` : "none", transform: (node.color || "").toLowerCase() === c.toLowerCase() ? "scale(1.12)" : "scale(1)" }} title={c} />))}</div><div className="flex items-center gap-2 mt-2.5 pt-2.5 border-t border-gray-100"><span className="text-[9px] font-black uppercase tracking-widest text-gray-400 flex-shrink-0">Personalizado</span><input type="color" value={node.color || "#374151"} onChange={e => onColorChange(node.id ?? node.code, e.target.value)} className="w-6 h-6 rounded-md cursor-pointer border border-gray-200 p-0 bg-transparent" style={{ appearance: "none" }} /></div></div>)}</div>)}<button onClick={e => { e.stopPropagation(); onDelete?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white transition-colors"><Trash2 size={13} /></button></div>}
+         {!editing && (hovering || showColorPicker) && <div className="flex items-center gap-0.5 flex-shrink-0"><button onClick={startEdit} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white transition-colors"><Pencil size={13} /></button>{onColorChange && (<div ref={colorPickerRef} className="relative" onMouseDown={e => e.stopPropagation()}><button onClick={e => { e.stopPropagation(); setShowColorPicker(v => !v); }} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white transition-colors" title="Cambiar color"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg></button>{showColorPicker && (<div className="absolute top-full right-0 mt-1 z-50 bg-white rounded-xl shadow-2xl p-2.5 border border-gray-100" style={{ minWidth: 200 }} onClick={e => e.stopPropagation()}><div className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-2 px-1">{t("am_section_color")}</div><div className="grid grid-cols-6 gap-1.5">{PRESET_COLORS.map(c => (<button key={c} onClick={() => { onColorChange(node.id ?? node.code, c); setShowColorPicker(false); }} className="w-7 h-7 rounded-lg transition-all hover:scale-110" style={{ backgroundColor: c, boxShadow: (node.color || "").toLowerCase() === c.toLowerCase() ? `0 0 0 2px white, 0 0 0 3.5px ${c}` : "none", transform: (node.color || "").toLowerCase() === c.toLowerCase() ? "scale(1.12)" : "scale(1)" }} title={c} />))}</div><div className="flex items-center gap-2 mt-2.5 pt-2.5 border-t border-gray-100"><span className="text-[9px] font-black uppercase tracking-widest text-gray-400 flex-shrink-0">Personalizado</span><input type="color" value={node.color || "#374151"} onChange={e => onColorChange(node.id ?? node.code, e.target.value)} className="w-6 h-6 rounded-md cursor-pointer border border-gray-200 p-0 bg-transparent" style={{ appearance: "none" }} /></div></div>)}</div>)}<button onClick={e => { e.stopPropagation(); onDelete?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-white/20 text-white/80 hover:text-white transition-colors"><Trash2 size={13} /></button></div>}
           {editControls}
         </div>
         {dropZone === "after" && dropLine}
-     {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child}depth={1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} hideAmounts={hideAmounts} amountsByCode={amountsByCode} templateAmountsById={templateAmountsById} amountsByCodeDim={amountsByCodeDim} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onColorChange={onColorChange} onDelete={onDelete} onAddChild={onAddChild} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} />)}
+    {isOpen && hasChildren && node.children.map(child => <DraggableTreeRow key={child.id ?? child.code} node={child}depth={1} expanded={expanded} onToggle={onToggle} side={side} mappingKind={mappingKind} hideAmounts={hideAmounts} amountsByCode={amountsByCode} templateAmountsById={templateAmountsById} amountsByCodeDim={amountsByCodeDim} onCopy={onCopy} movedIds={movedIds}movedDimsByCode={movedDimsByCode} onDrop={onDrop} onRename={onRename} onColorChange={onColorChange} onDelete={onDelete} onAddChild={onAddChild} sectionByCode={sectionByCode} multiMode={multiMode} selectedIds={selectedIds} onToggleSelect={onToggleSelect} clientTree={clientTree} templateTree={templateTree} highlightedIds={highlightedIds} onToggleHighlight={onToggleHighlight} dimsByGroupCode={dimsByGroupCode} />)}
       </>
     );
   }
@@ -3273,7 +3429,10 @@ style={{ background: showDims ? "#f59e0b" : "#fef3c7", color: "#d97706" }}
         const idx = d.indexOf(":");
         const group = idx !== -1 ? d.slice(0, idx).trim() : "";
         const name = idx !== -1 ? d.slice(idx + 1).trim() : d;
-        const isDimMoved = movedDims.has(d);
+     // A dim sub-row counts as mapped if its specific dimension was mapped,
+        // OR the whole account is mapped (whole-account mapping covers all its
+        // dimensions — they just weren't recorded individually in movedDims).
+        const isDimMoved = movedDims.has(d) || isMoved;
         const dimNode = { ...stripSubtreeForTransfer(node), id: node.id, dims: [d] };
         return (
           <div key={i}
@@ -3301,7 +3460,7 @@ className={`group/dim flex items-center gap-1 py-1.5 rounded-lg transition-color
               );
             })()}
             {isDimMoved && side === "client" && <CheckCircle2 size={10} className="text-emerald-500 flex-shrink-0" />}
-            {side === "template" && (
+{side === "template" && (
               <button
                 onClick={e => { e.stopPropagation(); onDelete?.(`__dim__${node.id ?? node.code}__${d}`); }}
                 onMouseDown={e => e.stopPropagation()}
@@ -3358,8 +3517,8 @@ if (!open) return (
           <input type="text" value={name} onChange={e => { setName(e.target.value); setError(null); }} onKeyDown={e => { if (e.key === "Enter") handleSubmit(); if (e.key === "Escape") { fullReset(); setOpen(false); } }} placeholder={t("am_account_name")} className="flex-1 min-w-0 px-3 py-2 rounded-lg text-xs bg-gray-50 border border-gray-200 outline-none transition-all placeholder:text-gray-300" onFocus={e => e.target.style.borderColor = accent} onBlur={e => e.target.style.borderColor = '#e5e7eb'} />
         </div>
         <div className="flex items-center justify-between">
-          <label className="flex items-center gap-2 cursor-pointer select-none group">
-            <div onClick={() => setIsSum(s => !s)} className="w-4 h-4 rounded-md flex items-center justify-center transition-all flex-shrink-0 shadow-sm" style={{ border: `2px solid ${isSum ? accent : '#e5e7eb'}`, backgroundColor: isSum ? accent : 'white' }}>{isSum && <Check size={9} className="text-white" strokeWidth={3} />}</div>
+<label onClick={() => setIsSum(s => !s)} className="flex items-center gap-2 cursor-pointer select-none group">
+            <div className="w-4 h-4 rounded-md flex items-center justify-center transition-all flex-shrink-0 shadow-sm" style={{ border: `2px solid ${isSum ? accent : '#e5e7eb'}`, backgroundColor: isSum ? accent : 'white' }}>{isSum && <Check size={9} className="text-white" strokeWidth={3} />}</div>
 <span className="text-[11px] text-gray-500 font-medium group-hover:text-gray-700 transition-colors">{t("am_sum_total_row")}</span>
           </label>
           <button onClick={handleSubmit} className="px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider text-white transition-all hover:opacity-90 active:scale-95 shadow-sm" style={{ backgroundColor: accent }}>{t("am_btn_add")}</button>
@@ -3517,8 +3676,7 @@ function EmptyPanelState(props) {
   const IconCmp = props.icon;
   return <div className="text-center py-16"><IconCmp size={24} className="text-gray-200 mx-auto mb-2" /><p className="text-xs text-gray-400 font-medium">{props.message}</p></div>;
 }
-// eslint-disable-next-line react-refresh/only-export-components
-export function normalizeMappingStandard(std) {
+function normalizeMappingStandard(std) {
   if (!std) return null;
   if (STANDARD_META[std]) return std;           // already a valid STANDARD_META key
   if (std === "SpanishIFRS-ES") return "SpanishIFRS"; // KPI resolver → mapper name

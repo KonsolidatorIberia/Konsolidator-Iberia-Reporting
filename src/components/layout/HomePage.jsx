@@ -2804,10 +2804,13 @@ const wrap = (src) => {
   const trendSeries = useMemo(() => {
     if (!trendRows.length || !heroKpis || kpiList.length === 0) return [];
 
-    // Build pivots per (year, month)
+// Build pivots per (year, month). Track which months actually have
+    // reported rows — an empty fetch means "not reported", NOT "zero balance".
     const pivotsByKey = new Map();
+    const hasDataByKey = new Map();
     trendRows.forEach(({ year: y, month: m, rows }) => {
       pivotsByKey.set(`${y}-${m}`, buildPivotFromRows(rows, sumAccountCodes));
+      hasDataByKey.set(`${y}-${m}`, Array.isArray(rows) && rows.length > 0);
     });
 
     const sorted = [...trendRows]
@@ -2816,35 +2819,43 @@ const wrap = (src) => {
 
     const out = [];
     for (let i = 0; i < sorted.length; i++) {
-      const { year: y, month: m } = sorted[i];
+const { year: y, month: m } = sorted[i];
       const currP = pivotsByKey.get(`${y}-${m}`);
       if (!currP) continue;
+      const currHasData = hasDataByKey.get(`${y}-${m}`);
 
 let monthlyPivot;
       if (valueMode === "ytd") {
         monthlyPivot = currP;
-      } else {
+} else {
         const isJanuary = m === 1;
-        if (isJanuary) {
+        if (!currHasData) {
+          // Month has no reported data → its monthly value is 0 (flat on the
+          // floor), NOT curr - prev (which would draw a phantom negative spike
+          // equal to -(previous month)).
+          monthlyPivot = new Map();
+          monthlyPivot.__dimPivot = new Map();
+          monthlyPivot.__sumPivot = new Map();
+        } else if (isJanuary) {
           monthlyPivot = currP;
         } else {
           const prevP = pivotsByKey.get(`${y}-${m - 1}`);
-          if (!prevP) continue; // skip oldest if we can't compute its delta
+          const safePrev = prevP ?? new Map();
           monthlyPivot = new Map();
-          const allCodes = new Set([...currP.keys(), ...prevP.keys()]);
+          const allCodes = new Set([...currP.keys(), ...safePrev.keys()]);
           allCodes.forEach(ac => {
-            monthlyPivot.set(ac, (currP.get(ac) ?? 0) - (prevP.get(ac) ?? 0));
+            monthlyPivot.set(ac, (currP.get(ac) ?? 0) - (safePrev.get(ac) ?? 0));
           });
 const mdp = new Map();
           const cDP = currP.__dimPivot ?? new Map();
-          const pDP = prevP.__dimPivot ?? new Map();
+          const pDP = safePrev.__dimPivot ?? new Map();
           new Set([...cDP.keys(), ...pDP.keys()]).forEach(k => {
             mdp.set(k, (cDP.get(k) ?? 0) - (pDP.get(k) ?? 0));
           });
           monthlyPivot.__dimPivot = mdp;
           const msp = new Map();
           const cSP = currP.__sumPivot ?? new Map();
-          const pSP = prevP.__sumPivot ?? new Map();
+          const pSP = safePrev.__sumPivot ?? new Map();
           new Set([...cSP.keys(), ...pSP.keys()]).forEach(k => {
             msp.set(k, (cSP.get(k) ?? 0) - (pSP.get(k) ?? 0));
           });

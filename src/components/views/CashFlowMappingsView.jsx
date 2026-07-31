@@ -28,7 +28,6 @@ import {
   isOriginalSection,
 } from "../../lib/standardMappingApi";
 import {
-  getHiddenOverrideMapping,
   upsertHiddenOverrideMapping,
   setActiveMappingSilently,
 } from "../../lib/mappingsApi";
@@ -279,9 +278,7 @@ const desired = {
 walk(n.children, code, sectionCode);
     }
   };
-  walk(cfTree);
-  console.log("[diff CF] rowsUpdated for 7999:", rowsUpdated.find(u => u.account_code === "7999"));
-  console.log("[diff CF] rowsAdded parent-child:", rowsAdded.map(r => `${r.account_code} parent=${r.parent_code}`));
+walk(cfTree);
   // Deletions: any live CF row/section not present in the tree and not original
   liveRows.forEach(r => {
     if (r.statement !== "CF") return;
@@ -484,33 +481,40 @@ const [cfMappingRows, setCfMappingRows] = useState([]);
     })();
   }, []);
 
-  useEffect(() => {
+useEffect(() => {
     if (view !== "list" || !companyId) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setMappingsLoading(true);
-    api.list({ companyId }).then(rows => setMappings(rows ?? [])).finally(() => setMappingsLoading(false));
+    let cancelled = false;
+    Promise.resolve().then(() => { if (!cancelled) setMappingsLoading(true); });
+    api.list({ companyId })
+      .then(rows => { if (!cancelled) setMappings(rows ?? []); })
+      .finally(() => { if (!cancelled) setMappingsLoading(false); });
+    return () => { cancelled = true; };
   }, [view, companyId, api]);
 
 useEffect(() => {
     if (!pendingEdit) return;
+    let cancelled = false;
     if (pendingEdit.openCustom && pendingEdit.standard) {
-      /* eslint-disable react-hooks/set-state-in-effect */
-      setEditingMapping(null);
-      setSelectedStandard(pendingEdit.standard);
-      setView("mapper");
-      /* eslint-enable react-hooks/set-state-in-effect */
-      onPendingEditConsumed?.();
-      return;
+      Promise.resolve().then(() => {
+        if (cancelled) return;
+        setEditingMapping(null);
+        setSelectedStandard(pendingEdit.standard);
+        setView("mapper");
+        onPendingEditConsumed?.();
+      });
+      return () => { cancelled = true; };
     }
     if (!mappings.length) return;
     const m = mappings.find(x => String(x.mapping_id) === String(pendingEdit.mapping_id));
     if (!m) return;
-    /* eslint-disable react-hooks/set-state-in-effect */
-    setEditingMapping(m);
-    setSelectedStandard(m.standard);
-    setCfViewMode(m.cf_view_mode ?? "consolidated");
-    setView("mapper");
-    /* eslint-enable react-hooks/set-state-in-effect */
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setEditingMapping(m);
+      setSelectedStandard(m.standard);
+      setCfViewMode(m.cf_view_mode ?? "consolidated");
+      setView("mapper");
+    });
+    return () => { cancelled = true; };
   }, [pendingEdit, mappings, onPendingEditConsumed]);
 
   useEffect(() => {
@@ -1344,20 +1348,26 @@ const undoRef = useRef(undo);
   }, []);
   useEffect(() => { historyRef.current = []; onDirtyChange?.(false); }, [standard, editingMapping?.mapping_id, onDirtyChange]);
 
-  // Load template
+// Load template
   useEffect(() => {
     const ac = new AbortController();
+    let cancelled = false;
     if (standard === "Scratch") {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setTplRows([]); setTplSections([]); setTplLoading(false);
-      return;
+      Promise.resolve().then(() => {
+        if (cancelled) return;
+        setTplRows([]); setTplSections([]); setTplLoading(false);
+      });
+      return () => { cancelled = true; };
     }
 // CUSTOM-* standards live in the unified standard_statement_* tables.
     // Built-in ones still come from the legacy per-standard cf_ tables.
-    const isCustom = standard?.startsWith("CUSTOM-");
+const isCustom = standard?.startsWith("CUSTOM-");
     const cfTable = STANDARD_META[standard]?.cfTable;
     if (!isCustom && !cfTable) return;
-    setTplLoading(true); setTplRows([]); setTplSections([]);
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setTplLoading(true); setTplRows([]); setTplSections([]);
+    });
 
     const rowsUrl = isCustom
       ? `${SUPABASE_URL}/standard_statement_rows?select=*&standard_key=eq.${encodeURIComponent(standard)}&statement=eq.CF&order=sort_order.asc`
@@ -1373,13 +1383,9 @@ const undoRef = useRef(undo);
           fetch(secsUrl, { headers: sbHeaders, signal: ac.signal }),
         ]);
         const rows = await rowsRes.json(), secs = await secsRes.json();
-        if (ac.signal.aborted) return;
+if (ac.signal.aborted) return;
 setTplRows(Array.isArray(rows) ? rows : []);
         setTplSections(Array.isArray(secs) ? secs : []);
-        if (isCustom) {
-          console.log("[CF CUSTOM tplRows]", rows?.length, rows?.slice(0, 10));
-          console.log("[CF CUSTOM tplSections]", secs?.length, secs);
-        }
       } catch (e) { if (e.name !== "AbortError") { setTplRows([]); setTplSections([]); } }
       finally { if (!ac.signal.aborted) setTplLoading(false); }
     })();
@@ -1388,31 +1394,23 @@ setTplRows(Array.isArray(rows) ? rows : []);
 
 const baseTemplateTree = useMemo(() => {
     function addIds(nodes) { return nodes.map(n => ({ ...n, id: `tpl-${n.code}`, children: addIds(n.children || []) })); }
-    const tree = addIds(buildTemplateTree(tplRows, tplSections));
-    if (standard?.startsWith("CUSTOM-")) {
-      const summarize = (nodes, depth = 0) => nodes.forEach(n => {
-        console.log(`[CF tree] ${"  ".repeat(depth)}${n.code ?? n.kind ?? "?"} ${n.name ?? n.label ?? ""} (children: ${n.children?.length ?? 0})`);
-        if (n.children?.length) summarize(n.children, depth + 1);
-      });
-      console.log("[CF baseTemplateTree] root count:", tree.length);
-      summarize(tree);
-    }
-    return tree;
-  }, [tplRows, tplSections, standard]);
+    return addIds(buildTemplateTree(tplRows, tplSections));
+  }, [tplRows, tplSections]);
 
-  // Init trees
+// Init trees
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setClientTree(null); setTemplateTree(null);
-    setMovedClientCodes(new Set()); setMovedTemplateIds(new Set());
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setClientTree(null); setTemplateTree(null);
+      setMovedClientCodes(new Set()); setMovedTemplateIds(new Set());
+    });
+    return () => { cancelled = true; };
   }, [standard]);
 
 useEffect(() => {
     if (!editingMapping) return;
     const cfTree = Array.isArray(editingMapping.cf_tree) ? editingMapping.cf_tree : [];
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setTemplateTree(cfTree);
-    if (Array.isArray(editingMapping.highlighted_ids)) setHighlightedIds(new Set(editingMapping.highlighted_ids));
     // Reconstruct movedClientCodes from the loaded tree
     const moved = new Set();
     const walk = (nodes) => (nodes || []).forEach(n => {
@@ -1422,6 +1420,7 @@ useEffect(() => {
       walk(n.children);
     });
     walk(cfTree);
+    let movedFinal;
     if (isCustomEditor) {
       // In CUSTOM mode, "moved" reflects only the accounts actually linked in
       // cfMappingRows (not the whole standard template). Filter down.
@@ -1432,15 +1431,35 @@ useEffect(() => {
       });
       const filtered = new Set();
       moved.forEach(c => { if (mappedCodes.has(c)) filtered.add(c); });
-      setMovedClientCodes(filtered);
+      movedFinal = filtered;
     } else {
-      setMovedClientCodes(moved);
+      movedFinal = moved;
     }
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setTemplateTree(cfTree);
+      if (Array.isArray(editingMapping.highlighted_ids)) setHighlightedIds(new Set(editingMapping.highlighted_ids));
+      setMovedClientCodes(movedFinal);
+    });
+    return () => { cancelled = true; };
   }, [editingMapping, isCustomEditor, cfMappingRows]);
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { if (baseTemplateTree.length > 0 && !templateTree) setTemplateTree(baseTemplateTree); }, [baseTemplateTree, templateTree]);
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { setCurrentName(editingMapping?.name ?? ""); setCurrentDescription(editingMapping?.description ?? ""); }, [editingMapping]);
+useEffect(() => {
+    if (baseTemplateTree.length > 0 && !templateTree) {
+      let cancelled = false;
+      Promise.resolve().then(() => { if (!cancelled) setTemplateTree(baseTemplateTree); });
+      return () => { cancelled = true; };
+    }
+  }, [baseTemplateTree, templateTree]);
+useEffect(() => {
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setCurrentName(editingMapping?.name ?? "");
+      setCurrentDescription(editingMapping?.description ?? "");
+    });
+    return () => { cancelled = true; };
+  }, [editingMapping]);
 
   // Pre-mark client CF codes that already exist in fresh template
   useEffect(() => {
@@ -1450,25 +1469,20 @@ useEffect(() => {
       if (n.kind !== "breaker" && n.code && !String(n.code).startsWith("__")) templateCodes.add(String(n.code));
       walk(n.children || []);
     });
-    walk(baseTemplateTree);
+walk(baseTemplateTree);
     if (!templateCodes.size) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setMovedClientCodes(prev => {
-      const next = new Set(prev);
-      const codes = new Set();
-      cfMappingRows.forEach(r => codes.add(String(r.cashFlowAccountCode ?? r.CashFlowAccountCode ?? "")));
-      codes.forEach(code => { if (code && templateCodes.has(code)) next.add(code); });
-      return next;
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setMovedClientCodes(prev => {
+        const next = new Set(prev);
+        const codes = new Set();
+        cfMappingRows.forEach(r => codes.add(String(r.cashFlowAccountCode ?? r.CashFlowAccountCode ?? "")));
+        codes.forEach(code => { if (code && templateCodes.has(code)) next.add(code); });
+        return next;
+      });
     });
-console.log("[CF init mark] editingMapping:", !!editingMapping, "baseLen:", baseTemplateTree.length, "cfMappingRowsLen:", cfMappingRows?.length, "templateCodes size:", templateCodes.size);
-    const sampleMapping = cfMappingRows.slice(0, 3);
-    console.log("[CF init mark] sample cfMappingRows:", sampleMapping);
-    const codesFromMapping = [...new Set(cfMappingRows.map(r => String(r.cashFlowAccountCode ?? r.CashFlowAccountCode ?? "")))];
-    const matched = codesFromMapping.filter(c => c && templateCodes.has(c));
-    console.log("[CF init mark] unique cf codes in cfMappingRows:", codesFromMapping.length, "matched vs template:", matched.length);
-    console.log("[CF init mark] sample matched:", matched.slice(0, 10));
-    console.log("[CF client tree]", baseClientTree.slice(0, 5));
-console.log("[CF client tree count nodes]", (() => { let n=0; const w=(nds)=>nds.forEach(x=>{n++;w(x.children||[])}); w(baseClientTree); return n; })());
+    return () => { cancelled = true; };
   }, [editingMapping, standard, baseTemplateTree, cfMappingRows]);
 
 const effectiveClientTree = useMemo(() => {
@@ -1598,10 +1612,6 @@ setSaving(true); setSaveError(null);
 
 if (customBaseline) {
           try {
-console.log("[handleSave CF] cfTree root count:", cfTree.length);
-            console.log("[handleSave CF] cfTree root names:", cfTree.map(n => `${n.kind}: ${n.name ?? n.code}`));
-            console.log("[handleSave CF] templateTree === cfTree ref:", templateTree === cfTree);
-            console.log("[handleSave CF] customLiveRows count:", customLiveRows.length, "CF only:", customLiveRows.filter(r => r.statement === "CF").length);
             const changes = diffCustomStandardCF({
               cfTree,
               baseline: customBaseline,
@@ -1609,7 +1619,6 @@ console.log("[handleSave CF] cfTree root count:", cfTree.length);
               liveSections: customLiveSections,
             });
             const hasAnyChange = Object.values(changes).some(arr => Array.isArray(arr) && arr.length > 0);
-            console.log("[custom-save CF] changes:", JSON.stringify(changes, null, 2));
             if (hasAnyChange) {
               await saveCustomStandard({
                 standardKey: standard,
@@ -2558,28 +2567,51 @@ const handleDragStart = e => {
     }
     e.dataTransfer.setData("application/json", JSON.stringify({ sourceSide: side, node: { ...stripSubtreeForTransfer(node), id: node.id } }));
   };
-  const handleDragOver = e => {
+const handleDragOver = e => {
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = "copy";
     const rect = e.currentTarget.getBoundingClientRect();
     const y = e.clientY - rect.top;
     const h = rect.height;
+    const r = y / h; // 0 (top) .. 1 (bottom)
     const canHaveInside = isSum || node.kind === "breaker";
-    if (canHaveInside) {
-      if (y < h * 0.2) setDropZone("before");
-      else if (y > h * 0.8) setDropZone("after");
-      else setDropZone("inside");
-    } else {
-      setDropZone(y < h * 0.5 ? "before" : "after");
-    }
+    // Hysteresis dead-band: near a boundary, keep the zone we already committed
+    // to instead of recomputing. Kills the flicker when the cursor jitters on a
+    // split line. Only switch once the cursor clearly crosses.
+    const HB = 0.08;
+    setDropZone(prev => {
+      if (canHaveInside) {
+        // Sum rows CAN take children: centre 40% = inside, big 30% top/bottom
+        // gap targets so you only drop "inside" when clearly centred.
+        if (prev === "inside") {
+          if (r < 0.30 - HB) return "before";
+          if (r > 0.70 + HB) return "after";
+          return "inside";
+        }
+        if (prev === "before" && r < 0.30 + HB) return "before";
+        if (prev === "after" && r > 0.70 - HB) return "after";
+        if (r < 0.30) return "before";
+        if (r > 0.70) return "after";
+        return "inside";
+      }
+      // Non-sum: only before / after, magnetised to the nearest gap with a
+      // dead-band around the midpoint so it never flickers.
+      if (prev === "before" && r < 0.5 + HB) return "before";
+      if (prev === "after"  && r > 0.5 - HB) return "after";
+      return r < 0.5 ? "before" : "after";
+    });
   };
   const handleDrop = e => { e.preventDefault(); e.stopPropagation(); const zone = dropZone; setDropZone(null); try { const data = JSON.parse(e.dataTransfer.getData("application/json")); onDrop({ sourceNode: data.node, sourceSide: data.sourceSide, targetId: node.id ?? node.code, position: zone ?? "after" }); } catch { /* ignore */ } };
   const accent = side === "client" ? "#0891b2" : "#374151";
-  const dropLine = (
-    <div className="relative my-0.5 pointer-events-none" style={{ marginLeft: 8 + depth * 14, marginRight: 8 }}>
-      <div style={{ height: 3, background: accent, borderRadius: 2, boxShadow: `0 0 14px ${accent}, 0 0 4px ${accent}` }} />
-      <div className="absolute top-1/2 -translate-y-1/2" style={{ left: -3, width: 9, height: 9, borderRadius: "50%", background: accent, boxShadow: `0 0 8px ${accent}, 0 0 2px ${accent}` }} />
+const dropLine = (
+    // Zero-height overlay: the bar is absolutely positioned so showing/hiding
+    // the indicator never shifts the row layout. Layout shift was causing the
+    // cursor to leave the row (dragleave) the instant the line appeared, which
+    // made the indicator flicker on/off — the "can't decide" glitch.
+    <div className="relative pointer-events-none" style={{ height: 0, marginLeft: 8 + depth * 14, marginRight: 8 }}>
+      <div className="absolute left-0 right-0" style={{ top: -1.5, height: 3, background: accent, borderRadius: 2, boxShadow: `0 0 14px ${accent}, 0 0 4px ${accent}` }} />
+      <div className="absolute" style={{ top: -4.5, left: -3, width: 9, height: 9, borderRadius: "50%", background: accent, boxShadow: `0 0 8px ${accent}, 0 0 2px ${accent}` }} />
     </div>
   );
 
@@ -2607,7 +2639,7 @@ const handleDragStart = e => {
                   </button>
                   {showColorPicker && (
                     <div className="absolute top-full right-0 mt-1 z-50 bg-white rounded-xl shadow-2xl p-2.5 border border-gray-100" style={{ minWidth: 200 }} onClick={e => e.stopPropagation()}>
-                      <div className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-2 px-1">Color de sección</div>
+                      <div className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-2 px-1">{t("am_section_color")}</div>
                       <div className="grid grid-cols-6 gap-1.5">
                         {["#0891b2","#CF305D","#374151","#57aa78","#dc7533","#7c3aed","#1a2f8a","#ca8a04"].map(c => (
                           <button key={c} onClick={() => { onColorChange(node.id ?? node.code, c); setShowColorPicker(false); }} className="w-7 h-7 rounded-lg transition-all hover:scale-110" style={{ backgroundColor: c, boxShadow: (node.color || "").toLowerCase() === c.toLowerCase() ? `0 0 0 2px white, 0 0 0 3.5px ${c}` : "none", transform: (node.color || "").toLowerCase() === c.toLowerCase() ? "scale(1.12)" : "scale(1)" }} title={c} />
@@ -2808,8 +2840,8 @@ if (!tc) { setError(t("cfm_err_code_required")); return; }
           <input type="text" value={name} onChange={e => { setName(e.target.value); setError(null); }} onKeyDown={e => { if (e.key === "Enter") handleSubmit(); if (e.key === "Escape") { fullReset(); setOpen(false); } }} placeholder={t("cfm_account_name")} className="flex-1 min-w-0 px-3 py-2 rounded-lg text-xs bg-gray-50 border border-gray-200 outline-none transition-all" onFocus={e => e.target.style.borderColor = accent} onBlur={e => e.target.style.borderColor = '#e5e7eb'} />
         </div>
         <div className="flex items-center justify-between">
-          <label className="flex items-center gap-2 cursor-pointer select-none group">
-            <div onClick={() => setIsSum(s => !s)} className="w-4 h-4 rounded-md flex items-center justify-center transition-all flex-shrink-0 shadow-sm" style={{ border: `2px solid ${isSum ? accent : '#e5e7eb'}`, backgroundColor: isSum ? accent : 'white' }}>{isSum && <Check size={9} className="text-white" strokeWidth={3} />}</div>
+<label onClick={() => setIsSum(s => !s)} className="flex items-center gap-2 cursor-pointer select-none group">
+            <div className="w-4 h-4 rounded-md flex items-center justify-center transition-all flex-shrink-0 shadow-sm" style={{ border: `2px solid ${isSum ? accent : '#e5e7eb'}`, backgroundColor: isSum ? accent : 'white' }}>{isSum && <Check size={9} className="text-white" strokeWidth={3} />}</div>
 <span className="text-[11px] text-gray-500 font-medium group-hover:text-gray-700">{t("cfm_sum_total_row")}</span>
           </label>
           <button onClick={handleSubmit} className="px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider text-white transition-all hover:opacity-90 active:scale-95 shadow-sm" style={{ backgroundColor: accent }}>{t("cfm_add_btn")}</button>

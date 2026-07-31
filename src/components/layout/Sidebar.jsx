@@ -16,8 +16,7 @@ const NAV_KEYS = [
       { key: "individual-kpis",         labelKey: "nav_kpis",         icon: BarChart3  },
       { key: "individual-dimensiones",  labelKey: "nav_dimensions",   icon: Filter     },
       { key: "individual-cashflow",     labelKey: "nav_cashflow",     icon: TrendingUp },
-  // Temporalmente desactivada: página Cuadro de memoria (individual).
-      // { key: "individual-memory-notes", labelKey: "nav_memory_notes", icon: BookOpen   },
+{ key: "individual-memory-notes", labelKey: "nav_memory_notes", icon: BookOpen   },
     ],
   },
   {
@@ -28,8 +27,7 @@ const NAV_KEYS = [
       { key: "consolidated-kpis",        labelKey: "nav_kpis",          icon: BarChart3  },
       { key: "consolidated-dimensiones", labelKey: "nav_dimensions",    icon: Filter     },
       { key: "consolidated-cashflow",    labelKey: "nav_cashflow",      icon: TrendingUp },
-// Temporalmente desactivada: página Cuadro de memoria (consolidado).
-      // { key: "consolidated-notes",       labelKey: "nav_memory_notes",  icon: BookOpen   },
+{ key: "consolidated-notes",       labelKey: "nav_memory_notes",  icon: BookOpen   },
 ],
   },
   {
