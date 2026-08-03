@@ -667,14 +667,15 @@ const amt = (r) => -(typeof getRowAmount === "function" ? Number(getRowAmount(r)
     const t = codeTypeMap.get(code) ?? "";
     return t === "P/L" || t === "DIS";
   };
-  const consVal = (code, p, pPrev) => {
+const consVal = (code, p, pPrev) => {
     const curr = getConsTotal(code, p);
-    if (ytdOnly || !pPrev || !isPLCode(code)) return curr;
+    // Guard: empty current pivot → no (0 − prevYTD) phantom negatives.
+    if (ytdOnly || !pPrev || !isPLCode(code) || !p || p.size === 0) return curr;
     return curr - getConsTotal(code, pPrev);
   };
   const contribVal = (code, company, p, pPrev) => {
     const curr = getContrib(code, company, p);
-    if (ytdOnly || !pPrev || !isPLCode(code)) return curr;
+    if (ytdOnly || !pPrev || !isPLCode(code) || !p || p.size === 0) return curr;
     return curr - getContrib(code, company, pPrev);
   };
   const contribSumVal = (code, p, pPrev) =>
@@ -1231,14 +1232,15 @@ const isPLCode = (code) => {
     const t = codeTypeMap.get(code) ?? "";
     return t === "P/L" || t === "DIS";
   };
-  const consMonthly = (code) => {
+const consMonthly = (code) => {
     const curr = getConsTotal(code, pivot);
-    if (ytdOnly || !pivotPrev || !isPLCode(code)) return curr;
+    // Guard: empty current period → no (0 − prevYTD) phantom negatives.
+    if (ytdOnly || !pivotPrev || !isPLCode(code) || pivot.size === 0) return curr;
     return curr - getConsTotal(code, pivotPrev);
   };
   const contribMonthly = (code, company) => {
     const curr = getContrib(code, company, pivot);
-    if (ytdOnly || !pivotPrev || !isPLCode(code)) return curr;
+    if (ytdOnly || !pivotPrev || !isPLCode(code) || pivot.size === 0) return curr;
     return curr - getContrib(code, company, pivotPrev);
   };
   const contribSumMonthly = (code) =>
@@ -1370,15 +1372,16 @@ if (breakerLabel) {
     const groups = [];
     // Group 1: Consolidated (+ compare cols)
 // Compare-period monthly helper (YTD(cmp) - YTD(cmpPrev) for P/L).
-    const consMonthlyCmp = (code) => {
+const consMonthlyCmp = (code) => {
       const curr = getConsTotal(code, cmpPivot);
-      if (ytdOnly || !cmpPivotPrev || !isPLCode(code)) return curr;
+      // Guard: empty compare period → no phantom negatives.
+      if (ytdOnly || !cmpPivotPrev || !isPLCode(code) || cmpPivot.size === 0) return curr;
       return curr - getConsTotal(code, cmpPivotPrev);
     };
     const contribSumMonthlyCmp = (code) =>
       effectiveCompanies.reduce((s, c) => {
         const curr = getContrib(code, c, cmpPivot);
-        if (ytdOnly || !cmpPivotPrev || !isPLCode(code)) return s + curr;
+        if (ytdOnly || !cmpPivotPrev || !isPLCode(code) || cmpPivot.size === 0) return s + curr;
         return s + (curr - getContrib(code, c, cmpPivotPrev));
       }, 0);
 
@@ -1409,9 +1412,9 @@ if (compareMode) {
     groups.push(g2);
 
 // Per-company compare monthly helper.
-    const contribMonthlyCmp = (code, company) => {
+const contribMonthlyCmp = (code, company) => {
       const curr = getContrib(code, company, cmpPivot);
-      if (ytdOnly || !cmpPivotPrev || !isPLCode(code)) return curr;
+      if (ytdOnly || !cmpPivotPrev || !isPLCode(code) || cmpPivot.size === 0) return curr;
       return curr - getContrib(code, company, cmpPivotPrev);
     };
     // Group 3: Contribution sum + per-company columns

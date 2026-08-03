@@ -646,9 +646,9 @@ function ConsolidationBackground({ primary }) {
 /* ═══════════════════════════════════════════════════════════════
    KPI HERO CARD
 ═══════════════════════════════════════════════════════════════ */
-function HeroKPI({ label, value, prevValue, trend, color, accent, icon: Icon, delay = 0, loading }) {
+function HeroKPI({ label, value, prevValue, trend, color, accent, icon: Icon, delay = 0, loading, noData = false }) {
   const t = useT();
-  const change = prevValue && prevValue !== 0 ? ((value - prevValue) / Math.abs(prevValue)) * 100 : null;
+  const change = (!noData && prevValue && prevValue !== 0) ? ((value - prevValue) / Math.abs(prevValue)) * 100 : null;
   const isPositive = change != null ? change >= 0 : null;
   const sparklineData = useMemo(() => (trend ?? []).map((v, i) => ({ x: i, y: v })), [trend]);
 
@@ -691,15 +691,20 @@ style={{
         </div>
 
         <div className="mb-2 flex-shrink-0">
-          {loading ? (
+{loading ? (
             <div className="h-8 w-28 bg-white/15 rounded animate-pulse" />
+          ) : noData ? (
+            <p className="text-2xl font-black text-white/50 tracking-tight">—</p>
           ) : (
             <p className="text-2xl font-black text-white tracking-tight" style={{ textShadow: "0 2px 12px rgba(0,0,0,0.15)" }}>
               {fmtBig(value)}
             </p>
           )}
-{prevValue != null && prevValue !== 0 && (
+{!noData && prevValue != null && prevValue !== 0 && (
             <p className="text-[12px] text-white/65 mt-1 font-semibold">{t("hero_vs")} {fmtBig(prevValue)}</p>
+          )}
+{noData && !loading && (
+            <p className="text-[11px] text-white/55 mt-1 font-semibold">{t("home_period_no_data")}</p>
           )}
         </div>
 
@@ -2536,9 +2541,12 @@ const found = probes.find(Boolean);
   const initialFetchSkippedRef = useRef(!!(prefetch?.current?.length));
   useEffect(() => {
     if (!year || !month || !source || !structure || !company) return;
-    if (initialFetchSkippedRef.current) { initialFetchSkippedRef.current = false; return; }
+if (initialFetchSkippedRef.current) { initialFetchSkippedRef.current = false; return; }
     let cancelled = false;
     setLoading(true);
+    // Clear stale rows from the previous period so an empty new period doesn't
+    // keep showing the old month's data in the KPIs and breakdown.
+    setCurrentRows([]);
     (async () => {
       const cur = await fetchPeriod(year, month, source, structure, company);
       if (cancelled) return;
@@ -2678,6 +2686,15 @@ const m = Number(month);
   // monthly mode = YTD(current) − YTD(month-1). For Jan, monthly = YTD.
 const currentMonthlyPivot = useMemo(() => {
     if (valueMode === "ytd") return currentYtdPivot;
+    // If the anchor period reported NO rows, it has no data — return an empty
+    // pivot instead of computing (0 − previousYTD), which would surface the
+    // prior month's figures as phantom negatives. "Not reported" ≠ "zero".
+    if (currentRows.length === 0) {
+      const empty = new Map();
+      empty.__dimPivot = new Map();
+      empty.__sumPivot = new Map();
+      return empty;
+    }
     const m = parseInt(month);
     if (m === 1) return currentYtdPivot;
     const diffWith = (beforeYtd) => {
@@ -2709,8 +2726,8 @@ const currentMonthlyPivot = useMemo(() => {
       if (!found) return currentYtdPivot;
       return diffWith(buildPivotFromRows(found.rows, sumAccountCodes));
     }
-    return diffWith(buildPivotFromRows(monthBeforeAnchorRows, sumAccountCodes));
-  }, [currentYtdPivot, year, month, trendRows, monthBeforeAnchorRows, sumAccountCodes, valueMode]);
+return diffWith(buildPivotFromRows(monthBeforeAnchorRows, sumAccountCodes));
+  }, [currentYtdPivot, currentRows, year, month, trendRows, monthBeforeAnchorRows, sumAccountCodes, valueMode]);
 
 // Pivot for the COMPARE period. In YTD mode = raw YTD. In monthly mode =
   // YTD(compare) − YTD(month-before-compare).
@@ -2749,7 +2766,9 @@ const prevMonthlyPivot = useMemo(() => {
 
 // Unfiltered pivots for custom breakdown — no sum-account exclusion so
   // user-picked accounts always resolve correctly
-  const rawCurrentMonthlyPivot = useMemo(() => {
+const rawCurrentMonthlyPivot = useMemo(() => {
+    // No rows for the anchor period → empty, not (0 − previous).
+    if (currentRows.length === 0) return new Map();
     const ytd = buildPivotFromRows(currentRows, null);
     if (valueMode === "ytd" || parseInt(month) === 1) return ytd;
     const before = buildPivotFromRows(monthBeforeAnchorRows, null);
@@ -3091,16 +3110,26 @@ return `${MONTHS_ABBR[mNum - 1]} ${year}`;
 
 const _anyLoading = loading || trendLoading || probing || allCoLoading || !resolverReady;
 
-// Progress meter: 5 stages, weighted by perceptual cost
+  // True when the selected period's anchor fetch has FINISHED but returned no
+  // rows — i.e. this period genuinely has no data. Used to show an explicit
+  // "no data" state instead of rendering 0s that look like real values.
+  const noPeriodData = !!year && !!month && !loading && currentRows.length === 0;
+
+// Progress meter: 5 stages, weighted by perceptual cost.
+  // IMPORTANT: stages count as complete when the corresponding FETCH has
+  // finished — NOT when it returned rows. A period with no data is a valid
+  // result, so an empty currentRows/trendRows/allCoCurrentRows must still
+  // advance the bar to 100%. Otherwise selecting an empty month leaves the
+  // loader stuck (~60%) and its overlay blocks the whole page forever.
   const loadProgress = useMemo(() => {
     let pct = 0;
     if (year && month)                        pct += 15;
     if (resolverReady && kpiList.length > 0)  pct += 25;
-    if (currentRows.length > 0)               pct += 25;
-    if (trendRows.length >= 6)                pct += 20;
-    if (allCoCurrentRows.length > 0)          pct += 15;
+    if (!loading)                             pct += 25;   // anchor fetch done (even if empty)
+    if (!trendLoading)                        pct += 20;   // trend fetch done (even if empty)
+    if (!allCoLoading)                        pct += 15;   // all-companies fetch done (even if empty)
     return Math.min(100, pct);
-  }, [year, month, resolverReady, kpiList.length, currentRows.length, trendRows.length, allCoCurrentRows.length]);
+  }, [year, month, resolverReady, kpiList.length, loading, trendLoading, allCoLoading]);
 
   // Smoothly animate the displayed value between progress changes
   const animatedLoadProgress = useAnimatedNumber(loadProgress, 700);
@@ -3928,10 +3957,11 @@ selectedCompany={company}
                     value={vals?.current ?? 0}
                     prevValue={vals?.prev ?? 0}
                     trend={sparklines[idx] ?? []}
-                    color={sc.color}
+color={sc.color}
                     accent={sc.accent}
                     icon={sc.icon}
                     loading={loading}
+                    noData={noPeriodData}
                     delay={idx * 0.06}
                   />
 
@@ -4438,8 +4468,18 @@ interval={trendSeriesDisplay.length <= 12 ? 0 : Math.floor(trendSeriesDisplay.le
                   </AreaChart>
                 </ResponsiveContainer>
 ) : (
-                <div className="flex items-center justify-center h-full text-gray-300 text-xs">
-                  {trendLoading ? <Loader2 size={20} className="animate-spin" /> : t("home_no_trend")}
+                <div className="flex flex-col items-center justify-center h-full gap-2 text-center px-6">
+                  {trendLoading ? (
+                    <Loader2 size={20} className="animate-spin text-gray-300" />
+                  ) : (year && month) ? (
+                    <>
+                      <AlertTriangle size={20} className="text-amber-400" />
+                      <p className="text-xs font-black text-gray-400">{t("home_period_no_data")}</p>
+                      <p className="text-[10px] text-gray-300">{t("home_period_no_data_sub")}</p>
+                    </>
+                  ) : (
+                    <span className="text-gray-300 text-xs">{t("home_no_trend")}</span>
+                  )}
                 </div>
               )}
             </div>
@@ -4530,8 +4570,14 @@ className="absolute right-0 top-full mt-2 z-[500] rounded-2xl p-2 flex flex-col 
 
             {/* Rows */}
             {costBreakdown.length > 0 ? (
-              <div className="flex-1 min-h-0 overflow-y-auto space-y-2.5 pr-1 hide-scrollbar">
-{costBreakdown.map((c, i) => {
+<div className="flex-1 min-h-0 overflow-y-auto space-y-2.5 pr-1 hide-scrollbar">
+{costBreakdown.length === 0 && noPeriodData ? (
+                  <div className="flex flex-col items-center justify-center h-full gap-2 text-center px-6">
+                    <AlertTriangle size={20} className="text-amber-400" />
+                    <p className="text-xs font-black text-gray-400">{t("home_period_no_data")}</p>
+                    <p className="text-[10px] text-gray-300">{t("home_period_no_data_sub")}</p>
+                  </div>
+                ) : costBreakdown.map((c, i) => {
 const absTot = Math.abs(totalCosts);
                   const pct = absTot > 0 ? (Math.abs(c.value) / absTot) * 100 : 0;
                   const barColor = activeCustomStructure

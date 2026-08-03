@@ -5067,6 +5067,10 @@ const p = new Map();
 let pivotForKpi;
           if (secMode === "ytd") {
             pivotForKpi = curr.pivot;
+} else if (!curr.hasData) {
+            // This month has no data → empty monthly pivot, not (0 − prevYTD),
+            // which would plot the prior month as a phantom negative spike.
+            pivotForKpi = (() => { const e = new Map(); e.__dimPivot = new Map(); e.__bsCodes = curr.pivot.__bsCodes ?? new Set(); return e; })();
           } else {
 const prev = results[i - 1];
             const mp = new Map();
@@ -5189,9 +5193,12 @@ const p = new Map();
 for (let i = 1; i < results.length; i++) {
             const curr = results[i];
             if (curr.isPrior) continue;
-            let pivot;
+let pivot;
             if (secMode === "ytd") {
               pivot = curr.pivot;
+            } else if (!curr.hasData) {
+              // Month with no data → empty monthly pivot, not (0 − prevYTD).
+              pivot = (() => { const e = new Map(); e.__dimPivot = new Map(); return e; })();
             } else {
               const prev = results[i - 1];
               const mp = new Map();
@@ -6740,9 +6747,20 @@ currPivot.__parties = partiesById;
         selectedDims: groupDimCodes ?? null,
       };
       currPivot.__variationScope = { kind: "company", key: co };
-
-      if (viewPeriod === "ytd") {
+if (viewPeriod === "ytd") {
         pivots.set(co, currPivot);
+      } else if (rows.length === 0) {
+        // Empty period for this company → empty pivot, not (0 − prevYTD), which
+        // would show the prior month as phantom negatives. "Not reported" ≠ 0.
+        const emptyPivot = new Map();
+        emptyPivot.__dimPivot = new Map();
+        emptyPivot.__localPivot = new Map();
+        emptyPivot.__bsCodes = currPivot.__bsCodes ?? new Set();
+        emptyPivot.__bsLocalCodes = currPivot.__bsLocalCodes ?? new Set();
+        emptyPivot.__groupDescendants = groupDescendantsMap;
+        emptyPivot.__parties = partiesById;
+        emptyPivot.__variationScope = { kind: "company", key: co };
+        pivots.set(co, emptyPivot);
       } else {
         // Monthly = current YTD - previous month YTD (per account).
         // For January (month=1) the previous month is in the prior year, so
@@ -6881,6 +6899,19 @@ currPivot.__dimPivot = buildDimPivotFromRaw(rows);
       currPivot.__variationScope = { kind: "company", key: co };
       if (viewPeriod === "ytd") {
         pivots.set(co, currPivot);
+} else if (rows.length === 0) {
+        // Compare period has no data for this company → empty pivot, not
+        // (0 − prevYTD), which would surface the prior month as phantom negatives.
+        const emptyPivot = new Map();
+        emptyPivot.__dimPivot = new Map();
+        emptyPivot.__localPivot = new Map();
+        emptyPivot.__bsCodes = currPivot.__bsCodes ?? new Set();
+        emptyPivot.__bsLocalCodes = currPivot.__bsLocalCodes ?? new Set();
+        emptyPivot.__groupDescendants = groupDescendantsMap;
+        emptyPivot.__parties = partiesById;
+        emptyPivot.__partyContext = cmpPartyCtx(co);
+        emptyPivot.__variationScope = { kind: "company", key: co };
+        pivots.set(co, emptyPivot);
       } else {
 const prevRows = companyDataCmpPrev.get(co) ?? [];
         const prevPivot = buildPivot(prevRows);
@@ -7197,7 +7228,10 @@ const attachPartyCtx = (pivots) => {
     allKeys.forEach(key => {
       const curr = currPivots.get(key);
       const prev = prevPivots.get(key);
-      const meta = curr ?? prev;
+const meta = curr ?? prev;
+      // If the compare period has no data for this dimension (curr missing),
+      // don't subtract its prior month — that would be phantom negatives.
+      const cmpHasData = !!curr;
       const monthlyPivot = new Map();
       const allCodes = new Set([
         ...(curr?.pivot.keys() ?? []),
@@ -7207,7 +7241,7 @@ const bs = curr?.pivot.__bsCodes ?? new Set();
       const bsLocal = curr?.pivot.__bsLocalCodes ?? new Set();
 allCodes.forEach(ac => {
         const currVal = curr?.pivot.get(ac) ?? 0;
-        const prevVal = isJanuary ? 0 : (prev?.pivot.get(ac) ?? 0);
+        const prevVal = (isJanuary || !cmpHasData) ? 0 : (prev?.pivot.get(ac) ?? 0);
         monthlyPivot.set(ac, bs.has(ac) ? currVal : currVal - prevVal);
       });
       const mdp = new Map();
@@ -7215,14 +7249,14 @@ allCodes.forEach(ac => {
       const pDP = prev?.pivot.__dimPivot ?? new Map();
       new Set([...cDP.keys(), ...pDP.keys()]).forEach(k => {
         const acPart = k.split(":::")[0];
-        mdp.set(k, bs.has(acPart) ? (cDP.get(k) ?? 0) : (cDP.get(k) ?? 0) - (isJanuary ? 0 : (pDP.get(k) ?? 0)));
+mdp.set(k, bs.has(acPart) ? (cDP.get(k) ?? 0) : (cDP.get(k) ?? 0) - ((isJanuary || !cmpHasData) ? 0 : (pDP.get(k) ?? 0)));
       });
       monthlyPivot.__dimPivot = mdp;
       const cLP = curr?.pivot.__localPivot ?? new Map();
       const pLP = prev?.pivot.__localPivot ?? new Map();
       const mLP = new Map();
       new Set([...cLP.keys(), ...pLP.keys()]).forEach(lc => {
-        mLP.set(lc, bsLocal.has(lc) ? (cLP.get(lc) ?? 0) : (cLP.get(lc) ?? 0) - (isJanuary ? 0 : (pLP.get(lc) ?? 0)));
+mLP.set(lc, bsLocal.has(lc) ? (cLP.get(lc) ?? 0) : (cLP.get(lc) ?? 0) - ((isJanuary || !cmpHasData) ? 0 : (pLP.get(lc) ?? 0)));
       });
       monthlyPivot.__localPivot = mLP;
       const cLDP = curr?.pivot.__localDimPivot ?? new Map();
@@ -7230,7 +7264,7 @@ allCodes.forEach(ac => {
       const mLDP = new Map();
       new Set([...cLDP.keys(), ...pLDP.keys()]).forEach(k => {
         const lacPart = k.split(":::")[0];
-        mLDP.set(k, bsLocal.has(lacPart) ? (cLDP.get(k) ?? 0) : (cLDP.get(k) ?? 0) - (isJanuary ? 0 : (pLDP.get(k) ?? 0)));
+mLDP.set(k, bsLocal.has(lacPart) ? (cLDP.get(k) ?? 0) : (cLDP.get(k) ?? 0) - ((isJanuary || !cmpHasData) ? 0 : (pLDP.get(k) ?? 0)));
       });
       monthlyPivot.__localDimPivot = mLDP;
       monthlyPivot.__bsCodes = bs;
@@ -7738,9 +7772,12 @@ const p = new Map();
 for (let i = 1; i < results.length; i++) {
       const curr = results[i];
       if (curr.isPrior) continue;
-      let pivotForKpi;
+let pivotForKpi;
       if (mode === "ytd") {
         pivotForKpi = curr.pivot;
+      } else if (!curr.hasData) {
+        // Month with no data → empty monthly pivot, not (0 − prevYTD).
+        pivotForKpi = (() => { const e = new Map(); e.__dimPivot = new Map(); e.__bsCodes = curr.pivot.__bsCodes ?? new Set(); return e; })();
       } else {
 const prev = results[i - 1];
         const mp = new Map();
@@ -8101,7 +8138,9 @@ curr.__parties = partiesById;
         prev.__parties = partiesById;
         prev.__partyContext = partyCtx;
         prev.__variationScope = { kind: "company", key: co };
-const monthly = diffPivots(curr, prev, isJan);
+        // Guard: if this period has no rows, don't subtract the prior month
+        // (diffPivots would produce phantom negatives). Empty period = no data.
+        const monthly = rows.length === 0 ? curr : diffPivots(curr, prev, isJan);
         monthly.__variationScope = { kind: "company", key: co };
         ytdResults.set(co,     computeAllKpisResolved(kList, curr,    ccTagToCodes, sectionCodes, resolvedAllKpis));
         monthlyResults.set(co, computeAllKpisResolved(kList, monthly, ccTagToCodes, sectionCodes, resolvedAllKpis));
@@ -8196,21 +8235,24 @@ if (out.has(code)) return;
 // Suma sobre TODAS las empresas seleccionadas (null = todas), igual que
       // el on-screen. selCompanies[0] daba 0 si la primera no tenía la partida.
       const partyCompanies = (selCompanies == null ? companyCodes : selCompanies).filter(Boolean);
-      allCodes.forEach(code => {
+allCodes.forEach(code => {
         const curr = currMap.get(code) ?? (() => { const p = new Map(); p.__dimPivot = new Map(); return p; })();
         const prev = prevMap2.get(code) ?? (() => { const p = new Map(); p.__dimPivot = new Map(); return p; })();
+        // Guard: compare/main period has no data for this dim → don't subtract
+        // the prior month (phantom negatives). No curr entry = not reported.
+        const cmpHasData = currMap.has(code);
 const bs = curr.__bsCodes ?? new Set();
         const bsLocal = curr.__bsLocalCodes ?? new Set();
         const monthly = new Map();
         new Set([...curr.keys(), ...prev.keys()]).forEach(ac => {
-          monthly.set(ac, bs.has(ac) ? (curr.get(ac) ?? 0) : (curr.get(ac) ?? 0) - (isJan ? 0 : (prev.get(ac) ?? 0)));
+          monthly.set(ac, bs.has(ac) ? (curr.get(ac) ?? 0) : (curr.get(ac) ?? 0) - ((isJan || !cmpHasData) ? 0 : (prev.get(ac) ?? 0)));
         });
 const mdp = new Map();
         const cDP = curr.__dimPivot ?? new Map();
         const pDP = prev.__dimPivot ?? new Map();
         new Set([...cDP.keys(), ...pDP.keys()]).forEach(k => {
           const acPart = k.split(":::")[0];
-          mdp.set(k, bs.has(acPart) ? (cDP.get(k) ?? 0) : (cDP.get(k) ?? 0) - (isJan ? 0 : (pDP.get(k) ?? 0)));
+          mdp.set(k, bs.has(acPart) ? (cDP.get(k) ?? 0) : (cDP.get(k) ?? 0) - ((isJan || !cmpHasData) ? 0 : (pDP.get(k) ?? 0)));
         });
         monthly.__dimPivot = mdp;
         const mldp = new Map();
@@ -8218,7 +8260,7 @@ const mdp = new Map();
         const pLDP = prev.__localDimPivot ?? new Map();
         new Set([...cLDP.keys(), ...pLDP.keys()]).forEach(k => {
           const lacPart = k.split(":::")[0];
-          mldp.set(k, bsLocal.has(lacPart) ? (cLDP.get(k) ?? 0) : (cLDP.get(k) ?? 0) - (isJan ? 0 : (pLDP.get(k) ?? 0)));
+          mldp.set(k, bsLocal.has(lacPart) ? (cLDP.get(k) ?? 0) : (cLDP.get(k) ?? 0) - ((isJan || !cmpHasData) ? 0 : (pLDP.get(k) ?? 0)));
         });
         monthly.__localDimPivot = mldp;
         // Also carry a monthly localPivot with B/S awareness
@@ -8226,7 +8268,7 @@ const mdp = new Map();
         const cLP = curr.__localPivot ?? new Map();
         const pLP = prev.__localPivot ?? new Map();
         new Set([...cLP.keys(), ...pLP.keys()]).forEach(lc => {
-          mlp.set(lc, bsLocal.has(lc) ? (cLP.get(lc) ?? 0) : (cLP.get(lc) ?? 0) - (isJan ? 0 : (pLP.get(lc) ?? 0)));
+          mlp.set(lc, bsLocal.has(lc) ? (cLP.get(lc) ?? 0) : (cLP.get(lc) ?? 0) - ((isJan || !cmpHasData) ? 0 : (pLP.get(lc) ?? 0)));
         });
 monthly.__localPivot = mlp;
         monthly.__bsCodes = bs;

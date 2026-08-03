@@ -4162,9 +4162,11 @@ const series = [];
 const prev = results[i - 1];
           const mp = new Map();
           const bs = curr.pivot.__bsCodes ?? new Set();
+          // Guard: empty month → don't subtract prior (no phantom negatives).
+          const currHasData = curr.pivot.size > 0;
           const allCodes = new Set([...curr.pivot.keys(), ...prev.pivot.keys()]);
           allCodes.forEach(ac => {
-            mp.set(ac, bs.has(ac) ? (curr.pivot.get(ac) ?? 0) : (curr.pivot.get(ac) ?? 0) - (curr.m === 1 ? 0 : (prev.pivot.get(ac) ?? 0)));
+            mp.set(ac, bs.has(ac) ? (curr.pivot.get(ac) ?? 0) : (curr.pivot.get(ac) ?? 0) - ((curr.m === 1 || !currHasData) ? 0 : (prev.pivot.get(ac) ?? 0)));
           });
           const mdp = new Map();
           const currDP = curr.pivot.__dimPivot ?? new Map();
@@ -4172,7 +4174,7 @@ const prev = results[i - 1];
           const allDPKeys = new Set([...currDP.keys(), ...prevDP.keys()]);
           allDPKeys.forEach(k => {
             const acPart = k.split(":::")[0];
-            mdp.set(k, bs.has(acPart) ? (currDP.get(k) ?? 0) : (currDP.get(k) ?? 0) - (curr.m === 1 ? 0 : (prevDP.get(k) ?? 0)));
+            mdp.set(k, bs.has(acPart) ? (currDP.get(k) ?? 0) : (currDP.get(k) ?? 0) - ((curr.m === 1 || !currHasData) ? 0 : (prevDP.get(k) ?? 0)));
           });
           mp.__dimPivot = mdp;
           mp.__bsCodes = bs;
@@ -4291,19 +4293,20 @@ if (!ac) return;
             let pivot;
             if (secMode === "ytd") {
               pivot = curr.pivot;
-            } else {
+} else {
 const prev = results[i - 1];
               const mp = new Map();
               const bs = curr.pivot.__bsCodes ?? new Set();
+              const currHasData = curr.pivot.size > 0;
               new Set([...curr.pivot.keys(), ...prev.pivot.keys()]).forEach(ac => {
-                mp.set(ac, bs.has(ac) ? (curr.pivot.get(ac) ?? 0) : (curr.pivot.get(ac) ?? 0) - (curr.m === 1 ? 0 : (prev.pivot.get(ac) ?? 0)));
+                mp.set(ac, bs.has(ac) ? (curr.pivot.get(ac) ?? 0) : (curr.pivot.get(ac) ?? 0) - ((curr.m === 1 || !currHasData) ? 0 : (prev.pivot.get(ac) ?? 0)));
               });
               const mdp = new Map();
               const currDP = curr.pivot.__dimPivot ?? new Map();
               const prevDP = prev.pivot.__dimPivot ?? new Map();
               new Set([...currDP.keys(), ...prevDP.keys()]).forEach(k => {
                 const acPart = k.split(":::")[0];
-                mdp.set(k, bs.has(acPart) ? (currDP.get(k) ?? 0) : (currDP.get(k) ?? 0) - (curr.m === 1 ? 0 : (prevDP.get(k) ?? 0)));
+                mdp.set(k, bs.has(acPart) ? (currDP.get(k) ?? 0) : (currDP.get(k) ?? 0) - ((curr.m === 1 || !currHasData) ? 0 : (prevDP.get(k) ?? 0)));
               });
               mp.__dimPivot = mdp;
               mp.__bsCodes = bs;
@@ -5455,11 +5458,15 @@ p.__dimPivot = dimP;
 const toMonthly = (curr, prev) => {
       const mp = new Map();
       const bs = curr.__bsCodes ?? new Set();
+      // Guard: if the current period has no data (empty pivot), don't subtract
+      // the prior month — (0 − prevYTD) would surface it as phantom negatives.
+      // "Not reported" ≠ "zero activity".
+      const currHasData = curr.size > 0;
       const all = new Set([...curr.keys(), ...prev.keys()]);
       // Balance-sheet codes are stocks: keep the cumulative (YTD) value even in
       // monthly mode. Only P/L (flows) get the curr - prev delta.
       all.forEach(ac => {
-        mp.set(ac, bs.has(ac) ? (curr.get(ac) ?? 0) : (curr.get(ac) ?? 0) - (isJanuary ? 0 : (prev.get(ac) ?? 0)));
+        mp.set(ac, bs.has(ac) ? (curr.get(ac) ?? 0) : (curr.get(ac) ?? 0) - ((isJanuary || !currHasData) ? 0 : (prev.get(ac) ?? 0)));
       });
       // Same for the per-dim sub-lookup — the dim key is "ac:::grp:::code",
       // so a code is B/S when its "ac" prefix is in the B/S set.
@@ -5469,7 +5476,7 @@ const toMonthly = (curr, prev) => {
       const mpDim = new Map();
       dimAll.forEach(k => {
         const acPart = k.split(":::")[0];
-        mpDim.set(k, bs.has(acPart) ? (currDim.get(k) ?? 0) : (currDim.get(k) ?? 0) - (isJanuary ? 0 : (prevDim.get(k) ?? 0)));
+        mpDim.set(k, bs.has(acPart) ? (currDim.get(k) ?? 0) : (currDim.get(k) ?? 0) - ((isJanuary || !currHasData) ? 0 : (prevDim.get(k) ?? 0)));
       });
       mp.__dimPivot = mpDim;
       mp.__bsCodes = bs;
@@ -5597,16 +5604,18 @@ new Set([...curr.keys(), ...prev.keys()]).forEach(key => {
       const c = curr.get(key), p = prev.get(key);
       const meta = c ?? p;
       const bs = c?.pivot.__bsCodes ?? new Set();
+// Guard: dim absent from the compare period (no c) → don't subtract prior.
+      const cmpHasData = !!c;
       const mp = new Map();
       new Set([...(c?.pivot.keys() ?? []), ...(p?.pivot.keys() ?? [])]).forEach(ac => {
-        mp.set(ac, bs.has(ac) ? (c?.pivot.get(ac) ?? 0) : (c?.pivot.get(ac) ?? 0) - (isJanuary ? 0 : (p?.pivot.get(ac) ?? 0)));
+        mp.set(ac, bs.has(ac) ? (c?.pivot.get(ac) ?? 0) : (c?.pivot.get(ac) ?? 0) - ((isJanuary || !cmpHasData) ? 0 : (p?.pivot.get(ac) ?? 0)));
       });
       const mdp = new Map();
       const cDP = c?.pivot.__dimPivot ?? new Map();
       const pDP = p?.pivot.__dimPivot ?? new Map();
       new Set([...cDP.keys(), ...pDP.keys()]).forEach(k => {
         const acPart = k.split(":::")[0];
-        mdp.set(k, bs.has(acPart) ? (cDP.get(k) ?? 0) : (cDP.get(k) ?? 0) - (isJanuary ? 0 : (pDP.get(k) ?? 0)));
+        mdp.set(k, bs.has(acPart) ? (cDP.get(k) ?? 0) : (cDP.get(k) ?? 0) - ((isJanuary || !cmpHasData) ? 0 : (pDP.get(k) ?? 0)));
       });
 mp.__dimPivot = mdp;
       mp.__descendants = groupDescendants;
@@ -5772,16 +5781,17 @@ const isJanuary = parseInt(month) === 1;
       const c = curr.get(key), p = prev.get(key);
       const meta = c ?? p;
       const bs = c?.pivot.__bsCodes ?? new Set();
+const cmpHasData = !!c;
       const mp = new Map();
       new Set([...(c?.pivot.keys() ?? []), ...(p?.pivot.keys() ?? [])]).forEach(ac => {
-        mp.set(ac, bs.has(ac) ? (c?.pivot.get(ac) ?? 0) : (c?.pivot.get(ac) ?? 0) - (isJanuary ? 0 : (p?.pivot.get(ac) ?? 0)));
+        mp.set(ac, bs.has(ac) ? (c?.pivot.get(ac) ?? 0) : (c?.pivot.get(ac) ?? 0) - ((isJanuary || !cmpHasData) ? 0 : (p?.pivot.get(ac) ?? 0)));
       });
       const mdp = new Map();
       const cDP = c?.pivot.__dimPivot ?? new Map();
       const pDP = p?.pivot.__dimPivot ?? new Map();
       new Set([...cDP.keys(), ...pDP.keys()]).forEach(k => {
         const acPart = k.split(":::")[0];
-        mdp.set(k, bs.has(acPart) ? (cDP.get(k) ?? 0) : (cDP.get(k) ?? 0) - (isJanuary ? 0 : (pDP.get(k) ?? 0)));
+        mdp.set(k, bs.has(acPart) ? (cDP.get(k) ?? 0) : (cDP.get(k) ?? 0) - ((isJanuary || !cmpHasData) ? 0 : (pDP.get(k) ?? 0)));
       });
 mp.__dimPivot = mdp;
       mp.__descendants = groupDescendants;
@@ -6179,9 +6189,12 @@ const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
     for (let i = 1; i < results.length; i++) {
       const curr = results[i];
       if (curr.isPrior) continue;
-      let pivotForKpi;
+let pivotForKpi;
       if (mode === "ytd") {
         pivotForKpi = curr.pivot;
+} else if (!curr.hasData) {
+        // Month with no data → empty monthly pivot, not (0 − prevYTD).
+        pivotForKpi = (() => { const e = new Map(); e.__dimPivot = new Map(); e.__bsCodes = curr.pivot.__bsCodes ?? new Set(); return e; })();
 } else {
 const prev = results[i - 1];
         const mp = new Map();
@@ -6446,15 +6459,17 @@ p.__dimPivot      = dimPivot;
 
 const diffPivots = (curr, prev, isJan) => {
       const bs = curr.__bsCodes ?? new Set();
+      // Guard: empty current pivot → no (0 − prevYTD) phantom negatives.
+      const currHasData = curr.size > 0;
       const out = new Map();
       new Set([...curr.keys(), ...prev.keys()]).forEach(k => {
-        out.set(k, bs.has(k) ? (curr.get(k) ?? 0) : (curr.get(k) ?? 0) - (isJan ? 0 : (prev.get(k) ?? 0)));
+        out.set(k, bs.has(k) ? (curr.get(k) ?? 0) : (curr.get(k) ?? 0) - ((isJan || !currHasData) ? 0 : (prev.get(k) ?? 0)));
       });
       const diffSub = (a, b) => {
         const r = new Map();
         new Set([...(a ?? new Map()).keys(), ...(b ?? new Map()).keys()]).forEach(k => {
           const acPart = k.split(":::")[0];
-          r.set(k, bs.has(acPart) ? ((a?.get(k)) ?? 0) : ((a?.get(k)) ?? 0) - (isJan ? 0 : ((b?.get(k)) ?? 0)));
+          r.set(k, bs.has(acPart) ? ((a?.get(k)) ?? 0) : ((a?.get(k)) ?? 0) - ((isJan || !currHasData) ? 0 : ((b?.get(k)) ?? 0)));
         });
         return r;
       };
@@ -6608,20 +6623,22 @@ const currMap = buildDim(dataMap);
       const ytdVars = new Map();
       const monthlyVars = new Map();
       const allCodes = new Set([...currMap.keys(), ...prevMap2.keys()]);
-      allCodes.forEach(code => {
+allCodes.forEach(code => {
 const curr = currMap.get(code) ?? new Map();
         const prev = prevMap2.get(code) ?? new Map();
         const bs = curr.__bsCodes ?? new Set();
+        // Guard: dim absent from current period → don't subtract prior month.
+        const cmpHasData = currMap.has(code);
 const monthly = new Map();
         new Set([...curr.keys(), ...prev.keys()]).forEach(ac => {
-          monthly.set(ac, bs.has(ac) ? (curr.get(ac) ?? 0) : (curr.get(ac) ?? 0) - (isJan ? 0 : (prev.get(ac) ?? 0)));
+          monthly.set(ac, bs.has(ac) ? (curr.get(ac) ?? 0) : (curr.get(ac) ?? 0) - ((isJan || !cmpHasData) ? 0 : (prev.get(ac) ?? 0)));
         });
         const monthlyDP = new Map();
         const currDP = curr.__dimPivot ?? new Map();
         const prevDP = prev.__dimPivot ?? new Map();
         new Set([...currDP.keys(), ...prevDP.keys()]).forEach(k => {
           const acPart = k.split(":::")[0];
-          monthlyDP.set(k, bs.has(acPart) ? (currDP.get(k) ?? 0) : (currDP.get(k) ?? 0) - (isJan ? 0 : (prevDP.get(k) ?? 0)));
+          monthlyDP.set(k, bs.has(acPart) ? (currDP.get(k) ?? 0) : (currDP.get(k) ?? 0) - ((isJan || !cmpHasData) ? 0 : (prevDP.get(k) ?? 0)));
         });
 // Scope the party to THIS column's dimension (like the on-screen
         // dimension view), so each dimension column shows only its share —

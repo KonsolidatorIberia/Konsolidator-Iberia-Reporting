@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
-import { Loader2, BookOpen, FileText, Sparkles, Settings2, Download, Save, RefreshCw, Upload, Library, Scale } from "lucide-react";import { useTypo, useSettings } from "./SettingsContext";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { Loader2, BookOpen, FileText, Sparkles, Settings2, Download, Save, RefreshCw, Upload, Library, Scale, Bold, Italic, Underline, Plus, Trash2 } from "lucide-react";import { useTypo, useSettings } from "./SettingsContext";
 import PageHeader from "./PageHeader.jsx";
 
 const BASE_URL = "";
@@ -496,6 +496,132 @@ function MovementsTable({ note, rows, columns, pivot, onCellEdit }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//   NARRATIVE EDITOR — rich text with live {{rowId.colId}} variables that
+//   pull formatted values from the note's pivot and update automatically.
+//   Toolbar: font, size, spacing, bold/italic/underline, insert variable.
+// ═══════════════════════════════════════════════════════════════════════
+function fmtVal(n) {
+  if (n === 0 || n == null || (typeof n === "number" && isNaN(n))) return "—";
+  if (typeof n !== "number") return String(n);
+  const s = Math.abs(n).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return n < 0 ? `(${s})` : s;
+}
+
+const NARR_FONTS = [
+  { v: "'Newsreader',Georgia,serif", n: "Newsreader" },
+  { v: "Georgia,serif", n: "Georgia" },
+  { v: "'Inter',system-ui,sans-serif", n: "Inter" },
+  { v: "'Times New Roman',serif", n: "Times" },
+];
+const NARR_SIZES = ["13", "14", "15", "16", "17", "19", "22"];
+const NARR_SPACING = [{ v: "1.5", n: "Compacto" }, { v: "1.75", n: "Normal" }, { v: "2.1", n: "Amplio" }];
+
+function NarrativeEditor({ note, rows, columns, pivot, colors, onChange }) {
+  const edRef = useRef(null);
+  const savedRange = useRef(null);
+  const [font, setFont] = useState(NARR_FONTS[0].v);
+  const [size, setSize] = useState("16");
+  const [spacing, setSpacing] = useState("1.75");
+  const [picker, setPicker] = useState(null);
+
+  const template = note.default_narrative ?? note.narrative ?? "";
+
+  const rowLabel = useCallback((rid) => {
+    const r = rows.find((x) => String(x.id) === String(rid));
+    return r ? (r.label ?? r.name ?? rid) : rid;
+  }, [rows]);
+
+  const renderHtml = useCallback((tpl) => {
+    return String(tpl || "").replace(/\{\{([\w.:-]+?)\.([\w-]+)\}\}/g, (m, rid, cid) => {
+      const val = pivot.get(`${rid}|${cid}`);
+      return `<span data-var="${rid}.${cid}" contenteditable="false" title="${rowLabel(rid)}" style="display:inline-flex;padding:1px 7px;margin:0 1px;border-radius:6px;background:#E7F6EF;color:#0B7A54;font-family:'Inter',sans-serif;font-weight:700;font-size:0.92em;cursor:pointer;">${fmtVal(val)}</span>`;
+    });
+  }, [pivot, rowLabel]);
+
+  useEffect(() => {
+    if (!edRef.current || document.activeElement === edRef.current) return;
+    edRef.current.innerHTML = renderHtml(template) || '<p style="color:#9CA3AF;font-style:italic">Escribe el texto de la memoria… usa “Variable” para insertar valores de la tabla.</p>';
+  }, [template, renderHtml]);
+
+  useEffect(() => {
+    if (!edRef.current) return;
+    edRef.current.querySelectorAll("[data-var]").forEach((el) => {
+      el.style.animation = "none"; void el.offsetWidth; el.style.animation = "mnVarPulse 1s ease-out";
+    });
+  }, [pivot]);
+
+  const saveSel = () => { const s = window.getSelection(); if (s.rangeCount) savedRange.current = s.getRangeAt(0).cloneRange(); };
+  const restore = () => { if (savedRange.current) { const s = window.getSelection(); s.removeAllRanges(); s.addRange(savedRange.current); } };
+
+  const serialize = () => {
+    if (!edRef.current) return template;
+    const clone = edRef.current.cloneNode(true);
+    clone.querySelectorAll("[data-var]").forEach((el) => el.replaceWith(document.createTextNode(`{{${el.getAttribute("data-var")}}}`)));
+    return clone.innerHTML.replace(/<div>/g, "<p>").replace(/<\/div>/g, "</p>");
+  };
+  const pushChange = () => onChange && onChange(serialize());
+  const exec = (cmd, val) => { edRef.current.focus(); restore(); document.execCommand(cmd, false, val || null); saveSel(); pushChange(); };
+
+  const openPicker = (e) => { saveSel(); const r = e.currentTarget.getBoundingClientRect(); setPicker({ x: Math.min(r.left, window.innerWidth - 360), y: r.bottom + 6 }); };
+  const insertVar = (rid, cid, val) => {
+    edRef.current.focus(); restore();
+    const chip = document.createElement("span");
+    chip.setAttribute("data-var", `${rid}.${cid}`); chip.setAttribute("contenteditable", "false");
+    chip.title = rowLabel(rid); chip.textContent = fmtVal(val);
+    Object.assign(chip.style, { display: "inline-flex", padding: "1px 7px", margin: "0 1px", borderRadius: "6px", background: "#E7F6EF", color: "#0B7A54", fontFamily: "'Inter',sans-serif", fontWeight: "700", fontSize: "0.92em", cursor: "pointer" });
+    const sel = window.getSelection();
+    if (sel.rangeCount) { const rg = sel.getRangeAt(0); rg.deleteContents(); rg.insertNode(chip); const sp = document.createTextNode("\u00A0"); chip.after(sp); rg.setStartAfter(sp); rg.collapse(true); sel.removeAllRanges(); sel.addRange(rg); }
+    else edRef.current.appendChild(chip);
+    setPicker(null); pushChange();
+  };
+
+  const selStyle = { display: "flex", alignItems: "center", gap: 6, padding: "6px 9px", borderRadius: 7, fontSize: 12.5, fontWeight: 500, color: "#16181D", border: "1px solid #E5E7EB", background: "#FAFAFA", cursor: "pointer" };
+  const tbBtn = { width: 32, height: 32, borderRadius: 7, display: "grid", placeItems: "center", color: "#5A5F6E", background: "none", border: "none", cursor: "pointer" };
+
+  return (
+    <div>
+      <style>{`@keyframes mnVarPulse{0%{background:#BFE9D5}100%{background:#E7F6EF}}`}</style>
+      <div style={{ display: "flex", alignItems: "center", gap: 3, padding: "7px 9px", background: "#fff", border: "1px solid #E5E7EB", borderRadius: "12px 12px 0 0", borderBottom: "none", flexWrap: "wrap" }}>
+        <label style={selStyle}><select value={font} onChange={(e) => setFont(e.target.value)} style={{ border: "none", background: "none", font: "inherit", outline: "none", cursor: "pointer" }}>{NARR_FONTS.map((f) => <option key={f.v} value={f.v}>{f.n}</option>)}</select></label>
+        <label style={selStyle}><select value={size} onChange={(e) => setSize(e.target.value)} style={{ border: "none", background: "none", font: "inherit", outline: "none", cursor: "pointer", width: 34 }}>{NARR_SIZES.map((s) => <option key={s} value={s}>{s}</option>)}</select></label>
+        <label style={selStyle}><select value={spacing} onChange={(e) => setSpacing(e.target.value)} style={{ border: "none", background: "none", font: "inherit", outline: "none", cursor: "pointer" }}>{NARR_SPACING.map((s) => <option key={s.v} value={s.v}>{s.n}</option>)}</select></label>
+        <div style={{ width: 1, height: 22, background: "#E5E7EB", margin: "0 4px" }} />
+        <button style={tbBtn} title="Negrita" onMouseDown={(e) => { e.preventDefault(); exec("bold"); }}><Bold size={15} /></button>
+        <button style={tbBtn} title="Cursiva" onMouseDown={(e) => { e.preventDefault(); exec("italic"); }}><Italic size={15} /></button>
+        <button style={tbBtn} title="Subrayado" onMouseDown={(e) => { e.preventDefault(); exec("underline"); }}><Underline size={15} /></button>
+        <button onMouseDown={(e) => { e.preventDefault(); openPicker(e); }} style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 7, padding: "7px 12px", borderRadius: 8, background: "#E7F6EF", color: "#0F9B6C", fontSize: 12, fontWeight: 700, border: "none", cursor: "pointer" }}><Sparkles size={14} /> Variable</button>
+      </div>
+      <div ref={edRef} contentEditable suppressContentEditableWarning onInput={pushChange} onMouseUp={saveSel} onKeyUp={saveSel}
+        style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: "0 0 12px 12px", padding: "22px 26px", minHeight: 150, outline: "none", fontFamily: font, fontSize: size + "px", lineHeight: spacing, color: "#22252E" }} />
+      {picker && (
+        <>
+          <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setPicker(null)} />
+          <div style={{ position: "fixed", left: picker.x, top: picker.y, zIndex: 50, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 12, boxShadow: "0 12px 32px rgba(20,24,40,.14)", width: 340, overflow: "hidden" }}>
+            <div style={{ padding: "13px 15px 9px", borderBottom: "1px solid #F1F2F6" }}>
+              <h4 style={{ fontSize: 13, fontWeight: 700, margin: 0 }}>Insertar variable</h4>
+              <p style={{ fontSize: 11.5, color: "#9298A6", margin: "2px 0 0" }}>Mostrará el valor de la tabla y se actualizará solo.</p>
+            </div>
+            <div style={{ maxHeight: 280, overflowY: "auto", padding: 6 }}>
+              {rows.flatMap((row) => columns.map((col) => (
+                <div key={row.id + col.id} onClick={() => insertVar(row.id, col.id, pivot.get(`${row.id}|${col.id}`))}
+                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, cursor: "pointer" }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "#EEF0FA")} onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 500 }}>{row.label ?? row.name}</div>
+                    <div style={{ fontSize: 10.5, color: "#9298A6" }}>{col.label}</div>
+                  </div>
+                  <span style={{ fontSize: 12.5, fontWeight: 700, color: "#0F9B6C", fontVariantNumeric: "tabular-nums" }}>{fmtVal(pivot.get(`${row.id}|${col.id}`))}</span>
+                </div>
+              )))}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1347,10 +1473,17 @@ onExportPdf={handleExportPdf}
                     Texto narrativo
                   </p>
                 </div>
-                <div className="rounded-xl border-2 border-dashed border-gray-200 bg-gray-50 px-5 py-4">
-                  <p className="text-sm text-gray-600 leading-relaxed italic">
-                    {activeNote.default_narrative ?? "Aquí irá el texto narrativo de la nota. Edición avanzada en próxima entrega."}
-                  </p>
+                <div className="rounded-xl overflow-hidden">
+                  <NarrativeEditor
+                    note={activeNote}
+                    rows={activeRows}
+                    columns={activeCols}
+                    pivot={pivot}
+                    colors={colors}
+                    onChange={(tpl) => {
+                      setNotes(prev => prev.map(n => n.id === activeNote.id ? { ...n, default_narrative: tpl } : n));
+                    }}
+                  />
                 </div>
               </div>
 

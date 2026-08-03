@@ -233,6 +233,72 @@ function EmptyState({ message, sub = "" }) {
   );
 }
 
+// Rich "no data for this period" state — mirrors the Consolidation Sheet empty
+// state (animated orbs, spinning rings, tips, retry) so Individual data doesn't
+// show the bare "waiting for data" placeholder when a period is genuinely empty.
+function NoDataState({ onRetry }) {
+  const t = useT();
+  const { colors } = useSettings();
+  const primary = colors?.primary ?? "#1a2f8a";
+  return (
+    <div className="flex items-center justify-center flex-1 p-8">
+      <style>{`
+        @keyframes indEmptyIn { 0% { opacity:0; transform:translateY(8px); } 100% { opacity:1; transform:translateY(0); } }
+        @keyframes indOrb1 { 0%,100% { transform:translate(0,0) scale(1); } 50% { transform:translate(20px,-30px) scale(1.1); } }
+        @keyframes indOrb2 { 0%,100% { transform:translate(0,0) scale(1); } 50% { transform:translate(-15px,20px) scale(0.95); } }
+        @keyframes indSpin  { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }
+        @keyframes indSpinR { from { transform:rotate(0deg); } to { transform:rotate(-360deg); } }
+      `}</style>
+      <div className="relative max-w-md w-full text-center" style={{ animation: "indEmptyIn 500ms cubic-bezier(0.34,1.56,0.64,1)" }}>
+        <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-3xl">
+          <div className="absolute" style={{ width: 180, height: 180, top: -40, right: -40, background: `radial-gradient(circle, ${primary}12 0%, transparent 70%)`, animation: "indOrb1 8s ease-in-out infinite" }} />
+          <div className="absolute" style={{ width: 120, height: 120, bottom: -20, left: -20, background: "radial-gradient(circle, rgba(207,48,93,0.10) 0%, transparent 70%)", animation: "indOrb2 11s ease-in-out 2s infinite" }} />
+        </div>
+        <div className="relative z-10 p-10 rounded-3xl" style={{ background: "linear-gradient(135deg, #ffffff 0%, #fafbff 100%)", border: "1px solid rgba(26,47,138,0.06)", boxShadow: "0 20px 60px -12px rgba(26,47,138,0.08)" }}>
+          <div className="relative mx-auto mb-6" style={{ width: 88, height: 88 }}>
+            <svg width="88" height="88" viewBox="0 0 88 88" className="absolute inset-0">
+              <circle cx="44" cy="44" r="40" fill="none" stroke={`${primary}15`} strokeWidth="1.5" strokeDasharray="4 6" style={{ transformOrigin: "44px 44px", animation: "indSpin 20s linear infinite" }} />
+              <circle cx="44" cy="44" r="28" fill="none" stroke={`${primary}25`} strokeWidth="1.5" strokeDasharray="3 5" style={{ transformOrigin: "44px 44px", animation: "indSpinR 14s linear infinite" }} />
+            </svg>
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: `linear-gradient(145deg, ${primary} 0%, #3b54b8 100%)`, boxShadow: `0 8px 24px -6px ${primary}50, inset 0 1px 0 rgba(255,255,255,0.2)` }}>
+                <Layers size={20} className="text-white" strokeWidth={2.2} />
+              </div>
+            </div>
+          </div>
+          <p className="text-[10px] font-black uppercase tracking-[0.22em] mb-2" style={{ color: primary, opacity: 0.6 }}>{t("contrib_empty_kicker")}</p>
+          <h3 className="font-black text-xl text-gray-800 mb-3 tracking-tight" style={{ letterSpacing: "-0.02em" }}>{t("contrib_empty_title")}</h3>
+          <p className="text-sm text-gray-500 leading-relaxed mb-6">{t("contrib_empty_desc")}</p>
+          <div className="flex flex-col gap-2 mb-6">
+            <div className="flex items-center gap-3 px-4 py-3 rounded-xl text-left" style={{ background: `${primary}06`, border: `1px solid ${primary}10` }}>
+              <div className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: `${primary}15`, color: primary }}><Filter size={13} strokeWidth={2.4} /></div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-bold text-gray-700">{t("contrib_empty_tip1_title")}</p>
+                <p className="text-[11px] text-gray-400 mt-0.5">{t("contrib_empty_tip1_desc")}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 px-4 py-3 rounded-xl text-left" style={{ background: `${primary}06`, border: `1px solid ${primary}10` }}>
+              <div className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: `${primary}15`, color: primary }}><RefreshCw size={13} strokeWidth={2.4} /></div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-bold text-gray-700">{t("contrib_empty_tip2_title")}</p>
+                <p className="text-[11px] text-gray-400 mt-0.5">{t("contrib_empty_tip2_desc")}</p>
+              </div>
+            </div>
+          </div>
+          {onRetry && (
+            <button onClick={onRetry} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all"
+              style={{ background: `linear-gradient(145deg, ${primary} 0%, #3b54b8 100%)`, color: "white", boxShadow: `0 6px 16px -4px ${primary}40` }}
+              onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-1px)"; }}
+              onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; }}>
+              <RefreshCw size={12} strokeWidth={2.6} />{t("contrib_empty_retry")}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ErrorBox({ error, onRetry }) {
   const t = useT();
   return (
@@ -774,11 +840,13 @@ function generatePLXlsx({
       const ytdV      = -sumNode(node);
       const prevV     = -getPrev(prevMap, node.code, month);
       const monV      = ytdV - prevV;
+const cmpHasData = cmpMap.size > 0;
+      const cmp2HasData = cmp2Map.size > 0;
       const cmpYtdV   = compareMode ? -getYtd(cmpMap, node.code) : null;
-      const cmpPrevV  = compareMode ? -getPrev(cmpPrevMap, node.code, cmpFilters?.month) : null;
+      const cmpPrevV  = compareMode ? (cmpHasData ? -getPrev(cmpPrevMap, node.code, cmpFilters?.month) : 0) : null;
       const cmpMonV   = compareMode ? cmpYtdV - cmpPrevV : null;
       const cmp2YtdV  = compareMode ? -getYtd(cmp2Map, node.code) : null;
-      const cmp2PrevV = compareMode ? -getPrev(cmp2PrevMap, node.code, cmp2Filters?.month) : null;
+      const cmp2PrevV = compareMode ? (cmp2HasData ? -getPrev(cmp2PrevMap, node.code, cmp2Filters?.month) : 0) : null;
       const cmp2MonV  = compareMode ? cmp2YtdV - cmp2PrevV : null;
       const dA = (a, b) => (a != null && b != null) ? a - b : 0;
       const dP = (a, b) => (a != null && b != null && b !== 0) ? (a - b) / Math.abs(b) : 0;
@@ -1077,11 +1145,15 @@ const buildRowData = node => {
       const ytdV      = -sumNode(node);
       const prevV     = -getPrev(prevMap, node.code, month);
       const monV      = ytdV - prevV;
+// Guard: if the compare period has no data, don't subtract its prior
+      // month (0 − prevYTD would export phantom negatives). Matches on-screen.
+      const cmpHasData  = cmpMap.size > 0;
+      const cmp2HasData = cmp2Map.size > 0;
       const cmpYtdV   = compareMode ? -getYtd(cmpMap, node.code) : 0;
-      const cmpPrevV  = compareMode ? -getPrev(cmpPrevMap, node.code, cmpFilters?.month) : 0;
+      const cmpPrevV  = (compareMode && cmpHasData) ? -getPrev(cmpPrevMap, node.code, cmpFilters?.month) : 0;
       const cmpMonV   = cmpYtdV - cmpPrevV;
       const cmp2YtdV  = compareMode ? -getYtd(cmp2Map, node.code) : 0;
-      const cmp2PrevV = compareMode ? -getPrev(cmp2PrevMap, node.code, cmp2Filters?.month) : 0;
+      const cmp2PrevV = (compareMode && cmp2HasData) ? -getPrev(cmp2PrevMap, node.code, cmp2Filters?.month) : 0;
       const cmp2MonV  = cmp2YtdV - cmp2PrevV;
       return { node, monV, cmpMonV, cmp2MonV, ytdV, cmpYtdV, cmp2YtdV, isBold: node.isSumAccount };
     };
@@ -2142,9 +2214,9 @@ const nc = dr.getCell(PL.name);
         const dA = (a, b) => a - b;
         const dP = (a, b) => b !== 0 ? (a - b) / Math.abs(b) : null;
 
-        if (hasB && lac) {
+if (hasB && lac) {
           const bY = -(bLeafIdx.get(lac) ?? 0);
-          const bP = Number(cmpFilters?.month) === 1 ? 0 : -(bPrevLeafIdx.get(lac) ?? 0);
+          const bP = (Number(cmpFilters?.month) === 1 || cmpUploadedAccounts.length === 0) ? 0 : -(bPrevLeafIdx.get(lac) ?? 0);
           const bM = bY - bP;
           setC(dr, PL.monB,  bM, NUM_FMT, RED, false, bg);
           const dm = dA(monA, bM); setC(dr, PL.monBD, dm, NUM_FMT, devColor(dm), false, bg);
@@ -2155,7 +2227,7 @@ const nc = dr.getCell(PL.name);
         }
         if (hasC && lac) {
           const cY = -(cLeafIdxStd.get(lac) ?? 0);
-          const cP = Number(cmp2Filters?.month) === 1 ? 0 : -(cPrevLeafIdxStd.get(lac) ?? 0);
+  const cP = (Number(cmp2Filters?.month) === 1 || cmp2UploadedAccounts.length === 0) ? 0 : -(cPrevLeafIdxStd.get(lac) ?? 0);
           const cM = cY - cP;
           setC(dr, PL.monC,  cM, NUM_FMT, GRN, false, bg);
           const dm = dA(monA, cM); setC(dr, PL.monCD, dm, NUM_FMT, devColor(dm), false, bg);
@@ -2166,7 +2238,7 @@ const nc = dr.getCell(PL.name);
         }
         if (hasD && lac) {
           const dY = -(dLeafIdxStd.get(lac) ?? 0);
-          const dPV = Number(cmp3Filters?.month) === 1 ? 0 : -(dPrevLeafIdxStd.get(lac) ?? 0);
+         const dPV = (Number(cmp3Filters?.month) === 1 || cmp3UploadedAccounts.length === 0) ? 0 : -(dPrevLeafIdxStd.get(lac) ?? 0);
           const dM = dY - dPV;
           setC(dr, PL.monD,  dM, NUM_FMT, PURPLE, false, bg);
           const dm = dA(monA, dM); setC(dr, PL.monDD, dm, NUM_FMT, devColor(dm), false, bg);
@@ -2242,7 +2314,7 @@ const perCoPrevLeafDimIdx = hasMultiCo ? _selectedCo.map(co =>
 
         if (hasB && key) {
           const bY = -(bLeafDimIdx.get(key) ?? 0);
-          const bP = Number(cmpFilters?.month) === 1 ? 0 : -(bPrevLeafDimIdx.get(key) ?? 0);
+const bP = (Number(cmpFilters?.month) === 1 || cmpUploadedAccounts.length === 0) ? 0 : -(bPrevLeafDimIdx.get(key) ?? 0);
           const bM = bY - bP;
           setC(dr, PL.monB, bM, NUM_FMT, RED, false, bg);
           const dm = dA(monA, bM); setC(dr, PL.monBD, dm, NUM_FMT, devColor(dm), false, bg);
@@ -2253,7 +2325,7 @@ const perCoPrevLeafDimIdx = hasMultiCo ? _selectedCo.map(co =>
         }
         if (hasC && key) {
           const cY = -(cLeafDimIdx.get(key) ?? 0);
-          const cP = Number(cmp2Filters?.month) === 1 ? 0 : -(cPrevLeafDimIdx.get(key) ?? 0);
+     const cP = (Number(cmp2Filters?.month) === 1 || cmp2UploadedAccounts.length === 0) ? 0 : -(cPrevLeafDimIdx.get(key) ?? 0);
           const cM = cY - cP;
           setC(dr, PL.monC, cM, NUM_FMT, GRN, false, bg);
           const dm = dA(monA, cM); setC(dr, PL.monCD, dm, NUM_FMT, devColor(dm), false, bg);
@@ -2264,7 +2336,7 @@ const perCoPrevLeafDimIdx = hasMultiCo ? _selectedCo.map(co =>
         }
 if (hasD && key) {
           const dY = -(dLeafDimIdx.get(key) ?? 0);
-          const dPV = Number(cmp3Filters?.month) === 1 ? 0 : -(dPrevLeafDimIdx.get(key) ?? 0);
+         const dPV = (Number(cmp3Filters?.month) === 1 || cmp3UploadedAccounts.length === 0) ? 0 : -(dPrevLeafDimIdx.get(key) ?? 0);
           const dM = dY - dPV;
           setC(dr, PL.monD, dM, NUM_FMT, PURPLE, false, bg);
           const dm = dA(monA, dM); setC(dr, PL.monDD, dm, NUM_FMT, devColor(dm), false, bg);
@@ -2946,9 +3018,9 @@ const lnc = dr2.getCell(PL.name);
       setC(dr2, PL.monA, monA, NUM_FMT, TEXT_MUT, false, LEAF_BG);
       setC(dr2, PL.ytdA, ytdA, NUM_FMT, TEXT_MUT, false, LEAF_BG);
 
-      if (hasB && leaf.code) {
+if (hasB && leaf.code) {
         const bY = -(bLeafIdxOnce.get(String(leaf.code)) ?? 0);
-        const bP = Number(cmpFilters?.month) === 1 ? 0 : -(bPrevLeafIdxOnce.get(String(leaf.code)) ?? 0);
+        const bP = (Number(cmpFilters?.month) === 1 || cmpUploadedAccounts.length === 0) ? 0 : -(bPrevLeafIdxOnce.get(String(leaf.code)) ?? 0);
         const bM = bY - bP;
         setC(dr2, PL.monB, bM, NUM_FMT, RED, false, LEAF_BG);
         const dm = dA(monA, bM); setC(dr2, PL.monBD, dm, NUM_FMT, devColor(dm), false, LEAF_BG);
@@ -2959,7 +3031,7 @@ const lnc = dr2.getCell(PL.name);
       }
       if (hasC && leaf.code) {
         const cY = -(cLeafIdxOnce.get(String(leaf.code)) ?? 0);
-        const cP = Number(cmp2Filters?.month) === 1 ? 0 : -(cPrevLeafIdxOnce.get(String(leaf.code)) ?? 0);
+    const cP = (Number(cmp2Filters?.month) === 1 || cmp2UploadedAccounts.length === 0) ? 0 : -(cPrevLeafIdxOnce.get(String(leaf.code)) ?? 0);
         const cM = cY - cP;
         setC(dr2, PL.monC, cM, NUM_FMT, GRN, false, LEAF_BG);
         const dm = dA(monA, cM); setC(dr2, PL.monCD, dm, NUM_FMT, devColor(dm), false, LEAF_BG);
@@ -2970,7 +3042,7 @@ const lnc = dr2.getCell(PL.name);
       }
 if (hasD && leaf.code) {
         const dY = -(dLeafIdxOnce.get(String(leaf.code)) ?? 0);
-        const dPV = Number(cmp3Filters?.month) === 1 ? 0 : -(dPrevLeafIdxOnce.get(String(leaf.code)) ?? 0);
+       const dPV = (Number(cmp3Filters?.month) === 1 || cmp3UploadedAccounts.length === 0) ? 0 : -(dPrevLeafIdxOnce.get(String(leaf.code)) ?? 0);
         const dM = dY - dPV;
         setC(dr2, PL.monD, dM, NUM_FMT, PURPLE, false, LEAF_BG);
         const dm = dA(monA, dM); setC(dr2, PL.monDD, dm, NUM_FMT, devColor(dm), false, LEAF_BG);
@@ -3110,9 +3182,9 @@ ws._savedLeafDimIdx = {
         const dA = (a, b) => a - b;
         const dP = (a, b) => b !== 0 ? (a - b) / Math.abs(b) : null;
 
-        if (hasB && key) {
+if (hasB && key) {
           const bY = -(sLDI.b.get(key) ?? 0);
-          const bP = Number(cmpFilters?.month) === 1 ? 0 : -(sLDI.bPrev.get(key) ?? 0);
+          const bP = (Number(cmpFilters?.month) === 1 || cmpUploadedAccounts.length === 0) ? 0 : -(sLDI.bPrev.get(key) ?? 0);
           const bM = bY - bP;
           setC(drd, PL.monB, bM, NUM_FMT, RED, false, DIM_BG);
           const dm = dA(monA, bM); setC(drd, PL.monBD, dm, NUM_FMT, devColor(dm), false, DIM_BG);
@@ -3123,7 +3195,7 @@ ws._savedLeafDimIdx = {
         }
         if (hasC && key) {
           const cY = -(sLDI.c.get(key) ?? 0);
-          const cP = Number(cmp2Filters?.month) === 1 ? 0 : -(sLDI.cPrev.get(key) ?? 0);
+         const cP = (Number(cmp2Filters?.month) === 1 || cmp2UploadedAccounts.length === 0) ? 0 : -(sLDI.cPrev.get(key) ?? 0);
           const cM = cY - cP;
           setC(drd, PL.monC, cM, NUM_FMT, GRN, false, DIM_BG);
           const dm = dA(monA, cM); setC(drd, PL.monCD, dm, NUM_FMT, devColor(dm), false, DIM_BG);
@@ -3134,7 +3206,7 @@ ws._savedLeafDimIdx = {
         }
 if (hasD && key) {
           const dY = -(sLDI.d.get(key) ?? 0);
-          const dPV = Number(cmp3Filters?.month) === 1 ? 0 : -(sLDI.dPrev.get(key) ?? 0);
+       const dPV = (Number(cmp3Filters?.month) === 1 || cmp3UploadedAccounts.length === 0) ? 0 : -(sLDI.dPrev.get(key) ?? 0);
           const dM = dY - dPV;
           setC(drd, PL.monD, dM, NUM_FMT, PURPLE, false, DIM_BG);
           const dm = dA(monA, dM); setC(drd, PL.monDD, dm, NUM_FMT, devColor(dm), false, DIM_BG);
@@ -5036,12 +5108,14 @@ const pdfPerCoLeafDimIdx = hasMultiCo ? selectedCompanies.map(co => ({
         const ytd = -sumNode(node);
         const prev = -getPrev(prevMap, node.code, month);
         const mon = ytd - prev;
+// Guard: a compare period with no data must not subtract its prior
+        // month — otherwise (0 − prevYTD) exports phantom negatives. Matches UI.
         const cYtd = hasB ? -getYtd(cmpMap, node.code) : null;
-        const cMon = hasB ? cYtd - (-getPrev(cmpPrevMap, node.code, cmpFilters?.month)) : null;
+        const cMon = hasB ? cYtd - (cmpMap.size > 0 ? (-getPrev(cmpPrevMap, node.code, cmpFilters?.month)) : 0) : null;
         const c2Ytd = hasC ? -getYtd(cmp2Map, node.code) : null;
-        const c2Mon = hasC ? c2Ytd - (-getPrev(cmp2PrevMap, node.code, cmp2Filters?.month)) : null;
+        const c2Mon = hasC ? c2Ytd - (cmp2Map.size > 0 ? (-getPrev(cmp2PrevMap, node.code, cmp2Filters?.month)) : 0) : null;
         const c3Ytd = hasD ? -getYtd(cmp3Map, node.code) : null;
-        const c3Mon = hasD ? c3Ytd - (-getPrev(cmp3PrevMap, node.code, cmp3Filters?.month)) : null;
+        const c3Mon = hasD ? c3Ytd - (cmp3Map.size > 0 ? (-getPrev(cmp3PrevMap, node.code, cmp3Filters?.month)) : 0) : null;
         const isHl = PL_HIGHLIGHTED_CODES.has(String(node.code)) || String(node.code).endsWith('.S') || String(node.code).endsWith('.PL');
         const histVals = plHistMaps.map(h => {
           const hYtd = -getYtd(h.map, node.code);
@@ -5062,12 +5136,17 @@ const pdfPerCoLeafDimIdx = hasMultiCo ? selectedCompanies.map(co => ({
           const ytdA = -amt;
           const prevA = lac && Number(month) !== 1 ? (pdfPrevLeafIdx.get(lac) ?? 0) : 0;
           const monA = -(amt - prevA);
+// Guard: if a compare period reported no data, its prior-month leaf
+          // amount must be 0 — otherwise (0 − prev) exports phantom negatives.
+          const bHasData = cmpUploadedAccounts.length > 0;
+          const cHasData = cmp2UploadedAccounts.length > 0;
+          const dHasData = cmp3UploadedAccounts.length > 0;
           const bY = hasB && lac ? -(pdfBLeafIdx.get(lac) ?? 0) : null;
-          const bP = hasB && lac ? (Number(cmpFilters?.month) === 1 ? 0 : -(pdfBPrevLeafIdx.get(lac) ?? 0)) : null;
+          const bP = hasB && lac ? ((Number(cmpFilters?.month) === 1 || !bHasData) ? 0 : -(pdfBPrevLeafIdx.get(lac) ?? 0)) : null;
           const cY = hasC && lac ? -(pdfCLeafIdx.get(lac) ?? 0) : null;
-          const cP = hasC && lac ? (Number(cmp2Filters?.month) === 1 ? 0 : -(pdfCPrevLeafIdx.get(lac) ?? 0)) : null;
+          const cP = hasC && lac ? ((Number(cmp2Filters?.month) === 1 || !cHasData) ? 0 : -(pdfCPrevLeafIdx.get(lac) ?? 0)) : null;
           const dY = hasD && lac ? -(pdfDLeafIdx.get(lac) ?? 0) : null;
-          const dPV = hasD && lac ? (Number(cmp3Filters?.month) === 1 ? 0 : -(pdfDPrevLeafIdx.get(lac) ?? 0)) : null;
+          const dPV = hasD && lac ? ((Number(cmp3Filters?.month) === 1 || !dHasData) ? 0 : -(pdfDPrevLeafIdx.get(lac) ?? 0)) : null;
           const leafHistVals = hasHistoryPL ? pdfPlHistLeafIdx.map(h => {
             const hY = lac ? -(h.cur.get(lac) ?? 0) : 0;
             const hP = lac && Number(h.month) !== 1 ? -(h.prev.get(lac) ?? 0) : 0;
@@ -5094,12 +5173,12 @@ const pdfPerCoLeafDimIdx = hasMultiCo ? selectedCompanies.map(co => ({
             const ytdAdim = -(dim.amount ?? 0);
             const prevAdim = key && Number(month) !== 1 ? -(pdfPrevLeafDimIdx.get(key) ?? 0) : 0;
             const monAdim = ytdAdim - prevAdim;
-            const bYdim = hasB && key ? -(pdfBLeafDimIdx.get(key) ?? 0) : null;
-            const bPdim = hasB && key ? (Number(cmpFilters?.month) === 1 ? 0 : -(pdfBPrevLeafDimIdx.get(key) ?? 0)) : null;
+const bYdim = hasB && key ? -(pdfBLeafDimIdx.get(key) ?? 0) : null;
+            const bPdim = hasB && key ? ((Number(cmpFilters?.month) === 1 || !bHasData) ? 0 : -(pdfBPrevLeafDimIdx.get(key) ?? 0)) : null;
             const cYdim = hasC && key ? -(pdfCLeafDimIdx.get(key) ?? 0) : null;
-            const cPdim = hasC && key ? (Number(cmp2Filters?.month) === 1 ? 0 : -(pdfCPrevLeafDimIdx.get(key) ?? 0)) : null;
+            const cPdim = hasC && key ? ((Number(cmp2Filters?.month) === 1 || !cHasData) ? 0 : -(pdfCPrevLeafDimIdx.get(key) ?? 0)) : null;
             const dYdim = hasD && key ? -(pdfDLeafDimIdx.get(key) ?? 0) : null;
-            const dPdimV = hasD && key ? (Number(cmp3Filters?.month) === 1 ? 0 : -(pdfDPrevLeafDimIdx.get(key) ?? 0)) : null;
+            const dPdimV = hasD && key ? ((Number(cmp3Filters?.month) === 1 || !dHasData) ? 0 : -(pdfDPrevLeafDimIdx.get(key) ?? 0)) : null;
 const dimCoVals = hasMultiCo && key ? pdfPerCoLeafDimIdx.map(idx => {
               const ytdC = -(idx.cur.get(key) ?? 0);
               const prevC = Number(month) === 1 ? 0 : -(idx.prev.get(key) ?? 0);
@@ -5199,15 +5278,17 @@ const buildPlSummaryRows = () => {
             _isSectionHeader: true, _sectionColor: br.color,
           });
         }
-        out.push((() => {
+out.push((() => {
           const ytd = -sumNode(node);
           const mon = ytd - (-getPrev(prevMap, node.code, month));
+          // Guard: a compare period with no data must not subtract its prior
+          // month — otherwise (0 − prevYTD) exports phantom negatives. Matches UI.
           const cYtd = hasB ? -getYtd(cmpMap, node.code) : null;
-          const cMon = hasB ? cYtd - (-getPrev(cmpPrevMap, node.code, cmpFilters?.month)) : null;
-          const c2Ytd = hasC ? -getYtd(cmp2Map, node.code) : null;
-          const c2Mon = hasC ? c2Ytd - (-getPrev(cmp2PrevMap, node.code, cmp2Filters?.month)) : null;
-          const c3Ytd = hasD ? -getYtd(cmp3Map, node.code) : null;
-          const c3Mon = hasD ? c3Ytd - (-getPrev(cmp3PrevMap, node.code, cmp3Filters?.month)) : null;
+        const cMon = hasB ? cYtd - (cmpMap.size > 0 ? (-getPrev(cmpPrevMap, node.code, cmpFilters?.month)) : 0) : null;
+        const c2Ytd = hasC ? -getYtd(cmp2Map, node.code) : null;
+        const c2Mon = hasC ? c2Ytd - (cmp2Map.size > 0 ? (-getPrev(cmp2PrevMap, node.code, cmp2Filters?.month)) : 0) : null;
+        const c3Ytd = hasD ? -getYtd(cmp3Map, node.code) : null;
+        const c3Mon = hasD ? c3Ytd - (cmp3Map.size > 0 ? (-getPrev(cmp3PrevMap, node.code, cmp3Filters?.month)) : 0) : null;
           const histVals = plHistMaps.map(h => {
             const hYtd = -getYtd(h.map, node.code);
             const hPrev = -getPrev(h.prevMap, node.code, h.month);
@@ -5675,12 +5756,15 @@ if (opts && opts.drillDown === false) return;
           const ytdA = -(leaf.amount ?? 0);
           const prevA = leaf.code && Number(month) !== 1 ? (aPrevLeafIdx.get(String(leaf.code)) ?? 0) : 0;
           const monA = -((leaf.amount ?? 0) - prevA);
+const bHasData = cmpUploadedAccounts.length > 0;
+          const cHasData = cmp2UploadedAccounts.length > 0;
+          const dHasData = cmp3UploadedAccounts.length > 0;
           const bY = hasB && leaf.code ? -(bLeafIdx.get(String(leaf.code)) ?? 0) : null;
-          const bP = hasB && leaf.code ? (Number(cmpFilters?.month) === 1 ? 0 : -(bPrevLeafIdx.get(String(leaf.code)) ?? 0)) : null;
+          const bP = hasB && leaf.code ? ((Number(cmpFilters?.month) === 1 || !bHasData) ? 0 : -(bPrevLeafIdx.get(String(leaf.code)) ?? 0)) : null;
           const cY = hasC && leaf.code ? -(cLeafIdx.get(String(leaf.code)) ?? 0) : null;
-          const cP = hasC && leaf.code ? (Number(cmp2Filters?.month) === 1 ? 0 : -(cPrevLeafIdx.get(String(leaf.code)) ?? 0)) : null;
+          const cP = hasC && leaf.code ? ((Number(cmp2Filters?.month) === 1 || !cHasData) ? 0 : -(cPrevLeafIdx.get(String(leaf.code)) ?? 0)) : null;
           const dY = hasD && leaf.code ? -(dLeafIdx.get(String(leaf.code)) ?? 0) : null;
-          const dPV = hasD && leaf.code ? (Number(cmp3Filters?.month) === 1 ? 0 : -(dPrevLeafIdx.get(String(leaf.code)) ?? 0)) : null;
+          const dPV = hasD && leaf.code ? ((Number(cmp3Filters?.month) === 1 || !dHasData) ? 0 : -(dPrevLeafIdx.get(String(leaf.code)) ?? 0)) : null;
 const leafHistVals = hasHistoryPL && leaf.code ? plHistTreeMaps.map(h => {
             const lY = -(h.leafIdx.get(String(leaf.code)) ?? 0);
             const lP = Number(h.month) === 1 ? 0 : -(h.prevLeafIdx.get(String(leaf.code)) ?? 0);
@@ -5742,12 +5826,12 @@ const leafHistVals = hasHistoryPL && leaf.code ? plHistTreeMaps.map(h => {
             const ytdAdim = -(dim.amount ?? 0);
             const prevAdim = key && Number(month) !== 1 ? -(savedDimAprev.get(key) ?? 0) : 0;
             const monAdim = ytdAdim - prevAdim;
-            const bYdim = hasB && key ? -(savedDimB.get(key) ?? 0) : null;
-            const bPdim = hasB && key ? (Number(cmpFilters?.month) === 1 ? 0 : -(savedDimBprev.get(key) ?? 0)) : null;
+const bYdim = hasB && key ? -(savedDimB.get(key) ?? 0) : null;
+            const bPdim = hasB && key ? ((Number(cmpFilters?.month) === 1 || !bHasData) ? 0 : -(savedDimBprev.get(key) ?? 0)) : null;
             const cYdim = hasC && key ? -(savedDimC.get(key) ?? 0) : null;
-            const cPdim = hasC && key ? (Number(cmp2Filters?.month) === 1 ? 0 : -(savedDimCprev.get(key) ?? 0)) : null;
+            const cPdim = hasC && key ? ((Number(cmp2Filters?.month) === 1 || !cHasData) ? 0 : -(savedDimCprev.get(key) ?? 0)) : null;
             const dYdim = hasD && key ? -(savedDimD.get(key) ?? 0) : null;
-            const dPdimV = hasD && key ? (Number(cmp3Filters?.month) === 1 ? 0 : -(savedDimDprev.get(key) ?? 0)) : null;
+            const dPdimV = hasD && key ? ((Number(cmp3Filters?.month) === 1 || !dHasData) ? 0 : -(savedDimDprev.get(key) ?? 0)) : null;
 const dimCoValsLit = hasMultiCo && key ? perCoTreesLit.map(cot => {
               if (!cot._leafDimIdx) {
                 const buildLDIcoPdf = (rows) => {
@@ -7019,8 +7103,9 @@ const cmp2PrevLeafIndex = useMemo(() => {
 
 const getCmpPrevLeafAmt = useCallback((localCode) => {
   if (Number(cmpFilters?.month) === 1) return 0;
+  if (!cmpUploadedAccounts.length) return 0; // compare period has no data
   return cmpPrevLeafIndex.get(String(localCode)) ?? 0;
-}, [cmpPrevLeafIndex, cmpFilters]);
+}, [cmpPrevLeafIndex, cmpFilters, cmpUploadedAccounts]);
 
 const getCmp2PrevLeafAmt = useCallback((localCode) => {
   if (Number(cmp2Filters?.month) === 1) return 0;
@@ -7378,8 +7463,12 @@ const getCmpYtd  = useCallback((code) => { const n = cmpNodeByCode.get(code);   
 
 const getCmpPrev = useCallback((code) => {
   if (Number(cmpFilters?.month) === 1) return 0;
+  // If the compare period itself reported NO data, don't subtract its prior
+  // month — otherwise (0 − prevYTD) surfaces the previous month's figures as
+  // phantom negatives. "Not reported" ≠ "zero activity".
+  if (!cmpUploadedAccounts.length) return 0;
   const n = cmpPrevNodeByCode.get(code); return n ? sumNode(n) : 0;
-}, [cmpPrevNodeByCode, cmpFilters]);
+}, [cmpPrevNodeByCode, cmpFilters, cmpUploadedAccounts]);
 
 // ── Compare period 2 trees ──────────────────────────────────
 const cmp2Tree = useMemo(
@@ -9083,8 +9172,8 @@ const dimIsMatch = (() => {
   const prevA = Number(month) !== 1 ? -(aPrevLeafDimIdxSaved.get(k) ?? 0) : 0;
   const monA = ytdA - prevA;
   const displayA = ytdOnly ? ytdA : monA;
-  const bY = -(bLeafDimIdxSaved.get(k) ?? 0);
-  const bP = Number(cmpFilters?.month) === 1 ? 0 : -(bPrevLeafDimIdxSaved.get(k) ?? 0);
+const bY = -(bLeafDimIdxSaved.get(k) ?? 0);
+  const bP = (Number(cmpFilters?.month) === 1 || cmpUploadedAccounts.length === 0) ? 0 : -(bPrevLeafDimIdxSaved.get(k) ?? 0);
   const displayB = ytdOnly ? bY : (bY - bP);
   return <><PLAmountCell value={displayB} typoStyle={subbody2Style} divider /><DeviationCells a={displayA} b={displayB} typoStyle={subbody2Style} /></>;
 })()}
@@ -9337,14 +9426,7 @@ if (loading) return (
     </div>
   );
   if (error) return <ErrorBox error={error} />;
-  if (!uploadedAccounts.length || !groupAccounts.length) return (
-    <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
-      <div className="w-14 h-14 bg-[#eef1fb] rounded-2xl flex items-center justify-center mx-auto mb-4">
-        <TrendingUp size={24} className="text-[#1a2f8a]" />
-      </div>
-      <p className="text-gray-400 text-sm font-semibold">{t("waiting_for_data")}</p>
-    </div>
-  );
+if (!uploadedAccounts.length || !groupAccounts.length) return <NoDataState />;
 
 
 
@@ -10441,18 +10523,9 @@ const dispatch = (key) => setExpandedMap(prev => ({ ...prev, [key]: !prev[key] }
 
   if (error) return <ErrorBox error={error} />;
 
-  if (!uploadedAccounts.length || !groupAccounts.length) {
-    return (
-      <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
-        <div className="w-14 h-14 bg-[#eef1fb] rounded-2xl flex items-center justify-center mx-auto mb-4">
-          <TrendingUp size={24} className="text-[#1a2f8a]" />
-        </div>
-<p className="text-gray-400 text-sm font-semibold">{t("waiting_for_data")}</p>
-        <p className="text-gray-300 text-xs mt-1">{t("data_loading_automatically")}</p>
-      </div>
-    );
+if (!uploadedAccounts.length || !groupAccounts.length) {
+    return <NoDataState />;
   }
-
   return (
     <div className="space-y-4">
       {/* Toolbar */}
@@ -13666,14 +13739,7 @@ if (loading) return (
     </div>
   );
   if (error) return <ErrorBox error={error} />;
-  if (!uploadedAccounts.length || !groupAccounts.length) return (
-    <div className="bg-white rounded-2xl border border-gray-100 p-16 text-center">
-      <div className="w-14 h-14 bg-[#eef1fb] rounded-2xl flex items-center justify-center mx-auto mb-4">
-        <BarChart2 size={24} className="text-[#1a2f8a]" />
-      </div>
-<p className="text-gray-400 text-sm font-semibold">{t("waiting_for_data")}</p>
-    </div>
-  );
+if (!uploadedAccounts.length || !groupAccounts.length) return <NoDataState />;
 
 return (
     <div className="space-y-3 flex flex-col" style={{ minHeight: 0, flex: 1, overflow: "visible" }}>

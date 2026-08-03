@@ -1402,6 +1402,7 @@ const [prevPivot] = useState(new Map());
 const getVal = useCallback((ac, dk) => {
     const ytd = (pivot.get(ac)?.get(dk) ?? 0) * sign;
     if (viewMode === "ytd") return ytd;
+    if (pivot.size === 0) return ytd; // no data → no phantom negative
     const prevYtd = (prevPivotMain.get(ac)?.get(dk) ?? 0) * sign;
     return ytd - prevYtd;
   }, [pivot, prevPivotMain, sign, viewMode]);
@@ -1847,9 +1848,11 @@ const rollUpPivot = useCallback((p) => {
 }, [parentOf]);
 
 const rolledPivot      = useMemo(() => rollUpPivot(pivot),         [pivot,         rollUpPivot]);
-const rolledPrevPivot  = useMemo(() => rollUpPivot(prevPivotMain), [prevPivotMain, rollUpPivot]);
+// Guard: empty current period → empty prev pivot, so monthly deltas compute
+// (0 − 0) not (0 − prevYTD) phantom negatives. "Not reported" ≠ 0.
+const rolledPrevPivot  = useMemo(() => (pivot.size  === 0 ? new Map() : rollUpPivot(prevPivotMain)), [pivot,  prevPivotMain, rollUpPivot]);
 const rolledPivot2     = useMemo(() => rollUpPivot(pivot2),        [pivot2,        rollUpPivot]);
-const rolledPrevPivot2 = useMemo(() => rollUpPivot(prevPivot2),    [prevPivot2,    rollUpPivot]);
+const rolledPrevPivot2 = useMemo(() => (pivot2.size === 0 ? new Map() : rollUpPivot(prevPivot2)),    [pivot2, prevPivot2,    rollUpPivot]);
 
 const getValWithDescendants = useCallback((code, dk) => {
   const ytd = (rolledPivot.get(code)?.get(dk) ?? 0) * sign;
@@ -1917,9 +1920,10 @@ const drillRows = drillCache.get(accountCode);
   // parameterized by the per-topParent pivot pair. This is the same algorithm
   // the parent uses, so the numbers MUST match.
   const buildSumNode = (pCurrent, pPrev) => {
-    const getValFor = (code, dk) => {
+const getValFor = (code, dk) => {
       const ytd = (pCurrent.get(code)?.get(dk) ?? 0) * rowSign;
       if (viewMode === "ytd") return ytd;
+      if (pCurrent.size === 0) return ytd; // no data → no phantom negative
       const prevYtd = (pPrev.get(code)?.get(dk) ?? 0) * rowSign;
       return ytd - prevYtd;
     };
@@ -2066,10 +2070,12 @@ const writeSheetForStatement = (stType, viewLevel = null) => {
       const showTotals  = !sheetCompare && (opts.includeTotals !== false);
       const showBreakers = opts.includeBreakers !== false;
 
-      const pivotMain = isActive ? pivot : buildSimplePivot(data, stType);
-      const prevMain  = isActive ? prevPivotMain : new Map();
+const pivotMain = isActive ? pivot : buildSimplePivot(data, stType);
+      // Guard: empty current period → empty prev pivot, so monthly deltas are
+      // (0 − 0) not (0 − prevYTD) phantom negatives. Matches on-screen.
+      const prevMain  = (pivotMain.size === 0) ? new Map() : (isActive ? prevPivotMain : new Map());
       const pivotCmp  = cmpVisible ? (isActive ? pivot2 : buildSimplePivot(cmp2Data, stType)) : new Map();
-      const prevCmp   = isActive ? prevPivot2 : new Map();
+      const prevCmp   = (pivotCmp.size === 0) ? new Map() : (isActive ? prevPivot2 : new Map());
 
       // Descendant-aware rollup (literal mode) — matches on-screen getValWithDescendants
       const sumPivotFor = (p, code, dk) => {
@@ -2803,10 +2809,11 @@ doc.text(stType === "pl" ? T("file_dimensions_pl_upper") : T("file_dimensions_bs
       const useLiteral = viewLevel === null;
       const sign       = stType === "pl" ? -1 : 1;
 
-      const pivotMain = isActive ? pivot : buildSimplePivot(data, stType);
-      const prevMain  = isActive ? prevPivotMain : new Map();
+const pivotMain = isActive ? pivot : buildSimplePivot(data, stType);
+      // Guard: empty current period → empty prev pivot (no phantom negatives).
+      const prevMain  = (pivotMain.size === 0) ? new Map() : (isActive ? prevPivotMain : new Map());
       const pivotCmp  = isCompare ? (isActive ? pivot2 : buildSimplePivot(cmp2Data, stType)) : new Map();
-      const prevCmp   = isActive ? prevPivot2 : new Map();
+      const prevCmp   = (pivotCmp.size === 0) ? new Map() : (isActive ? prevPivot2 : new Map());
       const sheetView = isActive ? viewMode : "ytd";
 
       const sumPivotFor = (p, code, dk) => {
@@ -3227,6 +3234,7 @@ doc.save(`Konsolidator_ConsDimensions_${masterYear}_${String(masterMonth).padSta
 const getCmpVal = useCallback((ac, dk) => {
     const ytd = (pivot2.get(ac)?.get(dk) ?? 0) * sign;
     if (viewMode === "ytd") return ytd;
+    if (pivot2.size === 0) return ytd; // compare has no data → no phantom negative
     const prevYtd = (prevPivot2.get(ac)?.get(dk) ?? 0) * sign;
     return ytd - prevYtd;
   }, [pivot2, prevPivot2, sign, viewMode]);
@@ -3731,9 +3739,10 @@ const perCompanyPivots = new Map();
                           const coRolledPrev = useMaster
                             ? rolledPrevPivot
                             : rollUp(perCompanyPrevPivots.get(co)?.pivot ?? new Map());
-                          const getValCo = (code, dk) => {
+const getValCo = (code, dk) => {
                             const ytd = (coRolled.get(code)?.get(dk) ?? 0) * sign;
                             if (viewMode === "ytd") return ytd;
+                            if (coRolled.size === 0) return ytd; // no data → no phantom negative
                             const prevYtd = (coRolledPrev.get(code)?.get(dk) ?? 0) * sign;
                             return ytd - prevYtd;
                           };
@@ -4709,9 +4718,12 @@ const dimDashProgress = useMemo(() => {
     if (year && month)                                           pct += 20;
     if (sources.length > 0 && structures.length > 0)            pct += 15;
     if (groupAccountsLocal.length > 0)                          pct += 25;
-    if (rawData.length > 0)                                      pct += 40;
+    // Count the data stage as done when the fetch COMPLETES, not when it
+    // returns rows — an empty period is a valid result. Otherwise the loader
+    // sticks at ~60% forever and its overlay blocks the whole page.
+    if (hasCompletedFetch)                                       pct += 40;
     return Math.min(100, pct);
-  }, [year, month, sources.length, structures.length, groupAccountsLocal.length, rawData.length]);
+  }, [year, month, sources.length, structures.length, groupAccountsLocal.length, hasCompletedFetch]);
 
 const animatedDimProgress = useAnimatedNumber(dimDashProgress, 700);
 // Only ready once we actually have data. The previous fallback condition
@@ -4719,7 +4731,7 @@ const animatedDimProgress = useAnimatedNumber(dimDashProgress, 700);
   // between the probe finishing and the real fetch kicking off, causing the
   // "no data" panel to flash for one frame.
 void probeFinished; // referenced by progress effects elsewhere; suppress unused warning
-  const dimDashReady = rawData.length > 0;
+const dimDashReady = hasCompletedFetch;
 
   const sourceOpts    = [...new Set(sources.map(s  => typeof s === "object" ? (s.source    ?? s.Source    ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
   const structureOpts = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));

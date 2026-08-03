@@ -251,7 +251,7 @@ function orderDeletesLeafFirst(rowsDeleted, liveRows) {
 // ════════════════════════════════════════════════════════════════
 // Validation
 // ════════════════════════════════════════════════════════════════
-function validateChanges({ standardKey, changes, baseline, liveRows, liveSections }) {
+function validateChanges({ changes, baseline, liveRows, liveSections }) {
   const errors = [];
   const {
     rowsAdded       = [],

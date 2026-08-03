@@ -1035,17 +1035,21 @@ const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 
                   <span className="truncate max-w-[220px]" style={body2Style}>{info.name}</span>
                 </div>
               </td>
-              {dimCols.map(d => {
+{dimCols.map(d => {
                 const dk = d.code ?? "__none__";
                 const v = info.dims.get(dk) ?? 0;
                 if (!cmpVisible) return <DimAmountCell key={dk} value={v} typoStyle={body2Style} animate={isAnimatingData} />;
-                // Compare mode in drilled rows: only show A column, leave others blank
+// Compare mode: A, B (compare), deviation and % — same cells a normal row uses.
+                const cv = info.cmpDims?.get(dk) ?? 0;
+                const diff = v - cv;
+                const pct = cv !== 0 ? (diff / Math.abs(cv)) * 100 : null;
+                const devColor = diff === 0 ? "#D1D5DB" : diff > 0 ? "#059669" : "#EF4444";
                 return (
                   <React.Fragment key={dk}>
                     <DimAmountCell value={v} typoStyle={body2Style} animate={isAnimatingData} />
-                    <td style={{ background: "#fafbff" }} />
-                    <td style={{ background: "#fafbff" }} />
-                    <td style={{ background: "#fafbff" }} />
+                    <DimAmountCell value={cv} typoStyle={body2Style} animate={isAnimatingData} bgColor="#fafbff" />
+                    <DimDiffCell value={diff} animate={isAnimatingData} color={devColor} width={110} bgColor="#f5f7ff" />
+                    <DimPctCell value={pct} animate={isAnimatingData} color={devColor} width={90} bgColor="#f0f3ff" />
                   </React.Fragment>
                 );
               })}
@@ -1588,6 +1592,8 @@ const [prevPivotMain, setPrevPivotMain] = useState(new Map());
 const getVal = useCallback((ac, dk) => {
     const ytd = (pivot.get(ac)?.get(dk) ?? 0) * sign;
     if (viewMode === "ytd") return ytd;
+    // Guard: current period has no data → no phantom negative from prior month.
+    if (pivot.size === 0) return ytd;
     const prevYtd = (prevPivotMain.get(ac)?.get(dk) ?? 0) * sign;
     return ytd - prevYtd;
   }, [pivot, prevPivotMain, sign, viewMode]);
@@ -1595,9 +1601,10 @@ const getVal = useCallback((ac, dk) => {
   const getLocalVal = useCallback((ac, lac, dk) => {
     const ytd = (localPivot.get(ac)?.get(lac)?.dims.get(dk) ?? 0) * sign;
     if (viewMode === "ytd") return ytd;
+    if (pivot.size === 0) return ytd;
     const prevYtd = (prevLocalPivotMain.get(ac)?.get(lac)?.dims.get(dk) ?? 0) * sign;
     return ytd - prevYtd;
-  }, [localPivot, prevLocalPivotMain, sign, viewMode]);
+  }, [pivot, localPivot, prevLocalPivotMain, sign, viewMode]);
 
   // Dim name → code resolver. Mapping instances store dims as "Group:Name"
   // but dimCols are keyed by code (e.g. "1" for "Producción"). Build a
@@ -1848,9 +1855,9 @@ const ACOL = 580, TCOL = 150;
       for (const dim of visibleDims) {
         const dk = dim.code;
         const flat = new Map();
-        p.forEach((dimMap, acCode) => {
+p.forEach((dimMap, acCode) => {
           const ytd = dimMap.get(dk) ?? 0;
-          if (viewMode === "monthly" && pPrev) {
+          if (viewMode === "monthly" && pPrev && p.size > 0) {
             const prevYtd = pPrev.get(acCode)?.get(dk) ?? 0;
             flat.set(acCode, ytd - prevYtd);
           } else {
@@ -2241,11 +2248,13 @@ const rollUpPivot = useCallback((p) => {
   });
   return r;
 }, [parentOf]);
-
 const rolledPivot      = useMemo(() => rollUpPivot(pivot),         [pivot,         rollUpPivot]);
-const rolledPrevPivot  = useMemo(() => rollUpPivot(prevPivotMain), [prevPivotMain, rollUpPivot]);
+// Guard: if the CURRENT period has no data (empty pivot), the prev-month pivot
+// is forced empty so monthly deltas compute (0 − 0) instead of (0 − prevYTD),
+// which would surface the prior month as phantom negatives. "Not reported" ≠ 0.
+const rolledPrevPivot  = useMemo(() => (pivot.size  === 0 ? new Map() : rollUpPivot(prevPivotMain)), [pivot,  prevPivotMain, rollUpPivot]);
 const rolledPivot2     = useMemo(() => rollUpPivot(pivot2),        [pivot2,        rollUpPivot]);
-const rolledPrevPivot2 = useMemo(() => rollUpPivot(prevPivot2),    [prevPivot2,    rollUpPivot]);
+const rolledPrevPivot2 = useMemo(() => (pivot2.size === 0 ? new Map() : rollUpPivot(prevPivot2)),    [pivot2, prevPivot2,    rollUpPivot]);
 
 const getValWithDescendants = useCallback((code, dk) => {
   const ytd = (rolledPivot.get(code)?.get(dk) ?? 0) * sign;
@@ -2307,8 +2316,12 @@ const drillRows = drillCache.get(accountCode);
     return out;
   };
 
-  const currentPivots = buildPerCompanyPivots(drillRows);
+const currentPivots = buildPerCompanyPivots(drillRows);
   const prevPivots = viewMode === "monthly" ? buildPerCompanyPivots(drillPrevRows) : new Map();
+  // Compare per-company pivots — same partitioning, from the cross-company cmp
+  // fetch (drillCmpAllRows), so the drill's compare columns get real values.
+  const cmpCurrentPivots = cmpVisible ? buildPerCompanyPivots(drillCmpAllRows) : new Map();
+  const cmpPrevPivots = (cmpVisible && viewMode === "monthly") ? buildPerCompanyPivots(drillCmpAllPrevRows) : new Map();
 
   // Build sumNode(node, dk) replicating DimensionRow.sumNode EXACTLY, but
   // parameterized by the per-company pivot pair. This is the same algorithm
@@ -2384,18 +2397,27 @@ const drillRows = drillCache.get(accountCode);
         break;
       }
     }
-    const sumNode = buildSumNode(pivot, prevPivotMain);
+const sumNode = buildSumNode(pivot, prevPivotMain);
     const dims = new Map();
     rowDimCols.forEach(d => {
       const dk = d.code ?? "__none__";
       dims.set(dk, sumNode(drillNode, dk));
     });
-    const anyNonZero = [...dims.values()].some(v => v !== 0);
+    // Compare dims for the master company: use the master cmp pivots directly.
+    const cmpDims = new Map();
+    if (cmpVisible) {
+      const cmpSumNode = buildSumNode(pivot2, (pivot2.size === 0 ? new Map() : prevPivot2));
+      rowDimCols.forEach(d => {
+        const dk = d.code ?? "__none__";
+        cmpDims.set(dk, cmpSumNode(drillNode, dk));
+      });
+    }
+    const anyNonZero = [...dims.values()].some(v => v !== 0) || [...cmpDims.values()].some(v => v !== 0);
     
-    if (anyNonZero) result.push([masterCompany, { name: legalName, dims }]);
+    if (anyNonZero) result.push([masterCompany, { name: legalName, dims, cmpDims }]);
   }
 
-  // Other companies: each gets its own sumNode walker over its own pivot pair.
+// Other companies: each gets its own sumNode walker over its own pivot pair.
   currentPivots.forEach((info, co) => {
     const prev = prevPivots.get(co)?.pivot ?? new Map();
     const sumNode = buildSumNode(info.pivot, prev);
@@ -2404,13 +2426,25 @@ const drillRows = drillCache.get(accountCode);
       const dk = d.code ?? "__none__";
       dims.set(dk, sumNode(drillNode, dk));
     });
-    const anyNonZero = [...dims.values()].some(v => v !== 0);
-    if (anyNonZero) result.push([co, { name: info.name, dims }]);
+    // Compare dims for this company from the cmp per-company pivots.
+    const cmpDims = new Map();
+    if (cmpVisible) {
+      const cmpInfo = cmpCurrentPivots.get(co);
+      const cmpCurr = cmpInfo?.pivot ?? new Map();
+      const cmpPrev = cmpCurr.size === 0 ? new Map() : (cmpPrevPivots.get(co)?.pivot ?? new Map());
+      const cmpSumNode = buildSumNode(cmpCurr, cmpPrev);
+      rowDimCols.forEach(d => {
+        const dk = d.code ?? "__none__";
+        cmpDims.set(dk, cmpSumNode(drillNode, dk));
+      });
+    }
+    const anyNonZero = [...dims.values()].some(v => v !== 0) || [...cmpDims.values()].some(v => v !== 0);
+    if (anyNonZero) result.push([co, { name: info.name, dims, cmpDims }]);
   });
 
   result.sort((a, b) => a[1].name.localeCompare(b[1].name));
   return result;
-}, [drillCache, drillPrevRows, masterCompany, selGroups, selDims, pivot, prevPivotMain, viewMode, displayedTree, groupAccounts]);
+}, [drillCache, drillPrevRows, masterCompany, selGroups, selDims, pivot, prevPivotMain, viewMode, displayedTree, groupAccounts, cmpVisible, pivot2, prevPivot2, drillCmpAllRows, drillCmpAllPrevRows]);
 
 
 const handleExportXlsx = useCallback(async (opts = {}) => {
@@ -2462,10 +2496,12 @@ const sheetView = stType === "bs" ? "ytd" : viewMode;
       const showTotals  = !sheetCompare && (opts.includeTotals !== false);
       const showBreakers = opts.includeBreakers !== false;
 
-      const pivotMain = isActive ? pivot : buildSimplePivot(data, stType);
-      const prevMain  = isActive ? prevPivotMain : new Map();
+const pivotMain = isActive ? pivot : buildSimplePivot(data, stType);
+      // Guard: empty current period → empty prev pivot, so monthly deltas are
+      // (0 − 0) not (0 − prevYTD) phantom negatives. Matches on-screen.
+      const prevMain  = (pivotMain.size === 0) ? new Map() : (isActive ? prevPivotMain : new Map());
       const pivotCmp  = cmpVisible ? (isActive ? pivot2 : buildSimplePivot(cmp2Data, stType)) : new Map();
-      const prevCmp   = isActive ? prevPivot2 : new Map();
+      const prevCmp   = (pivotCmp.size === 0) ? new Map() : (isActive ? prevPivot2 : new Map());
 
       // Descendant-aware rollup (literal mode) — matches on-screen getValWithDescendants
       const sumPivotFor = (p, code, dk) => {
@@ -2539,10 +2575,11 @@ const sheetView = stType === "bs" ? "ytd" : viewMode;
         });
         return p;
       };
-      const localPivotMain    = isActive ? localPivot     : buildLocalPivotForSt(data);
-      const prevLocalMain     = isActive ? prevLocalPivotMain : new Map();
+const localPivotMain    = isActive ? localPivot     : buildLocalPivotForSt(data);
+      // Guard: empty current period → empty prev local pivot (no phantom negatives).
+      const prevLocalMain     = (localPivotMain.size === 0) ? new Map() : (isActive ? prevLocalPivotMain : new Map());
       const localPivotCmpMain = isActive ? localPivot2    : buildLocalPivotForSt(cmp2Data);
-      const prevLocalCmpMain  = isActive ? prevLocalPivot2 : new Map();
+      const prevLocalCmpMain  = (localPivotCmpMain.size === 0) ? new Map() : (isActive ? prevLocalPivot2 : new Map());
       // In-sheet local-value lookups (component-scope getLocalVal is bound to the
       // ACTIVE statement's pivot only — wrong when exporting the inactive one).
       const getLocalValInSheet = (ac, lac, dk) => {
@@ -3476,10 +3513,11 @@ doc.text(stType === "pl" ? T("file_dimensions_pl_upper") : T("file_dimensions_bs
       const useLiteral = viewLevel === null;
       const sign       = stType === "pl" ? -1 : 1;
 
-      const pivotMain = isActive ? pivot : buildSimplePivot(data, stType);
-      const prevMain  = isActive ? prevPivotMain : new Map();
+const pivotMain = isActive ? pivot : buildSimplePivot(data, stType);
+      // Guard: empty current period → empty prev pivot (no phantom negatives).
+      const prevMain  = (pivotMain.size === 0) ? new Map() : (isActive ? prevPivotMain : new Map());
       const pivotCmp  = isCompare ? (isActive ? pivot2 : buildSimplePivot(cmp2Data, stType)) : new Map();
-      const prevCmp   = isActive ? prevPivot2 : new Map();
+      const prevCmp   = (pivotCmp.size === 0) ? new Map() : (isActive ? prevPivot2 : new Map());
     // PL respects the current viewMode regardless of which panel is active
       // (BS is always YTD by design, so hardcode that).
       const sheetView = stType === "bs" ? "ytd" : viewMode;
@@ -3518,9 +3556,10 @@ doc.text(stType === "pl" ? T("file_dimensions_pl_upper") : T("file_dimensions_bs
         return ytd - (prevCmp.get(code)?.get(dk) ?? 0) * sign;
       };
 const localPivotMain = isActive ? localPivot : buildSimpleLocalPivot(data, stType);
-      const prevLocalMain  = isActive ? prevLocalPivotMain : new Map();
+      // Guard: empty current period → empty prev local pivot (no phantom negatives).
+      const prevLocalMain  = (localPivotMain.size === 0) ? new Map() : (isActive ? prevLocalPivotMain : new Map());
       const localPivotCmpMain = isActive ? localPivot2 : buildSimpleLocalPivot(cmp2Data, stType);
-      const prevLocalCmpMain  = isActive ? prevLocalPivot2 : new Map();
+      const prevLocalCmpMain  = (localPivotCmpMain.size === 0) ? new Map() : (isActive ? prevLocalPivot2 : new Map());
 
       // In-sheet local-value lookups. Use these instead of the component-scope
       // getLocalVal/getCmpLocalVal because those read from the ACTIVE statement's
@@ -4102,6 +4141,9 @@ doc.save(`Konsolidator_Dimensions_${masterYear}_${String(masterMonth).padStart(2
 const getCmpVal = useCallback((ac, dk) => {
     const ytd = (pivot2.get(ac)?.get(dk) ?? 0) * sign;
     if (viewMode === "ytd") return ytd;
+    // Guard: compare period has no data → don't subtract its prior month
+    // (0 − prevYTD would show the prior month as a phantom negative).
+    if (pivot2.size === 0) return ytd;
     const prevYtd = (prevPivot2.get(ac)?.get(dk) ?? 0) * sign;
     return ytd - prevYtd;
   }, [pivot2, prevPivot2, sign, viewMode]);
@@ -4109,9 +4151,10 @@ const getCmpVal = useCallback((ac, dk) => {
   const getCmpLocalVal = useCallback((ac, lac, dk) => {
     const ytd = (localPivot2.get(ac)?.get(lac)?.dims.get(dk) ?? 0) * sign;
     if (viewMode === "ytd") return ytd;
+    if (pivot2.size === 0) return ytd;
     const prevYtd = (prevLocalPivot2.get(ac)?.get(lac)?.dims.get(dk) ?? 0) * sign;
     return ytd - prevYtd;
-  }, [localPivot2, prevLocalPivot2, sign, viewMode]);
+  }, [pivot2, localPivot2, prevLocalPivot2, sign, viewMode]);
 
   // Count-up fires on anything that changes a displayed number. getVal/getCmpVal
   // are useCallbacks whose deps already cover pivot, prevPivot, sign, viewMode;
@@ -4695,9 +4738,10 @@ if (perCoCur.size === 0) {
                             {(() => null)()}
                             const coEntries = [...perCoCur.entries()];
                             coEntries.forEach(([co, info], ci) => {
-                              const getCoDim = (dk) => {
+const getCoDim = (dk) => {
                                 const ytd = (info.dims.get(dk) ?? 0) * sign;
                                 if (viewMode === "ytd") return ytd;
+                                if (info.dims.size === 0) return ytd; // no data → no phantom negative
                                 const prevYtd = (perCoPrev.get(co)?.dims.get(dk) ?? 0) * sign;
                                 return ytd - prevYtd;
                               };
@@ -4929,6 +4973,7 @@ const perCompanyCmpPivots = new Map();
 const getValCo = (code, dk) => {
                             const ytd = (coRolled.get(code)?.get(dk) ?? 0) * sign;
                             if (viewMode === "ytd") return ytd;
+                            if (coRolled.size === 0) return ytd; // no data → no phantom negative
                             const prevYtd = (coRolledPrev.get(code)?.get(dk) ?? 0) * sign;
                             return ytd - prevYtd;
                           };
@@ -4942,10 +4987,11 @@ const coRolledCmp = cmpVisible
                           const coRolledCmpPrev = (cmpVisible && viewMode === "monthly")
                             ? (useMaster ? rolledPrevPivot2 : rollUp(perCompanyCmpPrevPivots.get(co)?.pivot ?? new Map()))
                             : null;
-                          const getValCoCmp = cmpVisible
+const getValCoCmp = cmpVisible
                             ? ((code, dk) => {
                                 const ytd = (coRolledCmp.get(code)?.get(dk) ?? 0) * sign;
                                 if (viewMode === "ytd") return ytd;
+                                if (!coRolledCmp || coRolledCmp.size === 0) return ytd; // no data → no phantom negative
                                 const prevYtd = (coRolledCmpPrev?.get(code)?.get(dk) ?? 0) * sign;
                                 return ytd - prevYtd;
                               })
@@ -5865,9 +5911,12 @@ const dimDashProgress = useMemo(() => {
     if (year && month)                                           pct += 20;
     if (sources.length > 0 && structures.length > 0)            pct += 15;
     if (groupAccountsLocal.length > 0)                          pct += 25;
-    if (rawData.length > 0)                                      pct += 40;
+    // Count the data stage as done when the fetch COMPLETES, not when it
+    // returns rows — an empty period is a valid result. Otherwise the loader
+    // sticks at ~60% forever and its overlay blocks the whole page.
+    if (hasCompletedFetch)                                       pct += 40;
     return Math.min(100, pct);
-  }, [year, month, sources.length, structures.length, groupAccountsLocal.length, rawData.length]);
+  }, [year, month, sources.length, structures.length, groupAccountsLocal.length, hasCompletedFetch]);
 
 const animatedDimProgress = useAnimatedNumber(dimDashProgress, 700);
 // Only ready once we actually have data. The previous fallback condition
@@ -5875,7 +5924,7 @@ const animatedDimProgress = useAnimatedNumber(dimDashProgress, 700);
   // between the probe finishing and the real fetch kicking off, causing the
   // "no data" panel to flash for one frame.
 void probeFinished; // referenced by progress effects elsewhere; suppress unused warning
-  const dimDashReady = rawData.length > 0;
+const dimDashReady = hasCompletedFetch;
 
   const sourceOpts    = [...new Set(sources.map(s  => typeof s === "object" ? (s.source    ?? s.Source    ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
   const structureOpts = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
