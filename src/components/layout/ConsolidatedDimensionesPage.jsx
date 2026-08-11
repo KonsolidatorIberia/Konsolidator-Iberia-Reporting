@@ -781,7 +781,7 @@ const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 
       >
 <td
           className={`py-2.5 sticky left-0 z-10 border-r border-gray-100 ${isMatch ? "bg-[#fef3c7]" : "bg-white"}`}
-          style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 300, willChange: "transform" }}
+          style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 480, willChange: "transform" }}
           onClick={() => hasChildren && onToggle(code)}
         >
 <div className={`flex items-center group/row ${hasChildren ? "cursor-pointer" : ""}`}>
@@ -789,7 +789,7 @@ const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 
               ? <span className="flex-shrink-0 mr-2" style={{ color: colors.primary }}>
                   {isExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
                 </span>
-              : <span className="inline-block mr-2" style={{ width: 12 }} />}
+              : <span className="inline-block mr-2∫" style={{ width: 12 }} />}
 <span className="flex-shrink-0 mr-2 font-mono text-gray-400" style={subbody2Style}>{code}</span>
             <span className="truncate max-w-[280px]" style={rowStyle}>{(() => {
               const n = String(node.AccountName ?? node.accountName ?? "");
@@ -1145,7 +1145,7 @@ const cmpVisible = compareMode || cmpExiting;
     el.addEventListener("scroll", onScroll, { passive: true });
     ro.observe(el);
     setBodyHeight(el.clientHeight);
-    return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); };
+return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); };
   }, []);
 
 const toggleExpand = useCallback(code => {
@@ -1667,8 +1667,23 @@ if (isCustomMapping) {
           : [...activeMapping.rows.entries()]
               .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
               .map(([code, info]) => ({ instanceId: code, code, dims: [], ...info }));
+// Drop rows whose parent is another row in the SAME section — those are
+        // children and must appear only when their parent is expanded (via
+        // DimensionRow's children), not as their own top-level row. Without this
+        // every nested account (e.g. A.06.B under A.06) shows up flat.
+const rowsInfo = activeMapping.rows;
+        const codesInSrc = new Set(src.map(x => String(x.code)));
+        const isChildOfSameSection = (code) => {
+          const info = rowsInfo.get(String(code));
+          if (!info) return false;
+          const parent = (info.parent_code ?? info.parentCode) ? String(info.parent_code ?? info.parentCode) : null;
+          if (!parent || !codesInSrc.has(parent)) return false;
+          const pInfo = rowsInfo.get(parent);
+          return !!(pInfo && (pInfo.isSum ?? pInfo.is_sum) && pInfo.section === info.section);
+        };
         return src
           .slice()
+          .filter(inst => !isChildOfSameSection(inst.code))
           .sort((a, b) => a.sortOrder - b.sortOrder)
           .map(inst => {
             const code = inst.code;
@@ -1693,10 +1708,27 @@ if (isCustomMapping) {
           })
           .filter(Boolean);
       }
-      // Default standard mapping — respect Summary/Detailed toggle
+// Default standard mapping — respect Summary/Detailed toggle
       const filterFn = summaryMode ? (info => info.showInSummary) : (info => info.isSum);
-      return [...activeMapping.rows.entries()]
-        .filter(([, info]) => filterFn(info))
+      // Keep only TOP-LEVEL rows. A row whose parent is another kept row in the
+      // same section is a child — it must appear via its parent's expand, not
+      // as its own top-level row. Without this, nested accounts (A.01.A under
+      // A.01) render flat at the same level.
+      const rowsInfo = activeMapping.rows;
+      const parentOfInfo = (info) => {
+        const p = info.parent_code ?? info.parentCode ?? info.SumAccountCode ?? info.sumAccountCode ?? null;
+        return p ? String(p) : null;
+      };
+      const kept = [...rowsInfo.entries()].filter(([, info]) => filterFn(info));
+      const keptCodes = new Set(kept.map(([code]) => String(code)));
+const isChildOfSameSection = ([, info]) => {
+        const parent = parentOfInfo(info);
+        if (!parent || !keptCodes.has(parent)) return false;
+        const pInfo = rowsInfo.get(parent);
+        return !!(pInfo && (pInfo.isSum ?? pInfo.is_sum) && pInfo.section === info.section);
+      };
+      return kept
+        .filter(entry => !isChildOfSameSection(entry))
         .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
         .map(([code]) => treeIndex.get(code))
         .filter(Boolean);
@@ -1724,7 +1756,7 @@ const dividerMap = useMemo(() => {
       const sec = activeMapping.sections.get(m.section);
       if (sec) {
         const key = String(node._instanceId ?? node.AccountCode);
-        out[key] = { label: sec.label, color: palette[i] ?? sec.color };
+      out[key] = { label: sec.label, color: sec.color || palette[i] };
         i++;
       }
     }
@@ -2483,8 +2515,9 @@ if (mappingForSt?.rows && mappingForSt?.sections) {
             if (info.section && info.section !== "null" && info.section !== lastSection && showBreakers) {
               const sec = mappingForSt.sections.get(info.section);
               if (sec?.label) {
-                const barColor = inAppPalette[sectionIdx % inAppPalette.length]
-                  ?? toArgbHex(sec.color);
+const barColor = sec.color
+                  ? toArgbHex(sec.color)
+                  : inAppPalette[sectionIdx % inAppPalette.length];
                 renderSectionBar(sec.label, barColor);
                 sectionIdx++;
               }
@@ -2971,7 +3004,7 @@ const seenSections = new Set();
             if (!stCodes.has(code)) return;
             if (!seenSections.has(info.section) && showBreakers) {
               const sec = mappingForSt.sections.get(info.section);
-              if (sec?.label) rows.push({ isBreaker: true, label: sec.label, sectionIdx: pdfSectionIdx });
+             if (sec?.label) rows.push({ isBreaker: true, label: sec.label, color: sec.color, sectionIdx: pdfSectionIdx });
               pdfSectionIdx++;
               seenSections.add(info.section);
             }
@@ -3019,8 +3052,9 @@ dimSlice.forEach(() => {
 
       const body = rows.map(r => {
 if (r.isBreaker) {
-          const barColor = INAPP_PALETTE[(r.sectionIdx ?? 0) % INAPP_PALETTE.length]
-            ?? (r.color ? hexToRgb(r.color) : NAVYDK);
+          const barColor = r.color
+            ? hexToRgb(r.color)
+            : (INAPP_PALETTE[(r.sectionIdx ?? 0) % INAPP_PALETTE.length] ?? NAVYDK);
           return [{
             content: r.label.toUpperCase(),
             colSpan: totalColCount,
@@ -3328,7 +3362,7 @@ table td, table th { vertical-align: middle; }
       <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
 
         {/* Synced header */}
-        <div ref={headerRef} style={{ overflowX: "auto", overflowY: "hidden", flexShrink: 0, scrollbarWidth: "none", msOverflowStyle: "none", boxShadow: "0 4px 12px -4px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",contain: "layout style" }} onScroll={onHeaderScroll}>
+       <div ref={headerRef} style={{ overflowX: "auto", overflowY: "scroll", scrollbarGutter: "stable", flexShrink: 0, scrollbarWidth: "none", msOverflowStyle: "none", boxShadow: "0 4px 12px -4px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",contain: "layout style" }} onScroll={onHeaderScroll}>
 <table style={{ borderCollapse: "collapse", minWidth: totalWidth, width: "100%", tableLayout: "fixed" }}>
 <colgroup>
               <col style={{ width: 480, minWidth: 480 }} />
@@ -3336,9 +3370,9 @@ table td, table th { vertical-align: middle; }
                 <React.Fragment key={i}>
                   <col style={{ width: dimColWidths[i], minWidth: dimColWidths[i] }} />
                   {cmpVisible && <><col style={{ width: CMP_COL, minWidth: CMP_COL }} /><col style={{ width: DELTA_COL, minWidth: DELTA_COL }} /><col style={{ width: PCT_COL, minWidth: PCT_COL }} /></>}
-                </React.Fragment>
+</React.Fragment>
               ))}
-              <col style={{ width: TCOL, minWidth: TCOL }} />
+              {!cmpVisible && <col style={{ width: TCOL, minWidth: TCOL }} />}
             </colgroup>
         <thead>
 
@@ -3442,13 +3476,13 @@ onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary
                         <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{String(dim.name ?? "").replace(/^\d+\s*[-:.]?\s*/, "")}</span>
                       </th>
 {cmpVisible && <>
-                        <th className="text-center px-3 py-2 whitespace-nowrap" style={{ background: "#fafbff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 0ms forwards` }}>
+<th className="text-center px-4 py-2 whitespace-nowrap" style={{ background: "#fafbff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 0ms forwards` }}>
                          <span style={{ ...header2Style, color: "#CF305D", opacity: 0.7 }}>{T("pivot_col_sigma_cmp")}</span>
                         </th>
-                        <th className="text-center px-3 py-2 whitespace-nowrap" style={{ background: "#f5f7ff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 40ms forwards` }}>
+                        <th className="text-center px-2 py-2 whitespace-nowrap" style={{ width: 110, background: "#f5f7ff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 40ms forwards` }}>
                           <span style={{ ...header2Style, color: "#CF305D", opacity: 0.7 }}>{T("pivot_col_delta_amt")}</span>
                         </th>
-                        <th className="text-center px-3 py-2 whitespace-nowrap" style={{ background: "#f0f3ff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 80ms forwards` }}>
+                        <th className="text-center px-2 py-2 whitespace-nowrap" style={{ width: 90, background: "#f0f3ff", animation: `${cmpExiting ? "cmpCellOut" : "cmpCellIn"} 420ms cubic-bezier(0.4,0,0.2,1) 80ms forwards` }}>
                           <span style={{ ...header2Style, color: "#CF305D", opacity: 0.7 }}>{T("pivot_col_delta_pct")}</span>
                         </th>
                       </>}
@@ -3463,7 +3497,7 @@ onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary
         </div>
 
         {/* Synced body */}
-        <div ref={bodyRef} className="scrollbar-hide" style={{ flex: 1, minHeight: 0, overflowX: "auto", overflowY: "auto", contain: "layout style" }} onScroll={onBodyScroll}>
+       <div ref={bodyRef} className="scrollbar-hide" style={{ flex: 1, minHeight: 0, overflowX: "auto", overflowY: "scroll", scrollbarGutter: "stable", contain: "layout style" }} onScroll={onBodyScroll}>
           <table style={{ borderCollapse: "collapse", minWidth: totalWidth, width: "100%", tableLayout: "fixed" }}>
 <colgroup>
               <col style={{ width: ACOL, minWidth: ACOL }} />
@@ -3540,7 +3574,7 @@ const makeSumLit = (getValFn) => {
 
                   const out = [];
                   if (topPad > 0) {
-                    out.push(<tr key="__top_pad" style={{ height: topPad }}><td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + 2} /></tr>);
+                    out.push(<tr key="__top_pad" style={{ height: topPad }}><td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 1 : 2)} /></tr>);
                   }
 
                   const q = debouncedQuery.trim().toLowerCase();
@@ -3574,8 +3608,8 @@ const rowAnim = tableJustLoaded && i < 25
                       <tr key={rowKey} className={`border-b border-gray-100 ${isMatch ? "bg-[#fef3c7]" : "bg-white hover:bg-[#eef1fb]/60"}`}
                           onClick={hasKids ? () => toggleExpand(rowKey) : undefined}
                           style={{ cursor: hasKids ? "pointer" : "default", ...(rowAnim ?? {}) }}>
-                        <td className={`py-2.5 sticky left-0 z-10 border-r border-gray-100 ${isMatch ? "bg-[#fef3c7]" : "bg-white"}`}
-                            style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 300 }}>
+<td className={`py-2.5 sticky left-0 z-10 border-r border-gray-100 ${isMatch ? "bg-[#fef3c7]" : "bg-white"}`}
+                            style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 480 }}>
 <div className="flex items-center group/row">
                             {hasKids
                               ? <span className="flex-shrink-0 mr-2" style={{ color: colors.primary }}>
@@ -3633,7 +3667,7 @@ const rowAnim = tableJustLoaded && i < 25
                       if (isLoading || !drillRows) {
                         out.push(
                           <tr key={`${rowKey}__drill_loading`} className="bg-[#f8f9ff]">
-                            <td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + 2} className="py-3 text-center">
+                            <td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 1 : 2)} className="py-3 text-center">
                               <Loader2 size={14} className="animate-spin inline-block mr-2" style={{ color: colors.primary }} />
                               <span className="text-[11px] text-gray-400 font-bold">Cargando filiales…</span>
                             </td>
@@ -3762,7 +3796,7 @@ const getValCo = (code, dk) => {
                         if (companyRows.length === 0) {
                           out.push(
                             <tr key={`${rowKey}__drill_empty`} className="bg-[#f8f9ff]">
-                              <td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + 2} className="py-3 text-center">
+                              <td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 1 : 2)} className="py-3 text-center">
                                 <span className="text-[11px] text-gray-400 font-bold italic">Ninguna filial con contribución</span>
                               </td>
                             </tr>
@@ -3805,7 +3839,7 @@ const getValCo = (code, dk) => {
                   }
 
                   if (bottomPad > 0) {
-                    out.push(<tr key="__bot_pad" style={{ height: bottomPad }}><td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + 2} /></tr>);
+                    out.push(<tr key="__bot_pad" style={{ height: bottomPad }}><td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 1 : 2)} /></tr>);
                   }
                   return out;
                 }
@@ -3832,7 +3866,7 @@ return orderedRows.map((node, idx) => {
                           <td className="sticky left-0 z-20 px-6 py-1.5" style={{ backgroundColor: divider.color }}>
                             <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
                           </td>
-                          {Array.from({ length: dimCols.length * (cmpVisible ? 4 : 1) + 1 }).map((_, i) => (
+{Array.from({ length: dimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 0 : 1) }).map((_, i) => (
                             <td key={i} style={{ backgroundColor: divider.color }} />
                           ))}
                         </tr>
@@ -4050,10 +4084,30 @@ const autoMappingAppliedRef = useRef(false);
         if (!match) return;
 // Fetch the full mapping (with pl_tree / bs_tree) — list endpoint omits them
         const full = await getMapping(match.mapping_id);
-        initialMappingRef.current = full ?? match;
+initialMappingRef.current = full ?? match;
         handleApplyMapping(full ?? match, "structure");
       } catch (err) { console.error("[auto-mapping] error:", err); }
     })();
+  }, [handleApplyMapping]);
+
+  // The "clear mapping" button must drop the user's mapping and return to the
+  // custom-no-user default (the hidden override, flagged is_hidden), NOT re-apply the
+  // user's preferred default (initialMappingRef) — otherwise the default can't be removed.
+  const clearToHiddenOverride = useCallback(async () => {
+    try {
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) { setActiveMapping(null); return; }
+      const { listMappings, getMapping, getActiveCompanyId } = await import("../../lib/mappingsApi");
+      const cid = await getActiveCompanyId(uid);
+      if (!cid) { setActiveMapping(null); return; }
+      const allMappings = await listMappings({ companyId: cid, includeHidden: true });
+      const hidden = (allMappings || []).find(m => !!m.is_hidden);
+      if (!hidden) { setActiveMapping(null); return; }
+      const full = await getMapping(hidden.mapping_id);
+      handleApplyMapping(full ?? hidden, "structure");
+    } catch (err) { console.error("[clearToHiddenOverride] error:", err); setActiveMapping(null); }
   }, [handleApplyMapping]);
 
   // Recent mappings for the PageHeader hover-dropdown quick-access
@@ -4869,11 +4923,7 @@ title={T("edit_mapping_title")}
             {T("btn_edit")}
           </button>
           <button
-onClick={() => {
-              // Volver a la estructura custom inicial (no al standard PGCM/IFRS…).
-              if (initialMappingRef.current) handleApplyMapping(initialMappingRef.current, "structure");
-              else setActiveMapping(null);
-            }}
+onClick={() => { clearToHiddenOverride(); }}
             className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
 title={T("clear_mapping_title")}
           >

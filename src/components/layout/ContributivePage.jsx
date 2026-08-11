@@ -35,7 +35,8 @@ function fmtAmt(n) {
   if (n == null || n === 0) return "—";
   const num = typeof n === "number" ? n : Number(n);
   if (isNaN(num) || num === 0) return "—";
-  return num.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const s = Math.abs(num).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return num < 0 ? `(${s})` : s;
 }
 
 /* ─── Reporting currency ──────────────────────────────────────────────────── */
@@ -125,17 +126,18 @@ function _flattenTree(roots) {
 
 function generateContributiveXlsx({
   T,
-tree, pivot, pivotPrev = new Map(), overrideLiteralPl = null, overrideLiteralBs = null, overrideLiteralCf = null,
+tree, plTreeStd = [], bsTreeStd = [], pivot, pivotPrev = new Map(), overrideLiteralPl = null, overrideLiteralBs = null, overrideLiteralCf = null,
   cfTree, cfPivot, cfPivotPrev = new Map(),
 cols, cfCols,
   ytdOnly = true,
   cmpPivot, cmpPivotPrev = new Map(), cmpCfPivot,
   typeFilter, activeMapping,
-activeMappings = { pl: null, bs: null, cf: null }, codeToStatementFromStd = new Map(),
+activeMappings = { pl: null, bs: null, cf: null }, codeToStatementFromStd = new Map(), codeToSectionInfo = new Map(),
 dimIdx, dimIdxPrev = new Map(), cmpDimIdx, cmpDimIdxPrev = new Map(),
   journalPivot = new Map(), counterpartyPivot = new Map(),
   cfNameLookup = new Map(),
-  companies = [], exportSheets = { todos: true, pl: true, bs: true, cf: true }, drilldownOpt = true,
+companies = [], exportSheets = { todos: true, pl: true, bs: true, cf: true }, drilldownOpt = true,
+  includeAdjustments = true,
   compareMode = false,
   perspectiveMode = false, perspectiveParent = "",
   month, year, source, structure,
@@ -183,23 +185,26 @@ const tt = (k, fb) => (T ? T(k, fb) : fb);
     };
     // Always emit the 3 statement sheets + the combined Todos sheet, regardless
     // of the tab the user is on. (Previously only the active tab was exported.)
-    const sheetSpecs = [];
-    sheetSpecs.push({ name: tt("page_pl_full", "Profit & Loss"),  types: ["P/L", "DIS"], literal: litFor("pl"), isCF: false });
-    sheetSpecs.push({ name: tt("page_bs_full", "Balance Sheet"),  types: ["B/S"],        literal: litFor("bs"), isCF: false });
-    sheetSpecs.push({ name: tt("nav_cashflow", "Cash Flow"),      types: ["C/F", "CFS"], literal: litFor("cf"), isCF: true  });
+const sheetSpecs = [];
+    // Each statement sheet uses its OWN mapping: a user mapping if the tab has one,
+    // otherwise the hidden override (the custom-no-user standard for that statement).
+    // Falling through to null would make the sheet render from the on-screen `tree`,
+    // which is built for whatever tab is currently active — so a PL user mapping would
+    // leak into the BS/CF sheets. The override keeps each sheet self-contained.
+    sheetSpecs.push({ name: tt("page_pl_full", "Profit & Loss"),  types: ["P/L", "DIS"], literal: litFor("pl") || overrideLiteralPl, isCF: false });
+    sheetSpecs.push({ name: tt("page_bs_full", "Balance Sheet"),  types: ["B/S"],        literal: litFor("bs") || overrideLiteralBs, isCF: false });
+    sheetSpecs.push({ name: tt("nav_cashflow", "Cash Flow"),      types: ["C/F", "CFS"], literal: litFor("cf") || null, isCF: true  });
     // In "Todos" (no typeFilter) add a combined sheet mirroring the on-screen
 // Todos sheet: PL + BS literals, then CF flat. Always emitted (after the 3).
     {
-      sheetSpecs.push({
+sheetSpecs.push({
 name: tt("filter_all", "Todos"),
         types: ["P/L", "DIS", "B/S", "C/F", "CFS"],
-        // Tag each section with its statement so the monthly/YTD logic knows
-        // PL sections become monthly deltas while BS sections stay YTD.
-literal: [
-          // Todos always uses the STANDARD statements (override), never a user mapping.
-          ...((overrideLiteralPl || litFor("pl")) || []).map(s => ({ ...s, _stmt: "P/L" })),
-          ...((overrideLiteralBs || litFor("bs")) || []).map(s => ({ ...s, _stmt: "B/S" })),
-        ],
+        // Todos ALWAYS renders from the custom-no-user standard trees (plTreeStd +
+        // bsTreeStd + cfTree), never from a user mapping — so it stays consistent
+        // regardless of which tab has a user mapping active. No literal → the
+        // STANDARD branch handles it (which walks plTreeStd/bsTreeStd and appends CF).
+        literal: null,
 isCF: false,
         isCombined: true,
       });
@@ -207,8 +212,7 @@ isCF: false,
 
     // Filter sheets by the user's modal selection (Todos/PL/BS/CF).
     const sheetKeyOf = (s) => s.isCombined ? "todos" : s.isCF ? "cf" : (s.types.includes("B/S") ? "bs" : "pl");
-    const sheetSpecsToRender = sheetSpecs.filter(s => exportSheets?.[sheetKeyOf(s)] !== false);
-
+const sheetSpecsToRender = sheetSpecs.filter(s => exportSheets?.[sheetKeyOf(s)] !== false);
     for (const spec of sheetSpecsToRender) {
 // Union of PL/BS + CF companies on every sheet, so a company that only has
     // CF data (or vice versa) still gets a column everywhere. Matches the app.
@@ -219,33 +223,6 @@ const usePivot = spec.isCF ? cfPivot : pivot;
       const useCmpPivot = spec.isCF ? cmpCfPivot : cmpPivot;
       if (visCo.length === 0) continue;
 
-      // Monthly vs YTD: in monthly mode subtract previous period (curr-prev) for
-      // P/L accounts only. B/S and C/F stay YTD. Mirrors on-screen getVal (~1830).
-const applyPeriod = (rawCurr, code, co, accountType) => {
-        if (ytdOnly) return rawCurr;
-        if (!window.__apLog) window.__apLog = 0;
-        if (window.__apLog < 15 && (String(code) === '999' || String(code) === '888' || String(code) === '777' || String(code) === 'H' || String(code) === 'G')) {
-          window.__apLog++;
-        }
-        // Resolve the real statement for this code from the standard. Custom
-        // accounts (999/888/777) and mislabeled nodes don't carry a reliable
-        // accountType, so the standard's statement is the source of truth:
-        // only P/L (and DIS) become monthly deltas; B/S and C/F stay YTD.
-        const stmt = codeToStatementFromStd.get(String(code)) ?? accountType ?? "";
-        const isPL = stmt === "P/L" || stmt === "DIS" || stmt === "PL";
-        if (spec.isCF || !isPL) return rawCurr;
-const prev = Number(usePivotPrev.get(String(code))?.[co]?.total ?? 0);
-        return rawCurr - prev;
-      };
-      // Same monthly/YTD logic for the compare column. CF and BS stay YTD.
-      const applyPeriodCmp = (rawCmp, code, co, sectionStmt) => {
-        if (ytdOnly || spec.isCF) return rawCmp;
-        const stmt = sectionStmt ?? codeToStatementFromStd.get(String(code)) ?? spec.types[0] ?? "";
-        const isPL = stmt === "P/L" || stmt === "DIS" || stmt === "PL";
-        if (!isPL) return rawCmp;
-        const prevCmp = Number(cmpPivotPrev.get(String(code))?.[co] ?? 0);
-        return rawCmp - prevCmp;
-      };
 
 // Sub-columns per company:
       //   - "A" amount (always)
@@ -253,7 +230,7 @@ const prev = Number(usePivotPrev.get(String(code))?.[co]?.total ?? 0);
       //   - CMP/Δ/Δ% (when compare on)
       //   - Uploaded + 5 journal types + IC (P/L + B/S only)
       const JOURNAL_SUBS = ["Uploaded", "AJE", "RJE", "EJE", "SYS", "CFA", "IC"];
-      const journalColCount = spec.isCF ? 0 : JOURNAL_SUBS.length;
+   const journalColCount = (spec.isCF || !includeAdjustments) ? 0 : JOURNAL_SUBS.length;
       const compareColCount = compareMode ? 3 : 0;
       const pctColCount     = perspectiveMode ? 1 : 0;
       const subColsPerCo    = 1 + pctColCount + compareColCount + journalColCount;
@@ -295,7 +272,7 @@ const subLines = [];
       // Banner
       ws.mergeCells(curRow, 1, curRow, totalCols);
       const titleCell = ws.getCell(curRow, 1);
-      titleCell.value = `Konsolidator · ${spec.name}`;
+titleCell.value = `Konsolidator · ${spec.name}${compareMode ? "  ·  COMPARE ON" : ""}`;
       titleCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
       titleCell.font = { name: "Calibri", size: 16, bold: true, color: { argb: C.white } };
       titleCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
@@ -349,7 +326,7 @@ const pCell = ws.getCell(r1, cursorCol);
         subColSchema.push({ label: "Δ",                                fill: C.navyDk });
         subColSchema.push({ label: tt("file_col_delta_pct", "Δ %"),   fill: C.navyDk });
       }
-      if (!spec.isCF) JOURNAL_SUBS.forEach(jk => {
+if (!spec.isCF && includeAdjustments) JOURNAL_SUBS.forEach(jk => {
         const lbl = jk === "Uploaded" ? tt("subtab_uploaded", "Uploaded") : jk;
         subColSchema.push({ label: lbl, fill: jk === "IC" ? C.amberDk : C.primary });
       });
@@ -402,9 +379,9 @@ const writeNum = (rowN, colN, val, fillArgb, opts = {}) => {
           cell.font = { name: "Calibri", size: 10, color: { argb: C.gray400 }, bold: !!opts.bold };
         } else {
           cell.value = Number(val);                                // exact, not rounded
-          cell.numFmt = opts.percent
-            ? '0.00"%";[Red]-0.00"%"'                              // 2-decimal percent
-            : '#,##0.00;[Red]-#,##0.00';                           // 2-decimal amount
+cell.numFmt = opts.percent
+            ? '0.00"%";[Red](0.00"%")'                             // 2-decimal percent, negatives in parens
+            : '#,##0.00;[Red](#,##0.00)';                          // 2-decimal amount, negatives in parens
           cell.font = { name: "Calibri", size: 10, bold: !!opts.bold,
             color: { argb: opts.colorOverride ?? (val < 0 ? C.red : "FF000000") } };
         }
@@ -487,7 +464,7 @@ const writeAccountRow = ({ code, name, depth, isBold, isSum, dims, getVal, getCm
               colorOverride: pct == null || pct === 0 ? null : "FF4F6BD0" });
           }
 
-          // Compare cols
+// Compare cols
           if (compareMode) {
             const b = getCmp(co);
             const delta = a - b;
@@ -499,8 +476,8 @@ const writeAccountRow = ({ code, name, depth, isBold, isSum, dims, getVal, getCm
               colorOverride: deltaPct == null ? null : (deltaPct < 0 ? C.red : C.green) });
           }
 
-          // Journal cols
-          if (!spec.isCF) {
+// Journal cols (ajustes y eliminaciones)
+          if (!spec.isCF && includeAdjustments) {
             const jp = getJp ? getJp(co) : {};
             const journalsTotal = Object.values(jp).reduce((s, v) => s + (Number(v) || 0), 0);
             const uploadedVal = a - journalsTotal;
@@ -534,9 +511,10 @@ curRow++;
       // Defined here so it can use writeSectionBar / writeAccountRow (loop-scoped).
 const writeCfFlatWithBreakers = (sectionsOverride = null) => {
         const seen = new Set();
-        // Build code → {label,color} from the CF literal sections. The combined
-        // "Todos" sheet passes the standard override sections so a user CF mapping
-        // isn't reflected there; the individual CF sheet uses the active mapping.
+        // Section lookup: prefer the CF literal sections when provided (Todos override
+        // or a user CF mapping); otherwise fall back to codeToSectionInfo — the same
+        // per-code section map the on-screen CF tab uses (custom-no-user standards have
+        // no treeLiteral but DO populate codeToSectionInfo).
         const codeToCfSection = new Map();
         (sectionsOverride || activeMappings?.cf?.treeLiteral || []).forEach(sec => {
           if (!sec.label) return;
@@ -551,7 +529,12 @@ const writeCfFlatWithBreakers = (sectionsOverride = null) => {
             const stack = [node];
             while (stack.length) {
             const n = stack.pop();
-            const info = codeToCfSection.get(String(n.AccountCode));
+            const info = codeToCfSection.get(String(n.AccountCode))
+              ?? (codeToSectionInfo.get(String(n.AccountCode))?.section
+                    ? { section: codeToSectionInfo.get(String(n.AccountCode)).section,
+                        label: codeToSectionInfo.get(String(n.AccountCode)).label,
+                        color: codeToSectionInfo.get(String(n.AccountCode)).color }
+                    : null);
             if (info?.section) return info;
             const ch = n.children || [];
             for (let k = ch.length - 1; k >= 0; k--) stack.push(ch[k]);
@@ -593,7 +576,7 @@ const getCmp = (co) => {
             return Number(cmpCfPivot?.get(code)?.[co] ?? 0);
           };
 writeAccountRow({ code, name: node.AccountName ?? node.accountName ?? cfNameLookup.get(String(code)) ?? code, depth, isBold: depth === 0, isSum, getVal, getCmp, getJp: () => ({}), getIc: () => 0 });
-          if (hasChildren) node.children.forEach(c => walkCf(c, depth + 1));
+if (hasChildren && !node._noExpand) node.children.forEach(c => walkCf(c, depth + 1));
         };
         let __wrote = 0;
         const __origWalk = walkCf;
@@ -611,11 +594,11 @@ writeAccountRow({ code, name: node.AccountName ?? node.accountName ?? cfNameLook
 // Does the CF tab have a USER mapping active (not the hidden override /
       // todos synthetic)? If so, render CF from its literal like PL/BS so the
       // export mirrors the mapped on-screen view. Otherwise use the standard flat.
-      const cfUserMapped = spec.isCF && activeMappings?.cf?.treeLiteral?.length > 0
+const cfUserMapped = spec.isCF && activeMappings?.cf?.treeLiteral?.length > 0
         && activeMappings.cf.name !== "__custom_override__"
         && activeMappings.cf.name !== "__todos_synthetic__";
 
-if (spec.isCF && !spec.isCombined && !cfUserMapped && (cfTree && cfTree.length > 0)) {
+      if (spec.isCF && !spec.isCombined && !cfUserMapped && (cfTree && cfTree.length > 0)) {
         // No user mapping AND cfTree is populated: render flat from cfTree with
         // section breakers — like the on-screen standard CF tab.
         writeCfFlatWithBreakers();
@@ -624,7 +607,7 @@ if (spec.isCF && !spec.isCombined && !cfUserMapped && (cfTree && cfTree.length >
 spec.literal.forEach(section => {
        if (section.label) writeSectionBar(section.label, toArgb(section.color));
           const renderNode = (node, depth) => {
-            const hasChildren = Array.isArray(node.children) && node.children.length > 0;
+         const hasChildren = Array.isArray(node.children) && node.children.length > 0 && !node._noExpand;
             const isSum = !!node.isSum && hasChildren;
 const getVal = (co) => {
               const curr = computeLiteralForCompany(node, usePivot, co, "object", spec.isCF ? null : dimIdx);
@@ -667,26 +650,92 @@ if (spec.isCombined) {
           // Use standard CF sections (override), not the user's CF mapping.
           writeCfFlatWithBreakers(overrideLiteralCf);
         }
-      } else {
-        // STANDARD MODE — flatten tree filtered by types
-        const useTree = spec.isCF ? (cfTree || []) : (tree || []);
+} else {
+        // STANDARD MODE — mirror the on-screen render exactly. The tree comes pre-shaped
+        // like the app (section anchors flat, grand totals as loose rows, breakers via
+        // codeToSectionInfo). Values roll up children via computeLiteralForCompany — the
+        // SAME function the app uses — instead of reading the pivot directly (which is
+        // empty for sum rows and produced blank exports).
+// Pick the statement's OWN standard tree so a user mapping on another tab
+        // can't leak in: BS uses bsTreeStd, PL uses plTreeStd, CF uses cfTree.
+        // The combined "Todos" sheet walks PL then BS from the standard trees.
+        const isBsSheet = !spec.isCF && spec.types.includes("B/S") && !spec.types.includes("P/L");
+        const useTree = spec.isCF ? (cfTree || [])
+                      : spec.isCombined ? [...(plTreeStd || []), ...(bsTreeStd || [])]
+                      : isBsSheet ? (bsTreeStd && bsTreeStd.length ? bsTreeStd : (tree || []))
+                      : (plTreeStd && plTreeStd.length ? plTreeStd : (tree || []));
         const filtered = useTree.filter(n => spec.types.includes(n.AccountType ?? n.accountType ?? ""));
-        writeSectionBar(spec.name, C.primary);
+
+        // Breaker resolution: section info per code, same source as the app.
+        const secInfoOf = (code) => codeToSectionInfo.get(String(code)) ?? null;
+        const seenSections = new Set();
+
+        // Adapt a standard tree node into the shape computeLiteralForCompany expects
+        // (it reads node.code / node.isSum / node.children / node.dims).
+        const asLit = (node) => ({
+          code: node.AccountCode,
+          isSum: (node.children?.length > 0),
+          dims: node.dims ?? null,
+          children: (node.children || []).map(asLit),
+        });
+
+        const stmtOf = (node) => codeToStatementFromStd.get(String(node.AccountCode))
+          ?? node.AccountType ?? node.accountType ?? spec.types[0] ?? "";
+
         const walk = (node, depth) => {
           const code = node.AccountCode;
           const hasChildren = node.children?.length > 0;
-          const isSummary = /\.S$/i.test(code) || hasChildren;
-const getVal = (co) => applyPeriod(Number(usePivot.get(code)?.[co]?.total ?? 0), code, co, node.AccountType ?? node.accountType ?? spec.types[0]);
-          const getCmp = (co) => compareMode ? applyPeriodCmp(Number(useCmpPivot?.get(code)?.[co] ?? 0), code, co, node.AccountType ?? node.accountType ?? spec.types[0]) : 0;
-          const getJp  = (co) => spec.isCF ? {} : (journalPivot.get(code)?.[co] ?? {});
-          const getIc  = (co) => spec.isCF ? 0  : Number(counterpartyPivot.get(code)?.[co] ?? 0);
+          const isSummary = /\.S$/i.test(String(code)) || hasChildren;
+          const litNode = asLit(node);
+
+          // Section breaker before the first row of each section (top level only).
+          if (depth === 0) {
+            const info = secInfoOf(code);
+            if (info?.section && !seenSections.has(info.section)) {
+              seenSections.add(info.section);
+              writeSectionBar(info.label ?? info.section, toArgb(info.color));
+            }
+          }
+
+          const getVal = (co) => {
+            const curr = computeLiteralForCompany(litNode, usePivot, co, "object", spec.isCF ? null : dimIdx);
+            if (ytdOnly || spec.isCF) return curr;
+            const stmt = stmtOf(node);
+            const isPL = stmt === "P/L" || stmt === "DIS" || stmt === "PL";
+            if (!isPL) return curr;
+            const prev = computeLiteralForCompany(litNode, usePivotPrev, co, "object", spec.isCF ? null : dimIdxPrev);
+            return curr - prev;
+          };
+          const getCmp = (co) => {
+            if (!compareMode) return 0;
+            const cmpCurr = computeLiteralForCompany(litNode, useCmpPivot, co, "scalar", spec.isCF ? null : cmpDimIdx);
+            if (ytdOnly || spec.isCF) return cmpCurr;
+            const stmt = stmtOf(node);
+            const isPL = stmt === "P/L" || stmt === "DIS" || stmt === "PL";
+            if (!isPL) return cmpCurr;
+            const cmpPrev = computeLiteralForCompany(litNode, cmpPivotPrev, co, "scalar", spec.isCF ? null : cmpDimIdxPrev);
+            return cmpCurr - cmpPrev;
+          };
+          const getJp  = (co) => spec.isCF ? {} : computeLiteralJournalForCompany(litNode, journalPivot, co, null);
+          const getIc  = (co) => spec.isCF ? 0  : computeLiteralCounterpartyForCompany(litNode, counterpartyPivot, co, null);
+
           writeAccountRow({
             code, name: node.AccountName ?? node.accountName ?? "",
-            depth, isBold: depth === 0 || isSummary, isSum: false, dims: null, getVal, getCmp, getJp, getIc,
+            depth, isBold: depth === 0 || isSummary, isSum: false, dims: node.dims ?? null,
+            getVal, getCmp, getJp, getIc,
           });
-          (node.children || []).forEach(c => walk(c, depth + 1));
+
+          // Don't recurse into _noExpand grand totals (they sum via children but render
+          // as a single loose row, exactly like the app).
+          if (!node._noExpand) (node.children || []).forEach(c => walk(c, depth + 1));
         };
-        filtered.forEach(n => walk(n, 0));
+filtered.forEach(n => walk(n, 0));
+        // Todos combined sheet: the CF statement lives in cfTree (not in `tree`), so the
+        // type-filtered STANDARD walk above never emits it. Append the CF flat here, same
+        // renderer the standalone CF sheet uses, so Todos ends with the Cash Flow block.
+        if (spec.isCombined && cfTree && cfTree.length > 0) {
+          writeCfFlatWithBreakers(overrideLiteralCf && overrideLiteralCf.length ? overrideLiteralCf : null);
+        }
       }
 
 // Column widths + per-column outline (journal & compare collapsible)
@@ -707,7 +756,7 @@ ws.getColumn(startCol + off).width = 14; ws.getColumn(startCol + off).outlineLev
           ws.getColumn(startCol + off).width = 13; ws.getColumn(startCol + off).outlineLevel = 1; ws.getColumn(startCol + off).hidden = true; off++;
           ws.getColumn(startCol + off).width = 11; ws.getColumn(startCol + off).outlineLevel = 1; ws.getColumn(startCol + off).hidden = true; off++;
         }
-        if (!spec.isCF) {
+if (!spec.isCF && includeAdjustments) {
           for (let k = 0; k < 6; k++) {
             ws.getColumn(startCol + off).width = 13;
             ws.getColumn(startCol + off).outlineLevel = 2;
@@ -792,7 +841,7 @@ cmpPivot, cmpPivotPrev, cmpCfPivot,
 ytdOnly = true,
   typeFilter, activeMapping, mappingTab,
 activeMappings = { pl: null, bs: null, cf: null },
-  codeToStatementFromStd = new Map(),
+codeToStatementFromStd = new Map(), codeToSectionInfo = new Map(),
   dimIdx, dimIdxPrev = new Map(), cmpDimIdx, cmpDimIdxPrev = new Map(),
   journalPivot = new Map(), counterpartyPivot = new Map(),
   cfNameLookup = new Map(),
@@ -818,9 +867,10 @@ companies = [], exportSheets = { todos: true, pl: true, bs: true, cf: true }, dr
     const GRAY_LT = [220, 225, 240];
     const INDIGO  = [99, 102, 241];
 
-    const fmtN = n => {
+const fmtN = n => {
       if (n == null || !Number.isFinite(n) || Math.abs(n) < 0.005) return "—";
-      return Number(n).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const s = Math.abs(Number(n)).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return Number(n) < 0 ? `(${s})` : s;
     };
     const fmtP = n => {
       if (n == null || !Number.isFinite(n) || Math.abs(n) < 0.05) return "—";
@@ -1070,23 +1120,7 @@ const usePivot = spec.isCF ? cfPivot : pivot;
       const useDimPrev = spec.isCF ? null : dimIdxPrev;
       const useCmpDim = spec.isCF ? null : cmpDimIdx;
       const useCmpDimPrev = spec.isCF ? null : cmpDimIdxPrev;
-      const applyPeriod = (rawCurr, code, co, accountType) => {
-        if (ytdOnly) return rawCurr;
-        const stmt = codeToStatementFromStd.get(String(code)) ?? accountType ?? "";
-        const isPL = stmt === "P/L" || stmt === "DIS" || stmt === "PL";
-        if (spec.isCF || !isPL) return rawCurr;
-        const prev = Number(usePivotPrev.get(String(code))?.[co]?.total ?? 0);
-        return rawCurr - prev;
-      };
-      const applyPeriodCmp = (rawCmp, code, co, accountType) => {
-        if (ytdOnly || spec.isCF) return rawCmp;
-        const stmt = codeToStatementFromStd.get(String(code)) ?? accountType ?? "";
-        const isPL = stmt === "P/L" || stmt === "DIS" || stmt === "PL";
-        if (!isPL) return rawCmp;
-        const prevCmp = Number(cmpPivotPrev.get(String(code))?.[co] ?? 0);
-        return rawCmp - prevCmp;
-      };
-      const rows = [];
+const rows = [];
 
       const pushBreaker = (label, color) => {
         rows.push({ _isBreaker: true, _label: String(label).toUpperCase(), _color: color });
@@ -1133,7 +1167,7 @@ const pushNode = ({ code, name, depth, isSum, dims, getVal, getCmp, getJp, getIc
             const delta = a - b;
             const deltaPct = Math.abs(b) > 1e-9 ? ((a - b) / Math.abs(b)) * 100 : null;
             row[`cmp_${co}`] = fmtN(b);
-            row[`del_${co}`] = (delta == null || Math.abs(delta) < 0.005) ? "—" : (delta > 0 ? "+" : "") + fmtN(delta);
+          row[`del_${co}`] = (delta == null || Math.abs(delta) < 0.005) ? "—" : (delta > 0 ? "+" : "") + fmtN(Math.abs(delta) === delta ? delta : delta);
             row[`dpc_${co}`] = deltaPct == null ? "—" : (deltaPct > 0 ? "+" : "") + deltaPct.toFixed(1) + "%";
           }
           if (journalsHere) {
@@ -1191,22 +1225,70 @@ if (spec.isCF && !spec.isCombined && !(activeMappings?.cf?.treeLiteral?.length >
         });
         // Combined "Todos": append CF flat (standard override) below PL+BS.
         if (spec.isCombined && cfTree && cfTree.length > 0) writeCfFlatPdf();
-      } else {
+} else {
+        // Mirror the on-screen render, same as the Excel STANDARD path: values roll up
+        // children via computeLiteralForCompany, breakers come from codeToSectionInfo,
+        // and _noExpand grand totals (CF.D1s) render as a single loose row.
         const useTree = spec.isCF ? (cfTree || []) : (tree || []);
         const filtered = useTree.filter(n => spec.types.includes(n.AccountType ?? n.accountType ?? ""));
-        pushBreaker(spec.name, "#1a2f8a");
+const findSectionOfSubtree = (node) => {
+          const stack = [node];
+          while (stack.length) {
+            const n = stack.pop();
+            const info = codeToSectionInfo.get(String(n.AccountCode));
+            if (info?.section) return info;
+            const children = n.children || [];
+            for (let k = children.length - 1; k >= 0; k--) stack.push(children[k]);
+          }
+          return null;
+        };
+        const seenSecStd = new Set();
+        const asLit = (node) => ({
+          code: node.AccountCode,
+          isSum: (node.children?.length > 0),
+          dims: node.dims ?? null,
+          children: (node.children || []).map(asLit),
+        });
+        const stmtOf = (node) => codeToStatementFromStd.get(String(node.AccountCode))
+          ?? node.AccountType ?? node.accountType ?? spec.types[0] ?? "";
         const walk = (node, depth) => {
           const code = node.AccountCode;
           const hasChildren = node.children?.length > 0;
-          const isSum = /\.S$/i.test(code) || hasChildren;
-          const getVal = (co) => applyPeriod(Number(usePivot.get(code)?.[co]?.total ?? 0), code, co, node.AccountType ?? node.accountType ?? spec.types[0]);
-          const getCmp = (co) => compareMode ? applyPeriodCmp(Number(useCmpPivot?.get(code)?.[co] ?? 0), code, co, node.AccountType ?? node.accountType ?? spec.types[0]) : 0;
-          const getJp  = (co) => spec.isCF ? {} : (journalPivot.get(code)?.[co] ?? {});
-          const getIc  = (co) => spec.isCF ? 0  : Number(counterpartyPivot.get(code)?.[co] ?? 0);
-          pushNode({ code, name: node.AccountName ?? node.accountName ?? "", depth, isSum, getVal, getCmp, getJp, getIc });
-          (node.children || []).forEach(c => walk(c, depth + 1));
+          const isSum = /\.S$/i.test(String(code)) || hasChildren;
+          const litNode = asLit(node);
+if (depth === 0) {
+            const info = findSectionOfSubtree(node);
+            if (info?.section && !seenSecStd.has(info.section)) {
+              seenSecStd.add(info.section);
+              pushBreaker(info.label ?? info.section, info.color || "#1a2f8a");
+            }
+          }
+          const getVal = (co) => {
+            const curr = computeLiteralForCompany(litNode, usePivot, co, "object", spec.isCF ? null : dimIdx);
+            if (ytdOnly || spec.isCF) return curr;
+            const stmt = stmtOf(node);
+            const isPL = stmt === "P/L" || stmt === "DIS" || stmt === "PL";
+            if (!isPL) return curr;
+            const prev = computeLiteralForCompany(litNode, usePivotPrev, co, "object", spec.isCF ? null : dimIdxPrev);
+            return curr - prev;
+          };
+          const getCmp = (co) => {
+            if (!compareMode) return 0;
+            const cmpCurr = computeLiteralForCompany(litNode, useCmpPivot, co, "scalar", spec.isCF ? null : cmpDimIdx);
+            if (ytdOnly || spec.isCF) return cmpCurr;
+            const stmt = stmtOf(node);
+            const isPL = stmt === "P/L" || stmt === "DIS" || stmt === "PL";
+            if (!isPL) return cmpCurr;
+            const cmpPrev = computeLiteralForCompany(litNode, cmpPivotPrev, co, "scalar", spec.isCF ? null : cmpDimIdxPrev);
+            return cmpCurr - cmpPrev;
+          };
+          const getJp  = (co) => spec.isCF ? {} : computeLiteralJournalForCompany(litNode, journalPivot, co, null);
+          const getIc  = (co) => spec.isCF ? 0  : computeLiteralCounterpartyForCompany(litNode, counterpartyPivot, co, null);
+          pushNode({ code, name: node.AccountName ?? node.accountName ?? "", depth, isSum, dims: node.dims ?? null, getVal, getCmp, getJp, getIc });
+          if (!node._noExpand) (node.children || []).forEach(c => walk(c, depth + 1));
         };
         filtered.forEach(n => walk(n, 0));
+        if (spec.isCombined && cfTree && cfTree.length > 0) writeCfFlatPdf();
       }
       return rows;
 
@@ -1220,11 +1302,16 @@ if (spec.isCF && !spec.isCombined && !(activeMappings?.cf?.treeLiteral?.length >
           const mark = (n) => { codeToCfSection.set(String(n.code ?? n.AccountCode), info); (n.children || []).forEach(mark); };
           (sec.nodes || []).forEach(mark);
         });
-        const sectionOf = (node) => {
+const sectionOf = (node) => {
           const stack = [node];
           while (stack.length) {
             const n = stack.pop();
-            const info = codeToCfSection.get(String(n.AccountCode));
+            const info = codeToCfSection.get(String(n.AccountCode))
+              ?? (codeToSectionInfo.get(String(n.AccountCode))?.section
+                    ? { section: codeToSectionInfo.get(String(n.AccountCode)).section,
+                        label: codeToSectionInfo.get(String(n.AccountCode)).label,
+                        color: codeToSectionInfo.get(String(n.AccountCode)).color }
+                    : null);
             if (info?.section) return info;
             const ch = n.children || [];
             for (let k = ch.length - 1; k >= 0; k--) stack.push(ch[k]);
@@ -1244,8 +1331,8 @@ if (spec.isCF && !spec.isCombined && !(activeMappings?.cf?.treeLiteral?.length >
             if (hasChildren) { let sum = 0; const w = (n) => { const ch = n.children || []; if (ch.length) ch.forEach(w); else sum += Number(cmpCfPivot?.get(n.AccountCode)?.[co] ?? 0); }; w(node); return sum; }
             return Number(cmpCfPivot?.get(code)?.[co] ?? 0);
           };
-          pushNode({ code, name: node.AccountName ?? node.accountName ?? cfNameLookup.get(String(code)) ?? code, depth, isSum, getVal, getCmp, getJp: () => ({}), getIc: () => 0 });
-          if (hasChildren) node.children.forEach(c => walkCf(c, depth + 1));
+pushNode({ code, name: node.AccountName ?? node.accountName ?? cfNameLookup.get(String(code)) ?? code, depth, isSum, getVal, getCmp, getJp: () => ({}), getIc: () => 0 });
+          if (hasChildren && !node._noExpand) node.children.forEach(c => walkCf(c, depth + 1));
         };
         (cfTree || []).forEach(node => {
           const info = sectionOf(node);
@@ -1935,10 +2022,11 @@ return (
 function AnimatedValueCell({ value, className, style, onClick }) {
   const animated = useCountUp(value ?? 0, 900);
   const rounded = Math.round(value ?? 0);
+  const isNeg = (value ?? 0) < 0;
   return (
     <td className={className} style={style} onClick={onClick}>
       {rounded === 0 ? <span className="text-gray-200">—</span> : (
-        <span>{fmtAmt(animated)}</span>
+        <span style={{ color: isNeg ? "#EF4444" : undefined }}>{fmtAmt(animated)}</span>
       )}
     </td>
   );
@@ -2090,16 +2178,19 @@ pivotPrev = null, ytdOnly = true,
 }) {
 const subbody1Style = useTypo("subbody1");
   const header3Style = useTypo("header3");
-  const code        = node.AccountCode;
-  const hasChildren = node.children?.length > 0;
+const code        = node.AccountCode;
+  // _noExpand rows (e.g. CF.D1s grand total) keep their children for value computation
+  // but must not be expandable in the UI — they render as a single loose row.
+  const hasRealChildren = node.children?.length > 0;
+  const hasChildren = hasRealChildren && !node._noExpand;
   const isExpanded  = isOpen ? isOpen(code) : expandedSet.has(code);
-  const isSummary   = /\.S$/i.test(code) || hasChildren;
+  const isSummary   = /\.S$/i.test(code) || hasRealChildren;
   const rowStyle    = depth === 0 ? body1Style : body2Style;
   const isMatch     = rowMatchesSelf(node);
 
 const getValFrom = (piv, co) => {
     if (!piv) return 0;
-    if (hasChildren) {
+    if (hasRealChildren) {
       let total = 0;
       const walk = (n) => {
         if (n.children && n.children.length > 0) {
@@ -2240,10 +2331,26 @@ const mainTd = (
           ) : null;
 
 const cmpVal = compareMode ? (() => {
-            const currCmp = cmpPivot?.get(code)?.[co] ?? 0;
+            // Roll up children for sum rows, same as getValFrom does for the main value.
+            // cmpPivot stores scalars (not {total}), so sum leaves directly.
+const cmpFrom = (piv, c) => {
+              if (!piv) return 0;
+              if (hasRealChildren) {
+                let total = 0;
+                const walk = (n) => {
+                  const ch = n.children || [];
+                  if (ch.length) { ch.forEach(walk); return; }
+                  total += Number(piv.get(n.AccountCode)?.[c] ?? 0);
+                };
+                walk(node);
+                return total;
+              }
+              return Number(piv.get(code)?.[c] ?? 0);
+            };
+            const currCmp = cmpFrom(cmpPivot, co);
             const nt = node.AccountType ?? node.accountType ?? "";
             if (ytdOnly || !cmpPivotPrev || nt === "B/S" || nt === "C/F" || nt === "CFS") return currCmp;
-            const prevCmp = cmpPivotPrev?.get(code)?.[co] ?? 0;
+            const prevCmp = cmpFrom(cmpPivotPrev, co);
             return currCmp - prevCmp;
           })() : 0;
           const dev = compareMode ? saldo - cmpVal : 0;
@@ -2404,9 +2511,12 @@ dimIdx = null, journalDimIdx = null, cptyDimIdx = null, cmpDimIdx = null,
   pivotPrev = null, ytdOnly = true,
 cmpPivotPrev = null, dimIdxPrev = null, cmpDimIdxPrev = null,
 }) {
-  const hasChildren = Array.isArray(node.children) && node.children.length > 0;
-  const isSum = !!node.isSum && hasChildren;
-  const isLeaf = !hasChildren;
+  const code = node.AccountCode;
+  const hasRealChildren = node.children?.length > 0;
+  const hasChildren = hasRealChildren && !node._noExpand;
+  const isSummary = /\.S$/i.test(String(code)) || hasRealChildren;
+  const isSum = isSummary;
+  const isLeaf = !hasRealChildren;
   const isExpanded = expandedSet.has(node.id);
 const rowStyle = depth === 0 ? body1Style : body2Style;
 const subbody1Style = useTypo("subbody1");
@@ -4066,13 +4176,13 @@ const [codeToParentFromStd, setCodeToParentFromStd] = useState(new Map());
   const [codeToStatementFromStd, setCodeToStatementFromStd] = useState(new Map());
 const [pgcSections] = useState({});
 const [expandedSet,setExpandedSet]= useState(new Set());
-  useEffect(() => { setExpandedSet(new Set()); }, [typeFilter]);
+useEffect(() => { setExpandedSet(new Set()); }, [typeFilter]);
 const [compareMode, setCompareMode] = useState(false);
   const [exportModal, setExportModal] = useState(false);
   const [exporting, setExporting] = useState(false);
 const [exportOpts, setExportOpts] = useState({
-    format: "xlsx",
-    includeBreakers: true,
+format: "xlsx",
+    includeAdjustments: true,
     includeTotals: true,
     includeCompare: true,
     drilldown: true,
@@ -4292,11 +4402,11 @@ const clearActiveMapping = useCallback(() => {
   // Auto-apply hidden override mapping for CUSTOM standards. It carries
   // pl_tree, bs_tree AND cf_tree — we apply the tree that matches the current tab.
 
-  useEffect(() => {
+useEffect(() => {
     const isCustom = activeStandardKey && String(activeStandardKey).startsWith("CUSTOM-");
     if (!isCustom) { setHiddenOverride(null); return; }
     let cancelled = false;
-    (async () => {
+(async () => {
       try {
         const { supabase } = await import("../../lib/supabaseClient");
         const { data: { session } } = await supabase.auth.getSession();
@@ -4312,33 +4422,91 @@ const clearActiveMapping = useCallback(() => {
     return () => { cancelled = true; };
   }, [activeStandardKey, customStandardVersion]);
 
-// Apply the hidden override ONCE per tab as the initial default. After that,
-  // the user is free to pick a different mapping — we must NOT re-apply the
-  // override on every activeMappings change (that would stomp their choice).
-  // A ref tracks which tabs already received the override this session.
+// Apply the initial default ONCE per tab. Priority per tab:
+  //   1) the user's chosen "standard" mapping (a per-user preference):
+  //        · pl / bs → user_settings.preferences.standard_mapping_id      (mappings table; holds pl_tree + bs_tree)
+  //        · cf      → user_settings.preferences.cashflow_standard_mapping_id (cashflow_mappings table)
+  //   2) the system hidden override (custom-no-user) as the fallback
+  // After the initial default we must NOT re-apply on every activeMappings change
+  // (that would stomp the user's later choice). A ref tracks which tabs are done.
   const overrideAppliedRef = useRef(new Set());
-  useEffect(() => {
-    if (!hiddenOverride) return;
-    // A new override id resets the applied set (e.g. standard changed).
-    if (overrideAppliedRef.current._id !== hiddenOverride.mapping_id) {
+useEffect(() => {
+    // Run whenever the standard is custom — the user's standard mapping must apply
+    // even when there is no hidden override. Only bail if this isn't a custom standard.
+    const isCustom = activeStandardKey && String(activeStandardKey).startsWith("CUSTOM-");
+    if (!isCustom) return;
+    // A new override id (or none) resets the applied set (e.g. standard changed).
+    const ovId = hiddenOverride?.mapping_id ?? "__no_override__";
+    if (overrideAppliedRef.current._id !== ovId) {
       overrideAppliedRef.current = new Set();
-      overrideAppliedRef.current._id = hiddenOverride.mapping_id;
+      overrideAppliedRef.current._id = ovId;
     }
-   const tabsToApply = mappingTab ? [mappingTab] : ["pl", "bs", "cf"];
-    tabsToApply.forEach(tab => {
-      if (overrideAppliedRef.current.has(tab)) return; // already defaulted this tab
-      const treeField = tab === "pl" ? "pl_tree" : tab === "bs" ? "bs_tree" : "cf_tree";
-      const tree = hiddenOverride?.[treeField];
-      if (!Array.isArray(tree) || tree.length === 0) return;
-      if (activeMappings[tab]?.mapping_id === hiddenOverride.mapping_id) {
+    const tabsToApply = mappingTab ? [mappingTab] : ["pl", "bs", "cf"];
+    let cancelled = false;
+
+    (async () => {
+      // Read the user's standard-mapping preferences once.
+      let prefs = {};
+      try {
+        const { supabase } = await import("../../lib/supabaseClient");
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (uid) {
+          const { data } = await supabase
+            .from("user_settings").select("preferences").eq("user_id", uid).single();
+prefs = data?.preferences ?? {};
+        }
+      } catch { /* no prefs → override fallback */ }
+
+// Resolve a user's standard mapping for a given tab, or null.
+      const loadUserStandardFor = async (tab) => {
+        try {
+if (tab === "cf") {
+            const id = prefs.cashflow_standard_mapping_id;
+            if (!id) return null;
+            const { getMapping } = await import("../../lib/cashflowMappingsApi");
+            const full = await getMapping(id);
+            return (full && !full.is_archived && Array.isArray(full.cf_tree) && full.cf_tree.length > 0) ? full : null;
+          } else {
+            const id = prefs.standard_mapping_id;
+            if (!id) return null;
+            const { getMapping } = await import("../../lib/mappingsApi");
+            const full = await getMapping(id);
+            const field = tab === "pl" ? "pl_tree" : "bs_tree";
+            return (full && !full.is_archived && Array.isArray(full[field]) && full[field].length > 0) ? full : null;
+          }
+        } catch { return null; }
+      };
+
+      for (const tab of tabsToApply) {
+        if (cancelled) return;
+        if (overrideAppliedRef.current.has(tab)) continue; // already defaulted this tab
+
+        // 1) user's standard mapping wins.
+        const userStd = await loadUserStandardFor(tab);
+        if (cancelled) return;
+        if (userStd) {
+          handleApplyMapping(userStd, "structure", tab);
+          overrideAppliedRef.current.add(tab);
+          continue;
+        }
+
+        // 2) fall back to the hidden override for this tab.
+        const treeField = tab === "pl" ? "pl_tree" : tab === "bs" ? "bs_tree" : "cf_tree";
+        const tree = hiddenOverride?.[treeField];
+        if (!Array.isArray(tree) || tree.length === 0) continue;
+        if (activeMappings[tab]?.mapping_id === hiddenOverride.mapping_id) {
+          overrideAppliedRef.current.add(tab);
+          continue;
+        }
+        handleApplyMapping(hiddenOverride, "structure", tab);
         overrideAppliedRef.current.add(tab);
-        return;
       }
-      handleApplyMapping(hiddenOverride, "structure", tab);
-      overrideAppliedRef.current.add(tab);
-    });
+    })();
+
+return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hiddenOverride, mappingTab, handleApplyMapping]);
+  }, [hiddenOverride, mappingTab, handleApplyMapping, activeStandardKey]);
 
   // Dynamically pick which API to use based on mappingTab + viewsMode.
   // pl & bs → mappingsApi / reportMappingsApi (the ones from Individuales)
@@ -4775,15 +4943,21 @@ const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' 
     const prevMonth = month === 1 ? 12 : month - 1;
     const prevFilter = `Year eq ${prevYear} and Month eq ${prevMonth} and Source eq '${source}' and GroupStructure eq '${structure}'`;
 
+const fetchConsWithFallback = async (flt) => {
+      const cons = await fetch(`${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(flt)}`, { headers: h })
+        .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []);
+      if (cons.length > 0) return cons;
+      // Period not consolidated (e.g. October): fall back to uploaded-accounts, same
+      // source the CF statement already uses, so PL/BS aren't blank for that period.
+      return await fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(flt)}`, { headers: h })
+        .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []);
+    };
     Promise.all([
-      fetch(`${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h })
-        .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
+      fetchConsWithFallback(filter),
       fetch(`${BASE_URL}/v2/journal-entries?$filter=${encodeURIComponent(filter)}`, { headers: h })
         .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
-      fetch(`${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(prevFilter)}`, { headers: h })
-        .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
+      fetchConsWithFallback(prevFilter),
     ]).then(([consolidated, journals, prevConsolidated]) => {
-
 setRawData(consolidated);
       setJournalData(journals);
       setRawDataPrev(prevConsolidated);
@@ -4948,13 +5122,18 @@ const filter = `Year eq ${cmpYear} and Month eq ${cmpMonth} and Source eq '${cmp
     let pY = Number(cmpYear), pM = Number(cmpMonth) - 1;
     if (pM < 1) { pM = 12; pY -= 1; }
     const filterPrev = `Year eq ${pY} and Month eq ${pM} and Source eq '${cmpSource}' and GroupStructure eq '${cmpStructure}'`;
+const cmpConsWithFallback = async (flt) => {
+      const cons = await fetch(`${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(flt)}`, { headers: h })
+        .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []);
+      if (cons.length > 0) return cons;
+      return await fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(flt)}`, { headers: h })
+        .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []);
+    };
     Promise.all([
-      fetch(`${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h })
-        .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
+      cmpConsWithFallback(filter),
       fetch(`${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`, { headers: h })
         .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
-      fetch(`${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(filterPrev)}`, { headers: h })
-        .then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
+      cmpConsWithFallback(filterPrev),
     ]).then(([cons, uploaded, consPrev]) => {
       setCmpRawData(cons);
       setCmpCfUploadedData(uploaded);
@@ -5053,7 +5232,7 @@ const mappingDerived = useMemo(() => {
     return { instances, sortOrder, codeSection, breakers, mappedCodes };
   }, [activeMapping]);
 
-const { accountMap, pivot, pivotPrev, tree, cols, journalPivot, counterpartyPivot, cmpPivot, cmpPivotPrev, dimIdx, dimIdxPrev, journalDimIdx, cptyDimIdx, cmpDimIdx, cmpDimIdxPrev, rowMatchesDims } = useMemo(() => {
+const { accountMap, pivot, pivotPrev, tree, plTreeStd, bsTreeStd, cols, journalPivot, counterpartyPivot, cmpPivot, cmpPivotPrev, dimIdx, dimIdxPrev, journalDimIdx, cptyDimIdx, cmpDimIdx, cmpDimIdxPrev, rowMatchesDims } = useMemo(() => {
     if (!rawData.length) return { accountMap: new Map(), pivot: new Map(), tree: [], cols: [], journalPivot: new Map(), cmpPivot: new Map() };
 
     const accountMap = new Map();
@@ -5191,6 +5370,8 @@ const TYPE_ORDER = { "P/L": 0, "DIS": 0, "B/S": 1, "C/F": 2, "CFS": 2 };
     const effectiveSortOrder = mappingDerived?.sortOrder ?? breakerSortOrder;
 
 let tree;
+    let plTreeStd = [];
+    let bsTreeStd = [];
     // Mapping-active branch: build a tree with one node per INSTANCE, so the
     // same code with different dims renders as separate rows (Sabana pattern).
     if (mappingDerived && mappingDerived.instances && mappingDerived.instances.length > 0) {
@@ -5296,24 +5477,47 @@ if (isCustomStd && codeToSectionInfo && codeToSectionInfo.size > 0) {
               const sB = effectiveSortOrder.get(b.AccountCode) ?? 9999999;
               return sA - sB;
             });
-          // Note: sortRec MUTATES children. Clone shallow before to avoid
+// Note: sortRec MUTATES children. Clone shallow before to avoid
           // corrupting a shared node between P/L and B/S passes.
           const cloneShallow = (n) => ({ ...n, children: n.children.map(cloneShallow) });
           const clonedRoots = roots.map(cloneShallow);
 clonedRoots.forEach(sortRec);
-          return clonedRoots;
+// Grand totals (C.ACT / G.PYC / G.PAS, section=null) must not render as rows.
+          // The standard's parent wiring already skips linking children under grand totals,
+          // so these come through as empty roots — drop them (and splice any children, just
+          // in case a future standard does nest under them). Real section rows keep their breakers.
+          const dropGrandTotals = (nodes) => {
+            const out = [];
+            for (const n of nodes) {
+              if (isGrandTotal(n.AccountCode)) {
+                if (n.children && n.children.length) out.push(...dropGrandTotals(n.children));
+                // else: empty grand-total container — drop entirely
+              } else {
+                out.push(n);
+              }
+            }
+            return out;
+          };
+          return dropGrandTotals(clonedRoots);
         };
 
-        const plPass  = (n) => { const t = n.AccountType ?? ""; return t === "P/L" || t === "DIS"; };
+const plPass  = (n) => { const t = n.AccountType ?? ""; return t === "P/L" || t === "DIS"; };
         const bsPass  = (n) => (n.AccountType ?? "") === "B/S";
+       
 
+// Build PL and BS roots independently ALWAYS, so exports can render each
+        // statement from its own custom-no-user structure regardless of which tab
+        // is active. Otherwise the on-screen `tree` (shaped for the active tab, e.g.
+        // a PL user mapping) leaks into the other statement sheets.
+        plTreeStd = buildRootsForFilter(plPass);
+        bsTreeStd = buildRootsForFilter(bsPass);
 if (!typeFilter) {
-          tree = [...buildRootsForFilter(plPass), ...buildRootsForFilter(bsPass)];
+          tree = [...plTreeStd, ...bsTreeStd];
         } else if (typeFilter === "P/L") {
-          tree = buildRootsForFilter(plPass);
+          tree = plTreeStd;
         } else if (typeFilter === "B/S") {
-          tree = buildRootsForFilter(bsPass);
-        } else if (typeFilter === "C/F") {
+          tree = bsTreeStd;
+} else if (typeFilter === "C/F") {
           tree = buildRootsForFilter((n) => { const t = n.AccountType ?? ""; return t === "C/F" || t === "CFS"; });
         } else {
           tree = buildRootsForFilter((n) => (n.AccountType ?? "") === typeFilter);
@@ -5561,7 +5765,7 @@ const cmpDimIdxPrev = new Map(); // `${code}|${co}` → Map<dimKey, amount> (com
 
 
 
-return { accountMap, pivot, pivotPrev, tree, cols, journalPivot: rolled, counterpartyPivot: rolledCpty, cmpPivot, cmpPivotPrev, dimIdx, dimIdxPrev, journalDimIdx, cptyDimIdx, cmpDimIdx, cmpDimIdxPrev, rowMatchesDims };
+return { accountMap, pivot, pivotPrev, tree, plTreeStd, bsTreeStd, cols, journalPivot: rolled, counterpartyPivot: rolledCpty, cmpPivot, cmpPivotPrev, dimIdx, dimIdxPrev, journalDimIdx, cptyDimIdx, cmpDimIdx, cmpDimIdxPrev, rowMatchesDims };
 }, [rawData, rawDataPrev, journalData, typeFilter, cmpRawData, cmpRawDataPrev, perspectiveMode, childrenOfPerspective, breakerSortOrder, currencyMode, mappingDerived, dimensionsMeta, activeStandardKey, codeToSectionInfo, codeToNameFromStd, codeToParentFromStd, codeToStatementFromStd, upDimGroups, upDimensions]);
 
 // CF-specific pivot from uploaded data
@@ -5789,7 +5993,37 @@ cfStdCodesInStatement.forEach(code => {
         });
       };
       flatOrdered.forEach(collectNested);
-cfTree = flatOrdered.filter(n => !nestedCodes.has(String(n.AccountCode)));
+// The standard nests section anchors (A5s/CF_OP, B8s/CF_INV, C11s/CF_FIN) under a
+      // grand-total row (D1s "Aumento/disminución neta", which sums them). For rendering we
+      // need them FLAT: the three sectioned rows first (each shows its breaker), then the
+      // grand totals (D1s/E1s/F1s) as loose rows after. D1s keeps its children ONLY so its
+      // value still computes (sum of the three); we mark it _noExpand so the renderer won't
+      // re-draw those children nested (they already render as top-level rows above).
+      const cfSecOf = (code) => codeToSectionInfo.get(String(code))?.section ?? null;
+      const flatRoots = flatOrdered.filter(n => !nestedCodes.has(String(n.AccountCode)));
+      const sectionRows = [];
+      const totalRows = [];
+      for (const n of flatRoots) {
+        const kids = n.children || [];
+        const sectionKids = kids.filter(k => cfSecOf(k.AccountCode));
+        if (!cfSecOf(n.AccountCode) && sectionKids.length) {
+          // Grand total over section anchors: lift the section anchors up (they render with
+          // their breakers), and keep this total as a loose row that still sums via children.
+          sectionRows.push(...sectionKids);
+          totalRows.push({ ...n, _noExpand: true });
+        } else {
+          totalRows.push(n);
+        }
+      }
+      cfTree = [...sectionRows, ...totalRows];
+      // A section-null container (e.g. CF.D1s) that nests the real section anchors
+      // (CF.A5s/CF_OP, CF.B8s/CF_INV, CF.C11s/CF_FIN) hides their breakers until expanded.
+      // Splice up any child that carries its own section, so section rows sit at top level
+      // with their breakers. Containers whose children have no section stay as-is.
+// Sanity: nothing here — cfTree keeps its natural shape. Section anchors nested
+      // under a grand-total row (e.g. CF.D1s) get their breakers surfaced by the
+      // renderer, which auto-expands these containers (see collectExpandableCodes /
+      // default expanded set) so CF_OP / CF_INV / CF_FIN show without a manual click.
 } else {
       cfTree = buildTree([...cfAccountMap.values()]);
     }
@@ -5880,10 +6114,9 @@ cfTree = flatOrdered.filter(n => !nestedCodes.has(String(n.AccountCode)));
     });
 return { cfTree, cfPivot: piv, cfPivotPrev: cfPivPrev, cfCols, cmpCfPivot: cmpPivCf };
 }, [cfUploadedData, cfUploadedDataPrev, cfMetadata, cfGroupToCf, perspectiveMode, childrenOfPerspective, cmpCfUploadedData, mappingDerived, mappingTab, cfNameDict, cfMapping, activeStandardKey, breakerSortOrder, allCfSections, codeToNameFromStd, codeToParentFromStd, codeToSectionInfo, codeToStatementFromStd]);
-  const toggleExpand = useCallback(code => {
+const toggleExpand = useCallback(code => {
     setExpandedSet(prev => { const n = new Set(prev); n.has(code) ? n.delete(code) : n.add(code); return n; });
   }, []);
-
 // Walk the visible tree, collect ids/codes of nodes that have children.
   // In literal mode nodes use `id`; in standard mode they use `AccountCode`.
   const collectExpandableCodes = useCallback((nodes, useId = false) => {
@@ -5894,9 +6127,27 @@ return { cfTree, cfPivot: piv, cfPivotPrev: cfPivPrev, cfCols, cmpCfPivot: cmpPi
         n.children.forEach(walk);
       }
     };
-    nodes.forEach(walk);
+nodes.forEach(walk);
     return out;
   }, []);
+
+  // In Cash Flow, grand-total rows (e.g. CF.D1s "Aumento/disminución neta") nest the
+  // real section anchors (CF_OP/INV/FIN). Auto-expand those so their breakers show
+  // without a manual click, while keeping the total row and its value visible.
+  useEffect(() => {
+    if (typeFilter !== "C/F" || !Array.isArray(cfTree) || cfTree.length === 0) return;
+    const secOf = (code) => codeToSectionInfo.get(String(code))?.section ?? null;
+    const toExpand = [];
+    const walk = (nodes) => (nodes || []).forEach(n => {
+      const kids = n.children || [];
+      if (!secOf(n.AccountCode) && kids.some(k => secOf(k.AccountCode))) {
+        toExpand.push(n.AccountCode);
+      }
+      walk(kids);
+    });
+    walk(cfTree);
+    if (toExpand.length) setExpandedSet(prev => { const s = new Set(prev); toExpand.forEach(c => s.add(c)); return s; });
+  }, [typeFilter, cfTree, codeToSectionInfo]);
 
 const expandAll = useCallback(() => {
     if (activeMapping?.treeLiteral) {
@@ -5978,11 +6229,11 @@ const baseEffectiveCols = selectedCompanies.length === 0
       if (sumCode && sumName && !cfNameLookup.has(String(sumCode))) cfNameLookup.set(String(sumCode), String(sumName));
     });
     cfMetadata.forEach(({ name }, code) => { if (name && code) cfNameLookup.set(String(code), String(name)); });
-    const overrideLiteralPl = (hiddenOverride && Array.isArray(hiddenOverride.pl_tree) && hiddenOverride.pl_tree.length > 0) ? buildMappingLiteral(hiddenOverride.pl_tree) : null;
+const overrideLiteralPl = (hiddenOverride && Array.isArray(hiddenOverride.pl_tree) && hiddenOverride.pl_tree.length > 0) ? buildMappingLiteral(hiddenOverride.pl_tree) : null;
     const overrideLiteralBs = (hiddenOverride && Array.isArray(hiddenOverride.bs_tree) && hiddenOverride.bs_tree.length > 0) ? buildMappingLiteral(hiddenOverride.bs_tree) : null;
     const overrideLiteralCf = (hiddenOverride && Array.isArray(hiddenOverride.cf_tree) && hiddenOverride.cf_tree.length > 0) ? buildMappingLiteral(hiddenOverride.cf_tree) : null;
     return {
-      T, tree, overrideLiteralPl, overrideLiteralBs, overrideLiteralCf,
+     T, tree, plTreeStd, bsTreeStd, overrideLiteralPl, overrideLiteralBs, overrideLiteralCf,
       treeLiteral: activeMapping?.treeLiteral ?? null,
       pivot, pivotPrev, cfTree, cfPivot, cfPivotPrev, ytdOnly,
       cols: effectiveCols, cfCols,
@@ -5995,8 +6246,9 @@ const baseEffectiveCols = selectedCompanies.length === 0
       perspectiveMode, perspectiveParent: perspective,
       month, year, source, structure,
 cmpMonth, cmpYear, cmpSource, cmpStructure,
-      exportSheets: exportOpts.sheets ?? { todos: true, pl: true, bs: true, cf: true },
+exportSheets: exportOpts.sheets ?? { todos: true, pl: true, bs: true, cf: true },
       drilldownOpt: exportOpts.drilldown !== false,
+      includeAdjustments: exportOpts.includeAdjustments !== false,
     };
   };
   const handleExportXlsx = async () => { generateContributiveXlsx(buildExportPayload()); };
@@ -6594,7 +6846,7 @@ onShowJournals={journalData.length > 0 ? () => setShowJournals(true) : null}
                 </p>
                 <div className="grid grid-cols-2 gap-2">
                   {[
-                    ["includeBreakers", T("export_opt_breakers") || "Cabeceras de sección"],
+                   ["includeAdjustments", T("export_opt_adjustments") || "Columnas de ajustes y eliminaciones"],
                     ["drilldown",       T("export_opt_drilldown") || "Drill-down (colapsado)"],
                     ["includeTotals",   T("export_opt_totals") || "Totales de fila"],
                     ["includeCompare",  T("export_opt_compare") || "Columnas de comparación"],

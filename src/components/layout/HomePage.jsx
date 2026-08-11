@@ -2177,10 +2177,12 @@ await supabase.from("user_settings").upsert({
 
 useEffect(() => {
     if (!detectedStandard || !groupAccounts.length || !userId) return;
+    // Wait for the company id before running — resolveStandardKey needs it to
+    // find the custom binding (e.g. CUSTOM-genesal). Running early would sniff a
+    // generic standard and, because the check only runs once, never recover.
+    if (!settingsCompanyId) return;
     if (unmappedCheckDoneRef.current) return;
     unmappedCheckDoneRef.current = true;
-
-    const templateStd = detectedStandard === "SpanishIFRS-ES" ? "SpanishIFRS" : detectedStandard;
 
     (async () => {
       try {
@@ -2192,11 +2194,19 @@ useEffect(() => {
           .eq("user_id", userId)
           .single();
         if (settingsData?.preferences?.standard_mapping_id) return;
-        // Fetch PL and BS separately — exactly as the mapper does per statement
-const H = sbHeaders();
+
+        // Resolve the standard the COMPANY is actually bound to. For custom
+        // clients this is e.g. "CUSTOM-genesal" — their real chart lives in
+        // standard_statement_rows under that key, NOT in generic template_rows.
+        // Comparing against template_rows was the bug: every custom account
+        // (…P, group accounts, distribution rows) looked "unmapped".
+        const standardKey = await resolveStandardKey(settingsCompanyId, groupAccounts, null);
+        if (!standardKey) return;
+
+        const H = sbHeaders();
         const [plRes, bsRes] = await Promise.all([
-          fetch(`${SUPABASE_URL}/template_rows?select=account_code&standard=eq.${templateStd}&statement=eq.PL`, { headers: H }),
-          fetch(`${SUPABASE_URL}/template_rows?select=account_code&standard=eq.${templateStd}&statement=eq.BS`, { headers: H }),
+          fetch(`${SUPABASE_URL}/standard_statement_rows?select=account_code&standard_key=eq.${encodeURIComponent(standardKey)}&statement=eq.PL`, { headers: H }),
+          fetch(`${SUPABASE_URL}/standard_statement_rows?select=account_code&standard_key=eq.${encodeURIComponent(standardKey)}&statement=eq.BS`, { headers: H }),
         ]);
         const [plRows, bsRows] = await Promise.all([plRes.json(), bsRes.json()]);
 
@@ -2224,7 +2234,7 @@ const H = sbHeaders();
         if (unmapped.length > 0) setUnmappedAccounts(unmapped);
       } catch { /* non-critical */ }
     })();
-  }, [detectedStandard, groupAccounts, userId]);
+}, [detectedStandard, groupAccounts, userId, settingsCompanyId]);
 
   // Cost breakdown rows from PL table — fetched independently to avoid
   // touching the resolver. Same standard detection.

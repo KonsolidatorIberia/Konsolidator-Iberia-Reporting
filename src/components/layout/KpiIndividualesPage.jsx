@@ -812,8 +812,15 @@ const YEARS = Array.from({ length: 6 }, (_, i) => new Date().getFullYear() - i);
 function fmtValue(val, format) {
   if (val === null || val === undefined || isNaN(val) || !isFinite(val)) return "—";
   if (format === "percent") return val.toFixed(1) + "%";
-  if (format === "currency") return val.toLocaleString("de-DE", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
-  return val.toFixed(2);
+  // Accounting style: negatives shown in parentheses, not with a minus sign.
+  const paren = (s, neg) => neg ? `(${s})` : s;
+  if (format === "currency") {
+    const neg = val < 0;
+    const s = Math.abs(val).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return paren(s, neg);
+  }
+  const neg = val < 0;
+  return paren(Math.abs(val).toFixed(2), neg);
 }
 
 function getBenchmarkColor(value, benchmark) {

@@ -892,7 +892,7 @@ const cmpHasData = cmpMap.size > 0;
     const mkBorder = (style = "hair") => ({ bottom: { style, color: { argb: "FFE5E7EB" } } });
     const mkBorderThick = () => ({ bottom: { style: "thin", color: { argb: "FFCCCCCC" } } });
 
-    const NUM_FMT  = '#,##0.00;(#,##0.00);"-"';
+const NUM_FMT  = '#,##0.00;(#,##0.00);"-"';
     const PCT_FMT  = '0.0%;(0.0%);"-"';
 
     const buildSheet = (dataRows, sheetTitle) => {
@@ -1515,10 +1515,10 @@ journalEntries = [],
     // ── Helpers ───────────────────────────────────────────────
     const mkFill   = a => ({ type:'pattern', pattern:'solid', fgColor:{argb:a} });
     const mkFont   = (bold, argb, size=10, italic=false) => ({ bold, color:{argb}, name:'Calibri', size, italic });
-    const mkBorder = () => ({ bottom:{style:'thin', color:{argb:BORDER}} });
+const mkBorder = () => ({ bottom:{style:'thin', color:{argb:BORDER}} });
     const NUM_FMT  = '#,##0.00;(#,##0.00);"-"';
     const PCT_FMT  = '0.0%;(0.0%);"-"';
-
+    const EXPORT_STAMP = new Date().toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 // Resolve short company code → legal name
     const resolveCompany = (code) => {
       if (!code) return null;
@@ -1730,12 +1730,15 @@ BS.hist = [];
     if (hasMultiCo) perCoMaps.forEach(() => BS.co.push(bidx++));
     const bsCols = bidx - 1;
 
-const setC = (row, ci, val, fmt, fontColor, bold, fill, align='right') => {
+const setC = (row, ci, val, fmt, fontColor, bold, fill, align='center') => {
       if (!ci || !Number.isFinite(ci) || !row) return;
       const c = row.getCell(ci);
       c.value = val ?? 0;
       if (fmt) c.numFmt = fmt;
-      c.font = mkFont(bold, fontColor, 10);
+      // Negative values render red (on top of the parentheses from numFmt).
+      const isNeg = typeof (val ?? 0) === 'number' && (val ?? 0) < 0;
+      const effColor = isNeg ? 'FFCF305D' : fontColor;
+      c.font = mkFont(bold, effColor, 10);
       c.fill = mkFill(fill);
       c.alignment = { horizontal: align, vertical: 'middle' };
       c.border = mkBorder();
@@ -1796,8 +1799,8 @@ const setC = (row, ci, val, fmt, fontColor, bold, fill, align='right') => {
 
       ws.addRow([]);
       const r2 = ws.lastRow;
-      r2.height = 16;
-      r2.getCell(1).value = `A: ${aLabel}`;
+r2.height = 16;
+      r2.getCell(1).value = `A: ${aLabel}    ·    Exportado: ${EXPORT_STAMP}`;
       r2.getCell(1).font = mkFont(false, 'FFB4C6EE', 9);
       r2.getCell(1).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
       for (let c = 1; c <= plCols; c++) r2.getCell(c).fill = mkFill(NAVY);
@@ -1936,7 +1939,7 @@ if (hasC) {
       };
       const paletteArgb = [hexToArgb(colors.primary), hexToArgb(colors.secondary), hexToArgb(colors.tertiary)];
 
-      const buildEffectivePlBreakers = () => {
+const buildEffectivePlBreakers = () => {
         // PGC mapping path
         if (pgcMapping?.rows && pgcMapping?.sections) {
           const rowsToScan = isSummary ? summaryRows : (() => {
@@ -1949,7 +1952,7 @@ if (hasC) {
             tree.filter(n => ['P/L','DIS'].includes(n.accountType)).forEach(walk);
             return all.sort((a,b) => String(a.code).localeCompare(String(b.code), undefined, {numeric:true}));
           })();
-          const seen = new Set();
+const seen = new Set();
           const out = {};
           let i = 0;
           for (const node of rowsToScan) {
@@ -1957,9 +1960,11 @@ if (hasC) {
             if (!m) continue;
             if (seen.has(m.section)) continue;
             seen.add(m.section);
-            const sec = pgcMapping.sections.get(m.section);
+const sec = pgcMapping.sections.get(m.section);
             if (sec) {
-              out[String(node.code)] = { label: sec.label, argb: paletteArgb[i] ?? hexToArgb(sec.color) };
+              // Custom standards carry their own section color — honor it
+              // instead of the position-based palette (which mismatched colors).
+              out[String(node.code)] = { label: sec.label, argb: sec.color ? hexToArgb(sec.color) : (paletteArgb[i] ?? DIV_BLUE) };
               i++;
             }
           }
@@ -1990,30 +1995,36 @@ if (hasC) {
       const SUMMARY_DIV = buildEffectivePlBreakers();
 
       // For detailed mode, remap the first breaker to the first allSumRows code (matches PLStatement)
+// Anchor one breaker on the FIRST top-level row of each section, in sortOrder —
+      // same rule as the app's effectiveBreakersPl. The code-sorted scan above anchored
+      // on rows (A.07.S…) not present in the 9 top-level rows, so those dividers never fired.
       const DETAIL_DIV_BEFORE = (() => {
         const base = buildEffectivePlBreakers();
-        const allSumRowsLocal = [];
-        const walkSum = n => {
-          if (!hasData(n) || !['P/L','DIS'].includes(n.accountType)) return;
-          (n.children || []).forEach(walkSum);
-          if (n.isSumAccount) allSumRowsLocal.push(n);
-        };
-        tree.filter(n => ['P/L','DIS'].includes(n.accountType)).forEach(walkSum);
-        allSumRowsLocal.sort((a,b) => String(a.code).localeCompare(String(b.code), undefined, {numeric:true}));
-        if (allSumRowsLocal.length === 0) return base;
-        const positions = Object.keys(base)
-          .map(code => ({ code, pos: allSumRowsLocal.findIndex(n => String(n.code) === code) }))
-          .filter(x => x.pos >= 0)
-          .sort((a,b) => a.pos - b.pos);
-        if (positions.length === 0) return base;
-        const remapped = { ...base };
-        const earliest = positions[0];
-        const firstCode = String(allSumRowsLocal[0].code);
-        if (earliest.code !== firstCode) {
-          remapped[firstCode] = remapped[earliest.code];
-          delete remapped[earliest.code];
+        if (!(pgcMapping?.rows && pgcMapping?.sections)) return base;
+        // topLevelSums isn't in scope yet here; recompute the flat mapping top level.
+        const treeByCodeDiv = new Map();
+        (function idx(ns) { (ns || []).forEach(n => { treeByCodeDiv.set(String(n.code), n); idx(n.children); }); })(tree);
+        const flatTop = [...pgcMapping.rows.entries()]
+          .filter(([, info]) => {
+            if (!info.isSum) return false;
+            const parent = info.parentCode ? String(info.parentCode) : null;
+            const pInfo = parent ? pgcMapping.rows.get(parent) : null;
+            return !(pInfo && pInfo.isSum && pInfo.section === info.section);
+          })
+          .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+          .map(([code]) => code)
+          .filter(code => { const n = treeByCodeDiv.get(String(code)); return n && hasData(n) && ['P/L', 'DIS'].includes(n.accountType); });
+        const seen = new Set();
+        const out = {};
+        let i = 0;
+        for (const code of flatTop) {
+          const m = pgcMapping.rows.get(String(code));
+          if (!m || seen.has(m.section)) continue;
+          seen.add(m.section);
+          const sec = pgcMapping.sections.get(m.section);
+          if (sec) { out[String(code)] = { label: sec.label, argb: sec.color ? hexToArgb(sec.color) : (paletteArgb[i] ?? DIV_BLUE) }; i++; }
         }
-        return remapped;
+        return out;
       })();
 
       const writeDivider = (div) => {
@@ -2546,31 +2557,46 @@ const jrns = jrnByCode.get(String(parentNode.code)) || [];
       }
 
 // DETAILED MODE
-      const allSumRows = [];
-      const walkSum = node => {
-        if (!hasData(node) || !['P/L', 'DIS'].includes(node.accountType)) return;
-        if (node.isSumAccount) allSumRows.push(node);
-        (node.children || []).forEach(walkSum);
-      };
-      tree.filter(n => ['P/L', 'DIS'].includes(n.accountType)).forEach(walkSum);
+      // Mirror on-screen allSumRows: with a converted custom standard the detailed
+      // view is the FLAT mapping list in sortOrder (each with its full subtree via
+      // writeDrillChildren), not a code-sorted walk of the group-accounts tree.
+      const treeByCodeXlsx = new Map();
+      (function idx(ns) { (ns || []).forEach(n => { treeByCodeXlsx.set(String(n.code), n); idx(n.children); }); })(tree);
+      let topLevelSums;
+      if (pgcMapping?.rows && pgcMapping?.sections) {
+        topLevelSums = [...pgcMapping.rows.entries()]
+          .filter(([, info]) => {
+            if (!info.isSum) return false;
+            const parent = info.parentCode ? String(info.parentCode) : null;
+            const pInfo = parent ? pgcMapping.rows.get(parent) : null;
+            return !(pInfo && pInfo.isSum && pInfo.section === info.section);
+          })
+          .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+          .map(([code]) => treeByCodeXlsx.get(String(code)))
+          .filter(n => n && hasData(n) && ['P/L', 'DIS'].includes(n.accountType));
+      } else {
+        const allSumRows = [];
+        const walkSum = node => {
+          if (!hasData(node) || !['P/L', 'DIS'].includes(node.accountType)) return;
+          if (node.isSumAccount) allSumRows.push(node);
+          (node.children || []).forEach(walkSum);
+        };
+        tree.filter(n => ['P/L', 'DIS'].includes(n.accountType)).forEach(walkSum);
+        const nestedSumCodes = new Set();
+        const collectNested = (node) => {
+          (node.children || []).forEach(child => {
+            if (!hasData(child) || !['P/L', 'DIS'].includes(child.accountType)) return;
+            if (child.isSumAccount) nestedSumCodes.add(String(child.code));
+            collectNested(child);
+          });
+        };
+        allSumRows.forEach(collectNested);
+        topLevelSums = allSumRows
+          .filter(n => !nestedSumCodes.has(String(n.code)))
+          .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
+      }
 
-      // Sums that appear as descendants of another sum should NOT sit at top level;
-      // they get nested via writeDrillChildren instead, mirroring the on-screen hierarchy.
-      const nestedSumCodes = new Set();
-      const collectNested = (node) => {
-        (node.children || []).forEach(child => {
-          if (!hasData(child) || !['P/L', 'DIS'].includes(child.accountType)) return;
-          if (child.isSumAccount) nestedSumCodes.add(String(child.code));
-          collectNested(child);
-        });
-      };
-      allSumRows.forEach(collectNested);
-
-      const topLevelSums = allSumRows
-        .filter(n => !nestedSumCodes.has(String(n.code)))
-        .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
-
-      // Drill-down for a detailed row: recurse through ALL group children (sum + non-sum),
+// Drill-down for a detailed row: recurse through ALL group children (sum + non-sum),
       // then local accounts (with dims folded into their name cell), then journals.
       const writeDrillChildren = (parentNode, depth, ol) => {
         const grpChildren = (parentNode.children || []).filter(c =>
@@ -2604,8 +2630,8 @@ const jrns = jrnByCode.get(String(parentNode.code)) || [];
           const firstDiv = DETAIL_DIV_BEFORE[firstKey];
           if (firstDiv) writeDivider(firstDiv);
         }
-        writeDataRow(node, 0, 0);
-        writeDrillChildren(node, 1, 1);
+writeDataRow(node, 0, 0);
+        if (opts?.drillDown !== false) writeDrillChildren(node, 1, 1);
       });
     };
 
@@ -3633,6 +3659,9 @@ if (hasMultiCo) perCoBsTrees.forEach((cot, i) => {
       setC(dr, BS.co[i], total, NUM_FMT, valColor, bold, bg);
     });
 
+// Recurse structural children FIRST so the hierarchy shows even with drill-down off.
+    (node.children || []).forEach(child => writeBsNode(child, depth + 1));
+
 // ── Drill-down: uploadLeaves + dimensions ──
     if (opts && opts.drillDown === false) return;
     const gaNodeB = bsTreeByCodeOnce.get(String(node.code));
@@ -3943,11 +3972,9 @@ if (bsHasB || bsHasC || bsHasD) {
               });
             });
           }
-        }
+}
       }
     }
-
-    (node.children || []).forEach(child => writeBsNode(child, depth + 1));
   };
 
   savedBsLiteral.forEach((section) => {
@@ -3961,7 +3988,7 @@ if (bsHasB || bsHasC || bsHasD) {
       const hex = raw.startsWith('#') ? raw.slice(1) : raw.startsWith('FF') && raw.length === 8 ? raw.slice(2) : raw;
       const divColor = /^[0-9a-fA-F]{6}$/.test(hex) ? `FF${hex.toUpperCase()}` : DIV_BLUE;
       for (let c = 1; c <= bsCols; c++) {
-        dr.getCell(c).fill = mkFill(divColor);
+        dr.getCell(c ).fill = mkFill(divColor);
         dr.getCell(c).border = { bottom: { style: 'thin', color: { argb: divColor } } };
       }
       dr.getCell(1).value = String(lbl).toUpperCase();
@@ -3995,7 +4022,7 @@ if (bsHasB || bsHasC || bsHasD) {
       ws.addRow([]);
       const r2 = ws.lastRow;
       r2.height = 16;
-      r2.getCell(1).value = `A: ${aLabel} · ${structure}`;
+  r2.getCell(1).value = `A: ${aLabel} · ${structure}    ·    Exportado: ${new Date().toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
       r2.getCell(1).font = mkFont(false, 'FFB4C6EE', 9);
       r2.getCell(1).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
       for (let c = 1; c <= bsCols; c++) r2.getCell(c).fill = mkFill(NAVY);
@@ -4089,7 +4116,7 @@ if (bsHasD) {
       };
       const paletteArgbBs = [hexToArgbBs(colors.primary), hexToArgbBs(colors.secondary), hexToArgbBs(colors.tertiary)];
 
-      const BS_DIVIDERS = (() => {
+const BS_DIVIDERS = (() => {
         // PGC BS mapping path
         if (pgcBsMapping?.rows && pgcBsMapping?.sections) {
           const flatNodes = [];
@@ -4103,6 +4130,51 @@ if (bsHasD) {
             });
           })(tree);
           flatNodes.sort((a,b) => a.sortOrder - b.sortOrder);
+
+          // Summary view groups by FAMILY (ACTIVOS / PATRIMONIO Y PASIVO), like the app:
+          // custom-standard grand totals (C.ACT, G.PYC) have section=null, so we infer the
+          // family from the first descendant that carries a known section family.
+          if (label === 'Summary') {
+            const childrenInFlatBs = new Map();
+            (function idx(nodes, parent) {
+              nodes.forEach(n => {
+                if (hasData(n) && n.accountType === 'B/S') {
+                  if (parent) { const k = String(parent.code); if (!childrenInFlatBs.has(k)) childrenInFlatBs.set(k, []); childrenInFlatBs.get(k).push(n); }
+                  idx(n.children || [], n);
+                } else { idx(n.children || [], parent); }
+              });
+            })(tree, null);
+            const familyOfNode = (node) => {
+              const m = pgcBsMapping.rows.get(String(node.code));
+              const fam = bsSectionFamily(m?.section);
+              if (fam !== 'unknown') return fam;
+              const stack = [...(childrenInFlatBs.get(String(node.code)) || [])];
+              while (stack.length) {
+                const child = stack.shift();
+                const cm = pgcBsMapping.rows.get(String(child.code));
+                const cf = bsSectionFamily(cm?.section);
+                if (cf !== 'unknown') return cf;
+                stack.push(...(childrenInFlatBs.get(String(child.code)) || []));
+              }
+              return 'unknown';
+            };
+const famLabel = (fam) => fam === 'assets'
+              ? 'ACTIVOS'
+              : fam === 'liab_equity' ? 'PATRIMONIO Y PASIVO' : null;
+            const seenFam = new Set();
+            const out = {};
+            let i = 0;
+            for (const { node } of flatNodes) {
+              const fam = familyOfNode(node);
+              if (fam === 'unknown' || seenFam.has(fam)) continue;
+              seenFam.add(fam);
+              const lbl = famLabel(fam);
+              if (lbl) { out[String(node.code)] = { label: lbl, argb: paletteArgbBs[i] ?? DIV_BLUE }; i++; }
+            }
+            if (Object.keys(out).length > 0) return out;
+          }
+
+          // Assets / Equity views: breakers per section (all rows share one family).
           const seen = new Set();
           const out = {};
           let i = 0;
@@ -4179,11 +4251,15 @@ const c2Raw = bsHasC ? getYtd(bsC2M, node.code) : 0;
 
         const nameColor = isHighlighted ? NAVY : TEXT_DK;
 
-        ws.addRow([]);
+ws.addRow([]);
         const dr = ws.lastRow;
         dr.height = isHighlighted ? 19 : 17;
-        // BS hierarchy rows stay VISIBLE (like the app — all structural levels shown)
-        // We don't set outlineLevel on structural rows, only on drill-down (leaves/dims/journal)
+        // Structural rows collapse by depth, like the app's expand/collapse tree.
+        // Excel caps outlineLevel at 7; roots (depth 0) stay at level 0 = always visible.
+        if (depth > 0) {
+          dr.outlineLevel = Math.min(depth, 7);
+          dr.hidden = true;
+        }
 const nc = dr.getCell(BS.name);
         const bnmTxt = isHighlighted ? (node.name || '').toUpperCase() : (node.name || '');
         if (node.code) {
@@ -4232,10 +4308,13 @@ if (hasHistoryBS) {
           });
         }
 
-        // Recurse children — structural rows stay visible
+// Recurse children — structural rows stay visible
         (node.children || [])
           .filter(c => hasData(c) && c.accountType === 'B/S')
           .forEach(c => writeBSRow(c, depth + 1));
+
+        // Drill-down OFF: skip leaves / dims / journals, keep the structural rows only.
+        if (opts?.drillDown === false) return;
 
 // Drill-down: local accounts (collapsed) — fully populated with compare/history/multi-co values
         const bsLeafIdxOf = (rows) => {
@@ -4266,9 +4345,9 @@ if (hasHistoryBS) {
           const lbg = LEAF_BG;
           const lac = String(leaf.code ?? '');
           ws.addRow([]);
-          const lr = ws.lastRow;
+const lr = ws.lastRow;
           lr.height = 15;
-          lr.outlineLevel = 1;
+          lr.outlineLevel = Math.min(depth + 1, 7);
           lr.hidden = true;
           const lnc = lr.getCell(BS.name);
           lnc.value = `${leaf.code || ''} ${leaf.name || ''}`.trim();
@@ -4343,8 +4422,8 @@ if (hasHistoryBS) {
             const dbg = DIM_BG;
             ws.addRow([]);
             const dr2 = ws.lastRow;
-            dr2.height = 15;
-            dr2.outlineLevel = 2;
+dr2.height = 15;
+            dr2.outlineLevel = Math.min(depth + 2, 7);
             dr2.hidden = true;
             const dnc = dr2.getCell(BS.name);
             dnc.value = `◆ ${dim.name || dim.code || ''}`;
@@ -4532,16 +4611,46 @@ setC(jr, BS.act, amt, NUM_FMT, INDIGO, false, hbg);
         }
       };
 
-      const bsRoots = tree
+const bsRoots = tree
         .filter(n => hasData(n) && n.accountType === 'B/S')
         .filter(n => !filterFn || filterFn(n))
         .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
-
-      bsRoots.forEach(n => writeBSRow(n, 0));
+// In Assets / Equity views, any roll-up with an unknown section family
+      // (grand totals like C.ACT / G.PYC AND intermediate ones like G.PAS "Total pasivo")
+      // isn't shown as a row — the app renders only real section rows. Skip those nodes
+      // and splice their children up in place, at the same depth. Summary shows them all.
+      const isUnknownFamily = (n) => {
+        if (!(pgcBsMapping?.rows)) return false;
+        const m = pgcBsMapping.rows.get(String(n.code));
+        return bsSectionFamily(m?.section) === 'unknown';
+      };
+      const writeBSRowFiltered = (node, depth) => {
+        if (!hasData(node) || node.accountType !== 'B/S') return;
+        if (isUnknownFamily(node)) {
+          (node.children || []).forEach(c => writeBSRowFiltered(c, depth));
+        } else {
+          writeBSRow(node, depth);
+        }
+      };
+      if (label === 'Summary') {
+        bsRoots.forEach(n => writeBSRow(n, 0));
+      } else {
+        bsRoots.forEach(n => writeBSRowFiltered(n, 0));
+      }
     };
 
     // BUILD SHEETS
-    const isAssetsRoot = n => {
+const isAssetsRoot = n => {
+      // Prefer the mapping section family (matches on-screen bsSectionFamily);
+      // fall back to name matching only when there's no mapping entry.
+      if (pgcBsMapping?.rows) {
+        const m = pgcBsMapping.rows.get(String(n.code));
+        if (m) {
+          const fam = bsSectionFamily(m.section);
+          if (fam === 'assets') return true;
+          if (fam === 'liab_equity') return false;
+        }
+      }
       const name = (n.name ?? '').toLowerCase();
       return name.includes('asset') || name.includes('activo');
     };
@@ -4552,18 +4661,16 @@ const hasSavedBsLiteral = Array.isArray(savedBsLiteral) && savedBsLiteral.length
 if (hasSavedLiteral) {
 if (opts.plSaved !== false) { const _wsPl = wb.addWorksheet('Profit & Loss'); buildSavedPLSheet(_wsPl); frameCompareGroups(_wsPl, PL); }
 } else {
-if (opts.plSummary !== false) { const _wsPlSum = wb.addWorksheet('P&L Summary'); buildPLSheet(_wsPlSum, true); frameCompareGroups(_wsPlSum, PL); }
-  if (opts.plDetailed !== false) { const _wsPlDet = wb.addWorksheet('P&L Detailed'); buildPLSheet(_wsPlDet, false); frameCompareGroups(_wsPlDet, PL); }
+  const _wsPl = wb.addWorksheet('Profit & Loss'); buildPLSheet(_wsPl, false); frameCompareGroups(_wsPl, PL);
 }
 
 if (hasSavedBsLiteral) {
 if (opts.bsSaved !== false) { const _wsBs = wb.addWorksheet('Balance Sheet'); buildSavedBSSheet(_wsBs); frameCompareGroups(_wsBs, BS); }
 } else {
-if (opts.bsSummary !== false) { const _wsBsSum = wb.addWorksheet('BS Summary'); buildBSSheet(_wsBsSum, 'Summary', null); frameCompareGroups(_wsBsSum, BS); }
+  if (opts.bsSummary !== false) { const _wsBsSum = wb.addWorksheet('BS Summary'); buildBSSheet(_wsBsSum, 'Summary', null); frameCompareGroups(_wsBsSum, BS); }
   if (opts.bsAssets !== false)  { const _wsBsAss = wb.addWorksheet('BS Assets');  buildBSSheet(_wsBsAss, 'Assets', n => isAssetsRoot(n)); frameCompareGroups(_wsBsAss, BS); }
   if (opts.bsEquity !== false)  { const _wsBsEq  = wb.addWorksheet('BS Equity & Liab'); buildBSSheet(_wsBsEq, 'Equity & Liabilities', n => !isAssetsRoot(n)); frameCompareGroups(_wsBsEq, BS); }
 }
-
     // ═══════════════════════════════════════════════════════════
     // DIMENSIONS & JOURNAL SHEET
     // ═══════════════════════════════════════════════════════════
@@ -4743,7 +4850,8 @@ if (opts.bsSummary !== false) { const _wsBsSum = wb.addWorksheet('BS Summary'); 
     .catch(e => alert('Could not load library: ' + e.message));
 }
 
-function generateKonsolidatorPdf({
+function generateKonsolidatorPdf(__pdfArgs) {
+  const {
   t = (k) => k, MONTHS: MONTHS_T = MONTHS,
   groupAccounts, uploadedAccounts, prevUploadedAccounts,
   compareMode,
@@ -4779,8 +4887,8 @@ journalEntries = [],
   pgcMapping = null,
   pgcBsMapping = null,
   colors = { primary: '#1a2f8a', secondary: '#CF305D', tertiary: '#57aa78' },
-  opts = {},
-}) {
+opts = {},
+  } = __pdfArgs;
   function doGenerate(jsPDF, autoTable) {
     const buildJrnByCodePdf = (entries) => {
       const m = new Map();
@@ -4997,8 +5105,8 @@ if (!sections.find(s => s.title === sectionTitle)) {
     };
     const palettePl = [hexToRgbLocal(colors.primary), hexToRgbLocal(colors.secondary), hexToRgbLocal(colors.tertiary)];
 
-    const buildPlBreakersForPdf = (isSummary, treeArg) => {
-      if (pgcMapping?.rows && pgcMapping?.sections) {
+const buildPlBreakersForPdf = (isSummary, treeArg) => {
+if (pgcMapping?.rows && pgcMapping?.sections) {
         const rowsToScan = isSummary ? summaryRows : (() => {
           const all = [];
           const walkS = n => {
@@ -5017,8 +5125,10 @@ if (!sections.find(s => s.title === sectionTitle)) {
           if (!m) continue;
           if (seen.has(m.section)) continue;
           seen.add(m.section);
-          const sec = pgcMapping.sections.get(m.section);
-          if (sec) { out[String(node.code)] = { label: sec.label, color: palettePl[i] ?? hexToRgbLocal(sec.color) }; i++; }
+const sec = pgcMapping.sections.get(m.section);
+          // Custom standards carry their own section color — honor it instead
+          // of the position-based palette (which mismatched the colors).
+          if (sec) { out[String(node.code)] = { label: sec.label, color: sec.color ? hexToRgbLocal(sec.color) : (palettePl[i] ?? [10,20,70]) }; i++; }
         }
         return out;
       }
@@ -5091,13 +5201,44 @@ const pdfPerCoLeafDimIdx = hasMultiCo ? selectedCompanies.map(co => ({
     })) : [];
 
     // Build PL rows — fully expanded, all leaves/dims/journals
-    const buildPlRows = (treeArg) => {
+const buildPlRows = (treeArg) => {
       const rows = [];
-      const breakerMap = buildPlBreakersForPdf(false, treeArg);
-      const walk = (node, d) => {
+      // Mirror on-screen `allSumRows`: with a converted custom standard the
+      // detailed view is a FLAT list of mapping rows in sortOrder, not a walk of
+      // the group-accounts tree. convertSavedMappingTree never writes parentCode,
+      // so isChildOfSameSection is always false and every mapping row is top level.
+      const treeByCodePdf = new Map();
+      (function idx(ns) { (ns || []).forEach(n => { treeByCodePdf.set(String(n.code), n); idx(n.children); }); })(treeArg);
+      const mappedTopNodes = (pgcMapping?.rows && pgcMapping?.sections)
+        ? [...pgcMapping.rows.entries()]
+.filter(([, info]) => {
+              if (!info.isSum) return false;
+              const parent = info.parentCode ? String(info.parentCode) : null;
+              const pInfo = parent ? pgcMapping.rows.get(parent) : null;
+              return !(pInfo && pInfo.isSum && pInfo.section === info.section);
+            })
+            .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+            .map(([code]) => treeByCodePdf.get(String(code)))
+            .filter(n => n && hasData(n) && ['P/L', 'DIS'].includes(n.accountType))
+        : null;
+      // Breaker anchors = first row of each section IN THAT ORDER (same loop as effectiveBreakersPl).
+      const breakerMap = (() => {
+        if (!mappedTopNodes) return buildPlBreakersForPdf(false, treeArg);
+        const seen = new Set(); const out = {}; let i = 0;
+        for (const n of mappedTopNodes) {
+          const m = pgcMapping.rows.get(String(n.code));
+          if (!m || seen.has(m.section)) continue;
+          seen.add(m.section);
+          const sec = pgcMapping.sections.get(m.section);
+          if (sec) { out[String(n.code)] = { label: sec.label, color: sec.color ? hexToRgbLocal(sec.color) : (palettePl[i] ?? [10, 20, 70]) }; i++; }
+        }
+        return out;
+      })();
+const walk = (node, d) => {
         if (!hasData(node) || !['P/L', 'DIS'].includes(node.accountType)) return;
-        // Emit breaker row before this node if applicable (and only when d === 0)
-        if (d === 0 && breakerMap[String(node.code)]) {
+        // Breaker anchors are nested sums (A.01, A.06…), never tree roots, so a
+        // d===0 gate killed every section header. Emit on first sight, once each.
+if (d === 0 && breakerMap[String(node.code)]) {
           const br = breakerMap[String(node.code)];
           rows.push({
             code: '', label: String(br.label).toUpperCase(),
@@ -5127,7 +5268,8 @@ const pdfPerCoLeafDimIdx = hasMultiCo ? selectedCompanies.map(co => ({
           const prevC = Number(month) === 1 ? 0 : -getYtd(c.prevMap, node.code);
           return ytdOnly ? ytdC : (ytdC - prevC);
         });
-        rows.push({ code: String(node.code ?? ''), label: '  '.repeat(d) + (node.name || ''), mon, ytd, cMon, cYtd, c2Mon, c2Ytd, c3Mon, c3Ytd, histVals, coVals, isBold: node.isSumAccount, depth: d, isHighlighted: isHl });
+rows.push({ code: String(node.code ?? ''), label: '  '.repeat(d) + (node.name || ''), mon, ytd, cMon, cYtd, c2Mon, c2Ytd, c3Mon, c3Ytd, histVals, coVals, isBold: node.isSumAccount, depth: d, isHighlighted: isHl });
+        if (opts?.drillDown === false) return;
         node.children?.forEach(c => walk(c, d + 1));
 (node.uploadLeaves || []).forEach(leaf => {
           if (leaf.type === 'plain') return;
@@ -5259,52 +5401,12 @@ jrns.forEach(j => {
           }
         }
       };
-      treeArg.filter(n => hasData(n) && ['P/L', 'DIS'].includes(n.accountType)).sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true })).forEach(n => walk(n, 0));
+(mappedTopNodes ?? treeArg
+        .filter(n => hasData(n) && ['P/L', 'DIS'].includes(n.accountType))
+        .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }))
+).forEach(n => walk(n, 0));
       return rows;
     };
-
-const buildPlSummaryRows = () => {
-      if (!Array.isArray(summaryRows) || summaryRows.length === 0) return [];
-      const breakerMap = buildPlBreakersForPdf(true, tree);
-      const sorted = summaryRows.filter(n => hasData(n) && ['P/L', 'DIS'].includes(n.accountType))
-        .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
-      const out = [];
-      sorted.forEach(node => {
-        if (breakerMap[String(node.code)]) {
-          const br = breakerMap[String(node.code)];
-          out.push({
-            code: '', label: String(br.label).toUpperCase(),
-            mon: null, ytd: null, cMon: null, cYtd: null, c2Mon: null, c2Ytd: null, c3Mon: null, c3Ytd: null,
-            _isSectionHeader: true, _sectionColor: br.color,
-          });
-        }
-out.push((() => {
-          const ytd = -sumNode(node);
-          const mon = ytd - (-getPrev(prevMap, node.code, month));
-          // Guard: a compare period with no data must not subtract its prior
-          // month — otherwise (0 − prevYTD) exports phantom negatives. Matches UI.
-          const cYtd = hasB ? -getYtd(cmpMap, node.code) : null;
-        const cMon = hasB ? cYtd - (cmpMap.size > 0 ? (-getPrev(cmpPrevMap, node.code, cmpFilters?.month)) : 0) : null;
-        const c2Ytd = hasC ? -getYtd(cmp2Map, node.code) : null;
-        const c2Mon = hasC ? c2Ytd - (cmp2Map.size > 0 ? (-getPrev(cmp2PrevMap, node.code, cmp2Filters?.month)) : 0) : null;
-        const c3Ytd = hasD ? -getYtd(cmp3Map, node.code) : null;
-        const c3Mon = hasD ? c3Ytd - (cmp3Map.size > 0 ? (-getPrev(cmp3PrevMap, node.code, cmp3Filters?.month)) : 0) : null;
-          const histVals = plHistMaps.map(h => {
-            const hYtd = -getYtd(h.map, node.code);
-            const hPrev = -getPrev(h.prevMap, node.code, h.month);
-            return { mon: hYtd - hPrev, ytd: hYtd };
-          });
-          const coVals = perCoMaps.map(c => {
-            const ytdC = -getYtd(c.map, node.code);
-            const prevC = Number(month) === 1 ? 0 : -getYtd(c.prevMap, node.code);
-            return ytdOnly ? ytdC : (ytdC - prevC);
-          });
-return { code: String(node.code ?? ''), label: node.name || '', mon, ytd, cMon, cYtd, c2Mon, c2Ytd, c3Mon, c3Ytd, histVals, coVals, isBold: true, depth: 0, isHighlighted: true };
-        })());
-      });
-      return out;
-    };
-
 // BS leaf indexes for PDF drill-down
     const pdfBsBLeafIdx = bsHasB ? buildLeafIdxPdf(bsCmpUploadedAccounts) : new Map();
     const pdfBsCLeafIdx = bsHasC ? buildLeafIdxPdf(bsCmp2UploadedAccounts) : new Map();
@@ -5317,20 +5419,70 @@ const pdfBsBLeafDimIdx = bsHasB ? buildLeafDimIdxPdf(bsCmpUploadedAccounts) : ne
     const pdfBsPerCoLeafDimIdx = hasMultiCo ? selectedCompanies.map(co =>
       buildLeafDimIdxPdf((uploadedAccounts || []).filter(r => getCoF(r) === co))
     ) : [];
-    const buildBsBreakersForPdf = () => {
+const buildBsBreakersForPdf = (viewMode = 'summary') => {
       const paletteBsLocal = [hexToRgbLocal(colors.primary), hexToRgbLocal(colors.secondary), hexToRgbLocal(colors.tertiary)];
       if (pgcBsMapping?.rows && pgcBsMapping?.sections) {
         const flatNodes = [];
-        (function walk(nodes) {
+        const childrenInFlatBs = new Map();
+        (function walk(nodes, parent) {
           nodes.forEach(n => {
             if (hasData(n) && n.accountType === 'B/S') {
               const m = pgcBsMapping.rows.get(String(n.code));
               if (m && m.isSum) flatNodes.push({ node: n, sortOrder: m.sortOrder, section: m.section });
-            }
-            walk(n.children || []);
+              if (parent) { const k = String(parent.code); if (!childrenInFlatBs.has(k)) childrenInFlatBs.set(k, []); childrenInFlatBs.get(k).push(n); }
+              walk(n.children || [], n);
+            } else { walk(n.children || [], parent); }
           });
-        })(tree);
+        })(tree, null);
         flatNodes.sort((a,b) => a.sortOrder - b.sortOrder);
+
+        // Summary groups by FAMILY (ACTIVOS / PATRIMONIO Y PASIVO); grand totals have section=null
+        // so infer the family from the first descendant with a known section.
+        if (viewMode === 'summary') {
+          const familyOfNode = (node) => {
+            const m = pgcBsMapping.rows.get(String(node.code));
+            const fam = bsSectionFamily(m?.section);
+            if (fam !== 'unknown') return fam;
+            const stack = [...(childrenInFlatBs.get(String(node.code)) || [])];
+            while (stack.length) {
+              const child = stack.shift();
+              const cm = pgcBsMapping.rows.get(String(child.code));
+              const cf = bsSectionFamily(cm?.section);
+              if (cf !== 'unknown') return cf;
+              stack.push(...(childrenInFlatBs.get(String(child.code)) || []));
+            }
+            return 'unknown';
+          };
+          const famColorOf = (node) => {
+            const own = pgcBsMapping.rows.get(String(node.code));
+            let c = own ? pgcBsMapping.sections.get(own.section)?.color : null;
+            if (!c) {
+              const stack = [...(childrenInFlatBs.get(String(node.code)) || [])];
+              while (stack.length && !c) {
+                const ch = stack.shift();
+                const cm = pgcBsMapping.rows.get(String(ch.code));
+                const cs = cm ? pgcBsMapping.sections.get(cm.section) : null;
+                if (cs?.color) c = cs.color;
+                else stack.push(...(childrenInFlatBs.get(String(ch.code)) || []));
+              }
+            }
+            return c;
+          };
+          const famLabel = (fam) => fam === 'assets' ? 'ACTIVOS' : fam === 'liab_equity' ? 'PATRIMONIO Y PASIVO' : null;
+          const seenFam = new Set();
+          const out = {};
+          let i = 0;
+          for (const { node } of flatNodes) {
+            const fam = familyOfNode(node);
+            if (fam === 'unknown' || seenFam.has(fam)) continue;
+            seenFam.add(fam);
+            const lbl = famLabel(fam);
+            if (lbl) { const c = famColorOf(node); out[String(node.code)] = { label: lbl, color: c ? hexToRgbLocal(c) : (paletteBsLocal[i] ?? [26,43,107]) }; i++; }
+          }
+          if (Object.keys(out).length > 0) return out;
+        }
+
+        // Assets / Equity: breakers per section, using the mapping section color.
         const seen = new Set();
         const out = {};
         let i = 0;
@@ -5338,7 +5490,7 @@ const pdfBsBLeafDimIdx = bsHasB ? buildLeafDimIdxPdf(bsCmpUploadedAccounts) : ne
           if (seen.has(section)) continue;
           seen.add(section);
           const sec = pgcBsMapping.sections.get(section);
-          if (sec) { out[String(node.code)] = { label: sec.label, color: paletteBsLocal[i] ?? hexToRgbLocal(sec.color) }; i++; }
+          if (sec) { out[String(node.code)] = { label: sec.label, color: sec.color ? hexToRgbLocal(sec.color) : (paletteBsLocal[i] ?? [26,43,107]) }; i++; }
         }
         if (Object.keys(out).length > 0) return out;
       }
@@ -5354,12 +5506,14 @@ const pdfBsBLeafDimIdx = bsHasB ? buildLeafDimIdxPdf(bsCmpUploadedAccounts) : ne
       return {};
     };
 
-    const buildBsRows = (filterFn = null) => {
+const buildBsRows = (filterFn = null, viewMode = 'summary') => {
       const rows = [];
-      const breakerMap = buildBsBreakersForPdf();
+const breakerMap = buildBsBreakersForPdf(viewMode);
+      const emittedBreakers = new Set();
       const walk = (node, d) => {
         if (!hasData(node) || node.accountType !== 'B/S') return;
-        if (d === 0 && breakerMap[String(node.code)]) {
+        if (breakerMap[String(node.code)] && !emittedBreakers.has(String(node.code))) {
+          emittedBreakers.add(String(node.code));
           const br = breakerMap[String(node.code)];
           rows.push({
             code: '', label: String(br.label).toUpperCase(),
@@ -5384,7 +5538,8 @@ const pdfBsBLeafDimIdx = bsHasB ? buildLeafDimIdxPdf(bsCmpUploadedAccounts) : ne
           const raw = getYtd(c.map, node.code);
           return isNeg ? -raw : raw;
         });
-        rows.push({ code: String(node.code ?? ''), label: '  '.repeat(d) + (node.name || ''), total, cVal, c2Val, c3Val, histVals, coVals, isBold: isHl, depth: d, isHighlighted: isHl });
+rows.push({ code: String(node.code ?? ''), label: '  '.repeat(d) + (node.name || ''), total, cVal, c2Val, c3Val, histVals, coVals, isBold: isHl, depth: d, isHighlighted: isHl });
+if (opts?.drillDown === false) return;
         node.children?.filter(hasData).forEach(c => walk(c, d + 1));
 (node.uploadLeaves || []).forEach(leaf => {
           if (leaf.type === 'plain') return;
@@ -5468,7 +5623,24 @@ const jrns = (journalEntries || []).filter(j => {
           }
         }
       };
-tree.filter(n => hasData(n) && n.accountType === 'B/S').filter(n => !filterFn || filterFn(n)).sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true })).forEach(n => walk(n, 0));
+const isUnknownFamilyPdf = (n) => {
+        if (!(pgcBsMapping?.rows)) return false;
+        const m = pgcBsMapping.rows.get(String(n.code));
+        return bsSectionFamily(m?.section) === 'unknown';
+      };
+      const walkFiltered = (node, d) => {
+        if (!hasData(node) || node.accountType !== 'B/S') return;
+        if (viewMode !== 'summary' && isUnknownFamilyPdf(node)) {
+          (node.children || []).forEach(c => walkFiltered(c, d));
+        } else {
+          walk(node, d);
+        }
+      };
+      const roots = tree.filter(n => hasData(n) && n.accountType === 'B/S')
+        .filter(n => !filterFn || filterFn(n))
+        .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
+      if (viewMode === 'summary') roots.forEach(n => walk(n, 0));
+      else roots.forEach(n => walkFiltered(n, 0));
       return rows;
     };
 
@@ -5709,6 +5881,8 @@ const nodeHistVals = hasHistoryPL ? plHistTreeMaps.map(h => sumLitWithKids(node,
           isBold: hl || depth === 0, isHighlighted: hl || depth === 0, depth,
         });
 
+// Recurse structural children FIRST so the hierarchy shows even with drill-down off.
+        (node.children || []).forEach(child => pushNode(child, depth + 1));
 if (opts && opts.drillDown === false) return;
         const gaNode = aTree.get(String(node.code));
         let leaves = (gaNode?.uploadLeaves || []).filter(l => l.type !== 'plain');
@@ -5945,9 +6119,7 @@ if (hasB || hasC || hasD) {
               }
             }
           }
-        }
-
-        (node.children || []).forEach(child => pushNode(child, depth + 1));
+}
       };
 let plPdfLeafDimsRawFull = null;
 let plPdfRowsByLac = null;
@@ -6475,11 +6647,13 @@ const bsColStyles = () => {
         for (let i = 0; i < bsHistMaps.length; i++) s[`hist${i}`] = { cellWidth: valW, halign: 'right' };
         return s;
       }
-      const cc = (bsHasB ? 1 : 0) + (bsHasC ? 1 : 0) + (bsHasD ? 1 : 0);
-      const valW = 18, diffW = 14, pctW = 11;
+const cc = (bsHasB ? 1 : 0) + (bsHasC ? 1 : 0) + (bsHasD ? 1 : 0);
+      // Wider value columns so amounts like 1.062.995,00 fit on one line; scale down
+      // when many compare periods are active so the table still fits the page width.
+      const valW = cc >= 2 ? 21 : 24, diffW = cc >= 2 ? 16 : 18, pctW = 12;
       const labelW = usable - codeW - valW - cc * (valW + diffW + pctW);
-      const s = { code: { cellWidth: codeW, halign: 'left' }, label: { cellWidth: Math.max(50, labelW), halign: 'left' }, total: { cellWidth: valW, halign: 'right' } };
-      [['cVal','devB','devBP', bsHasB],['c2Val','devC','devCP', bsHasC],['c3Val','devD','devDP', bsHasD]].forEach(([a,b,c,en]) => { if (en) { s[a] = { cellWidth: valW, halign: 'right' }; s[b] = { cellWidth: diffW, halign: 'right' }; s[c] = { cellWidth: pctW, halign: 'right' }; }});
+      const s = { code: { cellWidth: codeW, halign: 'left' }, label: { cellWidth: Math.max(40, labelW), halign: 'left' }, total: { cellWidth: valW, halign: 'right', overflow: 'visible' } };
+[['cVal','devB','devBP', bsHasB],['c2Val','devC','devCP', bsHasC],['c3Val','devD','devDP', bsHasD]].forEach(([a,b,c,en]) => { if (en) { s[a] = { cellWidth: valW, halign: 'right', overflow: 'visible' }; s[b] = { cellWidth: diffW, halign: 'right', overflow: 'visible' }; s[c] = { cellWidth: pctW, halign: 'right', overflow: 'visible' }; }});
       for (let i = 0; i < bsHistMaps.length; i++) s[`hist${i}`] = { cellWidth: valW, halign: 'right' };
       return s;
     };
@@ -6491,8 +6665,8 @@ const bsColStyles = () => {
         startY, columns: cols, body,
         margin: { left: 8, right: 8, bottom: 10 },
         tableWidth: 'auto',
-        styles: { fontSize: isCompact ? 5.8 : 7.5, cellPadding: { top: isCompact ? 1.6 : 2.5, bottom: isCompact ? 1.6 : 2.5, left: isCompact ? 1.6 : 3, right: isCompact ? 1.6 : 3 }, overflow: 'linebreak', lineColor: GRAYLT, lineWidth: 0.1, font: 'helvetica', textColor: TEXTDK },
-        headStyles: { fillColor: NAVY, textColor: WHITE, fontStyle: 'bold', fontSize: isCompact ? 5.5 : 7, cellPadding: { top: 3, bottom: 3, left: isCompact ? 2 : 3, right: isCompact ? 2 : 3 }, lineWidth: 0 },
+styles: { fontSize: isCompact ? 7 : 8, cellPadding: { top: isCompact ? 2 : 2.5, bottom: isCompact ? 2 : 2.5, left: isCompact ? 2 : 3, right: isCompact ? 2 : 3 }, overflow: 'linebreak', lineColor: GRAYLT, lineWidth: 0.1, font: 'helvetica', textColor: TEXTDK },
+        headStyles: { fillColor: NAVY, textColor: WHITE, fontStyle: 'bold', fontSize: isCompact ? 6.5 : 7.5, cellPadding: { top: 3, bottom: 3, left: isCompact ? 2 : 3, right: isCompact ? 2 : 3 }, lineWidth: 0 },
         columnStyles: colStyles,
         alternateRowStyles: { fillColor: STRIPE },
         didParseCell: (d) => styleRowCell(d, isPL),
@@ -6520,22 +6694,13 @@ renderPage(`${t("page_pl_full")} — ${t("pl_monthly")}${chunkSuffix}`, isFirst,
             renderPage(`${t("page_pl_full")}${chunkSuffix}`, isFirst, makePlCols(), savedPlBody, true, plColStyles()); isFirst = false;
           }
         }
-      } else {
-        if (opts.plSummary !== false) {
-          if (hasB || hasC || hasD) {
-renderPage(`${t("page_pl")} — ${t("view_summary")} — ${t("pl_monthly")}${chunkSuffix}`, isFirst, makePlCols('monthly'), buildPlSummaryRows().map(toPlRowBody), true, plColStyles('monthly')); isFirst = false;
-            renderPage(`${t("page_pl")} — ${t("view_summary")} — ${t("pl_ytd")}${chunkSuffix}`,     isFirst, makePlCols('ytd'),     buildPlSummaryRows().map(toPlRowBody), true, plColStyles('ytd'));     isFirst = false;
-          } else {
-            renderPage(`${t("page_pl")} — ${t("view_summary")}${chunkSuffix}`, isFirst, makePlCols(), buildPlSummaryRows().map(toPlRowBody), true, plColStyles()); isFirst = false;
-          }
-        }
-        if (opts.plDetailed !== false) {
-          if (hasB || hasC || hasD) {
-            renderPage(`${t("page_pl")} — ${t("view_detailed")} — ${t("pl_monthly")}${chunkSuffix}`, isFirst, makePlCols('monthly'), buildPlRows(tree).map(toPlRowBody), true, plColStyles('monthly')); isFirst = false;
-            renderPage(`${t("page_pl")} — ${t("view_detailed")} — ${t("pl_ytd")}${chunkSuffix}`,     isFirst, makePlCols('ytd'),     buildPlRows(tree).map(toPlRowBody), true, plColStyles('ytd'));     isFirst = false;
-          } else {
-            renderPage(`${t("page_pl")} — ${t("view_detailed")}${chunkSuffix}`, isFirst, makePlCols(), buildPlRows(tree).map(toPlRowBody), true, plColStyles()); isFirst = false;
-          }
+} else {
+        const plBody = buildPlRows(tree).map(toPlRowBody);
+        if (hasB || hasC || hasD) {
+          renderPage(`${t("page_pl_full")} — ${t("pl_monthly")}${chunkSuffix}`, isFirst, makePlCols('monthly'), plBody, true, plColStyles('monthly')); isFirst = false;
+          renderPage(`${t("page_pl_full")} — ${t("pl_ytd")}${chunkSuffix}`,     isFirst, makePlCols('ytd'),     plBody, true, plColStyles('ytd'));     isFirst = false;
+        } else {
+          renderPage(`${t("page_pl_full")}${chunkSuffix}`, isFirst, makePlCols(), plBody, true, plColStyles()); isFirst = false;
         }
       }
     };
@@ -6546,18 +6711,24 @@ renderPage(`${t("page_pl")} — ${t("view_summary")} — ${t("pl_monthly")}${chu
       renderPlForChunk(0);
     }
 
-    const isAssetsRoot = n => (n.name ?? '').toLowerCase().includes('asset') || (n.name ?? '').toLowerCase().includes('activo');
+const isAssetsRoot = n => {
+      if (pgcBsMapping?.rows) {
+        const m = pgcBsMapping.rows.get(String(n.code));
+        if (m) { const fam = bsSectionFamily(m.section); if (fam === 'assets') return true; if (fam === 'liab_equity') return false; }
+      }
+      return (n.name ?? '').toLowerCase().includes('asset') || (n.name ?? '').toLowerCase().includes('activo');
+    };
 
 const renderBsForChunk = (chunkIdx) => {
       if (hasMultiCo) perCoMaps = buildPerCoMaps(coChunksAll[chunkIdx]);
       const chunkSuffix = hasMultiCo && coChunksAll.length > 1 ? ` (cos ${chunkIdx * MULTI_CO_CHUNK + 1}–${chunkIdx * MULTI_CO_CHUNK + coChunksAll[chunkIdx].length})` : '';
 
-      if (hasSavedBsLit) {
-if (opts.bsSaved !== false) { renderPage(`${t("page_bs_full")}${chunkSuffix}`, isFirst, makeBsCols(), buildSavedBsRowsLit().map(toBsRowBody), false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
+if (hasSavedBsLit) {
+if (opts.bsSaved !== false) {renderPage(`${t("page_bs_full")}${chunkSuffix}`, isFirst, makeBsCols(), buildSavedBsRowsLit().map(toBsRowBody), false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
       } else {
-        if (opts.bsSummary !== false) { renderPage(`${t("page_bs_full")} — ${t("view_summary")}${chunkSuffix}`, isFirst, makeBsCols(), buildBsRows().map(toBsRowBody),                       false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
-        if (opts.bsAssets  !== false) { renderPage(`${t("page_bs_full")} — ${t("bs_assets")}${chunkSuffix}`,   isFirst, makeBsCols(), buildBsRows(isAssetsRoot).map(toBsRowBody),          false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
-        if (opts.bsEquity  !== false) { renderPage(`${t("page_bs_full")} — ${t("bs_equity_liab_full")}${chunkSuffix}`, isFirst, makeBsCols(), buildBsRows(n => !isAssetsRoot(n)).map(toBsRowBody), false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
+if (opts.bsSummary !== false) { renderPage(`${t("page_bs_full")} — ${t("view_summary")}${chunkSuffix}`, isFirst, makeBsCols(), buildBsRows(null, 'summary').map(toBsRowBody),                       false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
+        if (opts.bsAssets  !== false) { renderPage(`${t("page_bs_full")} — ${t("bs_assets")}${chunkSuffix}`,   isFirst, makeBsCols(), buildBsRows(isAssetsRoot, 'assets').map(toBsRowBody),          false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
+        if (opts.bsEquity  !== false) { renderPage(`${t("page_bs_full")} — ${t("bs_equity_liab_full")}${chunkSuffix}`, isFirst, makeBsCols(), buildBsRows(n => !isAssetsRoot(n), 'equity').map(toBsRowBody), false, bsColStyles(), bsHasB, { b: bsBLabel, c: bsCLabel, d: bsDLabel }); isFirst = false; }
       }
     };
 
@@ -6800,14 +6971,8 @@ const startAccResize = useCallback((e) => {
   const startX = e.clientX;
   const startW = accColWidth ?? th.getBoundingClientRect().width;
 
-  // Medir el min: posición del último botón del header (expand/collapse all) + padding
-const thRect = th.getBoundingClientRect();
-  let maxRight = thRect.left;
-  th.querySelectorAll("button").forEach(b => {
-    const r = b.getBoundingClientRect().right;
-    if (r > maxRight) maxRight = r;
-  });
-const minW = maxRight > thRect.left ? Math.max(60, maxRight - thRect.left + 12) : 220;
+// Allow shrinking the name column right down so the data columns get more room.
+const minW = 80;
 
   const table = th.closest("table");
   const col = table?.querySelector("colgroup col:first-child");
@@ -6815,9 +6980,9 @@ const minW = maxRight > thRect.left ? Math.max(60, maxRight - thRect.left + 12) 
   handle.classList.add("is-dragging");
   let latestW = startW;
 
-  const move = (ev) => {
+const move = (ev) => {
     const dx = ev.clientX - startX;
-    latestW = Math.max(minW, Math.min(1200, startW + dx));
+    const _tW = table?.getBoundingClientRect().width ?? 0; const _maxW = _tW > 0 ? Math.max(minW, _tW * 0.45) : 1200; latestW = Math.max(minW, Math.min(_maxW, startW + dx));
     if (col) col.style.width = `${latestW}px`;
     th.style.width = `${latestW}px`;
   };
@@ -6956,6 +7121,26 @@ setExpandedMap(prev => ({ ...prev, [code]: !isOpen(code) }));
   };
 
   // Collect all sum account nodes from P/L tree in ascending code order (post-order = leaves first)
+const pgcDepthOf = useCallback((code) => {
+  // Depth of an account relative to the top of ITS section. Walk parentCode
+  // but stop as soon as the parent belongs to a different section — otherwise
+  // the chain climbs across sections and over-indents. Used to nest rows like
+  // A.06.B under A.06 in the flat statement render.
+  if (!pgcMapping?.rows) return 0;
+  const self = pgcMapping.rows.get(String(code));
+  if (!self) return 0;
+  const mySection = self.section;
+  let depth = 0, cur = String(code), hops = 0;
+  while (cur && hops < 40) {
+    const info = pgcMapping.rows.get(cur);
+    const parent = info?.parentCode ? String(info.parentCode) : null;
+    const pInfo = parent ? pgcMapping.rows.get(parent) : null;
+    if (!pInfo || pInfo.section !== mySection) break; // stop at section boundary
+    depth++; cur = parent; hops++;
+  }
+  return depth;
+}, [pgcMapping]);
+
 const allSumRows = useMemo(() => {
   // PGC mapping path: order by mapping, filter to is_sum rows
   if (pgcMapping?.rows) {
@@ -6963,8 +7148,19 @@ const allSumRows = useMemo(() => {
     (function index(nodes) {
       nodes.forEach(n => { treeByCode.set(String(n.code), n); index(n.children || []); });
     })(tree);
-    return [...pgcMapping.rows.entries()]
-      .filter(([, info]) => info.isSum)
+// Only TOP-LEVEL sum rows go in the flat list. A row whose parentCode is
+    // another sum row in the SAME section is a child — it must appear only when
+    // its parent is expanded (via renderChildren), not as its own top-level row.
+    const rowsMap = pgcMapping.rows;
+    const isChildOfSameSection = (code) => {
+      const info = rowsMap.get(String(code));
+      if (!info) return false;
+      const parent = info.parentCode ? String(info.parentCode) : null;
+      const pInfo = parent ? rowsMap.get(parent) : null;
+      return !!(pInfo && pInfo.isSum && pInfo.section === info.section);
+    };
+    return [...rowsMap.entries()]
+      .filter(([code, info]) => info.isSum && !isChildOfSameSection(code))
       .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
       .map(([code]) => treeByCode.get(code))
       .filter(n => n && hasData(n) && ["P/L", "DIS"].includes(n.accountType));
@@ -7881,7 +8077,7 @@ const isOpen = useCallback((key) => {
 // When PGC mapping is active, derive the 3 breakers (one per section,
 // placed on the first row of each section in the rendered list).
 const effectiveBreakersPl = useMemo(() => {
-  const palette = [colors.primary, colors.secondary, colors.tertiary];
+const palette = [colors.primary, colors.secondary, colors.tertiary];
 
   // PGC mapping path
   if (pgcMapping?.rows && pgcMapping?.sections) {
@@ -7894,9 +8090,11 @@ const effectiveBreakersPl = useMemo(() => {
       if (!m) continue;
       if (seen.has(m.section)) continue;
       seen.add(m.section);
-      const sec = pgcMapping.sections.get(m.section);
+const sec = pgcMapping.sections.get(m.section);
       if (sec) {
-        out[String(node.code)] = { label: sec.label, color: palette[i] ?? sec.color };
+        // Honor the custom standard's own section color; only fall back to the
+        // theme palette when the section has no color of its own.
+        out[String(node.code)] = { label: sec.label, color: sec.color || palette[i] };
         i++;
       }
     }
@@ -8504,9 +8702,8 @@ if (loading) return (
 const cmpLabel  = compareMode ? [cmpFilters.year, MONTHS.find(m => String(m.value) === String(cmpFilters.month))?.label, cmpFilters.source, cmpFilters.dimension].filter(Boolean).join(" · ") || t("period_b") : "";
 const cmp2Label = compareMode ? [cmp2Filters?.year, MONTHS.find(m => String(m.value) === String(cmp2Filters?.month))?.label, cmp2Filters?.source, cmp2Filters?.dimension].filter(Boolean).join(" · ") || t("period_c") : "";
 
-  if (savedPlLiteral && !loading) {
+if (savedPlLiteral && !loading) {
   const { treeByCode, sumDimRecursive, prevDimFullIdx, prevLeafIndexRaw, sumLiteralB, sumLiteralC, sumLiteralD, sumLiteral } = spComputed;
-
 
 return (
       <div className="space-y-3 flex flex-col" style={{ minHeight: 0, flex: 1, overflow: "visible" }}>
@@ -9963,7 +10160,7 @@ divider ? (
       style={{ animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(nodeIdx, 25) * 35 + 50}ms both` }}
       onClick={(e) => { e.stopPropagation(); toggle(node.code); }}>
 <td className="py-3 px-6 whitespace-nowrap k-sticky-acc">
-  <div className="flex items-center">
+  <div className="flex items-center" style={{ paddingLeft: pgcDepthOf(node.code) * 18 }}>
     {hasKids
       ? <span className="text-[#1a2f8a]/50 mr-2">{expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}</span>
       : <span className="inline-block mr-2" style={{ width: 12 }} />}
@@ -10790,8 +10987,8 @@ function BSDeviationCells({ a, b, typoStyle }) {
 
   return (
 <>
-      <td className="pl-4 pr-6 py-2.5 text-right whitespace-nowrap tabular-nums" style={{ ...style, width: "140px" }}>{diffStr}</td>
-      <td className="pl-2 pr-6 py-2.5 text-right whitespace-nowrap tabular-nums" style={{ ...style, width: "100px" }}>{pctStr}</td>
+     <td className="pl-4 pr-6 py-2.5 text-center whitespace-nowrap tabular-nums" style={{ ...style, width: "140px" }}>{diffStr}</td>
+     <td className="pl-2 pr-6 py-2.5 text-center whitespace-nowrap tabular-nums" style={{ ...style, width: "100px" }}>{pctStr}</td>
     </>
   );
 }
@@ -10963,12 +11160,14 @@ const minW = maxRight > thRect.left ? Math.max(60, maxRight - thRect.left + 12) 
   const table = th.closest("table");
   const col = table?.querySelector("colgroup col:first-child");
 
-  handle.classList.add("is-dragging");
+handle.classList.add("is-dragging");
   let latestW = startW;
 
   const move = (ev) => {
     const dx = ev.clientX - startX;
-    latestW = Math.max(minW, Math.min(1200, startW + dx));
+    const tableW = table?.getBoundingClientRect().width ?? 0;
+    const maxW = tableW > 0 ? Math.max(minW, tableW * 0.45) : 1200;
+    latestW = Math.max(minW, Math.min(maxW, startW + dx));
     if (col) col.style.width = `${latestW}px`;
     th.style.width = `${latestW}px`;
   };
@@ -10996,7 +11195,7 @@ useEffect(() => {
       const r = b.getBoundingClientRect().right;
       if (r > maxRight) maxRight = r;
     });
-    const minW = maxRight > thRect.left ? Math.max(60, maxRight - thRect.left + 12) : 220;
+const minW = 80;
     const currentW = accColWidth ?? thRect.width;
     if (currentW < minW) setAccColWidth(minW);
   };
@@ -11942,20 +12141,20 @@ function renderNode(node, depth = 0) {
 <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[120px] ${isBold ? "font-bold text-[#CF305D]" : "text-[#CF305D]"}`} style={{ borderLeft: "2px solid #e2e8f0" }}>
                   {cmpVal === 0 ? "-" : fmtAmt(cmpVal)}
                 </td>
-                <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[90px] ${devColor(devB)}`}>
+               <td className={`text-center pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[90px] ${devColor(devB)}`}>
                   {devB === 0 ? "-" : fmtAmt(devB)}
                 </td>
-                <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[70px] font-bold ${devColor(devB)}`}>
+               <td className={`text-center pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[70px] font-bold ${devColor(devB)}`}>
                   {devBPct === null ? "—" : `${devBPct >= 0 ? "+" : ""}${devBPct.toFixed(1)}%`}
                 </td>
                 {cmp2Enabled && <>
 <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[120px] ${isBold ? "font-bold text-[#57aa78]" : "text-[#57aa78]"}`} style={{ borderLeft: "2px solid #e2e8f0" }}>
                     {cmp2Val === 0 ? "-" : fmtAmt(cmp2Val)}
                   </td>
-                  <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[90px] ${devColor(devC)}`}>
+                 <td className={`text-center pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[90px] ${devColor(devC)}`}>
                     {devC === 0 ? "-" : fmtAmt(devC)}
                   </td>
-                  <td className={`text-right pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[70px] font-bold ${devColor(devC)}`}>
+                 <td className={`text-center pr-4 py-2.5 font-mono text-xs whitespace-nowrap min-w-[70px] font-bold ${devColor(devC)}`}>
                     {devCPct === null ? "—" : `${devCPct >= 0 ? "+" : ""}${devCPct.toFixed(1)}%`}
                   </td>
                 </>}
@@ -12601,9 +12800,23 @@ const effectiveBreakersBs = useMemo(() => {
       if (fam === "unknown") continue;
       if (seenFam.has(fam)) continue;
       seenFam.add(fam);
-      const label = familyLabel(fam);
+const label = familyLabel(fam);
       if (label) {
-        out[String(node.code)] = { label, color: palette[i] ?? colors.primary };
+        // Use the mapping color of this node's own section (or the first descendant
+        // section with a defined color) so family breakers match the mapping palette.
+        const ownSec = pgcBsMapping.rows.get(String(node.code));
+        let famColor = ownSec ? pgcBsMapping.sections.get(ownSec.section)?.color : null;
+        if (!famColor) {
+          const stack = [...(childrenInFlat.get(String(node.code)) || [])];
+          while (stack.length && !famColor) {
+            const ch = stack.shift();
+            const cm = pgcBsMapping.rows.get(String(ch.code));
+            const cs = cm ? pgcBsMapping.sections.get(cm.section) : null;
+            if (cs?.color) famColor = cs.color;
+            else stack.push(...(childrenInFlat.get(String(ch.code)) || []));
+          }
+        }
+        out[String(node.code)] = { label, color: famColor || palette[i] || colors.primary };
         i++;
       }
     }
@@ -12622,7 +12835,7 @@ const effectiveBreakersBs = useMemo(() => {
     seenSec.add(m.section);
     const sec = pgcBsMapping.sections.get(m.section);
     if (sec) {
-      out[String(node.code)] = { label: sec.label, color: palette[i] ?? sec.color };
+  out[String(node.code)] = { label: sec.label, color: sec.color || palette[i] || colors.primary };
       i++;
     }
   }
@@ -13289,19 +13502,7 @@ const bsCmp3Label = [cmp3Year, MONTHS.find(m => String(m.value) === String(cmp3M
                       </div>
                     </th>
                   ))}
-<th className="text-right pr-6 py-3" style={{ background: "transparent" }}>
-                    <div className="flex items-center justify-centergap-2" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
-                      {compareMode && (
-                        <button onClick={() => setFiltersOpen(o => !o)}
-                          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all duration-200 hover:scale-[1.02]"
-                          style={{ background: filtersOpen ? `${colors.primary}12` : "transparent", color: filtersOpen ? colors.primary : "#9ca3af" }}>
-                          <ChevronDown size={10} className={`transition-transform duration-200 ${filtersOpen ? "" : "-rotate-90"}`} />
-                          <span className="text-[9px] font-black uppercase tracking-wider">{filtersOpen ? t("btn_hide") : t("btn_show")}</span>
-                        </button>
-                      )}
-                    </div>
-                  </th>
-                </tr>
+</tr>
               </thead>
               <tbody>
 {(() => {
@@ -14481,6 +14682,41 @@ const [internalCompanies,  setInternalCompanies]  = useState([]);
 const [internalDimensions, setInternalDimensions] = useState([]);
 const [metaLoading,        setMetaLoading]        = useState(false);
 const metaFetchedRef = useRef(false);
+
+// activeStandardKey fallback: like sources/companies, the prop wins, but if it
+// isn't passed we resolve the company's real binding (e.g. CUSTOM-genesal)
+// ourselves. Without this the page falls back to the generic PGC mapping and
+// ignores the custom standard.
+const [internalStandardKey, setInternalStandardKey] = useState(null);
+const standardKeyFetchedRef = useRef(false);
+useEffect(() => {
+  if (activeStandardKey) return;            // prop wins (the normal case)
+  if (standardKeyFetchedRef.current) return;
+  standardKeyFetchedRef.current = true;
+  (async () => {
+    try {
+      const SB_URL = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
+      const SB_KEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
+      const { getActiveCompanyId } = await import("../../lib/mappingsApi");
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) return;
+      const cid = await getActiveCompanyId(uid);
+      if (!cid) return;
+      const res = await fetch(
+        `${SB_URL}/company_active_standard?select=standard_key&company_id=eq.${cid}`,
+        { headers: { apikey: SB_KEY, Authorization: `Bearer ${token || SB_KEY}`, Accept: "application/json" } }
+      );
+      const rows = await res.json();
+      const key = Array.isArray(rows) && rows[0]?.standard_key;
+      if (key) setInternalStandardKey(key);
+    } catch { /* non-critical: falls back to generic */ }
+  })();
+}, [activeStandardKey, token]);
+
+// Effective standard key used everywhere below.
+const effectiveStandardKey = activeStandardKey ?? internalStandardKey;
  
 // Props win when available; internal fallback fills the gap
 const { access: resourceAccess } = useCurrentUserResourceAccess();
@@ -14628,7 +14864,7 @@ const [pgcBsMapping, setPgcBsMapping] = useState(null);
 // (e.g. new sum rows created in the editor like 999, 888, 777). Without
 // this the hierarchy loops that iterate groupAccounts don't see them.
 const enrichedGrpData = useMemo(() => {
-  const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+const isCustom = effectiveStandardKey && effectiveStandardKey.startsWith("CUSTOM-");
   if (!isCustom) return grpData;
   const combinedRows = new Map();
   (pgcMapping?.rows || new Map()).forEach((info, code) => combinedRows.set(code, { info, statement: "PL" }));
@@ -14669,7 +14905,7 @@ const enrichedGrpData = useMemo(() => {
     });
   });
   return [...overridden, ...extra];
-}, [grpData, activeStandardKey, pgcMapping, pgcBsMapping]);
+}, [grpData, effectiveStandardKey, pgcMapping, pgcBsMapping]);
 const [customStandardVersion, setCustomStandardVersion] = useState(0);
 useEffect(() => {
   const handler = () => setCustomStandardVersion(v => v + 1);
@@ -14741,7 +14977,7 @@ useEffect(() => {
     Authorization: `Bearer ${SUPABASE_APIKEY}`,
   };
 
-  const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+const isCustom = effectiveStandardKey && effectiveStandardKey.startsWith("CUSTOM-");
 
   // Fall back to the old PGC-sniff when there's no bound custom standard.
   // (KPI resolver in HomePage already handles the full built-in matrix;
@@ -14756,17 +14992,17 @@ useEffect(() => {
   }
 
   const rowsUrl = isCustom
-    ? `${SUPABASE_URL}/standard_statement_rows?select=*&standard_key=eq.${encodeURIComponent(activeStandardKey)}&statement=eq.PL&order=sort_order.asc`
+    ? `${SUPABASE_URL}/standard_statement_rows?select=*&standard_key=eq.${encodeURIComponent(effectiveStandardKey)}&statement=eq.PL&order=sort_order.asc`
     : `${SUPABASE_URL}/pgc_pl_rows?select=*&order=sort_order.asc`;
   const secsUrl = isCustom
-    ? `${SUPABASE_URL}/standard_statement_sections?select=*&standard_key=eq.${encodeURIComponent(activeStandardKey)}&statement=eq.PL&order=sort_order.asc`
+    ? `${SUPABASE_URL}/standard_statement_sections?select=*&standard_key=eq.${encodeURIComponent(effectiveStandardKey)}&statement=eq.PL&order=sort_order.asc`
     : `${SUPABASE_URL}/pgc_pl_sections?select=*&order=sort_order.asc`;
 
   Promise.all([
     fetch(rowsUrl, { headers: sbHeaders }).then(r => r.json()),
     fetch(secsUrl, { headers: sbHeaders }).then(r => r.json()),
   ])
-    .then(([rowsArr, secsArr]) => {
+.then(([rowsArr, secsArr]) => {
       if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
       const rows = new Map();
       const names = new Map();
@@ -14788,7 +15024,7 @@ rowsArr.forEach(r => {
       setPgcMapping({ rows, sections, names });
     })
     .catch(() => setPgcMapping(null));
-}, [grpData, locale, activeStandardKey, customStandardVersion]);
+}, [grpData, locale, effectiveStandardKey, customStandardVersion]);
 
 // ── Load BS section mapping: unified standard_statement_rows for CUSTOM,
 // legacy pgc_bs_rows fallback for anything else (sniffed).
@@ -14802,7 +15038,7 @@ useEffect(() => {
     Authorization: `Bearer ${SUPABASE_APIKEY}`,
   };
 
-  const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+const isCustom = effectiveStandardKey && effectiveStandardKey.startsWith("CUSTOM-");
 
   if (!isCustom) {
     const isPGC = grpData.some(n => {
@@ -14813,10 +15049,10 @@ useEffect(() => {
   }
 
   const rowsUrl = isCustom
-    ? `${SUPABASE_URL}/standard_statement_rows?select=*&standard_key=eq.${encodeURIComponent(activeStandardKey)}&statement=eq.BS&order=sort_order.asc`
+    ? `${SUPABASE_URL}/standard_statement_rows?select=*&standard_key=eq.${encodeURIComponent(effectiveStandardKey)}&statement=eq.BS&order=sort_order.asc`
     : `${SUPABASE_URL}/pgc_bs_rows?select=*&order=sort_order.asc`;
   const secsUrl = isCustom
-    ? `${SUPABASE_URL}/standard_statement_sections?select=*&standard_key=eq.${encodeURIComponent(activeStandardKey)}&statement=eq.BS&order=sort_order.asc`
+    ? `${SUPABASE_URL}/standard_statement_sections?select=*&standard_key=eq.${encodeURIComponent(effectiveStandardKey)}&statement=eq.BS&order=sort_order.asc`
     : `${SUPABASE_URL}/pgc_bs_sections?select=*&order=sort_order.asc`;
 
   Promise.all([
@@ -14846,7 +15082,7 @@ section:       String(r.section_code),
       setPgcBsMapping({ rows, sections, names });
     })
 .catch(() => setPgcBsMapping(null));
-}, [grpData, locale, activeStandardKey, customStandardVersion]);
+}, [grpData, locale, effectiveStandardKey, customStandardVersion]);
 
 // Normalize BS section codes — CUSTOM standards use NCA/CA/EQ/NCL/CL,
 // legacy PGC uses ACTIVO/PASIVO/PATRIMONIO. This helper returns a
@@ -15169,12 +15405,35 @@ const applyPreferredMapping = useCallback(async () => {
     if (!cid) { setActiveMapping(null); return; }
     const allMappings = await listMappings({ companyId: cid, includeHidden: true });
     const match = (allMappings || []).find(m => String(m.mapping_id) === String(mid));
-    if (match) {
+if (match) {
       handleApplyMapping(match);
     } else {
       setActiveMapping(null);
     }
   } catch { /* ignore */ }
+}, [handleApplyMapping]);
+
+// The "clear mapping" buttons must drop the user's mapping and return to the
+// custom-no-user default (the hidden override, a mapping flagged is_hidden), NOT
+// re-apply the user's preferred default — otherwise the default can never be removed.
+const clearToHiddenOverride = useCallback(async () => {
+  try {
+    const { supabase } = await import("../../lib/supabaseClient");
+    const { data: { session } } = await supabase.auth.getSession();
+    const uid = session?.user?.id;
+    if (!uid) { setActiveMapping(null); return; }
+    const { listMappings, getActiveCompanyId } = await import("../../lib/mappingsApi");
+    const cid = await getActiveCompanyId(uid);
+    if (!cid) { setActiveMapping(null); return; }
+    const allMappings = await listMappings({ companyId: cid, includeHidden: true });
+    const hidden = (allMappings || []).find(m => !!m.is_hidden);
+    if (hidden) {
+      handleApplyMapping(hidden);
+    } else {
+      // No custom-no-user override exists → truly no mapping.
+      setActiveMapping(null);
+    }
+  } catch { setActiveMapping(null); }
 }, [handleApplyMapping]);
 
 // If the user loses access to their currently-active mapping (e.g. permissions changed
@@ -15896,12 +16155,9 @@ const ExportModal = exportModal ? createPortal(
                 ["bsSaved",    t("page_bs_full"),                                         colors.primary],
                 ["dimJournal", t("export_dim_journal_title"),                             "#dc7533"],
                 ["drillDown",  t("export_drill_down") || "Drill-down",                    "#8b5cf6"],
-              ] : [
-                ["plSummary",  `${t("page_pl")} ${t("view_summary")}`,                    colors.primary],
-                ["plDetailed", `${t("page_pl")} ${t("view_detailed")}`,                   colors.primary],
-                ["bsSummary",  `${t("page_bs")} ${t("view_summary")}`,                    colors.primary],
-                ["bsAssets",   `${t("page_bs")} ${t("bs_assets")}`,                       colors.primary],
-                ["bsEquity",   `${t("page_bs")} ${t("bs_equity_liab")}`,                  colors.primary],
+] : [
+                ["plDetailed", t("page_pl_full"),                                         colors.primary],
+                ["bsSummary",  t("page_bs_full"),                                          colors.primary],
                 ["dimJournal", t("export_dim_journal_title"),                             "#dc7533"],
                 ["drillDown",  t("export_drill_down") || "Drill-down",                    "#8b5cf6"],
               ]).map(([k, label, accent]) => {
@@ -15958,7 +16214,7 @@ const ExportModal = exportModal ? createPortal(
               setExportModal(false);
               const fmt = exportOpts.format ?? 'xlsx';
               const commonArgs = {
-                groupAccounts: grpData,
+           groupAccounts: enrichedGrpData,
                 uploadedAccounts: upData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions)),
                 prevUploadedAccounts: prevData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions)),
                 compareMode,
@@ -15993,8 +16249,8 @@ selectedCompanies: upCompaniesDebounced,
                 dimensions: effectiveDimensions,
 dimGroups,
 breakers,
-pgcMapping: activeMapping === null ? null : (activeMapping?.plConverted ?? pgcMapping ?? danishIfrsPlMapping ?? spanishIfrsEsPlMapping),
-                pgcBsMapping: activeMapping === null ? null : (activeMapping?.bsConverted ?? pgcBsMapping ?? danishIfrsBsMapping ?? spanishIfrsEsBsMapping),
+pgcMapping: activeMapping?.plConverted ?? pgcMapping ?? (activeMapping === null ? null : (danishIfrsPlMapping ?? spanishIfrsEsPlMapping)),
+pgcBsMapping: activeMapping?.bsConverted ?? pgcBsMapping ?? (activeMapping === null ? null : (danishIfrsBsMapping ?? spanishIfrsEsBsMapping)),
                 colors,
 plHistoryMonths: plHistoryExpanded ? plHistoryMonths : [],
                 bsHistoryMonths: bsHistoryExpanded ? bsHistoryMonths : [],
@@ -16122,15 +16378,16 @@ return (
 .k-scroll-overlay { overflow: overlay; }
 @supports not (overflow: overlay) { .k-scroll-overlay { overflow: auto; } }
 /* Sticky requires the table to have border-collapse: separate */
-        .k-sticky-table { border-collapse: separate; border-spacing: 0; }
+.k-sticky-table { border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+
        .k-sticky-table thead th { position: sticky; top: 0; z-index: 10; background: #ffffff !important; will-change: transform; }
         .k-sticky-table thead th.k-sticky-acc-head { position: sticky !important; top: 0; left: 0; z-index: 25; border-right: 1px solid rgba(0,0,0,0.06); }
 .k-sticky-table tbody td.k-sticky-acc,
         .k-sticky-table tbody th.k-sticky-acc { position: sticky; left: 0; z-index: 5; background: white; border-right: 1px solid rgba(0,0,0,0.06); }
 .k-sticky-acc, .k-sticky-acc-head { overflow: hidden !important; }
 .k-sticky-acc > div { min-width: 0; max-width: 100%; overflow: hidden; }
-.k-sticky-acc span:not(.k-no-truncate) { white-space: nowrap; flex-shrink: 0; }
-.k-sticky-acc > div { flex-wrap: nowrap; min-width: max-content; width: max-content; }
+.k-sticky-acc span:not(.k-no-truncate) { white-space: nowrap; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.k-sticky-acc > div { flex-wrap: nowrap; min-width: 0; max-width: 100%; overflow: hidden; }
 .k-acc-resize-handle { position: absolute; right: 0; top: 0; bottom: 0; width: 5px; cursor: col-resize; z-index: 50; background: transparent; transition: background 160ms; user-select: none; }
         .k-acc-resize-handle:hover, .k-acc-resize-handle.is-dragging { background: rgba(26,47,138,0.35); }
         .k-sticky-table tbody tr.bg-\\[\\#fef3c7\\] td.k-sticky-acc { background: #fef3c7; }
@@ -16291,7 +16548,7 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
       {t("btn_edit") ?? "Edit"}
     </button>
     <button
-onClick={() => applyPreferredMapping()}
+onClick={() => clearToHiddenOverride()}
       className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
       title={t("clear_mapping_title")}
     >
@@ -16460,7 +16717,7 @@ onClick={() => applyPreferredMapping()}
             <p className="font-black text-xs text-gray-700">{t("views_saved_report_mappings")}</p>
           </div>
           {activeMapping && (
-           <button onClick={() => { applyPreferredMapping(); setViewsMode(null); }}
+          <button onClick={() => { clearToHiddenOverride(); setViewsMode(null); }}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest text-red-500 hover:bg-red-50 transition-colors">
               <X size={10} /> {t("btn_clear_active")}
             </button>
@@ -16543,7 +16800,7 @@ onClick={() => applyPreferredMapping()}
             <p className="font-black text-xs text-gray-700">{t("views_saved_mappings")}</p>
           </div>
           {activeMapping && (
-    <button onClick={() => { applyPreferredMapping(); setViewsMode(null); }}
+   <button onClick={() => { clearToHiddenOverride(); setViewsMode(null); }}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest text-red-500 hover:bg-red-50 transition-colors">
               <X size={10} /> {t("btn_clear_active")}
             </button>
@@ -16799,7 +17056,7 @@ journalEntries={jrnData}
 journalEntriesCmp={jrnCmpData}
 journalEntriesCmp2={jrnCmp2Data}
   breakers={breakers}
-pgcMapping={activeMapping === null ? null : (activeMapping?.plConverted ?? pgcMapping ?? danishIfrsPlMapping ?? spanishIfrsEsPlMapping)}
+pgcMapping={activeMapping?.plConverted ?? pgcMapping ?? (activeMapping === null ? null : (danishIfrsPlMapping ?? spanishIfrsEsPlMapping))}
 savedPlLiteral={activeMapping?.plLiteral ?? null}
 savedHighlightedIds={activeMapping?.highlightedIds ?? null}
 />
@@ -16929,7 +17186,7 @@ externalCmp2Enabled={bsCmp2Enabled}
   bsCmp2Dimensions={bsCmp2Dimensions} setBsCmp2Dimensions={setBsCmp2Dimensions}
   effectiveDimensions={effectiveDimensions}
 breakers={breakers}
-pgcBsMapping={activeMapping === null ? null : (activeMapping?.bsConverted ?? pgcBsMapping ?? danishIfrsBsMapping ?? spanishIfrsEsBsMapping)}
+pgcBsMapping={activeMapping?.bsConverted ?? pgcBsMapping ?? (activeMapping === null ? null : (danishIfrsBsMapping ?? spanishIfrsEsBsMapping))}
 savedBsLiteral={activeMapping?.bsLiteral ?? null}
 savedHighlightedIds={activeMapping?.highlightedIds ?? null}
 />

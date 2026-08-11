@@ -53,22 +53,24 @@ function useCountUp(target, duration = 900) {
 }
 
 function AnimatedAmountCell({ value, style, className }) {
-  const animated = useCountUp(Math.round(value ?? 0), 900);
-  const rounded = Math.round(value ?? 0);
-  const color = rounded === 0 ? "#D1D5DB" : rounded < 0 ? "#EF4444" : "#000000";
+  const animated = useCountUp(value ?? 0, 900);
+  const isEmpty = Math.round((value ?? 0) * 100) === 0;
+  const color = isEmpty ? "#D1D5DB" : (value ?? 0) < 0 ? "#EF4444" : "#000000";
   return (
     <td className={className ?? "px-4 py-2.5 text-center whitespace-nowrap tabular-nums border-l border-gray-100"}
       style={{ minWidth: 120, ...style, color }}>
-      {rounded === 0 ? "—" : fmt(animated)}
+      {isEmpty ? "—" : fmt(animated)}
     </td>
   );
 }
 
 const fmt = (n) => {
   if (n == null || n === "") return "—";
-  const rounded = Math.round(Number(n));
-  if (rounded === 0) return "—";
-  return new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 }).format(rounded);
+  const num = Number(n);
+  if (!isFinite(num)) return "—";
+  if (Math.round(num * 100) === 0) return "—";
+  const s = Math.abs(num).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return num < 0 ? `(${s})` : s;
 };
 
 function parseDimensionsField(str) {
@@ -459,7 +461,7 @@ function DrillGroupRow({ groupCode, groupName, localRows = [], coAmounts = null,
           </div>
         </td>
 {visibleCompanies.map(c => {
-          const v = Math.round(amtByCompany[c] ?? 0);
+         const v = amtByCompany[c] ?? 0;
           return (
             <Fragment key={c}>
               <td className="px-4 py-2 text-center tabular-nums border-l border-gray-100"
@@ -467,7 +469,7 @@ function DrillGroupRow({ groupCode, groupName, localRows = [], coAmounts = null,
                 {v === 0 ? "—" : fmt(v)}
               </td>
 {compareMode && (() => {
-                const cmpV = Math.round(cmpAmtByCompany[c] ?? 0);
+              const cmpV = cmpAmtByCompany[c] ?? 0;
                 const delta = v - cmpV;
                 const pct = cmpV !== 0 ? ((v - cmpV) / Math.abs(cmpV)) * 100 : null;
                 const devColor = delta === 0 ? "#D1D5DB" : delta > 0 ? "#059669" : "#EF4444";
@@ -489,7 +491,7 @@ function DrillGroupRow({ groupCode, groupName, localRows = [], coAmounts = null,
           );
         })}
         {!compareMode && (() => {
-          const total = visibleCompanies.reduce((s, c) => s + Math.round(amtByCompany[c] ?? 0), 0);
+       const total = visibleCompanies.reduce((s, c) => s + (amtByCompany[c] ?? 0), 0);
           return (
             <td className="px-4 py-2 text-center tabular-nums" style={{ ...body2Style, background: "#f4f6fb", color: total === 0 ? "#D1D5DB" : total < 0 ? "#EF4444" : "#000", position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150, fontWeight: 800 }}>
               {total === 0 ? "—" : fmt(total)}
@@ -509,7 +511,7 @@ function DrillGroupRow({ groupCode, groupName, localRows = [], coAmounts = null,
             </div>
           </td>
 {visibleCompanies.map(c => {
-            const v = r.co === c ? Math.round(r.amt) : 0;
+        const v = r.co === c ? r.amt : 0;
             return (
               <Fragment key={c}>
                 <td className="px-4 py-1.5 text-center tabular-nums border-l border-gray-100"
@@ -518,10 +520,10 @@ function DrillGroupRow({ groupCode, groupName, localRows = [], coAmounts = null,
                 </td>
 {compareMode && (() => {
                   const localKey = r.isJournal ? `JRN::${groupCode}::${r.localCode}::${c}` : `ERP::${groupCode}::${r.localCode}::${c}`;
-                  const cmpV = Math.round(cmpDrillMap.get(localKey) ?? 0);
+                 const cmpV = cmpDrillMap.get(localKey) ?? 0;
                   // only show cmp data if this row matches the company
                   const showCmp = r.co === c;
-                  const myV = showCmp ? Math.round(r.amt) : 0;
+                 const myV = showCmp ? r.amt : 0;
                   const delta = myV - cmpV;
                   const pct = cmpV !== 0 ? ((myV - cmpV) / Math.abs(cmpV)) * 100 : null;
                   const devColor = delta === 0 ? "#D1D5DB" : delta > 0 ? "#059669" : "#EF4444";
@@ -544,7 +546,7 @@ function DrillGroupRow({ groupCode, groupName, localRows = [], coAmounts = null,
           })}
 {!compareMode && (
             <td className="px-4 py-1.5 text-center tabular-nums" style={{ ...subbody1Style, background: "#f9fafd", color: r.amt === 0 ? "#D1D5DB" : r.amt < 0 ? "#EF4444" : "#000", position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }}>
-              {r.amt === 0 ? "—" : fmt(Math.round(r.amt))}
+       {r.amt === 0 ? "—" : fmt(r.amt)}
             </td>
           )}
         </tr>
@@ -715,9 +717,9 @@ const totalCols = 1 + visibleCompanies.length * (compareMode ? 4 : 1);
         {visibleCompanies.map(c => {
           const val = getContrib(c);
           const cmpVal = compareMode ? getCmpContrib(c) : null;
-          const delta = cmpVal !== null ? Math.round(val) - Math.round(cmpVal) : null;
-          const pct = (cmpVal !== null && Math.round(cmpVal) !== 0)
-            ? ((Math.round(val) - Math.round(cmpVal)) / Math.abs(Math.round(cmpVal))) * 100
+const delta = cmpVal !== null ? val - cmpVal : null;
+          const pct = (cmpVal !== null && Math.abs(cmpVal) > 1e-9)
+            ? ((val - cmpVal) / Math.abs(cmpVal)) * 100
             : null;
           const devColor = !delta ? "#D1D5DB" : delta > 0 ? "#059669" : "#EF4444";
           return (
@@ -923,9 +925,9 @@ const totalCols = 1 + visibleCompanies.length * (compareMode ? 4 : 1);
           const cmpVal = compareMode
             ? (cmpPivot?.get(node.AccountCode)?.[c] ?? []).reduce((s, r) => s + Number(r._cfAmount ?? 0), 0)
             : null;
-          const delta = cmpVal !== null ? Math.round(val) - Math.round(cmpVal) : null;
-          const pct = (cmpVal !== null && Math.round(cmpVal) !== 0)
-            ? ((Math.round(val) - Math.round(cmpVal)) / Math.abs(Math.round(cmpVal))) * 100
+const delta = cmpVal !== null ? val - cmpVal : null;
+          const pct = (cmpVal !== null && Math.abs(cmpVal) > 1e-9)
+            ? ((val - cmpVal) / Math.abs(cmpVal)) * 100
             : null;
           const devColor = !delta ? "#D1D5DB" : delta > 0 ? "#059669" : "#EF4444";
           return (
@@ -1171,9 +1173,83 @@ rowsArr.forEach(r => rows.set(String(r.account_code), {
     loadCfStandardMapping("spanish_ifrs_es_cf_rows", "spanish_ifrs_es_cf_sections", setSpanishIfrsEsCfMapping);
   }, [cfStandard, isCustomStandard]);
 
-  // CUSTOM wins; then sniffed built-in.
+// CUSTOM wins; then sniffed built-in.
   const activeCfMapping = customCfMapping ?? pgcCfMapping ?? danishIfrsCfMapping ?? spanishIfrsEsCfMapping;
 
+  // For a CUSTOM standard there is no user "cf_tree", so build a cfLiteral
+  // (sections → nested nodes) from the flat standard_statement_rows using
+  // parent_code. Routes CUSTOM through the hierarchical MappedSheetRow renderer
+  // (same as user mappings) instead of the flat SheetRow branch, so children
+  // nest under their parents and only show when expanded.
+  const customCfLiteral = useMemo(() => {
+    if (!customCfMapping?.rows || !customCfMapping?.sections) return null;
+    const rows = customCfMapping.rows;
+    const childrenOf = new Map();
+    const roots = [];
+    const sameSectionParent = (info) => {
+      const p = info.parent_code;
+      if (!p || !rows.has(p)) return null;
+      const pInfo = rows.get(p);
+      return pInfo.section === info.section ? p : null;
+    };
+    [...rows.entries()]
+      .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+      .forEach(([code, info]) => {
+        const parent = sameSectionParent(info);
+        if (parent) {
+          if (!childrenOf.has(parent)) childrenOf.set(parent, []);
+          childrenOf.get(parent).push(code);
+        } else {
+          roots.push(code);
+        }
+      });
+    const buildNode = (code, depth, seen = new Set()) => {
+      if (seen.has(code) || depth > 40) return null;
+      seen.add(code);
+      const info = rows.get(code);
+      const kids = (childrenOf.get(code) || [])
+        .map(c => buildNode(c, depth + 1, seen))
+        .filter(Boolean);
+      return {
+        id: code,
+        code,
+        name: info?.account_name || "",
+        isSum: !!info?.isSum,
+        depth,
+        children: kids,
+      };
+    };
+    const bySec = new Map();
+    roots.forEach(code => {
+      const sec = rows.get(code)?.section || "_default";
+      if (!bySec.has(sec)) bySec.set(sec, []);
+      bySec.get(sec).push(code);
+    });
+    const out = [];
+    const usedSecs = new Set();
+    customCfMapping.sections.forEach((secInfo, secCode) => {
+      const codes = bySec.get(secCode);
+      if (!codes || codes.length === 0) return;
+      usedSecs.add(secCode);
+      out.push({
+        label: secInfo.label || "",
+        color: secInfo.color || "#1a2f8a",
+        nodes: codes.map(c => buildNode(c, 0)).filter(Boolean),
+      });
+    });
+    // Roots whose section has no breaker (closing totals with section=null):
+    // append with label null so they render flat at the end, no section bar.
+    const looseNodes = [];
+    bySec.forEach((codes, secCode) => {
+      if (usedSecs.has(secCode)) return;
+      codes.forEach(rootCode => {
+        const node = buildNode(rootCode, 0);
+        if (node) looseNodes.push(node);
+      });
+    });
+    if (looseNodes.length > 0) out.push({ label: null, color: null, nodes: looseNodes });
+    return out.length > 0 ? out : null;
+  }, [customCfMapping]);
 // Probe removed — the data fetch itself walks back if it returns empty.
 
   /* ─── Companies under selected structure ─────────────────────── */
@@ -1720,7 +1796,12 @@ setRecentMappings(combined);
 useEffect(() => { if (viewsMode === "structure") fetchSavedMappings(); }, [viewsMode]);
   useEffect(() => { if (viewsMode === "report") fetchReportMappings(); }, [viewsMode]);
 
-  // Auto-apply hidden override CF mapping when the active standard is CUSTOM.
+// On load for a CUSTOM standard, pick the default mapping in priority order:
+  //   1) a USER mapping flagged is_default for this company (from any origin —
+  //      Scratch, template or custom; the mapping's own `standard` is irrelevant)
+  //   2) the system hidden override (custom-no-user) as the fallback
+  // The hidden override is always cached in hiddenOverrideRef so "reset to default"
+  // can restore it, but a user default wins on first render.
   useEffect(() => {
     if (!isCustomStandard || !activeStandardKey) return;
     let cancelled = false;
@@ -1733,13 +1814,41 @@ useEffect(() => { if (viewsMode === "structure") fetchSavedMappings(); }, [views
         const { getActiveCompanyId, getHiddenOverrideMapping } = await import("../../lib/mappingsApi");
         const cid = await getActiveCompanyId(uid);
         if (!cid) return;
-const hidden = await getHiddenOverrideMapping({ companyId: cid, standard: activeStandardKey });
-        if (cancelled || !hidden) return;
-        hiddenOverrideRef.current = hidden;
-        if (Array.isArray(hidden.cf_tree) && hidden.cf_tree.length > 0) {
+
+        // Cache the hidden override first (fallback + reset target).
+        const hidden = await getHiddenOverrideMapping({ companyId: cid, standard: activeStandardKey });
+        if (cancelled) return;
+        if (hidden) hiddenOverrideRef.current = hidden;
+
+        // A user mapping flagged default for this company wins, whatever its standard.
+// The "standard" (default) CF mapping is a per-USER preference stored in
+        // user_settings.preferences.cashflow_standard_mapping_id — the same value the
+        // toggle in the mappings editor writes. If the user has one set, it wins over
+        // the system hidden override.
+        let userDefault = null;
+        try {
+          const { data: settings } = await supabase
+            .from("user_settings")
+            .select("preferences")
+            .eq("user_id", uid)
+            .single();
+          const stdMappingId = settings?.preferences?.cashflow_standard_mapping_id;
+          if (stdMappingId) {
+            const { getMapping } = await import("../../lib/cashflowMappingsApi");
+            const full = await getMapping(stdMappingId);
+            if (full && !full.is_archived && Array.isArray(full.cf_tree) && full.cf_tree.length > 0) {
+              userDefault = full;
+            }
+          }
+        } catch { /* no user default → fall back to override */ }
+        if (cancelled) return;
+
+        if (userDefault) {
+          handleApplyMapping(userDefault, "structure");
+        } else if (hidden && Array.isArray(hidden.cf_tree) && hidden.cf_tree.length > 0) {
           handleApplyMapping(hidden, "structure");
         }
-      } catch (e) { console.warn("[CashFlowPage] hidden override load failed:", e); }
+      } catch (e) { console.warn("[CashFlowPage] default mapping load failed:", e); }
     })();
     return () => { cancelled = true; };
   }, [isCustomStandard, activeStandardKey]);
@@ -1856,6 +1965,16 @@ const handleExportXlsx = async (opts = {}) => {
     const includeTotalsOpt  = opts.includeTotals     !== false;
     const includeCompareOpt = opts.includeCompare    !== false;
     const drilldown         = opts.drilldown         !== false;
+    // Who is exporting — surfaced in the header. Best-effort; never blocks export.
+    let exportedByName = "";
+    try {
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      exportedByName = session?.user?.user_metadata?.full_name
+        || session?.user?.user_metadata?.name
+        || session?.user?.email
+        || "";
+    } catch { /* ignore — header just omits the user */ }
     const C = {
       primary: "FF1A2F8A", white: "FFFFFFFF", highlight: "FFEEF1FB",
       band1: "FFFFFFFF", band2: "FFF8F9FF",
@@ -1884,11 +2003,12 @@ const sheetCompare = cmpVisible && includeCompareOpt;
       subLines.push(seg.join("    ·    "));
     }
     subLines.push(`${T("file_field_statement")}: ${T("nav_cashflow").toUpperCase()}    ·    ${T("filter_company")}: ${visCo.length}${activeMapping ? `    ·    ${T("export_filter_mapping")}: ${activeMapping.name}` : ""}${sheetCompare ? `    ·    ${T("file_compare_on")}` : ""}`);
-    if (sheetCompare && cmpYear && cmpMonth) {
+if (sheetCompare && cmpYear && cmpMonth) {
       const seg = [`🆚 ${T("file_vs_prefix")} ${periodLabel(cmpYear, cmpMonth)}`];
       if (cmpSource) seg.push(`${T("file_field_source")}: ${cmpSource}`);
       subLines.push(seg.join("    ·    "));
     }
+    subLines.push(`🕓 ${T("file_exported_at", "Exportado")}: ${new Date().toLocaleString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}${exportedByName ? `    ·    ${T("file_exported_by", "por")} ${exportedByName}` : ""}`);
 
     const headerRowCount = 1 + subLines.length + 1 + (sheetCompare ? 2 : 1);
     const ws = wb.addWorksheet("Cash Flow", {
@@ -1958,7 +2078,7 @@ const headers = [T("col_account"), ...visCo.map(co => getLegal(co))];
         c.value = h;
         c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
         c.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
-        c.alignment = { vertical: "middle", horizontal: i === 0 ? "left" : "right", indent: i === 0 ? 1 : 0 };
+c.alignment = { vertical: "middle", horizontal: i === 0 ? "left" : "center", indent: i === 0 ? 1 : 0 };
       });
       curRow++;
     }
@@ -1981,9 +2101,9 @@ const writeNum = (rowN, colN, val, fillArgb, opts = {}) => {
       const cell = ws.getCell(rowN, colN);
       // For currency use rounded value to test empty; for percent use raw value
       // so tiny non-zero pcts (e.g. -0.03%) still render as "—" but -4.2% shows.
-      const isEmpty = val == null || !Number.isFinite(val) || (opts.percent
+const isEmpty = val == null || !Number.isFinite(val) || (opts.percent
         ? Math.abs(val) < 0.05
-        : Math.round(val) === 0);
+        : Math.round(val * 100) === 0);
       if (isEmpty) {
         cell.value = "—";
         cell.font = { name: "Calibri", size: 10, color: { argb: C.gray400 }, bold: !!opts.bold };
@@ -1992,13 +2112,13 @@ const writeNum = (rowN, colN, val, fillArgb, opts = {}) => {
         // app displays. The app rounds A and B independently before subtracting,
         // so the export must too, otherwise deltas drift by ±1 unit.
         // Percent: keep raw value — needed for 0.1-decimal display (e.g. -4.2%).
-        const stored = opts.percent ? val : Math.round(val);
+const stored = opts.percent ? val : Math.round(val * 100) / 100;
         if (opts.formula) {
           cell.value = { formula: opts.formula, result: stored };
         } else {
           cell.value = stored;
         }
-        cell.numFmt = opts.percent ? '0.0"%"' : '#,##0;[Red]-#,##0';
+       cell.numFmt = opts.percent ? '0.0"%"' : '#,##0.00;[Red](#,##0.00)';
         cell.font = {
           name: "Calibri", size: 10, bold: !!opts.bold,
           color: { argb: opts.colorOverride ?? (val < 0 ? C.red : "FF000000") },
@@ -2109,7 +2229,6 @@ const writeAccountRow = ({ code, name, depth, isBold }) => {
       labelCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
       labelCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 + Math.min(depth, 6) };
       labelCell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
-
 let rowTotal = 0;
       visCo.forEach((co, i) => {
         const a = getValAt(code, co);
@@ -2123,14 +2242,14 @@ let rowTotal = 0;
           const bRef = cellRef(curRow, startCol + 1);
           writeNum(curRow, startCol,     a,        band,        { bold: isBold });
           writeNum(curRow, startCol + 1, b,        "FFFAFBFF",  { bold: isBold });
-          writeNum(curRow, startCol + 2, delta,    "FFF5F7FF", {
+writeNum(curRow, startCol + 2, delta,    "FFF5F7FF", {
             bold: isBold,
-            formula: `${aRef}-${bRef}`,
+            formula: `N(${aRef})-N(${bRef})`,
             colorOverride: (delta == null || Math.round(delta) === 0) ? null : (delta < 0 ? C.red : C.green),
           });
           writeNum(curRow, startCol + 3, deltaPct, "FFF0F3FF", {
             bold: isBold, percent: true,
-            formula: `IF(ABS(${bRef})<0.0001,NA(),(${aRef}-${bRef})/ABS(${bRef})*100)`,
+            formula: `IF(ABS(N(${bRef}))<0.0001,NA(),(N(${aRef})-N(${bRef}))/ABS(N(${bRef}))*100)`,
             colorOverride: deltaPct == null ? null : (deltaPct < 0 ? C.red : C.green),
           });
         } else {
@@ -2297,7 +2416,8 @@ const writeLeafWithDrill = (code, name, depth, isBold) => {
     };
 
 // ── RENDER: custom mapping literal OR default standard ─────────────
-    if (activeMapping?.cfLiteral) {
+    const exportCfLiteral = activeMapping?.cfLiteral ?? customCfLiteral;
+    if (exportCfLiteral) {
       // Sum nodes need a descendant rollup (matches MappedSheetRow.getContrib).
       // getValAt is a flat pivot lookup — right for leaves, wrong for sums whose
       // own pivot row is empty because postings live on their descendants.
@@ -2369,16 +2489,18 @@ const writeLeafWithDrill = (code, name, depth, isBold) => {
         }
         curRow++;
       };
-      const renderNode = (node, depth) => {
+const renderNode = (node, depth) => {
         const hasChildren = node.children && node.children.length > 0;
         if (hasChildren) {
           writeSumRow(node, depth);
-          node.children.forEach(c => renderNode(c, depth + 1));
+          // Drill-down off → show only top-level section nodes, not the
+          // nested children underneath them.
+          if (drilldown) node.children.forEach(c => renderNode(c, depth + 1));
         } else {
           writeLeafWithDrill(node.code, node.name || nameFor(node.code), depth, false);
         }
       };
-      activeMapping.cfLiteral.forEach(section => {
+exportCfLiteral.forEach(section => {
         if (section.label && includeBreakers) writeSectionBar(section.label, toArgbHex(section.color));
         section.nodes.forEach(n => renderNode(n, 0));
       });
@@ -2453,11 +2575,21 @@ let buffer;
     );
   };
 
-const handleExportPdf = (opts = {}) => {
+const handleExportPdf = async (opts = {}) => {
     const includeBreakers   = opts.includeBreakers   !== false;
     const includeTotalsOpt  = opts.includeTotals     !== false;
     const includeCompareOpt = opts.includeCompare    !== false;
     const drilldown         = opts.drilldown         !== false;
+    // Who is exporting — surfaced in the header. Best-effort; never blocks export.
+    let exportedByName = "";
+    try {
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      exportedByName = session?.user?.user_metadata?.full_name
+        || session?.user?.user_metadata?.name
+        || session?.user?.email
+        || "";
+    } catch { /* ignore — header just omits the user */ }
     const NAVY     = [26, 47, 138];
     const NAVYMID  = [40, 64, 168];
     const NAVYDK   = [10, 20, 70];
@@ -2583,11 +2715,11 @@ const getCmpValAt = (code, co) => {
       return m;
     };
 
-    const fmt = v => {
-      const r = Math.round(v);
-      if (r === 0 || !Number.isFinite(r)) return "—";
-      const abs = Math.abs(r).toLocaleString("de-DE");
-      return r < 0 ? `(${abs})` : abs;
+const fmt = v => {
+      const num = Number(v);
+      if (!Number.isFinite(num) || Math.round(num * 100) === 0) return "—";
+      const abs = Math.abs(num).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return num < 0 ? `(${abs})` : abs;
     };
     const fmtPct = v => {
       if (v == null || !Number.isFinite(v)) return "—";
@@ -2615,14 +2747,10 @@ const getCmpValAt = (code, co) => {
         chunkCompanies.forEach(co => {
           const a = getValAt(code, co);
           if (includeCompare) {
-            const b = getCmpValAt(code, co);
-// Round independently before subtracting so PDF matches the app's
-            // Math.round(val) - Math.round(cmpVal) integer math.
-            const ra = Math.round(a);
-            const rb = Math.round(b);
-            const delta = ra - rb;
-            const pct = Math.abs(rb) > 1e-9 ? ((ra - rb) / Math.abs(rb)) * 100 : null;
-            const dColor = (delta == null || Math.round(delta) === 0) ? GRAY : (delta > 0 ? GRN : RED);
+const b = getCmpValAt(code, co);
+            const delta = a - b;
+            const pct = Math.abs(b) > 1e-9 ? ((a - b) / Math.abs(b)) * 100 : null;
+            const dColor = (delta == null || Math.round(delta * 100) === 0) ? GRAY : (delta > 0 ? GRN : RED);
             cells.push({ content: fmt(a), styles: { fontStyle: isBold ? "bold" : "normal", textColor: a < 0 ? RED : TEXTDK } });
             cells.push({ content: fmt(b), styles: { fontStyle: isBold ? "bold" : "normal", textColor: REDDK } });
             cells.push({ content: fmt(delta), styles: { fontStyle: isBold ? "bold" : "normal", textColor: dColor } });
@@ -2650,12 +2778,10 @@ const pushGroupRow = ({ groupCode, groupName, depth, localRows, coAmounts, cmpMa
         chunkCompanies.forEach(co => {
           const v = amtByCo[co] ?? 0;
           if (includeCompare) {
-            const cmpV = cmpMap?.get(`GRP::${groupCode}::${co}`) ?? 0;
-const rv = Math.round(v);
-            const rc = Math.round(cmpV);
-            const delta = rv - rc;
-            const pct = Math.abs(rc) > 1e-9 ? ((rv - rc) / Math.abs(rc)) * 100 : null;
-            const dColor = (delta === 0) ? GRAY : (delta > 0 ? GRN : RED);
+const cmpV = cmpMap?.get(`GRP::${groupCode}::${co}`) ?? 0;
+            const delta = v - cmpV;
+            const pct = Math.abs(cmpV) > 1e-9 ? ((v - cmpV) / Math.abs(cmpV)) * 100 : null;
+            const dColor = (Math.round(delta * 100) === 0) ? GRAY : (delta > 0 ? GRN : RED);
             cells.push({ content: fmt(v),    styles: { fontStyle: "bold", fillColor: SUBBG, textColor: v < 0 ? RED : NAVY } });
             cells.push({ content: fmt(cmpV), styles: { fontStyle: "bold", fillColor: SUBBG, textColor: cmpV < 0 ? RED : REDDK } });
             cells.push({ content: fmt(delta), styles: { fontStyle: "bold", fillColor: SUBBG, textColor: dColor } });
@@ -2681,12 +2807,10 @@ const pushLocalRow = ({ localCode, localName, isJournal, co, amt, depth, groupCo
           const v = coLoop === co ? amt : 0;
           if (includeCompare) {
             const localKey = isJournal ? `JRN::${groupCode}::${localCode}::${coLoop}` : `ERP::${groupCode}::${localCode}::${coLoop}`;
-            const cmpV = coLoop === co ? (cmpMap?.get(localKey) ?? 0) : 0;
-const rv = Math.round(v);
-            const rc = Math.round(cmpV);
-            const delta = rv - rc;
-            const pct = Math.abs(rc) > 1e-9 ? ((rv - rc) / Math.abs(rc)) * 100 : null;
-            const dColor = (delta === 0) ? GRAY : (delta > 0 ? GRN : RED);
+const cmpV = coLoop === co ? (cmpMap?.get(localKey) ?? 0) : 0;
+            const delta = v - cmpV;
+            const pct = Math.abs(cmpV) > 1e-9 ? ((v - cmpV) / Math.abs(cmpV)) * 100 : null;
+            const dColor = (Math.round(delta * 100) === 0) ? GRAY : (delta > 0 ? GRN : RED);
             cells.push({ content: fmt(v),    styles: { fillColor: LOCALBG, textColor: v < 0 ? RED : TEXTDK } });
             cells.push({ content: fmt(cmpV), styles: { fillColor: LOCALBG, textColor: cmpV < 0 ? RED : REDDK } });
             cells.push({ content: fmt(delta), styles: { fillColor: LOCALBG, textColor: dColor } });
@@ -2733,7 +2857,8 @@ const pushLeafWithDrill = (code, name, depth, isBold) => {
         });
       };
 
-if (activeMapping?.cfLiteral) {
+const pdfCfLiteral = activeMapping?.cfLiteral ?? customCfLiteral;
+      if (pdfCfLiteral) {
         // Sum nodes need descendant rollup (matches MappedSheetRow.getContrib).
         // pushAccountRow uses getValAt (flat) which is 0 for sums whose postings
         // live on descendants — pushSumRow aggregates leaves so values match the app.
@@ -2758,11 +2883,11 @@ if (activeMapping?.cfLiteral) {
             if (includeCompare) {
 let b = 0;
               for (const lc of leaves) b += getCmpValAt(lc, co);
-              const ra = Math.round(a);
-              const rb = Math.round(b);
+const ra = Math.round(a * 100) / 100;
+              const rb = Math.round(b * 100) / 100;
               const delta = ra - rb;
               const pct = Math.abs(rb) > 1e-9 ? ((ra - rb) / Math.abs(rb)) * 100 : null;
-              const dColor = (delta == null || Math.round(delta) === 0) ? GRAY : (delta > 0 ? GRN : RED);
+              const dColor = (delta == null || Math.round(delta * 100) === 0) ? GRAY : (delta > 0 ? GRN : RED);
 cells.push({ content: fmt(ra),     styles: { fontStyle: "bold", textColor: ra < 0 ? RED : TEXTDK } });
               cells.push({ content: fmt(rb),     styles: { fontStyle: "bold", textColor: REDDK } });
               cells.push({ content: fmt(delta),  styles: { fontStyle: "bold", textColor: dColor } });
@@ -2781,16 +2906,18 @@ cells.push({ content: fmt(ra),     styles: { fontStyle: "bold", textColor: ra < 
           currentCfCode = node.code;
           currentCfName = node.name || nameFor(node.code);
         };
-        const renderNode = (node, depth) => {
+const renderNode = (node, depth) => {
           const hasChildren = node.children && node.children.length > 0;
           if (hasChildren) {
             pushSumRow(node, depth);
-            node.children.forEach(c => renderNode(c, depth + 1));
+            // Drill-down off → show only top-level section nodes, not the
+            // nested children underneath them.
+            if (drilldown) node.children.forEach(c => renderNode(c, depth + 1));
           } else {
             pushLeafWithDrill(node.code, node.name || nameFor(node.code), depth, false);
           }
         };
-        activeMapping.cfLiteral.forEach(section => {
+pdfCfLiteral.forEach(section => {
           if (section.label && includeBreakers) pushBreaker(section.label, section.color);
           section.nodes.forEach(n => renderNode(n, 0));
         });
@@ -2863,7 +2990,11 @@ if (activeMapping) placeBadge(T("badge_mapped"), [16, 185, 129], WHITE);
       doc.setFont("helvetica", "normal");
       doc.setFontSize(6);
       doc.setTextColor(...GRAY);
-     doc.text(`${T("file_generated")} ${new Date().toLocaleDateString()}`, W - 8, 22, { align: "right" });
+{
+        const stamp = new Date().toLocaleString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+        doc.text(`${T("file_generated")} ${stamp}`, W - 8, 22, { align: "right" });
+        if (exportedByName) doc.text(`${T("file_exported_by", "por")} ${exportedByName}`, W - 8, 25, { align: "right" });
+      }
 
       doc.setDrawColor(...NAVYMID);
       doc.setLineWidth(0.4);
@@ -3760,9 +3891,9 @@ handleApplyMapping(full ?? m, "report");
                   </thead>
 
 <tbody>
-{activeMapping?.cfLiteral ? (
+{(activeMapping?.cfLiteral ?? customCfLiteral) ? (
                       // ── CUSTOM MAPPING RENDER ───────────────────────────
-                      activeMapping.cfLiteral.map((section, secIdx) => {
+                      (activeMapping?.cfLiteral ?? customCfLiteral).map((section, secIdx) => {
                         const totalCols = 1 + visibleCompanies.length * (compareMode ? 4 : 1);
                         return (
                           <Fragment key={`cfmap-sec-${secIdx}`}>

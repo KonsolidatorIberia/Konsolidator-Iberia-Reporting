@@ -984,7 +984,7 @@ const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 
         if (loading || !rows) {
           return (
             <tr key={`${code}__drill_loading`} className="bg-[#f8f9ff]">
-              <td colSpan={(dimCols?.length ?? 0) * (cmpVisible ? 4 : 1) + 2} className="py-3 text-center">
+              <td colSpan={(dimCols?.length ?? 0) * (cmpVisible ? 4 : 1) + (cmpVisible ? 1 : 2)} className="py-3 text-center">
                 <Loader2 size={14} className="animate-spin inline-block mr-2" style={{ color: colors.primary }} />
                <span className="text-[11px] text-gray-400 font-bold">{T("dim_drill_loading_companies")}</span>
               </td>
@@ -1015,7 +1015,7 @@ const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 
         if (companyRows.length === 0) {
           return (
             <tr key={`${code}__drill_empty`} className="bg-[#f8f9ff]">
-              <td colSpan={(dimCols?.length ?? 0) * (cmpVisible ? 4 : 1) + 2} className="py-3 text-center">
+              <td colSpan={(dimCols?.length ?? 0) * (cmpVisible ? 4 : 1) + (cmpVisible ? 1 : 2)} className="py-3 text-center">
                <span className="text-[11px] text-gray-400 font-bold italic">{T("dim_drill_no_companies")}</span>
               </td>
             </tr>
@@ -1839,7 +1839,7 @@ const ACOL = 580, TCOL = 150;
       const nameLen = (dim.name ?? "").length;
       return Math.max(MIN_DCOL, nameLen * 9 + 40);
     });
-  }, [orderedDimCols]);
+}, [orderedDimCols]);
 
   const totalWidth = cmpVisible
     ? ACOL + dimColWidths.reduce((s, w) => s + w + CMP_COL + DELTA_COL + PCT_COL, 0)
@@ -1969,7 +1969,6 @@ const displayedTreeIndex = useMemo(() => {
 
 const isCustomMapping = hasCustomMapping;
 const orderedRows = useMemo(() => {
-    
     // CUSTOM standards (CUSTOM-*) use the hierarchical displayedTree directly.
 if (activeMapping?.rows) {
 if (isCustomMapping) {
@@ -2059,6 +2058,7 @@ const isCustomStandard = activeStandardKey && activeStandardKey.startsWith("CUST
         return false;
       };
 let result = flatOrdered.filter(n => !parentInFlatSameSection(n.AccountCode));
+      console.log("[screen-toplevel]", statementType, "count=", result.length, "codes=", result.map(n => n.AccountCode));
 
       // For BS: filter by view (all / assets / equity). Grand totals with
       // section=null are shown in "all" only.
@@ -2128,7 +2128,7 @@ const dividerMap = useMemo(() => {
         seenSec.add(m.section);
         const sec = activeMapping.sections.get(m.section);
         if (sec && !out[String(node.AccountCode)]) {
-          out[String(node.AccountCode)] = { label: sec.label, color: palette[si] ?? sec.color };
+       out[String(node.AccountCode)] = { label: sec.label, color: sec.color || palette[si] };
           si++;
         }
       }
@@ -2153,7 +2153,7 @@ const dividerMap = useMemo(() => {
       const sec = activeMapping.sections.get(m.section);
       if (sec) {
         const key = String(node._instanceId ?? node.AccountCode);
-        out[key] = { label: sec.label, color: palette[i] ?? sec.color };
+   out[key] = { label: sec.label, color: sec.color || palette[i] };
         i++;
       }
     }
@@ -2743,7 +2743,7 @@ const headers = [T("file_col_account"), ...visibleDims.map(d => d.name ?? d.code
           cell.font = { name: "Calibri", size: 10, color: { argb: C.gray400 }, bold: !!opts2.bold };
         } else {
           cell.value = val;
-          cell.numFmt = opts2.percent ? '0.0"%"' : '#,##0.00;[Red]-#,##0.00';
+         cell.numFmt = opts2.percent ? '0.0"%"' : '#,##0.00;[Red](#,##0.00)';
           cell.font = {
             name: "Calibri", size: 10, bold: !!opts2.bold,
             color: { argb: opts2.colorOverride ?? (val < 0 ? C.red : "FF1A2F8A") },
@@ -2875,12 +2875,14 @@ const renderRow = (node, depth, mode = "literal", excludeCodes = null) => {
         }
         curRow++;
 
-if (node.children && node.children.length > 0) {
+if (drilldown && node.children && node.children.length > 0) {
           node.children.forEach(c => {
             // Skip children that will render at the top level as their own row
             // (mirrors on-screen DimensionRow's excludeCodes behavior). Values
             // still roll up correctly because sumTreeForDim walks the full tree
             // — this only affects what's emitted as a separate row.
+            // Drill-down off → don't descend into children at all; show only
+            // the top-level section nodes.
             if (excludeCodes && excludeCodes.has(String(c.code ?? c.AccountCode ?? ""))) return;
             renderRow(c, depth + 1, mode, excludeCodes);
           });
@@ -3153,9 +3155,36 @@ if (mappingForSt?.rows && mappingForSt?.sections) {
           const filterFn = viewLevel === "summary"
             ? (info => info.showInSummary)
             : (info => info.isSum);
-          const orderedEntries = [...mappingForSt.rows.entries()]
+let orderedEntries = [...mappingForSt.rows.entries()]
             .filter(([, info]) => filterFn(info))
             .sort(([, a], [, b]) => a.sortOrder - b.sortOrder);
+          console.log("[dimroot]", viewLevel, "total=", orderedEntries.length, orderedEntries.map(([c,i]) => `${c}<-${i.parent_code ?? "NULL"}`));
+          // Drill-down off → keep only section-root entries (whose parent isn't
+          // itself in the filtered set), so we show just the first-level rows
+          // and breakers, nothing nested.
+if (!drilldown) {
+            const inSet = new Set(orderedEntries.map(([c]) => String(c)));
+            // Exact mirror of on-screen `parentInFlatSameSection`: a row is
+            // nested (hidden) only if, walking up its parent chain, it hits a
+            // parent that's in the set AND shares its same non-null section.
+            // Cross-section jumps and section=null spine parents make it a root.
+            const nested = (code) => {
+              const nodeSection = mappingForSt.rows.get(String(code))?.section ?? null;
+              let cur = String(code); let hops = 0;
+              while (cur && hops < 25) {
+                const parent = mappingForSt.rows.get(cur)?.parent_code
+                  ? String(mappingForSt.rows.get(cur).parent_code) : "";
+                if (!parent) return false;
+                if (inSet.has(parent)) {
+                  const parentSection = mappingForSt.rows.get(parent)?.section ?? null;
+                  return parentSection === nodeSection && nodeSection !== null;
+                }
+                cur = parent; hops++;
+              }
+              return false;
+            };
+            orderedEntries = orderedEntries.filter(([code]) => !nested(code));
+          }
           // Set of codes that render as their own top-level row. Passed to
           // renderRow so descendants matching these are skipped, mirroring
           // the on-screen `excludeCodes` filter in DimensionRow.
@@ -3163,12 +3192,14 @@ if (mappingForSt?.rows && mappingForSt?.sections) {
           const palette = ["FF1A2F8A", "FFCF305D", "FF10B981", "FFD97706"];
           const seenSections = new Set();
           let sectionIdx = 0;
-          orderedEntries.forEach(([code, info]) => {
-            if (!stCodes.has(code)) return;
+orderedEntries.forEach(([code, info]) => {
+            // Drill off surfaces mapping header rows (A.01, A.06…) not in
+            // groupAccounts, so don't gate on stCodes then.
+            if (drilldown && !stCodes.has(code)) return;
             if (!seenSections.has(info.section) && showBreakers) {
-              const sec = mappingForSt.sections.get(info.section);
+const sec = mappingForSt.sections.get(info.section);
               if (sec?.label) {
-                renderSectionBar(sec.label, palette[sectionIdx % palette.length]);
+                renderSectionBar(sec.label, sec.color ? toArgbHex(sec.color) : palette[sectionIdx % palette.length]);
                 sectionIdx++;
               }
               seenSections.add(info.section);
@@ -3681,9 +3712,11 @@ const renderRow = (node, depth, mode, excludeCodes = null) => {
         const values    = dimSlice.map(d => mainSum(node, d.code ?? "__none__"));
         const cmpValues = isCompare ? dimSlice.map(d => cmpSum(node, d.code ?? "__none__")) : [];
         const total = values.reduce((s, v) => s + v, 0);
-        rows.push({ code: node.code, name: node.name || node.code || "", values, cmpValues, total, isSum: !!node.isSum, depth });
-        if (node.children && node.children.length > 0) {
+rows.push({ code: node.code, name: node.name || node.code || "", values, cmpValues, total, isSum: !!node.isSum, depth });
+        if (drilldown && node.children && node.children.length > 0) {
           node.children.forEach(c => {
+            // Drill-down off → don't descend into children; show only the
+            // top-level section nodes (and breakers).
             if (excludeCodes && excludeCodes.has(String(c.code ?? c.AccountCode ?? ""))) return;
             renderRow(c, depth + 1, mode, excludeCodes);
           });
@@ -3810,9 +3843,10 @@ const renderRow = (node, depth, mode, excludeCodes = null) => {
         };
       };
 
-      if (useLiteral && literal && literal.length > 0) {
+if (useLiteral && literal && literal.length > 0) {
+        console.log("[dimlit] drilldown=", drilldown, "sections=", literal.map(s => ({ label: s.label, roots: s.nodes.map(n => ({ code: n.code, name: n.name, kids: (n.children||[]).length })) })));
         literal.forEach(section => {
-          if (section.label && showBreakers) rows.push({ isBreaker: true, label: section.label });
+if (section.label && showBreakers) rows.push({ isBreaker: true, label: section.label, color: section.color });
           section.nodes.forEach(n => renderRow(n, 0, "literal"));
         });
       } else {
@@ -3839,27 +3873,61 @@ const renderRow = (node, depth, mode, excludeCodes = null) => {
             childrenIdx.get(parent).push(code);
           }
         });
-        const buildTreeNode = (code, depth, visited = new Set()) => {
+const buildTreeNode = (code, depth, visited = new Set()) => {
+          const fallbackName = gaMap.get(code)?.AccountName ?? mappingForSt.rows.get(String(code))?.account_name ?? "";
           if (visited.has(code) || depth > 25) {
-            return { AccountCode: code, AccountName: gaMap.get(code)?.AccountName ?? "", children: [] };
+            return { AccountCode: code, AccountName: fallbackName, children: [] };
           }
           const next = new Set(visited); next.add(code);
           const kids = (childrenIdx.get(code) || []).map(c => buildTreeNode(c, depth + 1, next));
-          return { AccountCode: code, AccountName: gaMap.get(code)?.AccountName ?? "", children: kids };
+          return { AccountCode: code, AccountName: fallbackName, children: kids };
         };
 
-        if (mappingForSt?.rows && mappingForSt?.sections) {
+if (mappingForSt?.rows && mappingForSt?.sections) {
           const filterFn = viewLevel === "summary" ? (info => info.showInSummary) : (info => info.isSum);
-          const orderedEntries = [...mappingForSt.rows.entries()]
+let orderedEntries = [...mappingForSt.rows.entries()]
             .filter(([, info]) => filterFn(info))
             .sort(([, a], [, b]) => a.sortOrder - b.sortOrder);
-          const topLevelCodes = new Set(orderedEntries.map(([code]) => String(code)));
+       console.log("[dimroot]", viewLevel, "total=", orderedEntries.length, orderedEntries.slice(0,25).map(([c,i]) => `${c}<-${i.parent_code ?? "NULL"}[sec:${i.section ?? "NULL"}]`));
+          // Drill-down off → keep only section-root entries (whose parent isn't
+          // itself in the filtered set), so we show just the first-level rows
+          // and breakers, nothing nested.
+if (!drilldown) {
+            const inSet = new Set(orderedEntries.map(([c]) => String(c)));
+            // Exact mirror of on-screen `parentInFlatSameSection`: a row is
+            // nested (hidden) only if, walking up its parent chain, it hits a
+            // parent that's in the set AND shares its same non-null section.
+            // Cross-section jumps (A.01→A.04.S is REV→COGS) and section=null
+            // spine parents make it a root. This keeps A.04.S but drops A.02/
+            // A.03/A.04 (same COGS section under A.04.S).
+            const nested = (code) => {
+              const nodeSection = mappingForSt.rows.get(String(code))?.section ?? null;
+              let cur = String(code); let hops = 0;
+              while (cur && hops < 25) {
+                const parent = mappingForSt.rows.get(cur)?.parent_code
+                  ? String(mappingForSt.rows.get(cur).parent_code) : "";
+                if (!parent) return false;
+                if (inSet.has(parent)) {
+                  const parentSection = mappingForSt.rows.get(parent)?.section ?? null;
+                  return parentSection === nodeSection && nodeSection !== null;
+                }
+                cur = parent; hops++;
+              }
+              return false;
+            };
+            orderedEntries = orderedEntries.filter(([code]) => !nested(code));
+          }
+const topLevelCodes = new Set(orderedEntries.map(([code]) => String(code)));
+          console.log("[dimroot2]", viewLevel, "afterFilter=", orderedEntries.length, "codes=", orderedEntries.map(([c]) => c), "inStCodes=", orderedEntries.filter(([c]) => stCodes.has(c)).length);
           const seenSections = new Set();
-          orderedEntries.forEach(([code, info]) => {
-            if (!stCodes.has(code)) return;
+orderedEntries.forEach(([code, info]) => {
+            // When drill is off we intentionally surface mapping header rows
+            // (A.01, A.02…) that don't exist in groupAccounts, so don't gate on
+            // stCodes in that mode — otherwise every first-level row vanishes.
+            if (drilldown && !stCodes.has(code)) return;
             if (!seenSections.has(info.section) && showBreakers) {
               const sec = mappingForSt.sections.get(info.section);
-              if (sec?.label) rows.push({ isBreaker: true, label: sec.label });
+             if (sec?.label) rows.push({ isBreaker: true, label: sec.label, color: sec.color });
               seenSections.add(info.section);
             }
             renderRow(treeAsLit(buildTreeNode(code, 0), 0), 0, "tree", topLevelCodes);
@@ -3874,9 +3942,11 @@ const renderRow = (node, depth, mode, excludeCodes = null) => {
       }
 
       const startY = drawPageHeader(isFirst, stType, viewLevel, chunkInfo);
-      const fmt = v => (v == null || v === 0 || !Number.isFinite(v))
+const fmt = v => (v == null || v === 0 || !Number.isFinite(v))
         ? "—"
-        : v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        : v < 0
+          ? `(${Math.abs(v).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`
+          : v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       const fmtPct = v => v == null || !Number.isFinite(v)
         ? "—"
         : `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
@@ -3905,11 +3975,15 @@ dimSlice.forEach(() => {
       }
 
       const body = rows.map(r => {
-        if (r.isBreaker) {
+if (r.isBreaker) {
+          const hx = String(r.color || "").replace("#", "");
+          const secFill = /^[0-9a-fA-F]{6}$/.test(hx)
+            ? [parseInt(hx.slice(0,2),16), parseInt(hx.slice(2,4),16), parseInt(hx.slice(4,6),16)]
+            : NAVYDK;
           return [{
             content: r.label.toUpperCase(),
             colSpan: totalColCount,
-            styles: { fillColor: NAVYDK, textColor: WHITE, fontStyle: "bold", halign: "left", fontSize: bodyFont + 0.5 },
+            styles: { fillColor: secFill, textColor: WHITE, fontStyle: "bold", halign: "left", fontSize: bodyFont + 0.5 },
           }];
         }
         const indent = "  ".repeat(Math.min(r.depth, 6));
@@ -4004,9 +4078,9 @@ didParseCell: d => {
         didDrawPage: () => drawFooter(stType, viewLevel, chunkInfo),
       });
     };
-
-    const dispatchStatement = (stType, isFirstRef) => {
+const dispatchStatement = (stType, isFirstRef) => {
       const lit = stType === "pl" ? plLiteral : bsLiteral;
+      console.log("[dimdisp]", stType, "hasLiteral=", !!(lit && lit.length > 0), "litLen=", lit?.length, "drilldown=", drilldown);
       const levels = lit && lit.length > 0 ? [null] : ["summary", "detailed"];
       for (const level of levels) {
         for (let ci = 0; ci < dimChunks.length; ci++) {
@@ -4257,8 +4331,8 @@ table td, table th { vertical-align: middle; }
                   <col style={{ width: dimColWidths[i], minWidth: dimColWidths[i] }} />
                   {cmpVisible && <><col style={{ width: CMP_COL, minWidth: CMP_COL }} /><col style={{ width: DELTA_COL, minWidth: DELTA_COL }} /><col style={{ width: PCT_COL, minWidth: PCT_COL }} /></>}
                 </React.Fragment>
-              ))}
-              <col style={{ width: TCOL, minWidth: TCOL }} />
+))}
+              {!cmpVisible && <col style={{ width: TCOL, minWidth: TCOL }} />}
             </colgroup>
         <thead>
 
@@ -4570,7 +4644,7 @@ if (expanded && hasLocals) {
 
                   const out = [];
                   if (topPad > 0) {
-                    out.push(<tr key="__top_pad" style={{ height: topPad }}><td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + 2} /></tr>);
+                    out.push(<tr key="__top_pad" style={{ height: topPad }}><td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 1 : 2)} /></tr>);
                   }
 
                   const q = debouncedQuery.trim().toLowerCase();
@@ -4682,7 +4756,7 @@ setDrillExpandedLocals(prev => {
                         if (isLoading || !drillRows) {
                           out.push(
                             <tr key={`${d.rowKey}__drill_loading`} className="bg-[#f8f9ff]">
-                              <td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + 2} className="py-3 text-center">
+                              <td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 1 : 2)} className="py-3 text-center">
                                 <Loader2 size={14} className="animate-spin inline-block mr-2" style={{ color: colors.primary }} />
                                 <span className="text-[11px] text-gray-400 font-bold">Cargando empresas…</span>
                               </td>
@@ -4850,7 +4924,7 @@ const getCoDim = (dk) => {
                       if (isLoading || !drillRows) {
                         out.push(
                           <tr key={`${rowKey}__drill_loading`} className="bg-[#f8f9ff]">
-                            <td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + 2} className="py-3 text-center">
+                            <td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 1 : 2)} className="py-3 text-center">
                               <Loader2 size={14} className="animate-spin inline-block mr-2" style={{ color: colors.primary }} />
                               <span className="text-[11px] text-gray-400 font-bold">Cargando empresas…</span>
                             </td>
@@ -5018,7 +5092,7 @@ const getValCoCmp = cmpVisible
                         if (companyRows.length === 0) {
                           out.push(
                             <tr key={`${rowKey}__drill_empty`} className="bg-[#f8f9ff]">
-                              <td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + 2} className="py-3 text-center">
+                              <td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 1 : 2)} className="py-3 text-center">
                                 <span className="text-[11px] text-gray-400 font-bold italic">Ninguna empresa con movimiento</span>
                               </td>
                             </tr>
@@ -5065,7 +5139,7 @@ const getValCoCmp = cmpVisible
                   }
 
                   if (bottomPad > 0) {
-                    out.push(<tr key="__bot_pad" style={{ height: bottomPad }}><td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + 2} /></tr>);
+                    out.push(<tr key="__bot_pad" style={{ height: bottomPad }}><td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 1 : 2)} /></tr>);
                   }
                   return out;
                 }
@@ -5093,7 +5167,7 @@ const levelByCode = (hasCustomMapping && activeMapping?.rows)
                           <td className="sticky left-0 z-20 px-6 py-1.5" style={{ backgroundColor: divider.color }}>
                             <span className="uppercase tracking-widest" style={header3Style}>{divider.label}</span>
                           </td>
-                          {Array.from({ length: dimCols.length * (cmpVisible ? 4 : 1) + 1 }).map((_, i) => (
+{Array.from({ length: dimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 0 : 1) }).map((_, i) => (
                             <td key={i} style={{ backgroundColor: divider.color }} />
                           ))}
                         </tr>
@@ -5318,9 +5392,29 @@ const handleApplyMapping = useCallback((m, kind = "structure") => {
       const allMappings = await listMappings({ companyId: cid, includeHidden: true });
       const match = (allMappings || []).find(m => String(m.mapping_id) === String(mid));
       if (!match) { setActiveMapping(null); return; }
-      const full = await getMapping(match.mapping_id);
+const full = await getMapping(match.mapping_id);
       handleApplyMapping(full ?? match, "structure");
     } catch (err) { console.error("[applyPreferredMapping] error:", err); }
+  }, [handleApplyMapping]);
+
+  // The "clear mapping" button must drop the user's mapping and return to the
+  // custom-no-user default (the hidden override, flagged is_hidden), NOT re-apply the
+  // user's preferred default — otherwise the default can never be removed.
+  const clearToHiddenOverride = useCallback(async () => {
+    try {
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) { setActiveMapping(null); return; }
+      const { listMappings, getMapping, getActiveCompanyId } = await import("../../lib/mappingsApi");
+      const cid = await getActiveCompanyId(uid);
+      if (!cid) { setActiveMapping(null); return; }
+      const allMappings = await listMappings({ companyId: cid, includeHidden: true });
+      const hidden = (allMappings || []).find(m => !!m.is_hidden);
+      if (!hidden) { setActiveMapping(null); return; }
+      const full = await getMapping(hidden.mapping_id);
+      handleApplyMapping(full ?? hidden, "structure");
+    } catch (err) { console.error("[clearToHiddenOverride] error:", err); setActiveMapping(null); }
   }, [handleApplyMapping]);
 
   const autoMappingAppliedRef = useRef(false);
@@ -5469,7 +5563,7 @@ const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
       try {
         const [rowsArr, secsArr] = await Promise.all([
           sbGet(`${rowsTable}?select=*&order=sort_order.asc`),
-          sbGet(`${sectionsTable}?select=*&order=sort_order.asc`),
+sbGet(`${sectionsTable}?select=*&order=sort_order.asc`),
         ]);
         if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
 const rows = new Map();
@@ -5525,7 +5619,7 @@ const rows = new Map();
         const sections = new Map();
         secsArr.forEach(s => sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) }));
         setter({ rows, sections });
-      } catch { setter(null); }
+} catch { setter(null); }
     };
 
     if (isCustom) {
@@ -6041,7 +6135,7 @@ title={T("edit_mapping_title")}
             {T("btn_edit")}
           </button>
           <button
-           onClick={() => applyPreferredMapping()}
+          onClick={() => clearToHiddenOverride()}
             className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
 title={T("clear_mapping_title")}
           >

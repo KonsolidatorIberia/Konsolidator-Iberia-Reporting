@@ -15,6 +15,13 @@ import * as XLSX from "xlsx-js-style";
 
 const BASE_URL = "";
 
+// Partidas sin dimensiones: usamos una dimensión sintética única para que TODA la
+// maquinaria (valores, meses, fórmulas, render y la lectura desde KpiIndividualesPage
+// vía party.dims) siga funcionando sin cambios. KPIs itera party.dims y suma
+// computed[dim][month]; con una sola dim __NODIM__ suma esa fila y ya está.
+const NODIM_CODE = "__NODIM__";
+const NODIM_LABEL = "Valor";
+
 const NAVY_DEEP = "#0a1647";
 const NAVY      = "#1a2f8a";
 const RED       = "#e8394a";
@@ -524,12 +531,16 @@ const identityFields = [
   // ═════════════════════════════════════════════════════════
   // YEAR SHEETS
   // ═════════════════════════════════════════════════════════
-  const allDims = [];
+const allDims = [];
   dimGroups.forEach(g => {
     const inner = dimsByGroup.get(g);
     if (!inner) return;
     inner.forEach((name, code) => allDims.push({ code, name, group: g }));
   });
+  // Cliente sin dimensiones → una fila sintética "Valor" para poder meter datos.
+  if (allDims.length === 0) {
+    allDims.push({ code: NODIM_CODE, name: NODIM_LABEL, group: NODIM_CODE });
+  }
 
 const companyBannerStyle = {
     font: { name: "Inter", sz: 13, bold: true, color: { rgb: WHITE } },
@@ -782,9 +793,20 @@ if (companies.length === 0) throw new Error(TL("sp_err_mark_company"));
     }
   }
 
-  const dims = [...usedDims];
-if (dims.length === 0) throw new Error(TL("sp_err_no_values"));
-  const dimGroupsUsed = [...new Set(dims.map(c => dimToGroup.get(c)).filter(Boolean))];
+let dims = [...usedDims];
+  // Partida sin dimensiones: si el blueprint solo trae la fila sintética "Valor"
+  // (o no trae dimensiones reales pero sí valores), la tratamos como sin dims.
+  const onlyNoDim = dims.length === 0 || (dims.length === 1 && dims[0] === NODIM_CODE);
+  let dimGroupsUsed;
+  if (onlyNoDim) {
+    // ¿Hay algún valor cargado? Si no, sí es un error real (blueprint vacío).
+    const hasAnyValue = Object.keys(values).length > 0;
+    if (!hasAnyValue) throw new Error(TL("sp_err_no_values"));
+    dims = [NODIM_CODE];
+    dimGroupsUsed = [NODIM_CODE];
+  } else {
+    dimGroupsUsed = [...new Set(dims.map(c => dimToGroup.get(c)).filter(Boolean))];
+  }
 
   return {
     draft: {
@@ -1446,6 +1468,11 @@ const activeGroup = useMemo(
   }, [effectiveDimensions]);
 
 const handleCreate = async (draft) => {
+    // Sin dimensiones → dimensión sintética única, para que la partida tenga una
+    // fila donde guardar valores y KPIs pueda leerla (itera party.dims).
+    const noDims = !draft.dims || draft.dims.length === 0;
+    const pDims      = noDims ? [NODIM_CODE] : draft.dims;
+    const pDimGroups = noDims ? [NODIM_CODE] : draft.dimGroups;
 const { data, error } = await supabase.rpc("create_statistical_party", {
       p_name:        draft.name.trim(),
       p_description: draft.description.trim() || null,
@@ -1453,8 +1480,8 @@ const { data, error } = await supabase.rpc("create_statistical_party", {
       p_icon:        draft.icon,
       p_companies:   draft.companies,
       p_years:       draft.years,
-      p_dim_groups:  draft.dimGroups,
-      p_dims:        draft.dims,
+      p_dim_groups:  pDimGroups,
+      p_dims:        pDims,
       p_shared_across_companies: draft.sharedAcrossCompanies !== false,
     });
     if (error) {
@@ -2480,8 +2507,9 @@ const onFillMouseDown = (dimIdx, monthIdx) => (e) => {
               </tr>
             </thead>
             <tbody>
-              {group.dims.map((code, di) => {
-                const name = nameLookup.get(code) ?? code;
+{group.dims.map((code, di) => {
+                const isNoDim = code === NODIM_CODE;
+                const name = isNoDim ? NODIM_LABEL : (nameLookup.get(code) ?? code);
                 return (
                   <tr key={code} className="border-b hover:bg-[rgba(26,47,138,0.02)]"
                     style={{ borderColor: "rgba(26,47,138,0.06)" }}>
@@ -2492,19 +2520,25 @@ const onFillMouseDown = (dimIdx, monthIdx) => (e) => {
                         background: "white",
                       }}>
                       <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-mono font-bold w-5 text-center" style={{ color: NAVY, opacity: 0.35 }}>
-                          {di + 1}
-                        </span>
-                        <span className="text-[10px] font-mono font-bold" style={{ color: NAVY, opacity: 0.4 }}>{code}</span>
+                        {!isNoDim && (
+                          <span className="text-[10px] font-mono font-bold w-5 text-center" style={{ color: NAVY, opacity: 0.35 }}>
+                            {di + 1}
+                          </span>
+                        )}
+                        {!isNoDim && (
+                          <span className="text-[10px] font-mono font-bold" style={{ color: NAVY, opacity: 0.4 }}>{code}</span>
+                        )}
                         <span className="text-[13px] font-bold truncate flex-1" style={{ color: NAVY_DEEP }}>{name}</span>
-                        <button
-                          onClick={() => onRemoveDim(code)}
-                          className="opacity-0 group-hover/dim:opacity-100 w-6 h-6 rounded-md flex items-center justify-center transition-all flex-shrink-0"
-                          style={{ background: `${RED}12`, color: RED }}
-                          title={T("sp_remove_dimension")}
-                        >
-                          <Trash2 size={11} />
-                        </button>
+                        {!isNoDim && (
+                          <button
+                            onClick={() => onRemoveDim(code)}
+                            className="opacity-0 group-hover/dim:opacity-100 w-6 h-6 rounded-md flex items-center justify-center transition-all flex-shrink-0"
+                            style={{ background: `${RED}12`, color: RED }}
+                            title={T("sp_remove_dimension")}
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        )}
                       </div>
                     </td>
 {MONTHS.map((m, mi) => {
@@ -3212,11 +3246,11 @@ const [draft, setDraft] = useState({
       )
     : companyOpts;
 
+// Las dimensiones son OPCIONALES: un cliente sin dimensiones puede crear una
+  // partida igualmente (se le asigna una dimensión sintética al enviar).
   const canCreate = draft.name.trim().length > 0
     && draft.companies.length > 0
-    && draft.years.length > 0
-    && draft.dimGroups.length > 0
-    && draft.dims.length > 0;
+    && draft.years.length > 0;
 
 const toggle = useCallback((field, value) => {
     setDraft(d => {

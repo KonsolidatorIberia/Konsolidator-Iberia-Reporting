@@ -147,8 +147,11 @@ function downloadJson(filename, data) {
 // IMPORT — validate + write atomically
 // ═══════════════════════════════════════════════════════════════════
 
-// Canonical cc_tag catalog — must match the framework prompt
+// Canonical cc_tag catalog — must match the framework prompt.
+// Covers P/L (CC_NN) tags AND Balance-Sheet (BS_NN) tags. The KPI engine
+// resolves against both, so the import validator must accept both.
 const VALID_CC_TAGS = new Set([
+  // ── P/L (CC_NN) ──
   "CC_01-Revenue",
   "CC_02-Cost Of Sales",
   "CC_03-Other Operating Income",
@@ -159,12 +162,44 @@ const VALID_CC_TAGS = new Set([
   "CC_09-Impairment Gain (Loss) on Fixed Assets",
   "CC_10-Depreciation and Amotization",
   "CC_11-Other Operating Expenses",
+  "CC_12-Share of profit (loss) from associates",
   "CC_13-Interest Income",
   "CC_14-Other financial income",
   "CC_15-Interest expense",
   "CC_16-Other financial expense",
   "CC_17-Foreign Exchange",
   "CC_18-Income Tax",
+  "CC_19-Profit (loss) from discontinued operations",
+  // ── Balance Sheet (BS_NN) ──
+  "BS_01-Intangible assets",
+  "BS_02-PP&E",
+  "BS_03-Goodwill",
+  "BS_04-Investments in associates",
+  "BS_05-Investments",
+  "BS_06-Deferred tax assets",
+  "BS_07-Cash and equivalents",
+  "BS_08-Accounts receivable",
+  "BS_09-Inventories",
+  "BS_10-Short term investments and financial receivables",
+  "BS_11-Available for sale investments",
+  "BS_12-Short term investments in associates",
+  "BS_13-Other current assets",
+  "BS_14-Share capital",
+  "BS_15-Reserves",
+  "BS_15.1-Other equity instruments",
+  "BS_16-Retained earnings",
+  "BS_17-Non controlling interests",
+  "BS_18-Provisions",
+  "BS_19-Long term debt",
+  "BS_20-Long term debt with associates",
+  "BS_21-Deferred tax liabilities",
+  "BS_22-Other non current liabilities",
+  "BS_23-Accounts payable",
+  "BS_24-Short term debt",
+  "BS_25-Short term debt with associates",
+  "BS_26-Short term provisions",
+  "BS_27-income tax liabilities",
+  "BS_28-Other current liabilities",
 ]);
 
 // Required section codes per statement — enforces the standard structure

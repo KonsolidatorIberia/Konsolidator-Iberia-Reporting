@@ -19,7 +19,8 @@ const fmt = (n) => {
   if (n == null || n === "") return "—";
   const v = Number(n);
   if (!Number.isFinite(v) || Math.abs(v) < 0.005) return "—";
-  return new Intl.NumberFormat("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
+  const s = new Intl.NumberFormat("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Math.abs(v));
+  return v < 0 ? `(${s})` : s;
 };
 
 const TYPE_ORDER = { "P/L": 0, "DIS": 0, "B/S": 1, "C/F": 2, "CFS": 2 };
@@ -231,9 +232,12 @@ const isBoldName = hasChildren || !!node._isSum || /\.S$/i.test(String(node.Acco
 const consTotalFrom = (piv) => rollupCodes.reduce((acc, leafCode) => {
     const bc = piv?.get(leafCode);
     if (!bc) return acc;
+    // El consolidado del grupo incluye TODAS las filas Group, también las que llevan
+    // origin/counterparty (p.ej. eliminaciones interco registradas a nivel grupo).
+    // Excluirlas dejaba fuera partidas legítimas del consolidado (bug: 700000 daba
+    // 29.972.294,28 en vez de 31.162.412,56).
     return acc + (bc[topParent] ?? [])
       .filter(r => r.CompanyRole === "Group")
-      .filter(r => !r.OriginCompanyShortName?.trim() && !r.CounterpartyShortName?.trim())
       .filter(dimFilter)
       .reduce((s, r) => s + -getRowAmount(r), 0);
   }, 0);
@@ -439,11 +443,16 @@ compareMode={compareMode} cmpPivot={cmpPivot} cmpPivotPrev={cmpPivotPrev}
 </>
   );
 }, (prev, next) => {
-  // Solo re-renderiza esta fila si SU propia expansión cambió. Ignora la
-  // identidad del Set `expanded` (que cambia en cada toggle de cualquier fila
-  // y, si no, forzaría a recalcular el rollup de TODAS las filas).
   const key = next.node._instanceId ?? next.node.AccountCode;
+  // Re-render if this row's own expansion changed.
   if (prev.expanded.has(key) !== next.expanded.has(key)) return false;
+  // If this row is expanded, its rendered subtree depends on the expansion state of
+  // its descendants. A child toggling deeper down produces a NEW `expanded` Set but
+  // does NOT change this row's own key — so comparing only the own key would freeze
+  // the subtree and swallow the click. When expanded, fall through on Set identity
+  // change so the subtree re-renders; collapsed rows still skip (no visible subtree).
+  const nextExpanded = next.expanded.has(key);
+  if (nextExpanded && prev.expanded !== next.expanded) return false;
   const P = [
     "node","depth","rowIndex","onToggle","pivot","uploadedPivot","elimPivot",
     "contributionCompanies","topParent","elimExpanded","elimHeaders","elimColsExiting",
@@ -583,9 +592,10 @@ compareMode, cmpPivot, cmpPivotPrev, cmpYear, cmpMonth, cmpMoLabel,
 pivotPrev = null, ytdOnly = true,
 rowMatchesDims = null,
     getRowAmount = null,
-    activeMapping, mappingDerived, colors,
+activeMapping, mappingDerived, colors,
     perspectiveLegal,
     drillDown, elimDetail,
+    isCustomStd = false,
   } = params;
 const ws = wb.addWorksheet(sheetName);
 
@@ -737,22 +747,29 @@ const companiesStartCol = colCursor;
   }
   ws.getRow(1).height = 4;
 
-  // Title block
+// Title block — full Konsolidator-colored band with white text (matches the
+  // other pages' export headers) instead of a plain white header.
   ws.mergeCells(2, 1, 2, Math.max(6, totalCols));
   const titleCell = ws.getCell(2, 1);
   titleCell.value = `${isRootView ? "Consolidated" : "Subgroup"} Sheet`;
-  titleCell.font = { name: "Calibri", size: 20, bold: true, color: { argb: PRIMARY } };
+  titleCell.font = { name: "Calibri", size: 20, bold: true, color: { argb: "FFFFFFFF" } };
   titleCell.alignment = { vertical: "middle", indent: 1 };
   ws.getRow(2).height = 30;
+  for (let col = 1; col <= totalCols; col++) {
+    ws.getCell(2, col).fill = { type: "pattern", pattern: "solid", fgColor: { argb: PRIMARY } };
+  }
 
   ws.mergeCells(3, 1, 3, Math.max(6, totalCols));
   const subTitleCell = ws.getCell(3, 1);
   subTitleCell.value = `${monthLabel} ${year} · ${perspectiveLegal}${displayCurrency ? ` · ${displayCurrency}` : ""}`;
-  subTitleCell.font = { name: "Calibri", size: 11, bold: true, color: { argb: ACCENT } };
+  subTitleCell.font = { name: "Calibri", size: 11, bold: true, color: { argb: "FFFFFFFF" } };
   subTitleCell.alignment = { vertical: "middle", indent: 1 };
   ws.getRow(3).height = 18;
+  for (let col = 1; col <= totalCols; col++) {
+    ws.getCell(3, col).fill = { type: "pattern", pattern: "solid", fgColor: { argb: PRIMARY } };
+  }
 
-  // Context line (smaller, secondary info)
+  // Context line (smaller, secondary info) — now includes the export timestamp.
   ws.mergeCells(4, 1, 4, Math.max(6, totalCols));
   const subParts = [];
   if (source) subParts.push(`Source: ${source}`);
@@ -760,6 +777,7 @@ const companiesStartCol = colCursor;
   if (activeMapping) subParts.push(`Mapping: ${activeMapping.name}`);
 if (viewLabel) subParts.push(`View: ${viewLabel}`);
   if (compareMode && cmpYear && cmpMonth) subParts.push(`vs ${cmpMoLabel} ${cmpYear}`);
+  subParts.push(`Exportado: ${new Date().toLocaleString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}`);
   ws.getCell(4, 1).value = subParts.join("  ·  ");
   ws.getCell(4, 1).font = { name: "Calibri", size: 9, color: { argb: GREY_MID }, italic: true };
   ws.getCell(4, 1).alignment = { vertical: "middle", indent: 1 };
@@ -862,7 +880,7 @@ const n = Number(val) || 0;
       cell.value = null;
     } else {
       cell.value = n;
-      cell.numFmt = '#,##0.00;[Red]-#,##0.00;""';
+   cell.numFmt = '#,##0.00;[Red](#,##0.00);""';
     }
     cell.alignment = { horizontal: "right", vertical: "middle", indent: 1 };
     cell.font = {
@@ -877,8 +895,8 @@ color: { argb: n < 0 ? NEG_RED : GREY_DEEP },
     const cell = ws.getCell(row, col);
     const delta = (Number(current) || 0) - (Number(compare) || 0);
 if (Math.abs(delta) < 0.005) { cell.value = null; }
-    else { cell.value = delta; cell.numFmt = '+#,##0.00;-#,##0.00;""'; }
-    cell.alignment = { horizontal: "right", vertical: "middle", indent: 1 };
+else { cell.value = delta; cell.numFmt = '+#,##0.00;-#,##0.00;""'; }
+    cell.alignment = { horizontal: "center", vertical: "middle" };
 cell.font = { name: "Calibri", size: 10, color: { argb: delta < 0 ? NEG_RED : POS_GREEN } };
     cell.border = borderFor(col);
   };
@@ -890,9 +908,9 @@ cell.font = { name: "Calibri", size: 10, color: { argb: delta < 0 ? NEG_RED : PO
     else {
       const pct = ((current - c) / Math.abs(c));
       cell.value = pct;
-      cell.numFmt = '+0.0%;-0.0%;""';
+cell.numFmt = '+0.0%;-0.0%;""';
     }
-    cell.alignment = { horizontal: "right", vertical: "middle", indent: 1 };
+    cell.alignment = { horizontal: "center", vertical: "middle" };
     cell.font = { name: "Calibri", size: 10, italic: true, color: { argb: GREY_MID } };
     cell.border = borderFor(col);
   };
@@ -919,10 +937,12 @@ let prevType = null;
     const typeChanged = type !== prevType;
     prevType = type;
 
-    // Mapping owns the structure when active — no type-change dividers.
+// Mapping OR a custom standard owns the structure — no type-change dividers
+    // (those would inject stray "Distribution of Result" / "Balance Sheet" bars).
+    const structureOwned = !!mappingDerived || isCustomStd;
     const mappingBk = mappingBreakers[code];
     const typeBk = (typeChanged && TYPE_LABELS_EXPORT[type]) ? TYPE_LABELS_EXPORT[type] : null;
-    const breaker = mappingDerived
+    const breaker = structureOwned
       ? (mappingBk ? { label: String(mappingBk.label).toUpperCase(), color: mappingBk.color || "#1a2f8a" } : null)
       : (mappingBk
           ? { label: String(mappingBk.label).toUpperCase(), color: mappingBk.color || "#1a2f8a" }
@@ -1074,11 +1094,12 @@ compareMode, cmpPivot, cmpPivotPrev, cmpYear, cmpMonth, cmpMoLabel,
 pivotPrev = null, ytdOnly = true,
 rowMatchesDims = null,
   getRowAmount = null,
-  activeMapping, mappingDerivedAll, mappingDerivedPL, mappingDerivedBS,
+activeMapping, mappingDerivedAll, mappingDerivedPL, mappingDerivedBS,
   treeAll, treePL, treeBS,
   colors, perspectiveLegal,
   views,           // ["all", "pl", "bs"] - which sheets to generate
   drillDown, elimDetail,
+  isCustomStd = false,
 }) {
   const ExcelJSModule = await import("exceljs");
   const ExcelJS = ExcelJSModule.default ?? ExcelJSModule;
@@ -1110,9 +1131,10 @@ compareMode, cmpPivot, cmpPivotPrev, cmpYear, cmpMonth, cmpMoLabel,
 pivotPrev, ytdOnly,
 rowMatchesDims,
       getRowAmount,
-      activeMapping, mappingDerived: spec.derived, colors,
+activeMapping, mappingDerived: spec.derived, colors,
       perspectiveLegal,
       drillDown, elimDetail,
+      isCustomStd,
     });
   }
 
@@ -1141,9 +1163,10 @@ rowMatchesDims = null, drillDown = true,
   activeMapping,
   treeAll, treePL, treeBS,
   mappingDerivedAll, mappingDerivedPL, mappingDerivedBS,
-  colors, perspectiveLegal,
+colors, perspectiveLegal,
   views,
   elimDetail,
+  isCustomStd = false,
 }) {
   const { default: jsPDF } = await import("jspdf");
   const { default: autoTable } = await import("jspdf-autotable");
@@ -1250,7 +1273,7 @@ const DEC = { minimumFractionDigits: 2, maximumFractionDigits: 2 };
   const fmt = (v) => {
     const n = Number(v) || 0;
     if (Math.abs(n) < 0.005) return "—";
-    return n.toLocaleString("de-DE", DEC);
+   return n < 0 ? `(${Math.abs(n).toLocaleString("de-DE", DEC)})` : n.toLocaleString("de-DE", DEC);
   };
   const fmtDelta = (v) => {
     const n = Number(v) || 0;
@@ -1351,9 +1374,11 @@ const flat = [];
       const type = node.AccountType ?? "";
       const typeChanged = type !== prevType;
       prevType = type;
-      const mappingBk = mappingBreakers[node.AccountCode];
+const mappingBk = mappingBreakers[node.AccountCode];
       const typeBk = (typeChanged && TYPE_LABELS_PDF[type]) ? TYPE_LABELS_PDF[type] : null;
-      const breakerLabel = mappingDerived
+      // Mapping OR custom standard owns the structure — suppress type-dividers.
+      const structureOwned = !!mappingDerived || isCustomStd;
+      const breakerLabel = structureOwned
         ? (mappingBk ? String(mappingBk.label).toUpperCase() : null)
         : (mappingBk ? String(mappingBk.label).toUpperCase() : typeBk);
 if (breakerLabel) {
@@ -1535,7 +1560,7 @@ const { node, depth } = r;
               color = v < 0 ? RED : TEXT_DK;
             }
           }
-       row.push({ content: txt, styles: { halign: "right", textColor: color, fontSize: c.isElimDetail ? 6 : undefined } });
+     row.push({ content: txt, styles: { halign: "center", textColor: color, fontSize: c.isElimDetail ? 6 : undefined } });
         });
         body.push(row);
       });
@@ -1549,7 +1574,7 @@ const { node, depth } = r;
       const numW  = Math.min(NUM_W_MAX, Math.max(NUM_W_MIN, (PAGE_INNER - CODE_W - NAME_W_MIN) / nNum));
       const nameW = Math.max(NAME_W_MIN, PAGE_INNER - CODE_W - numW * nNum);
       const colStyles = { 0: { halign: "left", cellWidth: CODE_W }, 1: { halign: "left", cellWidth: nameW } };
-      chunk.cols.forEach((c, i) => { colStyles[i + 2] = { halign: "right", cellWidth: numW }; });
+     chunk.cols.forEach((c, i) => { colStyles[i + 2] = { halign: "center", cellWidth: numW }; });
 
       autoTable(doc, {
         startY, head, body,
@@ -2194,12 +2219,47 @@ const clearActiveMapping = useCallback(() => {
         if (!cancelled) setHiddenOverride(hidden ?? null);
       } catch (e) { console.warn("[ConsolidationSheet] hidden override load failed:", e); }
     })();
-    return () => {
+return () => {
       cancelled = true;
       setHiddenOverride(null);
       overrideAppliedRef.current = false;
     };
   }, [activeStandardKey]);
+
+  // Apply the user's chosen "standard" accounts mapping on load, if they have one.
+  // This page has only P/L and B/S (no cash flow tab), so the relevant preference is
+  // user_settings.preferences.standard_mapping_id (the accounts mapping, from the
+  // `mappings` table, which holds pl_tree AND bs_tree together). If set, it wins over
+  // the hidden override; if not, the override render branch remains the default.
+  // Applied once per standard key; the user can still pick another mapping afterwards.
+  const userDefaultAppliedRef = useRef(null);
+  useEffect(() => {
+    const isCustom = activeStandardKey && String(activeStandardKey).startsWith("CUSTOM-");
+    if (!isCustom) return;
+    if (userDefaultAppliedRef.current === activeStandardKey) return; // already applied for this key
+    let cancelled = false;
+    (async () => {
+      try {
+        const { supabase } = await import("../../lib/supabaseClient");
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) return;
+        const { data: settings } = await supabase
+          .from("user_settings").select("preferences").eq("user_id", uid).single();
+        const stdMappingId = settings?.preferences?.standard_mapping_id;
+        if (!stdMappingId) return;
+        const { getMapping } = await import("../../lib/mappingsApi");
+        const full = await getMapping(stdMappingId);
+        if (cancelled || !full || full.is_archived) return;
+        const hasPL = Array.isArray(full.pl_tree) && full.pl_tree.length > 0;
+        const hasBS = Array.isArray(full.bs_tree) && full.bs_tree.length > 0;
+        if (!hasPL && !hasBS) return;
+        userDefaultAppliedRef.current = activeStandardKey;
+        handleApplyMapping(full, "structure");
+      } catch (e) { console.warn("[ConsolidationSheet] user default mapping load failed:", e); }
+    })();
+    return () => { cancelled = true; };
+  }, [activeStandardKey, handleApplyMapping]);
 
   // P/L + B/S use the same mappings API (mappingsApi / reportMappingsApi)
   const pickMappingApi = useCallback(async (_tab, kind) => {
@@ -3065,7 +3125,7 @@ if (mappingDerived && mappingDerived.instances && mappingDerived.instances.lengt
       // Each mapping instance becomes its own tree node. Multiple instances
       // of the same account code (with different dims) do NOT collide —
       // they render as separate rows.
-      const treeNodes = mappingDerived.instances.map(inst => {
+const flatNodes = mappingDerived.instances.map(inst => {
         const existing = accountMap.get(inst.code);
         return {
           AccountCode: inst.code,
@@ -3076,11 +3136,28 @@ if (mappingDerived && mappingDerived.instances && mappingDerived.instances.lengt
           _instanceId: inst.instanceId,
           _dims: inst.dims || [],
           _isSum: inst.isSum,
+          _level: inst.level ?? 0,
         };
+      });
+      // Rebuild nesting from each instance's _level (depth in the mapping tree).
+      // A node at level N nests under the most recent node at level N-1. Without
+      // this the sum rows and their children all render flat at the top level.
+      const treeNodes = [];
+      const stack = [];
+      flatNodes.forEach(node => {
+        const lvl = node._level;
+        while (stack.length && stack[stack.length - 1]._level >= lvl) stack.pop();
+        if (stack.length) {
+          stack[stack.length - 1].children.push(node);
+        } else {
+          treeNodes.push(node);
+        }
+        stack.push(node);
       });
       // Already ordered by sortOrder in mappingDerived.instances
       const mappingBreakersOverride = {};
       const seenSections = new Set();
+      // Breakers are keyed off top-level nodes only (sections open at the top).
       treeNodes.forEach(node => {
         const secId = mappingDerived.codeSection.get(node._instanceId);
         if (!secId || seenSections.has(secId)) return;
@@ -3245,7 +3322,7 @@ if (parentCode && !codeToParentFromStd.get(code)) {
         node.children.forEach(sortRec);
       };
 
-      const roots = [...stdNodes.values()]
+const rawRoots = [...stdNodes.values()]
         .filter(passesTypeFilter)
         .filter(n => {
           const p = n.SumAccountCode;
@@ -3263,6 +3340,24 @@ if (parentCode && !codeToParentFromStd.get(code)) {
           const sB = effectiveSortOrder.get(b.AccountCode) ?? 9999999;
           return sA - sB;
         });
+
+      // Grand totals (C.ACT, G.PYC, G.PAS, etc.) carry no section and must NOT
+      // render as rows, nor spawn a generic "BALANCE" breaker. Drop them: if a
+      // grand total has children, promote those children up in its place; if it
+      // has none, remove it entirely. Mirrors the Contributive dropGrandTotals fix.
+      const dropGrandTotals = (nodes) => {
+        const out = [];
+        for (const n of nodes) {
+          if (isGrandTotal(n.AccountCode)) {
+            if (n.children && n.children.length) out.push(...dropGrandTotals(n.children));
+            // no children → drop entirely
+          } else {
+            out.push(n);
+          }
+        }
+        return out;
+      };
+const roots = dropGrandTotals(rawRoots);
 roots.forEach(sortRec);
       return { accountMap, tree: roots, mappingBreakersOverride: null };
     }
@@ -3348,28 +3443,65 @@ roots.forEach(sortRec);
         mappingForView.breakers = breakers;
         return nodes;
       }
-      // Standard path
-      const filtered = new Map([...accountMap.entries()].filter(([, v]) => {
-        const t = v.AccountType ?? "";
-        if (filterType === "P/L") return t === "P/L" || t === "DIS";
-        if (filterType === "B/S") return t === "B/S";
-        return t !== "C/F" && t !== "CFS"; // All
-      }));
-      if (breakerSortOrder.size > 0) {
-        return [...filtered.values()].sort((a, b) => {
-          const sA = breakerSortOrder.get(a.AccountCode) ?? 9999;
-          const sB = breakerSortOrder.get(b.AccountCode) ?? 9999;
-          if (sA !== sB) return sA - sB;
-          const tA = TYPE_ORDER[a.AccountType ?? ""] ?? 99;
-          const tB = TYPE_ORDER[b.AccountType ?? ""] ?? 99;
-          return tA - tB;
-        }).map(n => ({ ...n, children: [] }));
+// Standard path — replicate the on-screen custom tree EXACTLY: nodes come from
+      // breakerSortOrder.keys() (the full standard incl. sum rows like A.04.S), the
+      // parent link is codeToParentFromStd (the standard's real hierarchy, NOT the
+      // rawData SumAccountCode), and we skip grand-total / cross-section parents.
+      const isGrandTotalExp = (code) => {
+        const info = codeToSectionInfo.get(String(code));
+        return !info || !info.section;
+      };
+      const STMT_TO_TYPE = { PL: "P/L", BS: "B/S", CF: "C/F" };
+      const passesTypeCode = (code, type) => {
+        if (type === "C/F" || type === "CFS") return false;
+        if (filterType === "P/L") return type === "P/L" || type === "DIS";
+        if (filterType === "B/S") return type === "B/S";
+        return true; // All
+      };
+      const stdNodes = new Map();
+      for (const code of breakerSortOrder.keys()) {
+        if (isGrandTotalExp(code)) continue;
+        const fromMap = accountMap.get(code);
+        const stmt = codeToStatementFromStd.get(code);
+        const type = fromMap?.AccountType ?? STMT_TO_TYPE[stmt] ?? "P/L";
+        if (!passesTypeCode(code, type)) continue;
+        stdNodes.set(code, {
+          AccountCode: code,
+          AccountName: fromMap?.AccountName ?? codeToNameFromStd.get(code) ?? code,
+          AccountType: type,
+          SumAccountCode: codeToParentFromStd.get(code) ?? fromMap?.SumAccountCode ?? "",
+          children: [],
+        });
       }
-      return buildTree([...filtered.values()]).sort((a, b) => {
-        const tA = TYPE_ORDER[a.AccountType ?? ""] ?? 99;
-        const tB = TYPE_ORDER[b.AccountType ?? ""] ?? 99;
-        return tA - tB;
+      // Wire parent→child, skipping grand-total parents and cross-section links.
+      stdNodes.forEach(node => {
+        const parentCode = node.SumAccountCode;
+        if (!parentCode) return;
+        if (isGrandTotalExp(parentCode)) return;
+        const nodeSec = codeToSectionInfo.get(String(node.AccountCode))?.section;
+        const parentSec = codeToSectionInfo.get(String(parentCode))?.section;
+        if (nodeSec && parentSec && nodeSec !== parentSec) return;
+        const parent = stdNodes.get(parentCode);
+        if (parent && parent !== node) parent.children.push(node);
       });
+      const sortKey = (c) => breakerSortOrder.get(c) ?? 9999999;
+      const sortRec = (node) => {
+        if (!node.children?.length) return;
+        node.children.sort((a, b) => sortKey(a.AccountCode) - sortKey(b.AccountCode));
+        node.children.forEach(sortRec);
+      };
+      const roots = [...stdNodes.values()].filter(n => {
+        const p = n.SumAccountCode;
+        if (!p) return true;
+        if (isGrandTotalExp(p)) return true;
+        if (!stdNodes.has(p)) return true;
+        const nodeSec = codeToSectionInfo.get(String(n.AccountCode))?.section;
+        const parentSec = codeToSectionInfo.get(String(p))?.section;
+        if (nodeSec && parentSec && nodeSec !== parentSec) return true;
+        return false;
+      }).sort((a, b) => sortKey(a.AccountCode) - sortKey(b.AccountCode));
+      roots.forEach(sortRec);
+      return roots;
     };
 
 const getDerivedFor = (tab) => {
@@ -3477,18 +3609,47 @@ return {
       ? buildFromStructureTree(null, mapBs, "bs")
       : buildFromStructureTree(null, ovBs, "bs");
 
+const allTree = overrideAll ? overrideAll.nodes : buildFiltered("", null);
+    const plTree  = overridePL ? overridePL.nodes : buildFiltered("P/L", derivedPL);
+    const bsTree  = overrideBS ? overrideBS.nodes : buildFiltered("B/S", derivedBS);
+
+// Re-anchor breakers to the tree's actual top-level rows — exactly like the
+    // on-screen render. Each section's standard anchor account may be nested (not a
+    // top-level row here), so keying the bar on that anchor would drop it. Instead,
+    // walk the top-level rows in order and open each section's bar on the FIRST
+    // top-level row whose codeToSectionInfo section differs from the previous one.
+    // This restores Cost of Sales / Other Operating / Financial Result, whose anchors
+    // (A.02 / A.05 / A.14) sit nested under A.04.S / A.13.S / A.21.S.
+    const reanchorBreakers = (roots) => {
+      if (!codeToSectionInfo || codeToSectionInfo.size === 0) return {};
+      const out = {};
+      let prevSec = null;
+      (roots || []).forEach(n => {
+        const info = codeToSectionInfo.get(String(n.AccountCode));
+        const sec = info?.section ?? null;
+        if (sec && sec !== prevSec) {
+          out[n.AccountCode] = { label: info.label ?? sec, color: info.color || "#1a2f8a" };
+        }
+        if (sec) prevSec = sec;
+      });
+      return out;
+    };
+    const stdBreakersAll = overrideAll ? null : reanchorBreakers(allTree);
+    const stdBreakersPl  = overridePL ? null : reanchorBreakers(plTree);
+    const stdBreakersBs  = overrideBS ? null : reanchorBreakers(bsTree);
+
     return {
-      all: overrideAll ? overrideAll.nodes : buildFiltered("", null),
-      pl:  overridePL ? overridePL.nodes : buildFiltered("P/L", derivedPL),
-      bs:  overrideBS ? overrideBS.nodes : buildFiltered("B/S", derivedBS),
+      all: allTree,
+      pl:  plTree,
+      bs:  bsTree,
       overrideBreakers: {
-        all: overrideAll?.breakers ?? null,
-        pl:  overridePL?.breakers ?? null,
-        bs:  overrideBS?.breakers ?? null,
+        all: overrideAll?.breakers ?? stdBreakersAll,
+        pl:  overridePL?.breakers ?? stdBreakersPl,
+        bs:  overrideBS?.breakers ?? stdBreakersBs,
       },
 derivedPL, derivedBS,
     };
-}, [rawData, breakerSortOrder, activeMapping, hiddenOverride, codeToStatementFromStd]);
+}, [rawData, breakerSortOrder, activeMapping, hiddenOverride, codeToStatementFromStd, codeToSectionInfo, codeToParentFromStd, codeToNameFromStd]);
 
 const toggleExpand = useCallback((code) => setExpanded(prev => {
     const next = new Set(prev); next.has(code) ? next.delete(code) : next.add(code); return next;
@@ -4182,10 +4343,31 @@ className={`text-center px-3 select-none cursor-grab sheet-area-cos ${isFirstCom
   </tr>
 </thead>
 <tbody>
-{tree.map((node, i) => {
+{(() => {
+  // Re-anchor custom-no-user breakers to the tree's actual top-level rows.
+  // The `breakers` map keys each section on the standard's first account_code,
+  // which may be nested (not a top-level node here) — so those bars never paint.
+  // Walk the top-level nodes in order and open each section's bar on the FIRST
+  // top-level node whose codeToSectionInfo section differs from the previous one.
+  const reanchored = {};
+  const isCustomStdRender = activeStandardKey && String(activeStandardKey).startsWith("CUSTOM-");
+  const usesStateBreakers = !mappingBreakersOverride && !mappingDerived?.breakers;
+  if (isCustomStdRender && usesStateBreakers && codeToSectionInfo && codeToSectionInfo.size > 0) {
+    let prevSec = null;
+    for (const n of tree) {
+      const info = codeToSectionInfo.get(String(n.AccountCode));
+      const sec = info?.section ?? null;
+      if (sec && sec !== prevSec) {
+        reanchored[n.AccountCode] = { label: info.label ?? sec, color: info.color || "#1a2f8a" };
+      }
+      if (sec) prevSec = sec;
+    }
+  }
+  return tree.map((node, i) => {
   const type = node.AccountType ?? "";
   const prevType = i > 0 ? (tree[i-1].AccountType ?? "") : null;
   const typeChanged = type !== prevType;
+  const reanchoredBreaker = reanchored[node.AccountCode] ?? null;
   const TYPE_LABEL_COLORS = {
     "P/L": colors.primary,
     "DIS": colors.primary,
@@ -4216,9 +4398,14 @@ const effectiveBreakers = mappingBreakersOverride ?? mappingDerived?.breakers ??
   // When the override or a mapping owns the structure, ONLY its breakers may
   // show — never the standard type-dividers (Profit & Loss / Distribution of
   // Result / Balance Sheet), which belong to a different structure entirely.
-  const structureOwned = !!mappingBreakersOverride || !!mappingDerived;
-  const breaker = structureOwned
-    ? mappingBreaker
+// Custom standards (Genesal etc.) own their structure via codeToSectionInfo, so the
+  // generic type-dividers (Profit & Loss / Distribution of Result / Balance Sheet) must
+  // not appear — they're a legacy-standard fallback and would inject a stray "Distribution
+  // of Result" breaker whenever a DIS-typed account follows the P/L accounts.
+  const isCustomStdRender = activeStandardKey && String(activeStandardKey).startsWith("CUSTOM-");
+  const structureOwned = !!mappingBreakersOverride || !!mappingDerived || isCustomStdRender;
+const breaker = structureOwned
+    ? (mappingBreaker || reanchoredBreaker)
     : (mappingBreaker || (typeChanged && TYPE_LABELS[type] ? TYPE_LABELS[type] : null));
 const totalCols = 1 // account col
     + 1 + (compareMode ? 3 : 0) // consolidated
@@ -4255,9 +4442,10 @@ compareMode={cmpColsVisible} cmpPivot={cmpPivot} cmpPivotPrev={cmpPivotPrev}
 colors={colors} cmpColsExiting={cmpColsExiting} cmpColsVisible={cmpColsVisible}
         rowMatchesDims={rowMatchesDims} />
       )}
-    </React.Fragment>
+</React.Fragment>
   );
-})}
+  });
+})()}
 </tbody>
                 </table>
               </div>
@@ -4531,9 +4719,10 @@ rowMatchesDims,
                       treeBS:  exportTrees.bs,
                       colors,
                       perspectiveLegal: getLegal(topParent),
-                      views,
+views,
                       drillDown:  !!exportOpts.drillDown,
                       elimDetail: !!exportOpts.elimDetail,
+                      isCustomStd: !!(activeStandardKey && String(activeStandardKey).startsWith("CUSTOM-")),
                     };
                     if (exportOpts.format === "pdf") {
                       await generateSheetPdf(sharedArgs);

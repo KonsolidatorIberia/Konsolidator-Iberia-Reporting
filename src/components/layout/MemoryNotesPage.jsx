@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { Loader2, BookOpen, FileText, Sparkles, Settings2, Download, Save, RefreshCw, Upload, Library, Scale, Bold, Italic, Underline, Plus, Trash2 } from "lucide-react";import { useTypo, useSettings } from "./SettingsContext";
+import { Loader2, BookOpen, FileText, Sparkles, Settings2, Download, Save, RefreshCw, Upload, Library, Scale, Bold, Italic, Underline, Plus, Trash2, X } from "lucide-react";
+import { useTypo, useSettings } from "./SettingsContext";
 import PageHeader from "./PageHeader.jsx";
 
 const BASE_URL = "";
@@ -13,6 +14,45 @@ const sbHeaders = (schema) => ({
   "Accept-Profile": schema,
 });
 const sbGet = (schema, path) => fetch(`${SUPABASE_URL}/${path}`, { headers: sbHeaders(schema) }).then(r => r.json());
+
+// ─── Authenticated Supabase REST (for the `memory` save/note_state tables) ──
+// These tables have RLS `to authenticated`, so requests must carry the user's
+// JWT (session.access_token) — the publishable key is rol anon and gets blocked.
+async function sbMemAuth(method, path, { body, prefer } = {}) {
+  const { supabase } = await import("../../lib/supabaseClient");
+  const { data: { session } } = await supabase.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) throw new Error("No hay sesión de usuario para guardar memorias.");
+  const headers = {
+    apikey: SUPABASE_APIKEY,
+    Authorization: `Bearer ${jwt}`,
+    "Accept-Profile": "memory",
+    "Content-Profile": "memory",
+    "Content-Type": "application/json",
+  };
+  if (prefer) headers.Prefer = prefer;
+  const res = await fetch(`${SUPABASE_URL}/${path}`, {
+    method,
+    headers,
+    body: body != null ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`Supabase ${method} ${path} → ${res.status} ${txt}`);
+  }
+  const txt = await res.text();
+  return txt ? JSON.parse(txt) : null;
+}
+
+// Resolve the current user's id + display name for the "edited by" record.
+async function getMemUser() {
+  const { supabase } = await import("../../lib/supabaseClient");
+  const { data: { session } } = await supabase.auth.getSession();
+  const u = session?.user;
+  if (!u) return { id: null, name: null };
+  const md = u.user_metadata || {};
+  return { id: u.id, name: md.full_name || md.name || u.email || null };
+}
 
 // ─── External script loader (for ExcelJS, JSZip) ──────────────────
 function loadScript(src) {
@@ -378,9 +418,128 @@ function parseUserNumber(s) {
   return Number.isFinite(n) ? n : null;
 }
 
-function EditableCell({ rowId, colId, value, readOnly, onCellEdit, baseStyle, color }) {
+// ─── VariableBuilder ─────────────────────────────────────────────
+// Popover para construir una variable de celda: lista de términos { code, sign }
+// sobre una fuente (balance/pyg). El valor de la celda = Σ(sign × importe cuenta).
+function VariableBuilder({ items, initial, onSave, onClear, onClose, resolvePreview }) {
+  const [terms, setTerms]   = useState(() => (initial?.terms ?? []).map(t => ({ ...t })));
+  const [source, setSource] = useState(initial?.source ?? "balance");
+  const [search, setSearch] = useState("");
+const filtered = search.trim()
+    ? items.filter(i => i.label.toLowerCase().includes(search.toLowerCase()))
+    : items;
+  const addTerm = (code, sign) => {
+    setTerms(prev => prev.some(t => t.code === code) ? prev : [...prev, { code, sign }]);
+    setSearch("");
+  };
+  const toggleSign = (code) => setTerms(prev => prev.map(t => t.code === code ? { ...t, sign: t.sign < 0 ? 1 : -1 } : t));
+  const removeTerm = (code) => setTerms(prev => prev.filter(t => t.code !== code));
+  const preview = resolvePreview ? resolvePreview({ terms, source }) : null;
+
+return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 p-4"
+      onClick={onClose}>
+      <div className="w-[560px] max-w-full max-h-[85vh] rounded-2xl border border-gray-200 bg-white shadow-2xl flex flex-col overflow-hidden"
+        onClick={e => e.stopPropagation()}>
+        {/* Cabecera */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100">
+          <p className="text-xs font-black uppercase tracking-widest text-gray-600">Variable · asignar cuentas</p>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700"><X size={16} /></button>
+        </div>
+
+        {/* Fuente */}
+        <div className="flex gap-1.5 px-5 pt-3">
+          {[["balance", "Balance"], ["pyg", "PyG"]].map(([v, lbl]) => (
+            <button key={v} onClick={() => setSource(v)}
+              className={`px-3 py-1.5 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-colors ${source === v ? "bg-[#1a2f8a] text-white" : "bg-gray-100 text-gray-500 hover:bg-gray-200"}`}>
+              {lbl}
+            </button>
+          ))}
+          <div className="flex-1" />
+          {preview != null && (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#eef1fb]">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-[#1a2f8a]">Resultado</span>
+              <span className="font-mono font-black text-sm text-[#1a2f8a] tabular-nums">{fmt(preview)}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Términos elegidos */}
+        {terms.length > 0 && (
+          <div className="px-5 pt-3">
+            <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-1.5">Cuentas en la variable</p>
+            <div className="flex flex-wrap gap-1.5">
+              {terms.map(t => (
+                <div key={t.code} className="flex items-center gap-1.5 pl-1 pr-2 py-1 rounded-lg bg-gray-50 border border-gray-100">
+                  <button onClick={() => toggleSign(t.code)} title="Cambiar signo (+/−)"
+                    className={`w-5 h-5 rounded-md flex items-center justify-center font-black text-xs flex-shrink-0 ${t.sign < 0 ? "bg-red-100 text-red-600" : "bg-emerald-100 text-emerald-700"}`}>
+                    {t.sign < 0 ? "−" : "+"}
+                  </button>
+                  <span className="font-mono text-[11px] text-gray-700">{t.code}</span>
+                  <button onClick={() => removeTerm(t.code)} className="text-gray-300 hover:text-red-500 flex-shrink-0"><X size={11} /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Buscador */}
+        <div className="px-5 pt-3">
+          <input autoFocus value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Filtrar cuentas… (o desplázate por la lista)"
+            className="w-full rounded-lg px-3 py-2 text-xs outline-none"
+            style={{ background: "#f8f9ff", border: "1.5px solid #e8eaf0" }} />
+        </div>
+
+        {/* Lista de cuentas (siempre visible, scrolleable) */}
+        <div className="flex-1 min-h-0 overflow-y-auto mx-5 my-3 rounded-lg border border-gray-100">
+          {filtered.length === 0 ? (
+            <p className="text-[11px] text-gray-300 text-center py-6">Sin resultados</p>
+          ) : filtered.map(it => {
+            const chosen = terms.find(t => t.code === it.code);
+            return (
+              <div key={it.code} className="flex items-center border-b border-gray-50 last:border-0 hover:bg-gray-50/60">
+                <span className="flex-1 px-3 py-2 text-[11px] text-gray-700 truncate">{it.label}</span>
+                {chosen && (
+                  <span className={`text-[9px] font-black px-1.5 py-0.5 rounded mr-1 ${chosen.sign < 0 ? "bg-red-100 text-red-600" : "bg-emerald-100 text-emerald-700"}`}>
+                    {chosen.sign < 0 ? "− en var" : "+ en var"}
+                  </span>
+                )}
+                <button onClick={() => addTerm(it.code, 1)} title="Sumar"
+                  className="px-2.5 py-2 text-emerald-600 hover:bg-emerald-50 font-black">+</button>
+                <button onClick={() => addTerm(it.code, -1)} title="Restar"
+                  className="px-2.5 py-2 text-red-500 hover:bg-red-50 font-black">−</button>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Acciones */}
+        <div className="flex gap-2 px-5 py-3 border-t border-gray-100">
+          <button onClick={() => onSave({ terms, source })}
+            disabled={terms.length === 0}
+            className="flex-1 px-4 py-2 rounded-lg text-[11px] font-bold uppercase tracking-widest text-white bg-[#1a2f8a] disabled:opacity-40 hover:opacity-90">
+            Asignar
+          </button>
+          {initial && (
+            <button onClick={onClear}
+              className="px-4 py-2 rounded-lg text-[11px] font-bold uppercase tracking-widest text-red-600 bg-red-50 hover:bg-red-100">
+              Quitar
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditableCell({ rowId, colId, value, readOnly, onCellEdit, baseStyle, color,
+                        variable, accountItems, onSetVariable, resolveVariablePreview }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft]     = useState("");
+  const [showVar, setShowVar] = useState(false);
+  const hasVar = !!variable;
+  const varEnabled = !!onSetVariable && Array.isArray(accountItems);
 
   if (readOnly) {
     return (
@@ -422,31 +581,65 @@ function EditableCell({ rowId, colId, value, readOnly, onCellEdit, baseStyle, co
     );
   }
 
-  return (
-    <td onClick={startEdit}
-      className="px-4 py-2.5 text-right whitespace-nowrap tabular-nums cursor-text transition-colors hover:bg-blue-50/40"
+return (
+    <td className="px-4 py-2.5 text-right whitespace-nowrap tabular-nums transition-colors hover:bg-blue-50/40 relative group/cell"
       style={{ ...baseStyle, color }}>
-      {fmt(value)}
+      <span className="inline-flex items-center justify-end gap-1">
+        {varEnabled && (
+          <button
+            onClick={(e) => { e.stopPropagation(); setShowVar(v => !v); }}
+            title={hasVar ? "Editar variable" : "Asignar cuenta (variable)"}
+            className={`opacity-0 group-hover/cell:opacity-100 transition-opacity p-0.5 rounded ${hasVar ? "opacity-100 text-emerald-600" : "text-gray-400 hover:text-[#1a2f8a]"}`}>
+            <Library size={12} />
+          </button>
+        )}
+        <span onClick={hasVar ? undefined : startEdit}
+          className={hasVar ? "cursor-default" : "cursor-text"}
+          style={hasVar ? { color: "#0B7A54", fontWeight: 700 } : undefined}>
+          {fmt(value)}
+        </span>
+      </span>
+      {showVar && varEnabled && (
+        <VariableBuilder
+          items={accountItems}
+          initial={variable}
+          resolvePreview={resolveVariablePreview}
+          onSave={(v) => { onSetVariable(rowId, colId, v); setShowVar(false); }}
+          onClear={() => { onSetVariable(rowId, colId, null); setShowVar(false); }}
+          onClose={() => setShowVar(false)}
+        />
+      )}
     </td>
   );
 }
-
 // ─── MovementsTable ──────────────────────────────────────────────
 // Renders a table for one note. Rows + columns come from template definitions;
 // values come from the auto-built pivot keyed by (rowId, colId).
-function MovementsTable({ note, rows, columns, pivot, onCellEdit }) {
+function MovementsTable({ rows, columns, pivot, overrides, onCellEdit, onAddRow, onRenameRow, onDeleteRow, onEnable,
+                         cellVariables, accountItems, onSetVariable, resolveVariable }) {
   const { colors } = useSettings();
   const header2Style = useTypo("header2");
   const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
+  const [editingRowId, setEditingRowId] = useState(null);
+  const [rowDraft, setRowDraft] = useState("");
+  const startRename = (row) => { setEditingRowId(row.id); setRowDraft(row.label ?? ""); };
+  const commitRename = () => {
+    if (editingRowId != null && rowDraft.trim()) onRenameRow?.(editingRowId, rowDraft.trim());
+    setEditingRowId(null); setRowDraft("");
+  };
+  const editable = !!(onAddRow || onRenameRow || onDeleteRow);
 
-  if (!rows.length || !columns.length) {
+if (!rows.length || !columns.length) {
     return (
-      <div className="rounded-xl border-2 border-dashed border-gray-200 bg-gray-50 px-5 py-10 text-center">
-        <FileText size={24} className="mx-auto text-gray-300 mb-2" />
+      <button
+        onClick={onEnable}
+        disabled={!onEnable}
+        className={`w-full rounded-xl border-2 border-dashed border-gray-200 bg-gray-50 px-5 py-10 text-center transition-colors ${onEnable ? "hover:border-gray-300 hover:bg-gray-100 cursor-pointer" : ""}`}>
+        <Plus size={24} className="mx-auto text-gray-300 mb-2" />
         <p className="text-xs font-black text-gray-400 uppercase tracking-widest">Sin estructura definida</p>
-        <p className="text-[11px] text-gray-400 mt-1">Esta nota aún no tiene tabla configurada.</p>
-      </div>
+        <p className="text-[11px] text-gray-400 mt-1">{onEnable ? "Haz clic para crear una tabla y empezar a añadir filas." : "Esta nota aún no tiene tabla configurada."}</p>
+      </button>
     );
   }
 
@@ -470,32 +663,150 @@ function MovementsTable({ note, rows, columns, pivot, onCellEdit }) {
             {rows.map(row => {
               const isTotal = row.is_total;
               const rowStyle = isTotal ? { ...body1Style, fontWeight: 900 } : body2Style;
-              return (
+return (
                 <tr key={row.id}
-                  className={`border-b border-gray-50 ${isTotal ? "bg-gray-50" : "hover:bg-gray-50/40"} transition-colors`}>
+                  className={`group border-b border-gray-50 ${isTotal ? "bg-gray-50" : "hover:bg-gray-50/40"} transition-colors`}>
                   <td className="px-5 py-2.5" style={{ paddingLeft: `${20 + (row.level || 0) * 16}px`, ...rowStyle }}>
-                    {row.label}
+                    {editingRowId === row.id ? (
+                      <input
+                        autoFocus
+                        value={rowDraft}
+                        onChange={e => setRowDraft(e.target.value)}
+                        onBlur={commitRename}
+                        onKeyDown={e => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") { setEditingRowId(null); setRowDraft(""); } }}
+                        className="w-full px-1.5 py-0.5 rounded border border-gray-300 text-xs"
+                        style={rowStyle}
+                      />
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5">
+                        <span>{row.label}</span>
+                        {editable && !isTotal && (
+<span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1.5 ml-2">
+                            <button onClick={() => startRename(row)} title="Renombrar fila"
+                              className="p-1 rounded hover:bg-gray-200 text-gray-500 hover:text-gray-800"><Settings2 size={14} /></button>
+                            <button onClick={() => onDeleteRow?.(row.id)} title="Eliminar fila"
+                              className="p-1 rounded hover:bg-red-100 text-gray-500 hover:text-red-600"><Trash2 size={14} /></button>
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </td>
 {columns.map(col => {
-                    const v = pivot.get(`${row.id}|${col.id}`) ?? 0;
+                    // Valor efectivo de una celda (col dada) = override si existe, si no el pivot.
+                    const cellValFor = (rid, cid) => {
+                      const k = `${rid}|${cid}`;
+                      const o = overrides?.get(k);
+                      return (o !== undefined && o !== null) ? o : (pivot.get(k) ?? 0);
+                    };
+const cellVal = (rid) => cellValFor(rid, col.id);
+                    const cellVar = cellVariables?.[`${row.id}|${col.id}`] ?? null;
+                    // Valor efectivo de OTRA columna de la misma fila (para fórmulas y closing):
+                    // override > variable > pivot.
+                    const effVal = (rid, cid) => {
+                      const k = `${rid}|${cid}`;
+                      const o = overrides?.get(k);
+                      if (o !== undefined && o !== null) return o;
+                      const vr = cellVariables?.[k] ?? null;
+                      if (vr && resolveVariable) return resolveVariable(vr);
+                      return pivot.get(k) ?? 0;
+                    };
+const colByType = {};
+                    columns.forEach(c => {
+                      // No pisar un col_type ya asignado con uno que trae fórmula: el
+                      // "Saldo final" (closing sin fórmula) debe ganar sobre "Valor neto"
+                      // (closing CON fórmula) para la clave "closing".
+                      if (colByType[c.col_type] == null || !c.formula) colByType[c.col_type] = c.id;
+                    });
+                    // El closing "real" (saldo final) es el que NO tiene fórmula.
+                    const realClosingCol = columns.find(c => c.col_type === "closing" && !c.formula);
+                    const closingId = realClosingCol?.id ?? colByType["closing"];
+                    const isDerivedClosing = col.col_type === "closing" && !col.formula && !!closingId
+                      && overrides?.get(`${row.id}|${closingId}`) == null;
+                    const ownOverride = overrides?.get(`${row.id}|${col.id}`);
+                    const hasOwnOverride = ownOverride !== undefined && ownOverride !== null;
+                    let v;
+if (isTotal) {
+                      v = rows.reduce((s, r) => {
+                        if (r.is_total || r.is_subtotal) return s;
+                        return s + effVal(r.id, col.id);
+                      }, 0);
+                    } else if (hasOwnOverride) {
+                      // Un valor puesto a mano en esta celda manda sobre todo.
+                      v = ownOverride;
+                    } else if (cellVar && resolveVariable) {
+                      // Variable (cuenta[s]) se recalcula por periodo.
+                      v = resolveVariable(cellVar);
+                    } else if (col.formula) {
+                      // Columna calculada (p.ej. Valor neto): evaluar la fórmula con los
+                      // valores efectivos de las otras columnas de ESTA fila. Funciona
+                      // también para filas custom (que el pivot no calcula).
+                      const env = {
+                        opening:          colByType["opening"]          ? effVal(row.id, colByType["opening"])          : 0,
+                        additions:        colByType["addition"]         ? effVal(row.id, colByType["addition"])         : 0,
+                        disposals:        colByType["disposal"]         ? effVal(row.id, colByType["disposal"])         : 0,
+                        transfers:        colByType["transfer"]         ? effVal(row.id, colByType["transfer"])         : 0,
+closing:          closingId
+                                            ? (overrides?.get(`${row.id}|${closingId}`) != null
+                                                ? overrides.get(`${row.id}|${closingId}`)
+                                                : (effVal(row.id, colByType["opening"] ?? "") + effVal(row.id, colByType["addition"] ?? "") - effVal(row.id, colByType["disposal"] ?? "") + effVal(row.id, colByType["transfer"] ?? "")))
+                                            : 0,
+                        depreciation:     colByType["depreciation"]     ? effVal(row.id, colByType["depreciation"])     : 0,
+                        pyg_current:      colByType["pyg_current"]      ? effVal(row.id, colByType["pyg_current"])      : 0,
+                        pyg_prev:         colByType["pyg_prev"]         ? effVal(row.id, colByType["pyg_prev"])         : 0,
+                        balance_delta:    colByType["balance_delta"]    ? effVal(row.id, colByType["balance_delta"])    : 0,
+                        treasury_opening: colByType["treasury_opening"] ? effVal(row.id, colByType["treasury_opening"]) : 0,
+                        treasury_closing: colByType["treasury_closing"] ? effVal(row.id, colByType["treasury_closing"]) : 0,
+                      };
+                      try {
+                        let expr = col.formula;
+                        Object.entries(env).forEach(([k, val]) => { expr = expr.replaceAll(k, `(${Number.isFinite(val) ? val : 0})`); });
+                        const r = Function(`"use strict"; return (${expr})`)();
+                        v = Number.isFinite(r) ? r : 0;
+                      } catch { v = 0; }
+                    } else if (isDerivedClosing) {
+                      v = effVal(row.id, colByType["opening"] ?? "") + effVal(row.id, colByType["addition"] ?? "")
+                        - effVal(row.id, colByType["disposal"] ?? "") + effVal(row.id, colByType["transfer"] ?? "");
+                    } else {
+                      v = cellVal(row.id);
+                    }
                     const color = v === 0 ? "#D1D5DB" : v < 0 ? "#EF4444" : (isTotal ? colors.primary : "#000000");
                     return (
-                      <EditableCell key={col.id}
+<EditableCell key={col.id}
                         rowId={row.id}
                         colId={col.id}
                         value={v}
-                        readOnly={isTotal}
+                        readOnly={isTotal || isDerivedClosing}
                         onCellEdit={onCellEdit}
                         baseStyle={rowStyle}
-                        color={color} />
+                        color={color}
+                        variable={cellVar}
+                        accountItems={accountItems}
+                        onSetVariable={onSetVariable}
+                        resolveVariablePreview={resolveVariable} />
                     );
                   })}
                 </tr>
               );
             })}
-          </tbody>
+</tbody>
         </table>
       </div>
+{editable && onAddRow && (
+        <div className="px-5 py-2.5 border-t border-gray-100 bg-gray-50/50">
+          <button onClick={() => {
+              // Insertar antes de la primera fila de total (para que la nueva quede
+              // encima del total); si no hay total, al final.
+              const totalIdx = rows.findIndex(r => r.is_total);
+              const afterId = totalIdx > 0 ? rows[totalIdx - 1].id
+                            : totalIdx === 0 ? null
+                            : (rows.length ? rows[rows.length - 1].id : null);
+              onAddRow(afterId, "Nueva fila");
+            }}
+            className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-gray-500 hover:text-gray-800 transition-colors">
+            <Plus size={12} /> Añadir fila
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -521,7 +832,7 @@ const NARR_FONTS = [
 const NARR_SIZES = ["13", "14", "15", "16", "17", "19", "22"];
 const NARR_SPACING = [{ v: "1.5", n: "Compacto" }, { v: "1.75", n: "Normal" }, { v: "2.1", n: "Amplio" }];
 
-function NarrativeEditor({ note, rows, columns, pivot, colors, onChange }) {
+function NarrativeEditor({ note, rows, columns, pivot, onChange }) {
   const edRef = useRef(null);
   const savedRange = useRef(null);
   const [font, setFont] = useState(NARR_FONTS[0].v);
@@ -536,10 +847,21 @@ function NarrativeEditor({ note, rows, columns, pivot, colors, onChange }) {
     return r ? (r.label ?? r.name ?? rid) : rid;
   }, [rows]);
 
-  const renderHtml = useCallback((tpl) => {
-    return String(tpl || "").replace(/\{\{([\w.:-]+?)\.([\w-]+)\}\}/g, (m, rid, cid) => {
+const renderHtml = useCallback((tpl) => {
+    // Formato nuevo {{rid|cid}} y compat con el antiguo {{rid.cid}}.
+    return String(tpl || "").replace(/\{\{([^{}]+?)\}\}/g, (m, inner) => {
+      let rid, cid;
+      if (inner.includes("|")) {
+        const bar = inner.lastIndexOf("|");
+        rid = inner.slice(0, bar); cid = inner.slice(bar + 1);
+      } else {
+        // Legacy: separado por punto; el cid legacy termina en _col_<algo>.
+        const dot = inner.lastIndexOf(".");
+        if (dot < 0) return m;
+        rid = inner.slice(0, dot); cid = inner.slice(dot + 1);
+      }
       const val = pivot.get(`${rid}|${cid}`);
-      return `<span data-var="${rid}.${cid}" contenteditable="false" title="${rowLabel(rid)}" style="display:inline-flex;padding:1px 7px;margin:0 1px;border-radius:6px;background:#E7F6EF;color:#0B7A54;font-family:'Inter',sans-serif;font-weight:700;font-size:0.92em;cursor:pointer;">${fmtVal(val)}</span>`;
+      return `<span data-var="${rid}|${cid}" contenteditable="false" title="${rowLabel(rid)}" style="display:inline-flex;padding:1px 7px;margin:0 1px;border-radius:6px;background:#E7F6EF;color:#0B7A54;font-family:'Inter',sans-serif;font-weight:700;font-size:0.92em;cursor:pointer;">${fmtVal(val)}</span>`;
     });
   }, [pivot, rowLabel]);
 
@@ -558,25 +880,43 @@ function NarrativeEditor({ note, rows, columns, pivot, colors, onChange }) {
   const saveSel = () => { const s = window.getSelection(); if (s.rangeCount) savedRange.current = s.getRangeAt(0).cloneRange(); };
   const restore = () => { if (savedRange.current) { const s = window.getSelection(); s.removeAllRanges(); s.addRange(savedRange.current); } };
 
-  const serialize = () => {
+const serialize = () => {
     if (!edRef.current) return template;
     const clone = edRef.current.cloneNode(true);
     clone.querySelectorAll("[data-var]").forEach((el) => el.replaceWith(document.createTextNode(`{{${el.getAttribute("data-var")}}}`)));
-    return clone.innerHTML.replace(/<div>/g, "<p>").replace(/<\/div>/g, "</p>");
+    let html = clone.innerHTML.replace(/<div>/g, "<p>").replace(/<\/div>/g, "</p>");
+    // No persistir el placeholder como contenido real.
+    const text = clone.textContent.replace(/\u00A0/g, " ").trim();
+    if (text.startsWith("Escribe el texto de la memoria")) return "";
+    return html;
   };
   const pushChange = () => onChange && onChange(serialize());
   const exec = (cmd, val) => { edRef.current.focus(); restore(); document.execCommand(cmd, false, val || null); saveSel(); pushChange(); };
 
   const openPicker = (e) => { saveSel(); const r = e.currentTarget.getBoundingClientRect(); setPicker({ x: Math.min(r.left, window.innerWidth - 360), y: r.bottom + 6 }); };
-  const insertVar = (rid, cid, val) => {
+const insertVar = (rid, cid, val) => {
+    if (!edRef.current) return;
     edRef.current.focus(); restore();
     const chip = document.createElement("span");
-    chip.setAttribute("data-var", `${rid}.${cid}`); chip.setAttribute("contenteditable", "false");
+chip.setAttribute("data-var", `${rid}|${cid}`); chip.setAttribute("contenteditable", "false");
     chip.title = rowLabel(rid); chip.textContent = fmtVal(val);
     Object.assign(chip.style, { display: "inline-flex", padding: "1px 7px", margin: "0 1px", borderRadius: "6px", background: "#E7F6EF", color: "#0B7A54", fontFamily: "'Inter',sans-serif", fontWeight: "700", fontSize: "0.92em", cursor: "pointer" });
     const sel = window.getSelection();
-    if (sel.rangeCount) { const rg = sel.getRangeAt(0); rg.deleteContents(); rg.insertNode(chip); const sp = document.createTextNode("\u00A0"); chip.after(sp); rg.setStartAfter(sp); rg.collapse(true); sel.removeAllRanges(); sel.addRange(rg); }
-    else edRef.current.appendChild(chip);
+    // Sólo insertar en la selección si está DENTRO del editor; si no (p.ej. el foco
+    // estaba en el título del índice), añadir al final del editor para no inyectar
+    // el chip en otro elemento del DOM.
+    const anchor = sel && sel.rangeCount ? sel.getRangeAt(0).commonAncestorContainer : null;
+    const insideEditor = anchor && edRef.current.contains(anchor);
+    if (insideEditor) {
+      const rg = sel.getRangeAt(0);
+      rg.deleteContents(); rg.insertNode(chip);
+      const sp = document.createTextNode("\u00A0");
+      chip.after(sp); rg.setStartAfter(sp); rg.collapse(true);
+      sel.removeAllRanges(); sel.addRange(rg);
+    } else {
+      edRef.current.appendChild(chip);
+      edRef.current.appendChild(document.createTextNode("\u00A0"));
+    }
     setPicker(null); pushChange();
   };
 
@@ -843,11 +1183,28 @@ const [sourceOverride, setSource]       = useState(null);
   const company = companyOverride ?? defaultCompany;
 const [templateId, setTemplateId] = useState(null);
 const [activeNoteId, setActiveNoteId] = useState(null);
-  // Overrides manuales por nota. Map<noteId, Map<"rowId|colId", number>>.
+// Overrides manuales por nota. Map<noteId, Map<"rowId|colId", number>>.
   // null como valor elimina el override (la celda vuelve a su valor calculado).
-  const [overridesByNote, setOverridesByNote] = useState(() => new Map());
+const [overridesByNote, setOverridesByNote] = useState(() => new Map());
 
-  const handleCellEdit = useCallback((rowId, colId, value) => {
+  // Data (declarado antes de los handlers que hacen setNotes)
+  const [templates, setTemplates] = useState([]);
+  const [notes, setNotes]         = useState([]);
+  const [rows, setRows]           = useState([]); // ALL rows for current template
+  const [cols, setCols]           = useState([]); // ALL cols for current template
+  const [loadingTemplate, setLoadingTemplate] = useState(true);
+
+// ── Persistencia de memorias (Supabase) ──
+  // eslint-disable-next-line no-unused-vars
+  const [saveId, setSaveId]         = useState(null);   // id del set actual, si existe
+  const [saving, setSaving]         = useState(false);
+  // eslint-disable-next-line no-unused-vars
+  const [loadingSave, setLoadingSave] = useState(false);
+  const [lastSavedInfo, setLastSavedInfo] = useState(null); // { by, at } — se muestra en Fase E
+  // Narrativas editadas por nota que aún no están en `notes`. Persistimos leyendo
+  // de `notes[].default_narrative`, que es donde el editor escribe (onChange).
+
+const handleCellEdit = useCallback((rowId, colId, value) => {
     if (!activeNoteId) return;
     setOverridesByNote(prev => {
       const next = new Map(prev);
@@ -861,12 +1218,96 @@ const [activeNoteId, setActiveNoteId] = useState(null);
     });
   }, [activeNoteId]);
 
-  // Data
-  const [templates, setTemplates] = useState([]);
-  const [notes, setNotes]         = useState([]);
-  const [rows, setRows]           = useState([]); // ALL rows for current template
-  const [cols, setCols]           = useState([]); // ALL cols for current template
-  const [loadingTemplate, setLoadingTemplate] = useState(true);
+  // ── Edición de filas de tabla (Fase B) ────────────────────────────
+  // custom_rows de cada nota es un array de operaciones aplicadas sobre las
+  // filas de plantilla: { op:"add", id, label, after }, { op:"rename", id, label },
+  // { op:"hide", id }. Se guarda en note._custom_rows y se persiste en jsonb.
+  const mutateCustomRows = useCallback((fn) => {
+    if (!activeNoteId) return;
+    setNotes(prev => prev.map(n => {
+      if (n.id !== activeNoteId) return n;
+      const current = Array.isArray(n._custom_rows) ? n._custom_rows : [];
+      return { ...n, _custom_rows: fn(current) };
+    }));
+  }, [activeNoteId]);
+
+  const addCustomRow = useCallback((afterRowId, label) => {
+    const id = `custom-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
+    mutateCustomRows(ops => [...ops, { op: "add", id, label: label || "Nueva fila", after: afterRowId ?? null }]);
+  }, [mutateCustomRows]);
+
+  const renameRow = useCallback((rowId, label) => {
+    mutateCustomRows(ops => {
+      // Si es una fila custom "add", renombra in situ; si es de plantilla, añade/actualiza un "rename".
+      const isCustomAdd = ops.some(o => o.op === "add" && o.id === rowId);
+      if (isCustomAdd) return ops.map(o => (o.op === "add" && o.id === rowId) ? { ...o, label } : o);
+      const others = ops.filter(o => !(o.op === "rename" && o.id === rowId));
+      return [...others, { op: "rename", id: rowId, label }];
+    });
+  }, [mutateCustomRows]);
+
+const enableTable = useCallback(() => {
+    if (!activeNoteId) return;
+    setNotes(prev => prev.map(n => n.id === activeNoteId ? { ...n, _table_enabled: true } : n));
+  }, [activeNoteId]);
+
+const deleteRow = useCallback((rowId) => {
+    mutateCustomRows(ops => {
+      const isCustomAdd = ops.some(o => o.op === "add" && o.id === rowId);
+      if (isCustomAdd) {
+        // Eliminar una fila custom = quitar su "add" (y cualquier rename suyo).
+        return ops.filter(o => o.id !== rowId);
+      }
+      // Fila de plantilla: marcar "hide" (sin duplicar).
+      if (ops.some(o => o.op === "hide" && o.id === rowId)) return ops;
+      return [...ops, { op: "hide", id: rowId }];
+    });
+    // Limpiar del texto las referencias {{rowId.colId}} de esa fila, y sus variables
+    // y overrides de celda — la fila ya no existe, sus referencias no deben quedar.
+    if (!activeNoteId) return;
+const escId = String(rowId).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // colId puede contener ":" (p.ej. pgc_normal:nota_07_col_addition), así que
+    // aceptamos cualquier cosa que no sea "}" tras el punto separador.
+    const refRe = new RegExp(`\\{\\{${escId}\\.[^}]+\\}\\}`, "g");
+    setNotes(prev => prev.map(n => {
+      if (n.id !== activeNoteId) return n;
+      const narr = (n.default_narrative ?? n.narrative ?? "").replace(refRe, "");
+      const cv = { ...(n._cell_variables || {}) };
+      Object.keys(cv).forEach(k => { if (k.startsWith(`${rowId}|`)) delete cv[k]; });
+      return { ...n, default_narrative: narr, _cell_variables: cv };
+    }));
+    setOverridesByNote(prev => {
+      const noteOv = prev.get(activeNoteId);
+      if (!noteOv) return prev;
+      let changed = false;
+      const m = new Map(noteOv);
+      m.forEach((_, k) => { if (k.startsWith(`${rowId}|`)) { m.delete(k); changed = true; } });
+      if (!changed) return prev;
+      const next = new Map(prev);
+      if (m.size === 0) next.delete(activeNoteId); else next.set(activeNoteId, m);
+      return next;
+    });
+  }, [mutateCustomRows, activeNoteId]);
+
+  // Aplica las ops de custom_rows sobre las filas base de plantilla → filas a renderizar.
+  const applyCustomRows = useCallback((baseRows, customOps) => {
+    const ops = Array.isArray(customOps) ? customOps : [];
+    const hidden = new Set(ops.filter(o => o.op === "hide").map(o => String(o.id)));
+    const renames = new Map(ops.filter(o => o.op === "rename").map(o => [String(o.id), o.label]));
+    // 1) Filas de plantilla, sin ocultas, con renombrados aplicados.
+    let out = (baseRows || [])
+      .filter(r => !hidden.has(String(r.id)))
+      .map(r => renames.has(String(r.id)) ? { ...r, label: renames.get(String(r.id)), _renamed: true } : r);
+    // 2) Insertar las filas "add" en su posición (after). Las sin `after` van al final.
+    ops.filter(o => o.op === "add").forEach(o => {
+      const newRow = { id: o.id, label: o.label, level: 0, is_total: false, _custom: true };
+      if (o.after == null) { out = [...out, newRow]; return; }
+      const idx = out.findIndex(r => String(r.id) === String(o.after));
+      if (idx < 0) out = [...out, newRow];
+      else out = [...out.slice(0, idx + 1), newRow, ...out.slice(idx + 1)];
+    });
+    return out;
+}, []);
 
 const [currentRows, setCurrentRows] = useState([]); // uploaded-accounts current period
   const [prevRows, setPrevRows]       = useState([]); // uploaded-accounts prev period
@@ -967,7 +1408,8 @@ const dedupeBy = (arr, keyFn) => {
         remap(c),
         x => `${x.note_id}|${x.sort_order ?? ""}|${x.label ?? ""}`
       );
-      setNotes(uniqNotes);
+// Preserva la narrativa original de plantilla en _original_narrative para el reset.
+      setNotes(uniqNotes.map(n => ({ ...n, _original_narrative: n.default_narrative ?? n.narrative ?? "" })));
       setRows(uniqRows);
       setCols(uniqCols);
       if (uniqNotes.length > 0) {
@@ -1034,10 +1476,189 @@ const activeRows = useMemo(
     () => activeNote ? (rowsByNote.get(activeNote.id) ?? []) : [],
     [activeNote, rowsByNote]
   );
-  const activeCols = useMemo(
+  // Filas a renderizar = filas de plantilla + operaciones custom (add/rename/hide).
+const activeRowsCustom = useMemo(
+    () => applyCustomRows(activeRows, activeNote?._custom_rows),
+    [activeRows, activeNote, applyCustomRows]
+  );
+const activeCols = useMemo(
     () => activeNote ? (colsByNote.get(activeNote.id) ?? []) : [],
     [activeNote, colsByNote]
   );
+  // Tabla activada manualmente (Fase C): nota sin filas/cols de plantilla pero con
+  // _table_enabled. Generamos una columna "Valor" y una fila de total por defecto,
+  // sobre las que operan las filas custom (add/rename/hide) igual que una tabla normal.
+  const tableManuallyEnabled = !!activeNote?._table_enabled && (activeRows.length === 0 || activeCols.length === 0);
+  const DEFAULT_TOTAL_ID = "custom-total";
+const effectiveCols = useMemo(() => {
+    if (!tableManuallyEnabled) return activeCols;
+    // Mismo formato de movimiento que las tablas de plantilla.
+    return [
+      { id: "custom-opening",  label: "Saldo inicial", col_type: "opening"  },
+      { id: "custom-addition", label: "Altas",         col_type: "addition" },
+      { id: "custom-disposal", label: "Bajas",         col_type: "disposal" },
+      { id: "custom-transfer", label: "Traspasos",     col_type: "transfer" },
+      { id: "custom-closing",  label: "Saldo final",   col_type: "closing"  },
+    ];
+  }, [tableManuallyEnabled, activeCols]);
+  const effectiveRows = useMemo(() => {
+    if (!tableManuallyEnabled) return activeRowsCustom;
+    // filas custom + una fila de total al final
+    const customOps = Array.isArray(activeNote?._custom_rows) ? activeNote._custom_rows : [];
+    const base = applyCustomRows([], customOps);
+    return [...base, { id: DEFAULT_TOTAL_ID, label: "Total", level: 0, is_total: true }];
+  }, [tableManuallyEnabled, activeRowsCustom, activeNote, applyCustomRows]);
+
+  // ── Guardar / cargar memorias en Supabase ─────────────────────────
+  // Clave del set: company + year + month + structure + source + template_id.
+  // Guardar sobre la MISMA clave sobreescribe; cambiar cualquiera crea otro set.
+  const saveKey = useMemo(() => ({
+    company, year: Number(year), month: Number(month), structure, source, template_id: templateId,
+  }), [company, year, month, structure, source, templateId]);
+
+  const saveKeyReady = !!(company && year && month && structure && source && templateId);
+
+  // Serializa un Map<"rowId|colId", number> a objeto plano para jsonb.
+  const serializeOverrides = useCallback((noteId) => {
+    const m = overridesByNote.get(noteId);
+    if (!m || m.size === 0) return {};
+    const out = {};
+    m.forEach((v, k) => { out[k] = v; });
+    return out;
+  }, [overridesByNote]);
+
+  const saveMemories = useCallback(async () => {
+    if (!saveKeyReady) return;
+    setSaving(true);
+    try {
+      const user = await getMemUser();
+      // 1) Upsert del set (memory_saves) por la clave única. resolution=merge-duplicates
+      //    + on_conflict con las 6 columnas → sobreescribe el set existente.
+      const nowIso = new Date().toISOString();
+      const savePayload = {
+        ...saveKey,
+        updated_at: nowIso,
+        updated_by: user.id,
+        updated_by_name: user.name,
+      };
+      const conflictCols = "company,year,month,structure,source,template_id";
+      const savedRows = await sbMemAuth(
+        "POST",
+        `memory_saves?on_conflict=${conflictCols}`,
+        { body: savePayload, prefer: "resolution=merge-duplicates,return=representation" }
+      );
+      const setRow = Array.isArray(savedRows) ? savedRows[0] : savedRows;
+      const sid = setRow?.id;
+      if (!sid) throw new Error("No se pudo obtener el id del set guardado.");
+      setSaveId(sid);
+
+      // 2) Upsert del estado por nota (memory_note_state). Una fila por epígrafe
+      //    que tenga contenido (narrativa editada u overrides).
+      const statePayload = notes.map(n => {
+        const overrides = serializeOverrides(n.id);
+        const narrative = n.default_narrative ?? n.narrative ?? null;
+        return {
+          save_id: sid,
+          note_number: n.note_number,
+          narrative,
+          cell_overrides: overrides,
+          // custom_rows / cell_variables / table_enabled: fases B-D (por ahora defaults)
+          custom_rows: n._custom_rows ?? [],
+          cell_variables: n._cell_variables ?? {},
+          table_enabled: !!n._table_enabled,
+          updated_at: nowIso,
+        };
+      });
+      if (statePayload.length > 0) {
+        await sbMemAuth(
+          "POST",
+          `memory_note_state?on_conflict=save_id,note_number`,
+          { body: statePayload, prefer: "resolution=merge-duplicates,return=minimal" }
+        );
+      }
+      setLastSavedInfo({ by: user.name, at: nowIso });
+    } catch (err) {
+      console.error("[saveMemories] error:", err);
+      alert("No se pudieron guardar las memorias: " + (err?.message ?? err));
+    } finally {
+      setSaving(false);
+    }
+  }, [saveKeyReady, saveKey, notes, serializeOverrides]);
+
+  // Carga el set guardado (si existe) al cambiar la clave. Hidrata narrativas y overrides.
+  const hydrateFromSave = useCallback((states) => {
+    if (!Array.isArray(states)) return;
+    // Overrides → Map<noteId, Map<key, number>>, resolviendo note_number → note.id
+    const idByNumber = new Map(notes.map(n => [n.note_number, n.id]));
+    setOverridesByNote(() => {
+      const next = new Map();
+      states.forEach(s => {
+        const noteId = idByNumber.get(s.note_number);
+        if (!noteId) return;
+        const ov = s.cell_overrides || {};
+        const keys = Object.keys(ov);
+        if (keys.length === 0) return;
+        const m = new Map();
+        keys.forEach(k => m.set(k, ov[k]));
+        next.set(noteId, m);
+      });
+      return next;
+    });
+    // Narrativas + campos de fases B-D → sobre `notes`
+    setNotes(prev => prev.map(n => {
+      const s = states.find(x => x.note_number === n.note_number);
+      if (!s) return n;
+      return {
+        ...n,
+        default_narrative: s.narrative ?? n.default_narrative,
+        _custom_rows: s.custom_rows ?? [],
+        _cell_variables: s.cell_variables ?? {},
+        _table_enabled: !!s.table_enabled,
+      };
+    }));
+  }, [notes]);
+
+  const loadMemories = useCallback(async () => {
+    if (!saveKeyReady || notes.length === 0) return;
+    setLoadingSave(true);
+    try {
+      const q = `company=eq.${encodeURIComponent(saveKey.company)}`
+        + `&year=eq.${saveKey.year}&month=eq.${saveKey.month}`
+        + `&structure=eq.${encodeURIComponent(saveKey.structure)}`
+        + `&source=eq.${encodeURIComponent(saveKey.source)}`
+        + `&template_id=eq.${encodeURIComponent(saveKey.template_id)}`;
+      const found = await sbMemAuth("GET", `memory_saves?select=*&${q}&limit=1`);
+      const setRow = Array.isArray(found) ? found[0] : null;
+      if (!setRow) {
+        // No hay set guardado para esta combinación → empezar limpio.
+        setSaveId(null);
+        setLastSavedInfo(null);
+        setOverridesByNote(new Map());
+        return;
+      }
+      setSaveId(setRow.id);
+      setLastSavedInfo({ by: setRow.updated_by_name, at: setRow.updated_at });
+      const states = await sbMemAuth(
+        "GET",
+        `memory_note_state?select=*&save_id=eq.${setRow.id}`
+      );
+      hydrateFromSave(states);
+    } catch (err) {
+      console.error("[loadMemories] error:", err);
+    } finally {
+      setLoadingSave(false);
+    }
+  }, [saveKeyReady, saveKey, notes, hydrateFromSave]);
+
+// Carga automática del set guardado al cambiar la clave o al cargar las notas.
+  const lastLoadedKeyRef = useRef(null);
+  useEffect(() => {
+    if (!saveKeyReady || notes.length === 0) return;
+    const keyStr = JSON.stringify(saveKey);
+    if (lastLoadedKeyRef.current === keyStr) return;
+    lastLoadedKeyRef.current = keyStr;
+    loadMemories();
+  }, [saveKeyReady, saveKey, notes.length, loadMemories]);
 
 // Hierarchy index del chart de cuentas grupo (incluye fallback a códigos
   // huérfanos que sólo aparecen en los postings).
@@ -1091,7 +1712,87 @@ const activeRows = useMemo(
       prevCashflow:    rollUpPivot(prevCfRaw,  cfParentOf),
       prevCashflowRaw: prevCfRaw,
     };
-  }, [currentRows, prevRows, parentOf, typeByCode, cfCodeByGroupCode, cfParentOf]);
+}, [currentRows, prevRows, parentOf, typeByCode, cfCodeByGroupCode, cfParentOf]);
+
+  // ── Variables de celda (Fase D) ───────────────────────────────────
+  // Una variable = lista de términos { code, sign } sobre una fuente (balance/pyg).
+  // Valor = Σ(sign × importe de la cuenta en el periodo actual). Se recalcula cada
+  // periodo, así que al cambiar mes/año se actualiza sola.
+  const resolveVariableValue = useCallback((variable) => {
+    if (!variable || !Array.isArray(variable.terms) || variable.terms.length === 0) return 0;
+    const src = variable.source === "pyg"
+      ? { cur: accountSources.curPyg, raw: accountSources.curPygRaw }
+      : { cur: accountSources.curBalance, raw: accountSources.curBalanceRaw };
+    let total = 0;
+    variable.terms.forEach(t => {
+      const amt = sumCodes(src.cur, [t.code], src.raw);
+      total += (t.sign < 0 ? -1 : 1) * amt;
+    });
+    return total;
+  }, [accountSources]);
+
+  // Lista de cuentas para el picker: [{ code, label }], desde el plan de cuentas.
+  const accountItems = useMemo(() => {
+    const seen = new Set();
+    const items = [];
+    (groupAccounts || []).forEach(g => {
+      const code = String(g.AccountCode ?? g.accountCode ?? "");
+      if (!code || seen.has(code)) return;
+      seen.add(code);
+      const name = g.AccountName ?? g.accountName ?? "";
+      items.push({ code, label: name ? `${code} — ${name}` : code });
+    });
+    return items.sort((a, b) => a.code.localeCompare(b.code));
+  }, [groupAccounts]);
+
+// Handler para asignar/quitar la variable de una celda de la nota activa.
+  const setCellVariable = useCallback((rowId, colId, variable) => {
+    if (!activeNoteId) return;
+    setNotes(prev => prev.map(n => {
+      if (n.id !== activeNoteId) return n;
+      const cv = { ...(n._cell_variables || {}) };
+      const key = `${rowId}|${colId}`;
+      if (variable == null) delete cv[key];
+      else cv[key] = variable;
+      return { ...n, _cell_variables: cv };
+    }));
+  }, [activeNoteId]);
+
+  // ── Reset (Fase E) ────────────────────────────────────────────────
+  // Devuelve una nota a su punto de partida: narrativa original de plantilla,
+  // sin overrides, sin filas custom, sin variables, sin tabla activada a mano.
+  const resetNoteToOrigin = useCallback((noteId) => {
+    setNotes(prev => prev.map(n => n.id === noteId ? {
+      ...n,
+      default_narrative: n._original_narrative ?? n.default_narrative,
+      _custom_rows: [],
+      _cell_variables: {},
+      _table_enabled: false,
+    } : n));
+    setOverridesByNote(prev => {
+      const next = new Map(prev);
+      next.delete(noteId);
+      return next;
+    });
+  }, []);
+
+  const resetCurrentNote = useCallback(() => {
+    if (activeNoteId) resetNoteToOrigin(activeNoteId);
+  }, [activeNoteId, resetNoteToOrigin]);
+
+  const resetAllNotes = useCallback(() => {
+    setNotes(prev => prev.map(n => ({
+      ...n,
+      default_narrative: n._original_narrative ?? n.default_narrative,
+      _custom_rows: [],
+      _cell_variables: {},
+      _table_enabled: false,
+    })));
+    setOverridesByNote(new Map());
+  }, []);
+
+  // Estado del diálogo de reset.
+  const [resetDialog, setResetDialog] = useState(false);
 
   // Build pivot for active note
   const pivot = useMemo(() => {
@@ -1106,6 +1807,37 @@ return buildPivot({
     });
 }, [activeNote, activeRows, activeCols, accountSources, overridesByNote, currentRows.length, prevRows.length]);
 
+  // Pivot efectivo: valor real de cada celda (variable > override > pivot base),
+  // sobre las filas/columnas efectivas (incluye filas custom). Lo usa el editor de
+  // narrativa para que el picker ofrezca TODAS las celdas y el valor correcto.
+  const effectivePivot = useMemo(() => {
+    const out = new Map(pivot); // parte del pivot base
+    const ov = overridesByNote.get(activeNote?.id) ?? null;
+    const cvars = activeNote?._cell_variables ?? null;
+    // overrides
+    if (ov) ov.forEach((v, k) => out.set(k, v));
+    // variables de celda (ganan sobre override y pivot; se recalculan por periodo)
+    if (cvars) {
+      Object.entries(cvars).forEach(([k, variable]) => {
+        out.set(k, resolveVariableValue(variable));
+      });
+    }
+    // closing derivado de tablas custom (opening + altas − bajas + traspasos)
+    const closingCol = effectiveCols.find(c => c.col_type === "closing");
+    if (closingCol) {
+      const byType = {};
+      effectiveCols.forEach(c => { byType[c.col_type] = c.id; });
+      effectiveRows.forEach(r => {
+        if (r.is_total || r.is_subtotal) return;
+        const ck = `${r.id}|${closingCol.id}`;
+        if (ov?.has(ck)) return; // override manual del closing gana
+        const val = (t) => byType[t] ? (out.get(`${r.id}|${byType[t]}`) ?? 0) : 0;
+        out.set(ck, val("opening") + val("addition") - val("disposal") + val("transfer"));
+      });
+    }
+    return out;
+  }, [pivot, overridesByNote, activeNote, resolveVariableValue, effectiveCols, effectiveRows]);
+
   // Filter options
   const sourceOpts    = [...new Set(sources.map(s  => typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
   const structureOpts = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
@@ -1116,16 +1848,100 @@ return buildPivot({
     .filter(o => o.value);
 
 // ─── Export handlers ────────────────────────────────────────────
+  // Construye los datos COMPLETOS de exportación por nota: texto narrativo con las
+  // variables resueltas a su valor, y la tabla efectiva (filas custom + columnas
+  // efectivas + valores efectivos: variable > override > fórmula > closing > pivot).
   const buildExportData = useCallback(() => {
-    const allNotes = notes.filter(n => n.has_table);
-    return allNotes.map(n => {
-      const nRows = rowsByNote.get(n.id) ?? [];
-      const nCols = colsByNote.get(n.id) ?? [];
-      if (!nRows.length || !nCols.length) return null;
-const nPivot = buildPivot({ note: n, rows: nRows, columns: nCols, sources: accountSources, overrides: overridesByNote.get(n.id) ?? null });
-      return { note: n, rows: nRows, columns: nCols, pivot: nPivot };
-    }).filter(Boolean);
-  }, [notes, rowsByNote, colsByNote, accountSources, overridesByNote]);
+    return notes.map(n => {
+      const ov = overridesByNote.get(n.id) ?? null;
+      const cvars = n._cell_variables ?? null;
+      const customOps = Array.isArray(n._custom_rows) ? n._custom_rows : [];
+      const baseRows = rowsByNote.get(n.id) ?? [];
+      const baseCols = colsByNote.get(n.id) ?? [];
+
+      // ¿Tabla activada manualmente sin plantilla? → columnas de movimiento + total.
+      const manual = !!n._table_enabled && (baseRows.length === 0 || baseCols.length === 0);
+      let nCols, nRows;
+      if (manual) {
+        nCols = [
+          { id: "custom-opening",  label: "Saldo inicial", col_type: "opening"  },
+          { id: "custom-addition", label: "Altas",         col_type: "addition" },
+          { id: "custom-disposal", label: "Bajas",         col_type: "disposal" },
+          { id: "custom-transfer", label: "Traspasos",     col_type: "transfer" },
+          { id: "custom-closing",  label: "Saldo final",   col_type: "closing"  },
+        ];
+        nRows = [...applyCustomRows([], customOps), { id: "custom-total", label: "Total", level: 0, is_total: true }];
+      } else {
+        nCols = baseCols;
+        nRows = applyCustomRows(baseRows, customOps);
+      }
+
+      // Pivot base de esta nota (para valores calculados de plantilla).
+      const basePivot = (baseRows.length && baseCols.length)
+        ? buildPivot({ note: n, rows: baseRows, columns: baseCols, sources: accountSources, overrides: ov })
+        : new Map();
+
+      // Valor efectivo de una celda (misma prioridad que en pantalla).
+      const colByType = {};
+      nCols.forEach(c => { if (colByType[c.col_type] == null || !c.formula) colByType[c.col_type] = c.id; });
+      const realClosingCol = nCols.find(c => c.col_type === "closing" && !c.formula);
+      const closingId = realClosingCol?.id ?? colByType["closing"];
+      const effVal = (rid, cid) => {
+        const k = `${rid}|${cid}`;
+        const o = ov?.get(k);
+        if (o !== undefined && o !== null) return o;
+        const vr = cvars?.[k] ?? null;
+        if (vr) return resolveVariableValue(vr);
+        return basePivot.get(k) ?? 0;
+      };
+      const cellValue = (row, col) => {
+        if (row.is_total) {
+          return nRows.reduce((s, r) => (r.is_total || r.is_subtotal) ? s : s + effVal(r.id, col.id), 0);
+        }
+        const ownOv = ov?.get(`${row.id}|${col.id}`);
+        if (ownOv !== undefined && ownOv !== null) return ownOv;
+        const vr = cvars?.[`${row.id}|${col.id}`] ?? null;
+        if (vr) return resolveVariableValue(vr);
+        if (col.formula) {
+          const clo = closingId
+            ? (ov?.get(`${row.id}|${closingId}`) != null ? ov.get(`${row.id}|${closingId}`)
+               : effVal(row.id, colByType["opening"] ?? "") + effVal(row.id, colByType["addition"] ?? "") - effVal(row.id, colByType["disposal"] ?? "") + effVal(row.id, colByType["transfer"] ?? ""))
+            : 0;
+          const env = {
+            opening: effVal(row.id, colByType["opening"] ?? ""), additions: effVal(row.id, colByType["addition"] ?? ""),
+            disposals: effVal(row.id, colByType["disposal"] ?? ""), transfers: effVal(row.id, colByType["transfer"] ?? ""),
+            closing: clo, depreciation: effVal(row.id, colByType["depreciation"] ?? ""),
+            pyg_current: effVal(row.id, colByType["pyg_current"] ?? ""), pyg_prev: effVal(row.id, colByType["pyg_prev"] ?? ""),
+            balance_delta: effVal(row.id, colByType["balance_delta"] ?? ""), treasury_opening: effVal(row.id, colByType["treasury_opening"] ?? ""),
+            treasury_closing: effVal(row.id, colByType["treasury_closing"] ?? ""),
+          };
+          try { let e = col.formula; Object.entries(env).forEach(([k, v]) => { e = e.replaceAll(k, `(${Number.isFinite(v) ? v : 0})`); }); const r = Function(`"use strict"; return (${e})`)(); return Number.isFinite(r) ? r : 0; } catch { return 0; }
+        }
+        if (col.col_type === "closing" && !col.formula && closingId && ov?.get(`${row.id}|${closingId}`) == null) {
+          return effVal(row.id, colByType["opening"] ?? "") + effVal(row.id, colByType["addition"] ?? "") - effVal(row.id, colByType["disposal"] ?? "") + effVal(row.id, colByType["transfer"] ?? "");
+        }
+        return effVal(row.id, col.id);
+      };
+
+      // Matriz de valores { rowId: { colId: number } } lista para pintar.
+      const values = {};
+      nRows.forEach(row => { values[row.id] = {}; nCols.forEach(col => { values[row.id][col.id] = cellValue(row, col); }); });
+
+      // Narrativa con variables {{rid|cid}} (y legacy {{rid.cid}}) → valor formateado.
+      const rawNarr = n.default_narrative ?? n.narrative ?? "";
+      const resolvedNarrative = String(rawNarr).replace(/\{\{([^{}]+?)\}\}/g, (m, inner) => {
+        let rid, cid;
+        if (inner.includes("|")) { const b = inner.lastIndexOf("|"); rid = inner.slice(0, b); cid = inner.slice(b + 1); }
+        else { const d = inner.lastIndexOf("."); if (d < 0) return m; rid = inner.slice(0, d); cid = inner.slice(d + 1); }
+        const v = values[rid]?.[cid];
+        const num = (v == null || v === 0) ? "—" : Number(v).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        return `<b style="color:#0B7A54">${num}</b>`;
+      });
+
+      const hasTable = nRows.length > 0 && nCols.length > 0;
+      return { note: n, rows: nRows, columns: nCols, values, resolvedNarrative, hasTable };
+    });
+  }, [notes, rowsByNote, colsByNote, accountSources, overridesByNote, applyCustomRows, resolveVariableValue]);
 
   const handleExportExcel = useCallback(async () => {
     try {
@@ -1138,58 +1954,99 @@ const nPivot = buildPivot({ note: n, rows: nRows, columns: nCols, sources: accou
       const exportData = buildExportData();
       const tplLabel = templates.find(t => t.id === templateId)?.label ?? templateId;
 
-      const cover = wb.addWorksheet("Memoria");
-      cover.mergeCells("A1:D1");
-      cover.getCell("A1").value = `Memoria — ${tplLabel}`;
-      cover.getCell("A1").font = { size: 18, bold: true, color: { argb: "FF1A2F8A" } };
-      cover.getCell("A3").value = "Empresa:";   cover.getCell("B3").value = company;
-      cover.getCell("A4").value = "Periodo:";   cover.getCell("B4").value = `${month}/${year}`;
-      cover.getCell("A5").value = "Source:";    cover.getCell("B5").value = source;
-      cover.getCell("A6").value = "Estructura:";cover.getCell("B6").value = structure;
-      cover.columns = [{ width: 14 }, { width: 40 }, { width: 14 }, { width: 14 }];
+const NAVY = "FF1A2F8A";
+      const stripHtml = (h) => String(h ?? "").replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim();
+      const monthName = new Date(2000, Number(month) - 1, 1).toLocaleDateString("es-ES", { month: "long" });
 
-      exportData.forEach(({ note, rows: nRows, columns: nCols, pivot: nPivot }) => {
+      // ── Portada ──
+      const cover = wb.addWorksheet("Memoria");
+      cover.columns = [{ width: 16 }, { width: 46 }, { width: 16 }, { width: 16 }];
+      cover.getCell("A1").value = "KONSOLIDATOR";
+      cover.getCell("A1").font = { size: 11, bold: true, color: { argb: NAVY } };
+      cover.mergeCells("A3:D3");
+      cover.getCell("A3").value = `Memoria económica — ${tplLabel}`;
+      cover.getCell("A3").font = { size: 22, bold: true, color: { argb: NAVY } };
+      const meta = [["Empresa", company], ["Periodo", `${monthName} de ${year}`], ["Source", source], ["Estructura", structure]];
+      meta.forEach(([k, v], i) => {
+        const row = 5 + i;
+        cover.getCell(`A${row}`).value = k; cover.getCell(`A${row}`).font = { bold: true, color: { argb: NAVY } };
+        cover.getCell(`B${row}`).value = v;
+      });
+      cover.getCell("A10").value = `Generado el ${new Date().toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}`;
+      cover.getCell("A10").font = { size: 9, italic: true, color: { argb: "FF9CA3AF" } };
+      // Índice
+      cover.getCell("A12").value = "Índice de epígrafes";
+      cover.getCell("A12").font = { size: 13, bold: true, color: { argb: NAVY } };
+      exportData.forEach(({ note }, i) => {
+        const row = 13 + i;
+        cover.getCell(`A${row}`).value = note.note_number;
+        cover.getCell(`A${row}`).font = { bold: true, color: { argb: NAVY } };
+        cover.getCell(`A${row}`).alignment = { horizontal: "center" };
+        cover.mergeCells(`B${row}:D${row}`);
+        cover.getCell(`B${row}`).value = note.title;
+      });
+
+      exportData.forEach(({ note, rows: nRows, columns: nCols, values, resolvedNarrative, hasTable }) => {
         const sheetName = `N${note.note_number}`.slice(0, 31);
         const ws = wb.addWorksheet(sheetName);
+        const lastCol = Math.max(nCols.length + 1, 2);
 
-        ws.mergeCells(1, 1, 1, nCols.length + 1);
+        ws.mergeCells(1, 1, 1, lastCol);
         ws.getCell(1, 1).value = `Nota ${note.note_number} — ${note.title}`;
-        ws.getCell(1, 1).font = { size: 14, bold: true, color: { argb: "FF1A2F8A" } };
+        ws.getCell(1, 1).font = { size: 14, bold: true, color: { argb: NAVY } };
 
+        let cursor = 2;
         if (note.description) {
-          ws.mergeCells(2, 1, 2, nCols.length + 1);
-          ws.getCell(2, 1).value = note.description;
-          ws.getCell(2, 1).font = { italic: true, size: 10, color: { argb: "FF666666" } };
+          ws.mergeCells(cursor, 1, cursor, lastCol);
+          ws.getCell(cursor, 1).value = note.description;
+          ws.getCell(cursor, 1).font = { italic: true, size: 10, color: { argb: "FF666666" } };
+          cursor++;
+        }
+        const narrText = stripHtml(resolvedNarrative);
+        if (narrText) {
+          cursor++;
+          ws.mergeCells(cursor, 1, cursor, lastCol);
+          const nc = ws.getCell(cursor, 1);
+          nc.value = narrText;
+          nc.font = { size: 10, color: { argb: "FF374151" } };
+          nc.alignment = { wrapText: true, vertical: "top" };
+          ws.getRow(cursor).height = Math.min(120, 18 + Math.floor(narrText.length / 90) * 14);
+          cursor++;
         }
 
-        const headerRow = ws.getRow(4);
-        headerRow.getCell(1).value = "Concepto";
-        nCols.forEach((c, i) => { headerRow.getCell(i + 2).value = c.label; });
-        headerRow.eachCell(cell => {
-          cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1A2F8A" } };
-          cell.alignment = { vertical: "middle", horizontal: "center" };
-        });
-
-        nRows.forEach((row, ri) => {
-          const r = ws.getRow(5 + ri);
-          r.getCell(1).value = row.label;
-          if (row.is_total) r.getCell(1).font = { bold: true };
-          nCols.forEach((c, ci) => {
-            const v = nPivot.get(`${row.id}|${c.id}`) ?? 0;
-            const cell = r.getCell(2 + ci);
-            cell.value = v === 0 ? null : Number(v);
-            cell.numFmt = "#,##0.00;[Red]-#,##0.00";
-            cell.alignment = { horizontal: "right" };
-            if (row.is_total) {
-              cell.font = { bold: true };
-              cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF3F4F6" } };
-            }
+        if (hasTable) {
+          const headerRowIdx = cursor + 1;
+          const headerRow = ws.getRow(headerRowIdx);
+          headerRow.getCell(1).value = "Concepto";
+          nCols.forEach((c, i) => { headerRow.getCell(i + 2).value = c.label; });
+          headerRow.eachCell(cell => {
+            cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+            cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: NAVY } };
+            cell.alignment = { vertical: "middle", horizontal: "center" };
           });
-        });
 
-        ws.getColumn(1).width = 40;
-        for (let i = 2; i <= nCols.length + 1; i++) ws.getColumn(i).width = 18;
+          nRows.forEach((row, ri) => {
+            const r = ws.getRow(headerRowIdx + 1 + ri);
+            r.getCell(1).value = row.label;
+            if (row.is_total) r.getCell(1).font = { bold: true, color: { argb: NAVY } };
+            nCols.forEach((c, ci) => {
+              const v = values[row.id]?.[c.id] ?? 0;
+              const cell = r.getCell(2 + ci);
+              cell.value = v === 0 ? null : Number(v);
+              cell.numFmt = '#,##0.00;[Red](#,##0.00);"—"';
+              cell.alignment = { horizontal: "right" };
+              if (row.is_total) {
+                cell.font = { bold: true, color: { argb: NAVY } };
+                cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF4F6FB" } };
+              } else if (ri % 2 === 1) {
+                cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFBFCFF" } };
+              }
+            });
+          });
+
+          ws.getColumn(1).width = 42;
+          for (let i = 2; i <= lastCol; i++) ws.getColumn(i).width = 18;
+        }
       });
 
       const buffer = await wb.xlsx.writeBuffer();
@@ -1205,65 +2062,102 @@ const nPivot = buildPivot({ note: n, rows: nRows, columns: nCols, sources: accou
     }
   }, [buildExportData, templates, templateId, company, year, month, source, structure]);
 
-  const handleExportPdf = useCallback(() => {
+const handleExportPdf = useCallback(() => {
     const exportData = buildExportData();
     const tplLabel = templates.find(t => t.id === templateId)?.label ?? templateId;
-    const fmtN = (n) => {
-      if (n == null || n === 0) return "—";
-      const num = typeof n === "number" ? n : Number(n);
-      if (isNaN(num) || num === 0) return "—";
-      return num.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const primary = colors?.primary ?? "#1A2F8A";
+    const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const cell = (v) => {
+      if (v == null || v === 0) return `<td class="num zero">—</td>`;
+      const num = Number(v);
+      const txt = Math.abs(num).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return num < 0 ? `<td class="num neg">(${txt})</td>` : `<td class="num">${txt}</td>`;
     };
+    const monthName = new Date(2000, Number(month) - 1, 1).toLocaleDateString("es-ES", { month: "long" });
+    const stamp = new Date().toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 
-    const pages = exportData.map(({ note, rows: nRows, columns: nCols, pivot: nPivot }) => `
+    const toc = exportData.map(({ note }) =>
+      `<div class="toc-row"><span class="toc-n">${note.note_number}</span><span class="toc-t">${esc(note.title)}</span></div>`
+    ).join("");
+
+    const pages = exportData.map(({ note, rows: nRows, columns: nCols, values, resolvedNarrative, hasTable }) => `
       <section class="note-page">
-        <h2>Nota ${note.note_number} — ${note.title}</h2>
-        ${note.description ? `<p class="desc">${note.description}</p>` : ""}
-        ${note.default_narrative ? `<p class="narrative">${note.default_narrative}</p>` : ""}
+        <div class="note-head">
+          <span class="note-badge">${note.note_number}</span>
+          <h2>${esc(note.title)}</h2>
+        </div>
+        ${note.description ? `<p class="desc">${esc(note.description)}</p>` : ""}
+        ${resolvedNarrative ? `<div class="narrative">${resolvedNarrative}</div>` : ""}
+        ${hasTable ? `
         <table>
           <thead>
             <tr>
               <th>Concepto</th>
-              ${nCols.map(c => `<th class="num">${c.label}</th>`).join("")}
+              ${nCols.map(c => `<th class="num">${esc(c.label)}</th>`).join("")}
             </tr>
           </thead>
           <tbody>
             ${nRows.map(r => `
               <tr class="${r.is_total ? "total" : ""}">
-                <td>${r.label}</td>
-                ${nCols.map(c => `<td class="num">${fmtN(nPivot.get(`${r.id}|${c.id}`) ?? 0)}</td>`).join("")}
+                <td>${esc(r.label)}</td>
+                ${nCols.map(c => cell(values[r.id]?.[c.id])).join("")}
               </tr>
             `).join("")}
           </tbody>
-        </table>
+        </table>` : ""}
       </section>
     `).join("");
 
     const html = `<!doctype html>
 <html><head><meta charset="utf-8" />
-<title>Memoria ${company} ${year}-${month}</title>
+<title>Memoria ${esc(company)} ${year}-${month}</title>
 <style>
-  @page { size: A4 landscape; margin: 14mm; }
-  body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color:#1f2937; margin:0; }
-  .cover { padding:40mm 20mm; text-align:center; page-break-after:always; }
-  .cover h1 { color:#1A2F8A; font-size:36px; margin-bottom:24px; }
-  .cover p { font-size:14px; color:#6b7280; margin:6px 0; }
-  .note-page { page-break-after:always; }
-  h2 { color:#1A2F8A; font-size:20px; margin:0 0 4px 0; border-bottom:2px solid #1A2F8A; padding-bottom:6px; }
-  .desc { color:#6b7280; font-size:11px; font-style:italic; margin:4px 0 12px 0; }
-  .narrative { color:#374151; font-size:11px; margin:6px 0 16px 0; line-height:1.5; }
-  table { width:100%; border-collapse:collapse; font-size:10px; }
-  th { background:#1A2F8A; color:#fff; text-align:left; padding:6px 8px; font-weight:700; }
-  th.num, td.num { text-align:right; }
-  td { padding:5px 8px; border-bottom:1px solid #f3f4f6; }
-  tr.total td { background:#f9fafb; font-weight:700; color:#1A2F8A; }
-  @media print { .no-print { display:none !important; } }
+  @page { size: A4 portrait; margin: 16mm 14mm; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color:#1f2937; margin:0; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .cover { height:calc(100vh - 32mm); display:flex; flex-direction:column; justify-content:center; page-break-after:always; }
+  .cover .brand { font-size:12px; letter-spacing:3px; font-weight:800; color:${primary}; text-transform:uppercase; border-bottom:3px solid ${primary}; padding-bottom:10px; }
+  .cover h1 { color:${primary}; font-size:40px; margin:28px 0 6px; }
+  .cover .sub { font-size:16px; color:#6b7280; font-style:italic; margin-bottom:28px; }
+  .cover .meta { font-size:13px; color:#374151; line-height:1.9; }
+  .cover .meta b { color:${primary}; }
+  .cover .stamp { margin-top:auto; font-size:10px; color:#9ca3af; }
+  .toc-page { page-break-after:always; }
+  .toc-title { color:${primary}; font-size:22px; font-weight:800; border-bottom:2px solid ${primary}; padding-bottom:8px; margin-bottom:16px; }
+  .toc-row { display:flex; gap:12px; padding:6px 0; border-bottom:1px solid #f3f4f6; font-size:12px; align-items:baseline; }
+  .toc-n { width:26px; font-weight:800; color:${primary}; }
+  .note-page { page-break-inside:avoid; margin-bottom:14px; }
+  .note-head { display:flex; align-items:center; gap:10px; border-bottom:2px solid ${primary}; padding-bottom:8px; margin-top:14px; }
+  .note-badge { width:26px; height:26px; border-radius:50%; background:${primary}; color:#fff; font-weight:800; font-size:12px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  h2 { color:${primary}; font-size:17px; margin:0; }
+  .desc { color:#6b7280; font-size:10px; font-style:italic; margin:6px 0 10px; }
+  .narrative { color:#374151; font-size:11px; margin:8px 0 14px; line-height:1.6; text-align:justify; }
+  table { width:100%; border-collapse:collapse; font-size:10px; margin-top:6px; }
+  th { background:${primary}; color:#fff; text-align:left; padding:7px 9px; font-weight:700; font-size:9px; text-transform:uppercase; letter-spacing:0.4px; }
+  th.num { text-align:right; }
+  td { padding:6px 9px; border-bottom:1px solid #f3f4f6; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  td.zero { color:#cbd5e1; }
+  td.neg { color:#dc2626; }
+  tr.total td { background:#f4f6fb; font-weight:800; color:${primary}; border-top:2px solid ${primary}; }
+  tbody tr:nth-child(even):not(.total) td { background:#fbfcff; }
 </style></head>
 <body>
   <div class="cover">
-    <h1>Memoria — ${tplLabel}</h1>
-    <p><strong>${company}</strong></p>
-    <p>${month}/${year} · ${source} · ${structure}</p>
+    <div class="brand">Konsolidator</div>
+    <h1>Memoria económica</h1>
+    <div class="sub">${esc(tplLabel)}</div>
+    <div class="meta">
+      <div><b>Empresa:</b> ${esc(company)}</div>
+      <div><b>Periodo:</b> ${esc(monthName)} de ${year}</div>
+      <div><b>Source:</b> ${esc(source)}</div>
+      <div><b>Estructura:</b> ${esc(structure)}</div>
+    </div>
+    <div class="stamp">Generado el ${stamp}</div>
+  </div>
+  <div class="toc-page">
+    <div class="toc-title">Índice de epígrafes</div>
+    ${toc}
   </div>
   ${pages}
 </body></html>`;
@@ -1273,41 +2167,53 @@ const nPivot = buildPivot({ note: n, rows: nRows, columns: nCols, sources: accou
     win.document.close();
     win.focus();
     setTimeout(() => { win.print(); }, 500);
-  }, [buildExportData, templates, templateId, company, year, month, source, structure]);
+  }, [buildExportData, templates, templateId, company, year, month, source, structure, colors]);
 
-  const handleExportWord = useCallback(() => {
+const handleExportWord = useCallback(() => {
     const exportData = buildExportData();
     const tplLabel = templates.find(t => t.id === templateId)?.label ?? templateId;
-    const fmtN = (n) => {
-      if (n == null || n === 0) return "—";
-      const num = typeof n === "number" ? n : Number(n);
-      if (isNaN(num) || num === 0) return "—";
-      return num.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const monthName = new Date(2000, Number(month) - 1, 1).toLocaleDateString("es-ES", { month: "long" });
+    const wcell = (v) => {
+      if (v == null || v === 0) return `<td style="text-align:right;color:#cbd5e1;">—</td>`;
+      const num = Number(v);
+      const txt = Math.abs(num).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return num < 0
+        ? `<td style="text-align:right;color:#dc2626;">(${txt})</td>`
+        : `<td style="text-align:right;">${txt}</td>`;
     };
 
-    const sections = exportData.map(({ note, rows: nRows, columns: nCols, pivot: nPivot }) => `
-      <h2 style="color:#1A2F8A;font-size:18pt;margin-top:18pt;border-bottom:1pt solid #1A2F8A;padding-bottom:4pt;">
-        Nota ${note.note_number} — ${note.title}
+    const toc = exportData.map(({ note }) =>
+      `<tr><td style="width:34pt;font-weight:bold;color:#1A2F8A;">${note.note_number}</td><td>${esc(note.title)}</td></tr>`
+    ).join("");
+
+    const sections = exportData.map(({ note, rows: nRows, columns: nCols, values, resolvedNarrative, hasTable }) => `
+      <h2 style="color:#1A2F8A;font-size:16pt;margin-top:18pt;border-bottom:1.5pt solid #1A2F8A;padding-bottom:4pt;">
+        Nota ${note.note_number} — ${esc(note.title)}
       </h2>
-      ${note.description ? `<p style="color:#666;font-style:italic;font-size:10pt;">${note.description}</p>` : ""}
-      ${note.default_narrative ? `<p style="font-size:11pt;margin:8pt 0;">${note.default_narrative}</p>` : ""}
-      <table border="1" cellspacing="0" cellpadding="6" style="border-collapse:collapse;width:100%;font-size:10pt;font-family:Calibri,Arial,sans-serif;">
+      ${note.description ? `<p style="color:#666;font-style:italic;font-size:10pt;">${esc(note.description)}</p>` : ""}
+      ${resolvedNarrative ? `<p style="font-size:11pt;margin:8pt 0;line-height:1.5;text-align:justify;">${resolvedNarrative}</p>` : ""}
+      ${hasTable ? `
+      <table border="0" cellspacing="0" cellpadding="6" style="border-collapse:collapse;width:100%;font-size:10pt;font-family:Calibri,Arial,sans-serif;">
         <thead>
           <tr style="background:#1A2F8A;color:#ffffff;">
-            <th style="text-align:left;">Concepto</th>
-            ${nCols.map(c => `<th style="text-align:right;">${c.label}</th>`).join("")}
+            <th style="text-align:left;padding:6pt 8pt;">Concepto</th>
+            ${nCols.map(c => `<th style="text-align:right;padding:6pt 8pt;">${esc(c.label)}</th>`).join("")}
           </tr>
         </thead>
         <tbody>
           ${nRows.map(r => {
             const isTotal = r.is_total;
-            return `<tr ${isTotal ? 'style="background:#f3f4f6;font-weight:bold;color:#1A2F8A;"' : ""}>
-              <td>${r.label}</td>
-              ${nCols.map(c => `<td style="text-align:right;">${fmtN(nPivot.get(`${r.id}|${c.id}`) ?? 0)}</td>`).join("")}
+            const rowStyle = isTotal
+              ? 'style="background:#f4f6fb;font-weight:bold;color:#1A2F8A;border-top:1.5pt solid #1A2F8A;"'
+              : 'style="border-bottom:0.5pt solid #eef1f6;"';
+            return `<tr ${rowStyle}>
+              <td style="padding:5pt 8pt;">${esc(r.label)}</td>
+              ${nCols.map(c => wcell(values[r.id]?.[c.id])).join("")}
             </tr>`;
           }).join("")}
         </tbody>
-      </table>
+      </table>` : ""}
     `).join("");
 
     const html = `<!doctype html>
@@ -1317,18 +2223,29 @@ const nPivot = buildPivot({ note: n, rows: nRows, columns: nCols, sources: accou
 <head><meta charset="utf-8" />
 <title>Memoria</title>
 <!--[if gte mso 9]><xml>
-  <w:WordDocument><w:View>Print</w:View><w:Zoom>90</w:Zoom><w:DoNotOptimizeForBrowser/></w:WordDocument>
+  <w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom><w:DoNotOptimizeForBrowser/></w:WordDocument>
 </xml><![endif]-->
 <style>
-  @page Section1 { size: 297mm 210mm; mso-page-orientation: landscape; margin: 1.5cm; }
+  @page Section1 { size: 210mm 297mm; mso-page-orientation: portrait; margin: 1.8cm; }
   div.Section1 { page: Section1; }
-  body { font-family: Calibri, Arial, sans-serif; }
+  body { font-family: Calibri, Arial, sans-serif; color:#1f2937; }
+  .brand { font-size:10pt; letter-spacing:2pt; font-weight:bold; color:#1A2F8A; text-transform:uppercase; }
 </style></head>
 <body>
   <div class="Section1">
-    <h1 style="color:#1A2F8A;font-size:24pt;text-align:center;">Memoria — ${tplLabel}</h1>
-    <p style="text-align:center;font-size:12pt;"><strong>${company}</strong></p>
-    <p style="text-align:center;font-size:11pt;color:#666;">${month}/${year} · ${source} · ${structure}</p>
+    <p class="brand">Konsolidator</p>
+    <h1 style="color:#1A2F8A;font-size:26pt;margin:6pt 0 2pt;">Memoria económica</h1>
+    <p style="font-size:13pt;color:#6b7280;font-style:italic;margin:0 0 14pt;">${esc(tplLabel)}</p>
+    <table style="font-size:11pt;margin-bottom:8pt;">
+      <tr><td style="font-weight:bold;color:#1A2F8A;padding-right:10pt;">Empresa:</td><td>${esc(company)}</td></tr>
+      <tr><td style="font-weight:bold;color:#1A2F8A;">Periodo:</td><td>${esc(monthName)} de ${year}</td></tr>
+      <tr><td style="font-weight:bold;color:#1A2F8A;">Source:</td><td>${esc(source)}</td></tr>
+      <tr><td style="font-weight:bold;color:#1A2F8A;">Estructura:</td><td>${esc(structure)}</td></tr>
+    </table>
+    <br style="mso-special-character:line-break;page-break-before:always;" />
+    <h2 style="color:#1A2F8A;font-size:18pt;border-bottom:1.5pt solid #1A2F8A;padding-bottom:6pt;">Índice de epígrafes</h2>
+    <table style="font-size:11pt;width:100%;">${toc}</table>
+    <br style="mso-special-character:line-break;page-break-before:always;" />
     ${sections}
   </div>
 </body></html>`;
@@ -1341,28 +2258,6 @@ const nPivot = buildPivot({ note: n, rows: nRows, columns: nCols, sources: accou
     a.click();
     URL.revokeObjectURL(url);
   }, [buildExportData, templates, templateId, company, year, month, source, structure]);
-if (currentRows.length > 0 && groupAccounts.length > 0) {
-    console.log("📊 sizes", {
-      uploadedCurrent: currentRows.length,
-      groupAccounts: groupAccounts.length,
-      typeByCode: typeByCode.size,
-      parentOf: parentOf.size,
-      curBalance: accountSources.curBalance.size,
-      curPyg: accountSources.curPyg.size,
-      curCashflow: accountSources.curCashflow.size,
-    });
-    console.log("📊 sample uploaded row:", currentRows[0]);
-    console.log("📊 sample groupAccount:", groupAccounts[0]);
-    console.log("📊 first 10 codes in curBalance:", [...accountSources.curBalance.entries()].slice(0, 10));
-    console.log("📊 first 10 codes in curPyg:", [...accountSources.curPyg.entries()].slice(0, 10));
-    console.log("📊 active note + rows:", activeNote?.title, activeRows.map(r => ({ label: r.label, codes: r.account_codes })));
-    console.log("📊 active cols:", activeCols.map(c => ({ label: c.label, col_type: c.col_type, source: c.source_type })));
-console.log("📊 template row 0 account_codes:", activeRows[0]?.account_codes);
-    console.log("📊 template col 0:", activeCols[0]);
-    console.log("📊 pivot first 5 values:", [...pivot.entries()].slice(0, 5));
-    console.log("📊 curBalance sample 20 codes:", [...accountSources.curBalance.keys()].slice(0, 20));
-    console.log("📊 curPyg sample 20 codes:", [...accountSources.curPyg.keys()].slice(0, 20));
-  }
 
   return (
     <div className="flex flex-col gap-4 h-full min-h-0">
@@ -1395,8 +2290,9 @@ console.log("📊 template row 0 account_codes:", activeRows[0]?.account_codes);
 onExportPdf={handleExportPdf}
         onExportXlsx={handleExportExcel}
         onExportWord={handleExportWord}
-        headerActions={[
-          { icon: Save, label: "Save", onClick: () => {} },
+headerActions={[
+          { icon: saving ? Loader2 : Save, label: saving ? "Guardando…" : "Guardar", onClick: () => { if (!saving) saveMemories(); } },
+          { icon: RefreshCw, label: "Reset", onClick: () => setResetDialog(true) },
         ]}
       />
 
@@ -1404,12 +2300,20 @@ onExportPdf={handleExportPdf}
       <div className="flex-1 min-h-0 flex gap-4">
 
         <div className="w-[280px] flex-shrink-0 bg-white rounded-2xl border border-gray-100 shadow-xl flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
-            <BookOpen size={13} style={{ color: colors.primary }} />
-            <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: colors.primary }}>
-              Notas · {templates.find(t => t.id === templateId)?.label}
-            </p>
-            <span className="ml-auto text-[10px] font-bold text-gray-400">{notes.length}</span>
+<div className="px-4 py-3 border-b border-gray-100">
+            <div className="flex items-center gap-2">
+              <BookOpen size={13} style={{ color: colors.primary }} />
+              <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: colors.primary }}>
+                Notas · {templates.find(t => t.id === templateId)?.label}
+              </p>
+              <span className="ml-auto text-[10px] font-bold text-gray-400">{notes.length}</span>
+            </div>
+            {lastSavedInfo && (
+              <p className="text-[9px] text-gray-400 mt-1 truncate" title={`Guardado por ${lastSavedInfo.by ?? "—"}`}>
+                Última edición: {lastSavedInfo.by ?? "—"}
+                {lastSavedInfo.at ? ` · ${new Date(lastSavedInfo.at).toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""}
+              </p>
+            )}
           </div>
 
           <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
@@ -1474,11 +2378,11 @@ onExportPdf={handleExportPdf}
                   </p>
                 </div>
                 <div className="rounded-xl overflow-hidden">
-                  <NarrativeEditor
+<NarrativeEditor
                     note={activeNote}
-                    rows={activeRows}
-                    columns={activeCols}
-                    pivot={pivot}
+                    rows={effectiveRows}
+                    columns={effectiveCols}
+                    pivot={effectivePivot}
                     colors={colors}
                     onChange={(tpl) => {
                       setNotes(prev => prev.map(n => n.id === activeNote.id ? { ...n, default_narrative: tpl } : n));
@@ -1496,21 +2400,68 @@ onExportPdf={handleExportPdf}
                     </p>
                     {loadingData && <Loader2 size={11} className="animate-spin text-gray-400" />}
                   </div>
-                  {(currentRows.length === 0 && !loadingData) ? (
+{(currentRows.length === 0 && !loadingData && !tableManuallyEnabled) ? (
                     <div className="rounded-xl border-2 border-dashed border-gray-200 bg-gray-50 px-5 py-10 text-center">
                       <RefreshCw size={20} className="mx-auto text-gray-300 mb-2" />
                       <p className="text-xs font-black text-gray-400 uppercase tracking-widest">Sin datos para los filtros</p>
                       <p className="text-[11px] text-gray-400 mt-1">No se encontraron datos contables en {month}/{year} para {company}</p>
                     </div>
                   ) : (
-                   <MovementsTable note={activeNote} rows={activeRows} columns={activeCols} pivot={pivot} onCellEdit={handleCellEdit} />
+<MovementsTable note={activeNote} rows={effectiveRows} columns={effectiveCols} pivot={pivot} onCellEdit={handleCellEdit}
+                     overrides={overridesByNote.get(activeNote.id) ?? null}
+                     onAddRow={addCustomRow} onRenameRow={renameRow} onDeleteRow={deleteRow}
+                     onEnable={enableTable}
+                     cellVariables={activeNote._cell_variables ?? null}
+                     accountItems={accountItems}
+                     onSetVariable={setCellVariable}
+                     resolveVariable={resolveVariableValue} />
                   )}
-                </div>
+</div>
               )}
             </div>
           )}
         </div>
       </div>
+
+      {resetDialog && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setResetDialog(false)}>
+          <div className="w-[440px] max-w-full rounded-2xl bg-white shadow-2xl overflow-hidden"
+            onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
+              <RefreshCw size={16} style={{ color: colors.primary }} />
+              <p className="text-sm font-black text-gray-800">Restablecer memorias</p>
+            </div>
+            <div className="px-5 py-4">
+              <p className="text-xs text-gray-500 leading-relaxed mb-4">
+                Vuelve al punto de partida de la plantilla: descarta el texto editado, los valores
+                introducidos a mano, las filas añadidas y las variables. Esto solo afecta a la pantalla;
+                se guardará al pulsar <span className="font-bold">Guardar</span>.
+              </p>
+              <div className="flex flex-col gap-2">
+                <button
+                  onClick={() => { resetCurrentNote(); setResetDialog(false); }}
+                  className="w-full text-left px-4 py-3 rounded-xl border border-gray-200 hover:border-gray-300 hover:bg-gray-50 transition-colors">
+                  <p className="text-xs font-black text-gray-800 uppercase tracking-wider">Solo el epígrafe actual</p>
+                  <p className="text-[11px] text-gray-500 mt-0.5">Restablece el texto y la tabla de la nota abierta.</p>
+                </button>
+                <button
+                  onClick={() => { resetAllNotes(); setResetDialog(false); }}
+                  className="w-full text-left px-4 py-3 rounded-xl border-2 border-red-200 hover:border-red-300 hover:bg-red-50 transition-colors">
+                  <p className="text-xs font-black text-red-600 uppercase tracking-wider">Todos los epígrafes (1–25)</p>
+                  <p className="text-[11px] text-red-400 mt-0.5">Borra TODO el progreso y vuelve al punto de partida.</p>
+                </button>
+              </div>
+            </div>
+            <div className="px-5 py-3 border-t border-gray-100 flex justify-end">
+              <button onClick={() => setResetDialog(false)}
+                className="px-4 py-2 rounded-lg text-[11px] font-bold uppercase tracking-widest text-gray-500 hover:bg-gray-100">
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
