@@ -5,6 +5,33 @@ import PageHeader from "./PageHeader.jsx";
 
 const BASE_URL = "";
 
+// Tipos de tabla para epígrafes personalizados (extensible: añade una entrada).
+const TABLE_TYPES = {
+  none:     { label: "Sin tabla de datos", columns: [] },
+  movement: { label: "Movimiento (altas/bajas)", columns: [
+    { id: "c-opening",  label: "Saldo inicial", col_type: "opening"  },
+    { id: "c-addition", label: "Altas",         col_type: "addition" },
+    { id: "c-disposal", label: "Bajas",         col_type: "disposal" },
+    { id: "c-transfer", label: "Traspasos",     col_type: "transfer" },
+    { id: "c-closing",  label: "Saldo final",   col_type: "closing"  },
+  ]},
+  simple:   { label: "Importe simple", columns: [
+    { id: "c-value", label: "Valor", col_type: "value" },
+  ]},
+  twoYears: { label: "Dos ejercicios", columns: [
+    { id: "c-cur",  label: "Ejercicio actual",   col_type: "value" },
+    { id: "c-prev", label: "Ejercicio anterior", col_type: "value" },
+  ]},
+  related:  { label: "Partes vinculadas", columns: [
+    { id: "c-group", label: "Otras empresas del grupo",          col_type: "value" },
+    { id: "c-key",   label: "Personal clave de la dirección",    col_type: "value" },
+  ]},
+  empty:    { label: "Tabla vacía (defines columnas)", columns: [
+    { id: "c-value", label: "Valor", col_type: "value" },
+  ]},
+};
+const TABLE_TYPE_LIST = Object.entries(TABLE_TYPES).map(([id, t]) => ({ v: id, n: t.label }));
+
 // ─── Supabase REST helpers ────────────────────────────────────────
 const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
 const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
@@ -832,6 +859,68 @@ const NARR_FONTS = [
 const NARR_SIZES = ["13", "14", "15", "16", "17", "19", "22"];
 const NARR_SPACING = [{ v: "1.5", n: "Compacto" }, { v: "1.75", n: "Normal" }, { v: "2.1", n: "Amplio" }];
 
+// ─── AddNoteModal — crear un epígrafe personalizado ───────────────
+function AddNoteModal({ colors, onClose, onCreate }) {
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [hasNarrative, setHasNarrative] = useState(true);
+  const [tableType, setTableType] = useState("none");
+  const canCreate = title.trim().length > 0;
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+<div className="w-[520px] max-w-full rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
+          <Plus size={16} style={{ color: colors.primary }} />
+          <p className="text-sm font-black text-gray-800">Nuevo epígrafe de memoria</p>
+        </div>
+        <div className="px-5 py-4 space-y-4">
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1 block">Nombre del epígrafe *</label>
+            <input autoFocus value={title} onChange={e => setTitle(e.target.value)}
+              placeholder="p. ej. Operaciones con partes vinculadas"
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-gray-400" />
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1 block">Descripción (opcional)</label>
+            <input value={description} onChange={e => setDescription(e.target.value)}
+              placeholder="Breve descripción del epígrafe"
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-gray-400" />
+          </div>
+          <label className="flex items-center gap-2.5 cursor-pointer select-none">
+            <input type="checkbox" checked={hasNarrative} onChange={e => setHasNarrative(e.target.checked)}
+              className="w-4 h-4 rounded" style={{ accentColor: colors.primary }} />
+            <span className="text-sm text-gray-700">Incluir cuadro de texto (narrativa)</span>
+          </label>
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1 block">Tabla de datos</label>
+            <FancyDropdown
+              value={tableType}
+              options={TABLE_TYPE_LIST}
+              onChange={setTableType}
+            />
+            {tableType !== "none" && TABLE_TYPES[tableType]?.columns?.length > 0 && (
+              <p className="text-[10px] text-gray-400 mt-1.5">
+                Columnas: {TABLE_TYPES[tableType].columns.map(c => c.label).join(" · ")}
+              </p>
+            )}
+          </div>
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 flex justify-end gap-2">
+          <button onClick={onClose}
+            className="px-4 py-2 rounded-lg text-[11px] font-bold uppercase tracking-widest text-gray-500 hover:bg-gray-100">
+            Cancelar
+          </button>
+          <button onClick={() => onCreate({ title, description, hasNarrative, tableType })}
+            disabled={!canCreate}
+            className="px-4 py-2 rounded-lg text-[11px] font-bold uppercase tracking-widest text-white disabled:opacity-40" style={{ background: colors.primary }}>
+            Crear epígrafe
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── FancyDropdown — dropdown custom para el pop-up de formato ────
 function FancyDropdown({ value, options, onChange, renderOption, width }) {
   const { colors } = useSettings();
@@ -960,8 +1049,7 @@ chip.setAttribute("data-var", `${rid}|${cid}`); chip.setAttribute("contenteditab
     setPicker(null); pushChange();
   };
 
-  const selStyle = { display: "flex", alignItems: "center", gap: 6, padding: "6px 9px", borderRadius: 7, fontSize: 12.5, fontWeight: 500, color: "#16181D", border: "1px solid #E5E7EB", background: "#FAFAFA", cursor: "pointer" };
-  const tbBtn = { width: 32, height: 32, borderRadius: 7, display: "grid", placeItems: "center", color: "#5A5F6E", background: "none", border: "none", cursor: "pointer" };
+const tbBtn = { width: 32, height: 32, borderRadius: 7, display: "grid", placeItems: "center", color: "#5A5F6E", background: "none", border: "none", cursor: "pointer" };
 
   return (
     <div>
@@ -1291,6 +1379,49 @@ const enableTable = useCallback(() => {
     setNotes(prev => prev.map(n => n.id === activeNoteId ? { ...n, _table_enabled: true } : n));
   }, [activeNoteId]);
 
+  // Crear un epígrafe personalizado (número 26+). config: { title, description,
+  // hasNarrative, tableType }. Vive en el estado `notes` y persiste como custom.
+  const addCustomNote = useCallback((config) => {
+    const maxNum = notes.reduce((m, n) => Math.max(m, n.note_number ?? 0), 0);
+    const num = Math.max(25, maxNum) + 1;
+    const tableType = config.tableType ?? "none";
+    const hasTable = tableType !== "none";
+    const id = `custom-note-${Date.now()}`;
+    const newNote = {
+      id,
+      note_number: num,
+      title: config.title?.trim() || `Epígrafe ${num}`,
+      description: config.description?.trim() || "",
+      default_narrative: "",
+      has_table: hasTable,
+      is_required: false,
+      _is_custom_note: true,
+      _custom_title: config.title?.trim() || `Epígrafe ${num}`,
+      _custom_description: config.description?.trim() || "",
+      _has_narrative: config.hasNarrative !== false,
+      _table_type: tableType,
+      _table_enabled: hasTable,
+      _custom_rows: [],
+      _cell_variables: {},
+    };
+    setNotes(prev => [...prev, newNote]);
+    setActiveNoteId(id);
+  }, [notes]);
+
+  const deleteCustomNote = useCallback((noteId) => {
+    setNotes(prev => {
+      const filtered = prev.filter(n => n.id !== noteId);
+      return filtered;
+    });
+    setActiveNoteId(prev => {
+      if (prev !== noteId) return prev;
+      const remaining = notes.filter(n => n.id !== noteId);
+      return remaining.length ? remaining[0].id : null;
+    });
+  }, [notes]);
+
+  const [addNoteModal, setAddNoteModal] = useState(false);
+
 const deleteRow = useCallback((rowId) => {
     mutateCustomRows(ops => {
       const isCustomAdd = ops.some(o => o.op === "add" && o.id === rowId);
@@ -1528,11 +1659,16 @@ const activeCols = useMemo(
   // Tabla activada manualmente (Fase C): nota sin filas/cols de plantilla pero con
   // _table_enabled. Generamos una columna "Valor" y una fila de total por defecto,
   // sobre las que operan las filas custom (add/rename/hide) igual que una tabla normal.
-  const tableManuallyEnabled = !!activeNote?._table_enabled && (activeRows.length === 0 || activeCols.length === 0);
+const tableManuallyEnabled = !!activeNote?._table_enabled && (activeRows.length === 0 || activeCols.length === 0 || !!activeNote?._is_custom_note);
   const DEFAULT_TOTAL_ID = "custom-total";
 const effectiveCols = useMemo(() => {
     if (!tableManuallyEnabled) return activeCols;
-    // Mismo formato de movimiento que las tablas de plantilla.
+    // Epígrafe custom con un tipo de tabla elegido → usa sus columnas.
+    const tt = activeNote?._table_type;
+    if (tt && TABLE_TYPES[tt] && TABLE_TYPES[tt].columns.length > 0) {
+      return TABLE_TYPES[tt].columns.map(c => ({ ...c }));
+    }
+    // Por defecto (tabla activada a mano sin tipo): formato de movimiento.
     return [
       { id: "custom-opening",  label: "Saldo inicial", col_type: "opening"  },
       { id: "custom-addition", label: "Altas",         col_type: "addition" },
@@ -1540,7 +1676,7 @@ const effectiveCols = useMemo(() => {
       { id: "custom-transfer", label: "Traspasos",     col_type: "transfer" },
       { id: "custom-closing",  label: "Saldo final",   col_type: "closing"  },
     ];
-  }, [tableManuallyEnabled, activeCols]);
+  }, [tableManuallyEnabled, activeCols, activeNote]);
   const effectiveRows = useMemo(() => {
     if (!tableManuallyEnabled) return activeRowsCustom;
     // filas custom + una fila de total al final
@@ -1625,15 +1761,20 @@ const textSettingsLoadedRef = useRef(null);
       const statePayload = notes.map(n => {
         const overrides = serializeOverrides(n.id);
         const narrative = n.default_narrative ?? n.narrative ?? null;
-        return {
+return {
           save_id: sid,
           note_number: n.note_number,
           narrative,
           cell_overrides: overrides,
-          // custom_rows / cell_variables / table_enabled: fases B-D (por ahora defaults)
           custom_rows: n._custom_rows ?? [],
           cell_variables: n._cell_variables ?? {},
           table_enabled: !!n._table_enabled,
+          // Epígrafes personalizados (26+): guardar su metadata para recrearlos al cargar.
+          is_custom: !!n._is_custom_note,
+          custom_title: n._is_custom_note ? (n._custom_title ?? n.title) : null,
+          custom_description: n._is_custom_note ? (n._custom_description ?? n.description ?? "") : null,
+          has_narrative: n._is_custom_note ? (n._has_narrative !== false) : true,
+          table_type: n._is_custom_note ? (n._table_type ?? "none") : null,
           updated_at: nowIso,
         };
       });
@@ -1672,18 +1813,45 @@ const textSettingsLoadedRef = useRef(null);
       });
       return next;
     });
-    // Narrativas + campos de fases B-D → sobre `notes`
-    setNotes(prev => prev.map(n => {
-      const s = states.find(x => x.note_number === n.note_number);
-      if (!s) return n;
-      return {
-        ...n,
-        default_narrative: s.narrative ?? n.default_narrative,
-        _custom_rows: s.custom_rows ?? [],
-        _cell_variables: s.cell_variables ?? {},
-        _table_enabled: !!s.table_enabled,
-      };
-    }));
+// Narrativas + campos de fases B-D → sobre `notes`; y recrear epígrafes custom.
+    setNotes(prev => {
+      const updated = prev.map(n => {
+        const s = states.find(x => x.note_number === n.note_number);
+        if (!s) return n;
+        return {
+          ...n,
+          default_narrative: s.narrative ?? n.default_narrative,
+          _custom_rows: s.custom_rows ?? [],
+          _cell_variables: s.cell_variables ?? {},
+          _table_enabled: !!s.table_enabled,
+        };
+      });
+      // Epígrafes personalizados guardados (is_custom) que no están ya en la lista.
+      const existingNums = new Set(updated.map(n => n.note_number));
+      const customStates = states.filter(s => s.is_custom && !existingNums.has(s.note_number));
+      const recreated = customStates.map(s => {
+        const tt = s.table_type ?? "none";
+        const hasTable = tt !== "none";
+        return {
+          id: `custom-note-${s.note_number}-${s.save_id ?? "x"}`,
+          note_number: s.note_number,
+          title: s.custom_title ?? `Epígrafe ${s.note_number}`,
+          description: s.custom_description ?? "",
+          default_narrative: s.narrative ?? "",
+          has_table: hasTable,
+          is_required: false,
+          _is_custom_note: true,
+          _custom_title: s.custom_title ?? `Epígrafe ${s.note_number}`,
+          _custom_description: s.custom_description ?? "",
+          _has_narrative: s.has_narrative !== false,
+          _table_type: tt,
+          _table_enabled: hasTable,
+          _custom_rows: s.custom_rows ?? [],
+          _cell_variables: s.cell_variables ?? {},
+        };
+      });
+      return [...updated, ...recreated].sort((a, b) => (a.note_number ?? 0) - (b.note_number ?? 0));
+    });
   }, [notes]);
 
   const loadMemories = useCallback(async () => {
@@ -2391,11 +2559,24 @@ headerActions={[
                 <Loader2 size={16} className="animate-spin text-gray-300" />
               </div>
             ) : (
-              notes.map(n => (
-                <NoteSidebarItem key={n.id} note={n}
-                  active={n.id === activeNoteId}
-                  onClick={() => setActiveNoteId(n.id)} />
-              ))
+<>
+                {notes.map(n => (
+                  <NoteSidebarItem key={n.id} note={n}
+                    active={n.id === activeNoteId}
+                    onClick={() => setActiveNoteId(n.id)} />
+                ))}
+                <button onClick={() => setAddNoteModal(true)}
+                  className="w-full mt-1 flex items-center gap-2.5 px-3 py-2.5 rounded-xl border-2 border-dashed transition-colors hover:bg-gray-50"
+                  style={{ borderColor: `${colors.primary}40` }}>
+                  <div className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center"
+                    style={{ backgroundColor: `${colors.primary}12`, color: colors.primary }}>
+                    <Plus size={15} />
+                  </div>
+                  <span className="text-[11px] font-black uppercase tracking-wider" style={{ color: colors.primary }}>
+                    Añadir epígrafe
+                  </span>
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -2420,11 +2601,22 @@ headerActions={[
                   <h2 className="text-2xl font-black leading-tight" style={{ color: colors.primary }}>
                     {activeNote.title}
                   </h2>
-                  {activeNote.description && (
+{activeNote.description && (
                     <p className="text-xs text-gray-500 mt-1.5">{activeNote.description}</p>
                   )}
                 </div>
                 <div className="flex items-center gap-1.5">
+                  {activeNote._is_custom_note && (
+                    <button onClick={() => {
+                        if (window.confirm(`¿Eliminar el epígrafe "${activeNote.title}"? Se borrará al guardar.`)) {
+                          deleteCustomNote(activeNote.id);
+                        }
+                      }}
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-red-600 hover:bg-red-50 transition-colors"
+                      title="Eliminar epígrafe personalizado">
+                      <Trash2 size={12} /> Eliminar
+                    </button>
+                  )}
                   {activeNote.has_table && (
                     <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-wider"
                       style={{ background: `${colors.primary}15`, color: colors.primary }}>
@@ -2493,7 +2685,14 @@ headerActions={[
         </div>
       </div>
 
-{textPopupOpen && (
+{addNoteModal && (
+        <AddNoteModal
+          colors={colors}
+          onClose={() => setAddNoteModal(false)}
+          onCreate={(cfg) => { addCustomNote(cfg); setAddNoteModal(false); }}
+        />
+      )}
+      {textPopupOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
           onClick={() => setTextPopupOpen(false)}>
           <div className="w-[460px] max-w-full rounded-2xl bg-white shadow-2xl overflow-hidden"
