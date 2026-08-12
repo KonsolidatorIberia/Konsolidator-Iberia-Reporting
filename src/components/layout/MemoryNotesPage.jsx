@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { Loader2, BookOpen, FileText, Sparkles, Settings2, Download, Save, RefreshCw, Upload, Library, Scale, Bold, Italic, Underline, Plus, Trash2, X } from "lucide-react";
+import { Loader2, BookOpen, FileText, Sparkles, Settings2, Download, Save, RefreshCw, Upload, Library, Scale, Bold, Italic, Underline, Plus, Trash2, X, Type, ChevronDown, Check } from "lucide-react";
 import { useTypo, useSettings } from "./SettingsContext";
 import PageHeader from "./PageHeader.jsx";
 
@@ -832,12 +832,52 @@ const NARR_FONTS = [
 const NARR_SIZES = ["13", "14", "15", "16", "17", "19", "22"];
 const NARR_SPACING = [{ v: "1.5", n: "Compacto" }, { v: "1.75", n: "Normal" }, { v: "2.1", n: "Amplio" }];
 
-function NarrativeEditor({ note, rows, columns, pivot, onChange }) {
+// ─── FancyDropdown — dropdown custom para el pop-up de formato ────
+function FancyDropdown({ value, options, onChange, renderOption, width }) {
+  const { colors } = useSettings();
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+  const current = options.find(o => String(o.v) === String(value));
+  return (
+    <div ref={ref} className="relative" style={{ width: width || "100%" }}>
+      <button type="button" onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm bg-white transition-colors"
+        style={{ borderColor: open ? colors.primary : "#e5e7eb" }}>
+        <span className="truncate" style={renderOption ? renderOption(current) : undefined}>{current?.n ?? "—"}</span>
+        <ChevronDown size={15} className="text-gray-400 flex-shrink-0" style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .15s" }} />
+      </button>
+      {open && (
+        <div className="absolute z-50 mt-1 w-full max-h-56 overflow-y-auto rounded-xl border border-gray-100 bg-white shadow-xl py-1">
+          {options.map(o => {
+            const active = String(o.v) === String(value);
+            return (
+              <button key={o.v} type="button"
+                onClick={() => { onChange(o.v); setOpen(false); }}
+                className="w-full text-left px-3 py-2 text-sm transition-colors hover:bg-gray-50 flex items-center justify-between"
+                style={{ color: active ? colors.primary : "#374151", fontWeight: active ? 800 : 500, ...(renderOption ? renderOption(o) : {}) }}>
+                <span className="truncate">{o.n}</span>
+                {active && <Check size={13} style={{ color: colors.primary }} />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NarrativeEditor({ note, rows, columns, pivot, onChange, textSettings }) {
   const edRef = useRef(null);
   const savedRange = useRef(null);
-  const [font, setFont] = useState(NARR_FONTS[0].v);
-  const [size, setSize] = useState("16");
-  const [spacing, setSpacing] = useState("1.75");
+  const font = textSettings?.font ?? NARR_FONTS[0].v;
+  const size = String(textSettings?.size ?? 16);
+  const spacing = String(textSettings?.spacing ?? 1.75);
+  const weight = textSettings?.weight ?? 400;
   const [picker, setPicker] = useState(null);
 
   const template = note.default_narrative ?? note.narrative ?? "";
@@ -927,17 +967,15 @@ chip.setAttribute("data-var", `${rid}|${cid}`); chip.setAttribute("contenteditab
     <div>
       <style>{`@keyframes mnVarPulse{0%{background:#BFE9D5}100%{background:#E7F6EF}}`}</style>
       <div style={{ display: "flex", alignItems: "center", gap: 3, padding: "7px 9px", background: "#fff", border: "1px solid #E5E7EB", borderRadius: "12px 12px 0 0", borderBottom: "none", flexWrap: "wrap" }}>
-        <label style={selStyle}><select value={font} onChange={(e) => setFont(e.target.value)} style={{ border: "none", background: "none", font: "inherit", outline: "none", cursor: "pointer" }}>{NARR_FONTS.map((f) => <option key={f.v} value={f.v}>{f.n}</option>)}</select></label>
-        <label style={selStyle}><select value={size} onChange={(e) => setSize(e.target.value)} style={{ border: "none", background: "none", font: "inherit", outline: "none", cursor: "pointer", width: 34 }}>{NARR_SIZES.map((s) => <option key={s} value={s}>{s}</option>)}</select></label>
-        <label style={selStyle}><select value={spacing} onChange={(e) => setSpacing(e.target.value)} style={{ border: "none", background: "none", font: "inherit", outline: "none", cursor: "pointer" }}>{NARR_SPACING.map((s) => <option key={s.v} value={s.v}>{s.n}</option>)}</select></label>
-        <div style={{ width: 1, height: 22, background: "#E5E7EB", margin: "0 4px" }} />
-        <button style={tbBtn} title="Negrita" onMouseDown={(e) => { e.preventDefault(); exec("bold"); }}><Bold size={15} /></button>
+<button style={tbBtn} title="Negrita" onMouseDown={(e) => { e.preventDefault(); exec("bold"); }}><Bold size={15} /></button>
         <button style={tbBtn} title="Cursiva" onMouseDown={(e) => { e.preventDefault(); exec("italic"); }}><Italic size={15} /></button>
         <button style={tbBtn} title="Subrayado" onMouseDown={(e) => { e.preventDefault(); exec("underline"); }}><Underline size={15} /></button>
-        <button onMouseDown={(e) => { e.preventDefault(); openPicker(e); }} style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 7, padding: "7px 12px", borderRadius: 8, background: "#E7F6EF", color: "#0F9B6C", fontSize: 12, fontWeight: 700, border: "none", cursor: "pointer" }}><Sparkles size={14} /> Variable</button>
+      {rows.length > 0 && columns.length > 0 && (
+          <button onMouseDown={(e) => { e.preventDefault(); openPicker(e); }} style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 7, padding: "7px 12px", borderRadius: 8, background: "#E7F6EF", color: "#0F9B6C", fontSize: 12, fontWeight: 700, border: "none", cursor: "pointer" }}><Sparkles size={14} /> Variable</button>
+        )}
       </div>
       <div ref={edRef} contentEditable suppressContentEditableWarning onInput={pushChange} onMouseUp={saveSel} onKeyUp={saveSel}
-        style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: "0 0 12px 12px", padding: "22px 26px", minHeight: 150, outline: "none", fontFamily: font, fontSize: size + "px", lineHeight: spacing, color: "#22252E" }} />
+style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: "0 0 12px 12px", padding: "22px 26px", minHeight: 150, outline: "none", fontFamily: font, fontSize: size + "px", lineHeight: spacing, fontWeight: weight, color: "#22252E" }} />
       {picker && (
         <>
           <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setPicker(null)} />
@@ -1183,6 +1221,8 @@ const [sourceOverride, setSource]       = useState(null);
   const company = companyOverride ?? defaultCompany;
 const [templateId, setTemplateId] = useState(null);
 const [activeNoteId, setActiveNoteId] = useState(null);
+  const [textSettings, setTextSettings] = useState({ font: NARR_FONTS[0].v, size: 16, spacing: 1.75, weight: 400 });
+  const [textPopupOpen, setTextPopupOpen] = useState(false);
 // Overrides manuales por nota. Map<noteId, Map<"rowId|colId", number>>.
   // null como valor elimina el override (la celda vuelve a su valor calculado).
 const [overridesByNote, setOverridesByNote] = useState(() => new Map());
@@ -1526,6 +1566,34 @@ const effectiveCols = useMemo(() => {
     m.forEach((v, k) => { out[k] = v; });
     return out;
   }, [overridesByNote]);
+
+const loadTextSettings = useCallback(async () => {
+    if (!company) return;
+    try {
+      const rows = await sbMemAuth("GET", `memory_company_settings?select=text_settings&company=eq.${encodeURIComponent(company)}&limit=1`);
+      const ts = Array.isArray(rows) && rows[0]?.text_settings ? rows[0].text_settings : null;
+      if (ts && Object.keys(ts).length) setTextSettings(s => ({ ...s, ...ts }));
+    } catch (e) { console.error("[loadTextSettings]", e); }
+  }, [company]);
+
+  const saveTextSettings = useCallback(async (next) => {
+    if (!company) return;
+    setTextSettings(next);
+    try {
+      const user = await getMemUser();
+      await sbMemAuth("POST", `memory_company_settings?on_conflict=company`, {
+        body: { company, text_settings: next, updated_at: new Date().toISOString(), updated_by: user.id, updated_by_name: user.name },
+        prefer: "resolution=merge-duplicates,return=minimal",
+      });
+    } catch (e) { console.error("[saveTextSettings]", e); }
+  }, [company]);
+
+const textSettingsLoadedRef = useRef(null);
+  useEffect(() => {
+    if (!company || textSettingsLoadedRef.current === company) return;
+    textSettingsLoadedRef.current = company;
+    loadTextSettings();
+  }, [company, loadTextSettings]);
 
   const saveMemories = useCallback(async () => {
     if (!saveKeyReady) return;
@@ -2292,7 +2360,8 @@ onExportPdf={handleExportPdf}
         onExportWord={handleExportWord}
 headerActions={[
           { icon: saving ? Loader2 : Save, label: saving ? "Guardando…" : "Guardar", onClick: () => { if (!saving) saveMemories(); } },
-          { icon: RefreshCw, label: "Reset", onClick: () => setResetDialog(true) },
+{ icon: RefreshCw, label: "Reset", onClick: () => setResetDialog(true) },
+          { icon: Type, label: "Texto", onClick: () => setTextPopupOpen(true) },
         ]}
       />
 
@@ -2384,6 +2453,7 @@ headerActions={[
                     columns={effectiveCols}
                     pivot={effectivePivot}
                     colors={colors}
+                    textSettings={textSettings}
                     onChange={(tpl) => {
                       setNotes(prev => prev.map(n => n.id === activeNote.id ? { ...n, default_narrative: tpl } : n));
                     }}
@@ -2423,6 +2493,72 @@ headerActions={[
         </div>
       </div>
 
+{textPopupOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setTextPopupOpen(false)}>
+          <div className="w-[460px] max-w-full rounded-2xl bg-white shadow-2xl overflow-hidden"
+            onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
+              <Type size={16} style={{ color: colors.primary }} />
+              <p className="text-sm font-black text-gray-800">Formato de texto de la memoria</p>
+            </div>
+            <div className="px-5 py-4 space-y-4">
+              <p className="text-[11px] text-gray-400 -mt-1">Se aplica a todos los cuadros de la memoria de esta empresa.</p>
+<div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1 block">Fuente</label>
+                <FancyDropdown
+                  value={textSettings.font}
+                  options={NARR_FONTS.map(f => ({ v: f.v, n: f.n }))}
+                  onChange={v => setTextSettings(s => ({ ...s, font: v }))}
+                  renderOption={(o) => o ? { fontFamily: o.v } : {}}
+                />
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1 block">Tamaño</label>
+                  <FancyDropdown
+                    value={String(textSettings.size)}
+                    options={NARR_SIZES.map(s => ({ v: String(s), n: `${s}px` }))}
+                    onChange={v => setTextSettings(s => ({ ...s, size: Number(v) }))}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1 block">Interlineado</label>
+                  <FancyDropdown
+                    value={String(textSettings.spacing)}
+                    options={NARR_SPACING.map(s => ({ v: String(s.v), n: s.n }))}
+                    onChange={v => setTextSettings(s => ({ ...s, spacing: Number(v) }))}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1 block">Peso</label>
+                  <FancyDropdown
+                    value={String(textSettings.weight)}
+                    options={[["300","Ligero"],["400","Normal"],["500","Medio"],["600","Semi"],["700","Negrita"]].map(([v,n]) => ({ v, n }))}
+                    onChange={v => setTextSettings(s => ({ ...s, weight: Number(v) }))}
+                  />
+                </div>
+              </div>
+              <div className="rounded-xl border border-gray-100 bg-gray-50 px-4 py-3">
+                <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-1">Vista previa</p>
+                <p style={{ fontFamily: textSettings.font, fontSize: textSettings.size, lineHeight: textSettings.spacing, fontWeight: textSettings.weight, color: "#22252E" }}>
+                  La sociedad tiene como actividad principal la fabricación de equipos.
+                </p>
+              </div>
+            </div>
+            <div className="px-5 py-3 border-t border-gray-100 flex justify-end gap-2">
+              <button onClick={() => setTextPopupOpen(false)}
+                className="px-4 py-2 rounded-lg text-[11px] font-bold uppercase tracking-widest text-gray-500 hover:bg-gray-100">
+                Cancelar
+              </button>
+              <button onClick={() => { saveTextSettings(textSettings); setTextPopupOpen(false); }}
+                className="px-4 py-2 rounded-lg text-[11px] font-bold uppercase tracking-widest text-white" style={{ background: colors.primary }}>
+                Guardar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {resetDialog && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
           onClick={() => setResetDialog(false)}>

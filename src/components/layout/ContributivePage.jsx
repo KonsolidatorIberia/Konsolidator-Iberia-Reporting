@@ -4596,12 +4596,19 @@ return () => { cancelled = true; };
   useEffect(() => {
     if (!token) return;
     const h = headers();
+// Parseo tolerante: una respuesta vacía (token expirado, 204, cliente sin ese
+    // recurso) no debe lanzar "Unexpected end of JSON input" ni tumbar los filtros.
+    const safeJson = (r) => r.text().then(txt => {
+      if (!txt) return [];
+      try { const d = JSON.parse(txt); return d.value ?? (Array.isArray(d) ? d : []); }
+      catch { return []; }
+    });
     Promise.all([
-      fetch(`${BASE_URL}/v2/periods`,        { headers: h }).then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
-      fetch(`${BASE_URL}/v2/sources`,        { headers: h }).then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
-      fetch(`${BASE_URL}/v2/structures`,     { headers: h }).then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
-      fetch(`${BASE_URL}/v2/companies`,      { headers: h }).then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
-      fetch(`${BASE_URL}/v2/group-structure`,{ headers: h }).then(r => r.json()).then(d => d.value ?? (Array.isArray(d) ? d : [])).catch(() => []),
+      fetch(`${BASE_URL}/v2/periods`,        { headers: h }).then(safeJson).catch(() => []),
+      fetch(`${BASE_URL}/v2/sources`,        { headers: h }).then(safeJson).catch(() => []),
+      fetch(`${BASE_URL}/v2/structures`,     { headers: h }).then(safeJson).catch(() => []),
+      fetch(`${BASE_URL}/v2/companies`,      { headers: h }).then(safeJson).catch(() => []),
+      fetch(`${BASE_URL}/v2/group-structure`,{ headers: h }).then(safeJson).catch(() => []),
     ]).then(([per, src, str, co, gs]) => {
       setPeriods(per);
       setSources(src);
@@ -4621,7 +4628,7 @@ return () => { cancelled = true; };
         setStructure(String(v));
       }
 
-      setMetaReady(true);
+setMetaReady(true);
     });
   }, [token, headers]);
 
@@ -5099,12 +5106,23 @@ const [dimensionsMeta, setDimensionsMeta] = useState([]); // [{DimensionGroupNam
 
   /* ── Fetch dimensions metadata (for code↔name mirror in dim index) ── */
   useEffect(() => {
-    if (!token || !metaReady) return;
+if (!token || !metaReady) return;
     const h = headers();
 fetch(`${BASE_URL}/v2/dimensions`, { headers: h })
-.then(r => r.json())
-.then(d => {
-        const arr = d.value ?? (Array.isArray(d) ? d : []);
+      .then(async (r) => {
+        // Leer como texto y parsear con guarda: una respuesta vacía (token
+        // expirado, 204, o error sin cuerpo) hacía que r.json() lanzara
+        // "Unexpected end of JSON input" y rompía la carga de filtros.
+        const txt = await r.text();
+        if (!txt) return [];
+        try {
+          const d = JSON.parse(txt);
+          return d.value ?? (Array.isArray(d) ? d : []);
+        } catch {
+          return [];
+        }
+      })
+      .then((arr) => {
         setDimensionsMeta(arr);
       })
       .catch((e) => {
