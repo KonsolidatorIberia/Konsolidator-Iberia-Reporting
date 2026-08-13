@@ -422,7 +422,8 @@ const t = useT();
   const [companyId, setCompanyId] = useState(null);
   const [mappings, setMappings] = useState([]);
   const [mappingsLoading, setMappingsLoading] = useState(true);
-  const [editingMapping, setEditingMapping] = useState(null);
+const [editingMapping, setEditingMapping] = useState(null);
+  const [editCardMapping, setEditCardMapping] = useState(null);
   const [standardMappingId, setStandardMappingId] = useState(null);
   const [pendingStandardMapping, setPendingStandardMapping] = useState(null);
 const [showBackConfirm, setShowBackConfirm] = useState(false);
@@ -854,11 +855,24 @@ headerSearch={view === "list" ? { value: search, onChange: setSearch, placeholde
             filterStandard={filterStandard} filterUser={filterUser} filterFavorite={filterFavorite} sortBy={sortBy}
             onCreate={() => { setEditingMapping(null); setView("create"); }}
             onOpen={m => { setEditingMapping(m); setSelectedStandard(m.standard); setCfViewMode(m.cf_view_mode ?? "consolidated"); setView("mapper"); }}
-            onArchive={async m => {
+onArchive={async m => {
               if (!window.confirm(t("cfm_delete_confirm").replace("{name}", m.name))) return;
               await api.archive({ mappingId: m.mapping_id, userId: authUserId });
               const rows = await api.list({ companyId });
               setMappings(rows ?? []);
+            }}
+            onEdit={m => setEditCardMapping(m)}
+          />
+        )}
+        {editCardMapping && (
+          <EditMappingModal
+            mapping={editCardMapping}
+            onClose={() => setEditCardMapping(null)}
+            onSave={async ({ name, description }) => {
+              await api.update({ mappingId: editCardMapping.mapping_id, userId: authUserId, name, description });
+              const rows = await api.list({ companyId });
+              setMappings(rows ?? []);
+              setEditCardMapping(null);
             }}
           />
         )}
@@ -935,7 +949,7 @@ saveRef={mapperSaveRef}
 }
 
 // ─── ListView ────────────────────────────────────────────────
-function ListView({ mappings, loading, search, standardMappingId, onSetStandard, favorites = new Set(), onToggleFavorite, filterStandard = "", filterUser = "", filterFavorite = false, sortBy = "desc", onCreate, onOpen, onArchive }) {
+function ListView({ mappings, loading, search, standardMappingId, onSetStandard, favorites = new Set(), onToggleFavorite, filterStandard = "", filterUser = "", filterFavorite = false, sortBy = "desc", onCreate, onOpen, onArchive, onEdit }) {
   const t = useT();
   const filtered = useMemo(() => {
     let list = mappings;
@@ -963,7 +977,7 @@ function ListView({ mappings, loading, search, standardMappingId, onSetStandard,
         : filtered.length === 0 ? <EmptyLibrary onCreate={onCreate} hasSearch={!!search?.trim()} />
         : (
           <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-            {filtered.map(m => <MappingCard key={m.mapping_id} mapping={m} isStandard={m.mapping_id === standardMappingId} isFavorite={favorites.has(m.mapping_id)} onSetStandard={onSetStandard} onToggleFavorite={onToggleFavorite} onOpen={onOpen} onArchive={onArchive} />)}
+{filtered.map(m => <MappingCard key={m.mapping_id} mapping={m} isStandard={m.mapping_id === standardMappingId} isFavorite={favorites.has(m.mapping_id)} onSetStandard={onSetStandard} onToggleFavorite={onToggleFavorite} onOpen={onOpen} onArchive={onArchive} onEdit={onEdit} />)}
           </div>
         )}
     </div>
@@ -982,7 +996,46 @@ function EmptyLibrary({ onCreate, hasSearch }) {
   );
 }
 
-function MappingCard({ mapping, isStandard, isFavorite, onSetStandard, onToggleFavorite, onOpen, onArchive }) {
+function EditMappingModal({ mapping, onClose, onSave }) {
+  const [name, setName] = useState(mapping.name ?? "");
+  const [description, setDescription] = useState(mapping.description ?? "");
+  const [saving, setSaving] = useState(false);
+  const canSave = name.trim().length > 0 && !saving;
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/40" />
+      <div className="relative w-[460px] max-w-full rounded-2xl bg-white shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
+          <Pencil size={15} style={{ color: "#0891b2" }} />
+          <p className="text-sm font-black text-gray-800">Editar mapeo</p>
+        </div>
+        <div className="px-5 py-4 space-y-4">
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1 block">Nombre</label>
+            <input autoFocus value={name} onChange={e => setName(e.target.value)}
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-[#0891b2]" />
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1 block">Descripción</label>
+            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={3}
+              placeholder="Descripción del mapeo (opcional)"
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-[#0891b2] resize-none" />
+          </div>
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-[11px] font-bold uppercase tracking-widest text-gray-500 hover:bg-gray-100">Cancelar</button>
+          <button onClick={async () => { setSaving(true); await onSave({ name: name.trim(), description: description.trim() || null }); }}
+            disabled={!canSave}
+            className="px-4 py-2 rounded-lg text-[11px] font-bold uppercase tracking-widest text-white disabled:opacity-40" style={{ background: "#0891b2" }}>
+            {saving ? "Guardando…" : "Guardar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MappingCard({ mapping, isStandard, isFavorite, onSetStandard, onToggleFavorite, onOpen, onArchive, onEdit }) {
   const t = useT();
   const standardMeta = STANDARD_META[mapping.standard];
   return (
@@ -1001,6 +1054,7 @@ function MappingCard({ mapping, isStandard, isFavorite, onSetStandard, onToggleF
             style={{ color: isFavorite ? "#f59e0b" : "#9ca3af" }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill={isFavorite ? "#f59e0b" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
           </button>
+<button onClick={e => { e.stopPropagation(); onEdit?.(mapping); }} className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-[#e0f7fa] hover:text-[#0891b2] transition-all" title="Editar"><Pencil size={12} /></button>
           <button onClick={e => { e.stopPropagation(); onArchive?.(mapping); }} className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-red-50 hover:text-red-500 transition-all"><Trash2 size={11} /></button>
         </div>
         {mapping.description && <p className="text-[11px] text-gray-500 mb-3 line-clamp-2">{mapping.description}</p>}
@@ -2712,11 +2766,8 @@ className={`flex-1 min-w-0 flex items-center gap-2 px-2 py-2.5 rounded-lg transi
 {onAddChild && isSum && <button onClick={e => { e.stopPropagation(); onAddChild?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} title={t("cfm_add_child_row")} className="w-6 h-6 rounded flex items-center justify-center hover:bg-emerald-50 text-gray-400 hover:text-emerald-600"><Plus size={14} /></button>}
               {!isOriginalRowNode && <button onClick={startEdit} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-[#0891b2]/10 text-gray-400 hover:text-[#0891b2]"><Pencil size={13} /></button>}
               {mappingKind === "report" && <button onClick={e => { e.stopPropagation(); onCopy?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} title={t("cfm_duplicate_to_template")} className="w-6 h-6 rounded flex items-center justify-center hover:bg-indigo-50 text-gray-400 hover:text-indigo-600"><Copy size={12} /></button>}
-              {side !== "client" && (
+{side !== "client" && (
                 <>
-                  <button onClick={e => { e.stopPropagation(); onToggleHighlight?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center" style={{ color: highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : undefined }}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill={highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : "none"} stroke={highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-                  </button>
                   {!isOriginalRowNode && <button onClick={e => { e.stopPropagation(); onDelete?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-red-50 text-gray-400 hover:text-red-500"><Trash2 size={13} /></button>}
                 </>
               )}
@@ -2934,15 +2985,18 @@ function SaveMappingForm({ name, setName, description, setDescription, error, on
 // ─── Panel / PanelToolbar / EmptyPanelState ──────────────────
 function Panel({ title, subtitle, accent, onExpandAll, onCollapseAll, isExpanded, extra, children }) {
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 flex flex-col overflow-hidden shadow-sm">
-      <div className="px-5 py-3 border-b border-gray-100 flex items-center gap-4 flex-shrink-0" style={{ backgroundColor: `${accent}06` }}>
-        <div className="w-[3px] h-9 rounded-full flex-shrink-0" style={{ backgroundColor: accent }} />
+    <div className="bg-white rounded-2xl flex flex-col overflow-hidden"
+      style={{ border: "1px solid rgba(15,23,42,0.06)", boxShadow: "0 1px 2px rgba(15,23,42,0.04), 0 8px 24px -16px rgba(15,23,42,0.20)" }}>
+      <div className="px-5 pt-3.5 pb-3 flex items-center gap-3 flex-shrink-0"
+        style={{ background: `linear-gradient(180deg, ${accent}0A 0%, ${accent}03 100%)`, borderBottom: `1px solid ${accent}12` }}>
         <div className="flex-1 min-w-0">
-          <p className="font-black text-[13px] leading-tight" style={{ color: accent }}>{title}</p>
-          <p className="text-[10px] text-gray-400 font-semibold uppercase tracking-[0.12em] mt-0.5">{subtitle}</p>
+          <p className="font-black text-[13.5px] leading-tight tracking-[-0.01em]" style={{ color: accent }}>{title}</p>
+          <p className="text-[9.5px] text-gray-400 font-bold uppercase tracking-[0.16em] mt-1">{subtitle}</p>
         </div>
         {extra && <div className="flex-shrink-0 flex items-center">{extra}</div>}
-        <button onClick={isExpanded ? onCollapseAll : onExpandAll} className="w-7 h-7 rounded-lg flex items-center justify-center transition-all hover:scale-110 flex-shrink-0" style={{ background: `${accent}10`, color: accent }}>
+        <button onClick={isExpanded ? onCollapseAll : onExpandAll}
+          className="w-7 h-7 rounded-lg flex items-center justify-center transition-all duration-200 hover:brightness-95 active:scale-95 flex-shrink-0"
+          style={{ background: isExpanded ? accent : `${accent}12`, color: isExpanded ? "#fff" : accent }}>
           {isExpanded
             ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
             : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
@@ -2953,14 +3007,26 @@ function Panel({ title, subtitle, accent, onExpandAll, onCollapseAll, isExpanded
   );
 }
 function PanelToolbar({ search, setSearch, placeholder, count, total }) {
+  const [focused, setFocused] = useState(false);
   return (
     <div className="flex items-center gap-2 mb-3 flex-shrink-0">
-      <div className="flex-1 flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-1.5">
-        <Search size={12} className="text-gray-400 flex-shrink-0" />
-        <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder={placeholder} className="text-xs outline-none text-gray-700 w-full bg-transparent placeholder:text-gray-300" />
-        {search && <button onClick={() => setSearch("")}><X size={11} className="text-gray-400 hover:text-gray-600" /></button>}
+      <div className="flex-1 flex items-center gap-2 rounded-xl px-3 py-2 transition-all duration-200"
+        style={{
+          background: focused ? "#fff" : "#f6f7f9",
+          border: `1.5px solid ${focused ? "rgba(26,47,138,0.35)" : "transparent"}`,
+          boxShadow: focused ? "0 0 0 3px rgba(26,47,138,0.08)" : "none",
+        }}>
+     <Search size={13} className="flex-shrink-0 transition-colors" style={{ color: focused ? "#1a2f8a" : "#9ca3af" }} />
+        <input type="text" value={search} onChange={e => setSearch(e.target.value)}
+          onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+          placeholder={placeholder}
+          className="text-xs outline-none text-gray-700 w-full bg-transparent placeholder:text-gray-300 font-medium" />
+        {search && <button onClick={() => setSearch("")} className="flex-shrink-0"><X size={12} className="text-gray-400 hover:text-gray-600" /></button>}
       </div>
-      {search && count !== total && <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded">{count}/{total}</span>}
+      {search && count !== total && (
+        <span className="text-[10px] font-black tracking-wide px-2 py-1 rounded-lg flex-shrink-0"
+          style={{ color: "#b45309", background: "#fef3c7" }}>{count}/{total}</span>
+      )}
     </div>
   );
 }

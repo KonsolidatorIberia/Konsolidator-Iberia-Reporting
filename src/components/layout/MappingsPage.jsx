@@ -297,7 +297,7 @@ function renameNode(tree, targetId, newName) { return walkTransform(tree, n => (
 function deleteNode(tree, targetId) { return walkTransform(tree, n => (n.id === targetId || n.code === targetId) ? null : n); }
 function collectIdsFromSubtree(node) { const out = []; function walk(n) { out.push(n.id ?? n.code); (n.children || []).forEach(walk); } walk(node); return out; }
 function stripSubtreeForTransfer(node) { return { code: node.code, name: node.name, isSum: node.isSum ?? node.isSumAccount ?? false, isSumAccount: node.isSumAccount ?? node.isSum ?? false, accountType: node.accountType ?? null, sectionCode: node.sectionCode ?? null, showInSummary: node.showInSummary ?? false, dims: node.dims ?? null, children: (node.children || []).map(stripSubtreeForTransfer) }; }
-function collectAllCodes(tree, prefix) {const out = []; function walk(nodes) { nodes.forEach(n => { if ((n.children?.length ?? 0) > 0) { out.push(`${prefix}-${n.code}`); walk(n.children); } }); } walk(tree); return out; }
+function collectAllCodes(tree, prefix) {const out = []; function walk(nodes) { nodes.forEach(n => { if ((n.children?.length ?? 0) > 0) { out.push(`${prefix}-${n.id ?? n.code}`); walk(n.children); } }); } walk(tree); return out; }
 function countNodes(tree) { let n = 0; function walk(nodes) { nodes.forEach(node => { n++; walk(node.children || []); }); } walk(tree); return n; }
 function filterTree(tree, predicate) { function walk(nodes) { return nodes.map(n => { const kids = walk(n.children || []); return (predicate(n) || kids.length > 0) ? { ...n, children: kids } : null; }).filter(Boolean); } return walk(tree); }
 function filterTreeTpl(tree, q) { function walk(nodes) { return nodes.map(n => { const kids = walk(n.children || []); const matches = n.code.toLowerCase().includes(q) || (n.name ?? "").toLowerCase().includes(q); return (matches || kids.length > 0) ? { ...n, children: kids } : null; }).filter(Boolean); } return walk(tree); }
@@ -686,6 +686,7 @@ const t = useT();
   const [mappings, setMappings] = useState([]);
 const [mappingsLoading, setMappingsLoading] = useState(true);
 const [editingMapping, setEditingMapping] = useState(null);
+  const [editCardMapping, setEditCardMapping] = useState(null); // mapeo en edición de nombre/descripción
 const [standardMappingId, setStandardMappingId] = useState(null);
 const [pendingStandardMapping, setPendingStandardMapping] = useState(null);
 const [showBackConfirm, setShowBackConfirm] = useState(false);
@@ -954,9 +955,8 @@ mapper: { title: selectedStandard ? `${t("am_mapper_title_prefix")} · ${stdLabe
   return (
     <div className="flex flex-col h-full min-h-0">
 <PageHeader
-        kicker={t("am_kicker_views_mappings")}
-title={cfg.title}
-        titleSuffix={view === "mapper" && editingMapping?.name ? editingMapping.name : undefined}
+title="Mapeos"
+        titleSuffix={mappingKind === "report" ? "Reporte" : "Estructura"}
         tabs={[]}
         activeTab={null}
         onTabChange={() => {}}
@@ -1061,11 +1061,24 @@ headerSearch={view === "list" ? { value: search, onChange: setSearch, placeholde
             sortBy={sortBy}
             onCreate={() => { setEditingMapping(null); setView("create"); }}
             onOpen={m => { setEditingMapping(m); setSelectedStandard(m.standard); setView("mapper"); }}
-            onArchive={async m => {
+onArchive={async m => {
               if (!window.confirm(t("am_card_delete_confirm").replace("{name}", m.name))) return;
               await api.archive({ mappingId: m.mapping_id, userId: authUserId });
               const rows = await api.list({ companyId });
               setMappings(rows);
+            }}
+onEdit={m => setEditCardMapping(m)}
+          />
+        )}
+        {editCardMapping && (
+          <EditMappingModal
+            mapping={editCardMapping}
+            onClose={() => setEditCardMapping(null)}
+            onSave={async ({ name, description }) => {
+              await api.update({ mappingId: editCardMapping.mapping_id, userId: authUserId, name, description });
+              const rows = await api.list({ companyId });
+              setMappings(rows);
+              setEditCardMapping(null);
             }}
           />
         )}
@@ -1175,7 +1188,7 @@ api={api}
 }
 
 // ─── ListView ────────────────────────────────────────────────
-function ListView({ mappings, loading, search, standardMappingId, onSetStandard, favorites = new Set(), onToggleFavorite, filterStandard = "", filterUser = "", filterFavorite = false, sortBy = "desc", onCreate, onOpen, onArchive }) {
+function ListView({ mappings, loading, search, standardMappingId, onSetStandard, favorites = new Set(), onToggleFavorite, filterStandard = "", filterUser = "", filterFavorite = false, sortBy = "desc", onCreate, onOpen, onArchive, onEdit }) {
   const t = useT();
   const filtered = useMemo(() => {
     let list = mappings;
@@ -1205,7 +1218,7 @@ return [...list].sort((a, b) => {
         <EmptyLibrary onCreate={onCreate} hasSearch={!!search.trim()} />
 ) : (
         <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-          {filtered.map(m => <MappingCard key={m.mapping_id} mapping={m} isStandard={m.mapping_id === standardMappingId} isFavorite={favorites.has(m.mapping_id)} onSetStandard={onSetStandard} onToggleFavorite={onToggleFavorite} onOpen={onOpen} onArchive={onArchive} />)}
+         {filtered.map(m => <MappingCard key={m.mapping_id} mapping={m} isStandard={m.mapping_id === standardMappingId} isFavorite={favorites.has(m.mapping_id)} onSetStandard={onSetStandard} onToggleFavorite={onToggleFavorite} onOpen={onOpen} onArchive={onArchive} onEdit={onEdit} />)}
         </div>
       )}
     </div>
@@ -1224,7 +1237,47 @@ function EmptyLibrary({ onCreate, hasSearch }) {
   );
 }
 
-function MappingCard({ mapping, isStandard, isFavorite, onSetStandard, onToggleFavorite, onOpen, onArchive }) {
+function EditMappingModal({ mapping, onClose, onSave }) {
+  const t = useT();
+  const [name, setName] = useState(mapping.name ?? "");
+  const [description, setDescription] = useState(mapping.description ?? "");
+  const [saving, setSaving] = useState(false);
+  const canSave = name.trim().length > 0 && !saving;
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/40" />
+      <div className="relative w-[460px] max-w-full rounded-2xl bg-white shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
+          <Pencil size={15} style={{ color: "#1a2f8a" }} />
+          <p className="text-sm font-black text-gray-800">{t("am_card_edit") ?? "Editar mapeo"}</p>
+        </div>
+        <div className="px-5 py-4 space-y-4">
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1 block">Nombre</label>
+            <input autoFocus value={name} onChange={e => setName(e.target.value)}
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-[#1a2f8a]" />
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1 block">Descripción</label>
+            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={3}
+              placeholder="Descripción del mapeo (opcional)"
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-[#1a2f8a] resize-none" />
+          </div>
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-[11px] font-bold uppercase tracking-widest text-gray-500 hover:bg-gray-100">Cancelar</button>
+          <button onClick={async () => { setSaving(true); await onSave({ name: name.trim(), description: description.trim() || null }); }}
+            disabled={!canSave}
+            className="px-4 py-2 rounded-lg text-[11px] font-bold uppercase tracking-widest text-white disabled:opacity-40" style={{ background: "#1a2f8a" }}>
+            {saving ? "Guardando…" : "Guardar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MappingCard({ mapping, isStandard, isFavorite, onSetStandard, onToggleFavorite, onOpen, onArchive, onEdit }) {
   const t = useT();
   const standardMeta = STANDARD_META[mapping.standard];
   return (
@@ -1238,12 +1291,13 @@ function MappingCard({ mapping, isStandard, isFavorite, onSetStandard, onToggleF
 <p className="font-black text-sm text-gray-800 truncate">{mapping.name ?? t("am_untitled")}</p>
             <p className="text-[10px] font-bold uppercase tracking-widest mt-0.5" style={{ color: standardMeta?.accent ?? "#1a2f8a" }}>{stdLabel(t, mapping.standard)}</p>
           </div>
-          <button onClick={e => { e.stopPropagation(); onToggleFavorite?.(mapping.mapping_id); }}
+<button onClick={e => { e.stopPropagation(); onToggleFavorite?.(mapping.mapping_id); }}
             className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${isFavorite ? "" : "opacity-0 group-hover:opacity-100"}`}
             style={{ color: isFavorite ? "#f59e0b" : "#9ca3af" }}
             title={isFavorite ? t("am_card_remove_favorites") : t("am_card_add_favorites")}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill={isFavorite ? "#f59e0b" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
           </button>
+          <button onClick={e => { e.stopPropagation(); onEdit?.(mapping); }} className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-[#eef1fb] hover:text-[#1a2f8a] transition-all" title={t("am_card_edit") ?? "Editar"}><Pencil size={12} /></button>
           <button onClick={e => { e.stopPropagation(); onArchive?.(mapping); }} className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-red-50 hover:text-red-500 transition-all" title={t("am_card_archive")}><Trash2 size={11} /></button>
         </div>
         {mapping.description && <p className="text-[11px] text-gray-500 mb-3 line-clamp-2">{mapping.description}</p>}
@@ -2054,7 +2108,17 @@ if (nameConflict) { setSaveError(t("am_err_name_exists").replace("{name}", curre
 }
     setSaving(true); setSaveError(null);
     try {
-const plTree = templateTreeBy.PL ?? templateTree ?? [], bsTree = templateTreeBy.BS ?? [];
+// Cada statement guarda SU propio árbol. Nunca usar `templateTree` (el árbol del
+// statement ACTIVO) como fallback del otro lado: si editas BS y PL no se ha
+// inicializado, `templateTree` sería el de BS y se replicaría en pl_tree.
+// Fallback correcto: el statement activo usa su árbol vivo; el inactivo conserva
+// lo que ya había en el mapeo que se edita (o vacío si es nuevo).
+const liveByStatement = { PL: statement === "PL" ? (templateTreeBy.PL ?? templateTree) : templateTreeBy.PL,
+                          BS: statement === "BS" ? (templateTreeBy.BS ?? templateTree) : templateTreeBy.BS };
+const plTree = liveByStatement.PL
+  ?? (Array.isArray(editingMapping?.pl_tree) ? editingMapping.pl_tree : []);
+const bsTree = liveByStatement.BS
+  ?? (Array.isArray(editingMapping?.bs_tree) ? editingMapping.bs_tree : []);
       const highlightedArr = [...highlightedIds];
 if (isCustomEditor) {
         let saved;
@@ -3212,7 +3276,9 @@ function AnimatedAmount({ value, hidden }) {
 // ─── DraggableTreeRow ─────────────────────────────────────────
 function DraggableTreeRow({ node, depth, expanded, onToggle, side, mappingKind = "structure", hideAmounts = false, amountsByCode = new Map(), templateAmountsById = new Map(), amountsByCodeDim = new Map(), onCopy, movedIds, movedDimsByCode = new Map(), onDrop, onRename, onColorChange, onDelete, onAddChild, sectionByCode, multiMode, selectedIds, onToggleSelect, clientTree, templateTree, highlightedIds, onToggleHighlight, dimsByGroupCode }) {
   const t = useT();
-  const key = `${side === "client" ? "client" : "tpl"}-${node.code}`;
+// Key expansion by the unique node.id (falling back to code). Using code alone made
+  // duplicated sets share expansion state — opening one opened its duplicate.
+  const key = `${side === "client" ? "client" : "tpl"}-${node.id ?? node.code}`;
   const isOpen = !!expanded[key];
   const hasChildren = (node.children?.length ?? 0) > 0;
   const isSum = node.isSum ?? node.isSumAccount;
@@ -3400,9 +3466,6 @@ style={{ background: showDims ? "#f59e0b" : "#fef3c7", color: "#d97706" }}
 <button onClick={startEdit} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-[#1a2f8a]/10 text-gray-400 hover:text-[#1a2f8a] transition-colors"><Pencil size={13} /></button>
             {mappingKind === "report" && node.kind !== "breaker" && <button onClick={e => { e.stopPropagation(); onCopy?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} title={t("am_duplicate_to_template")} className="w-6 h-6 rounded flex items-center justify-center hover:bg-indigo-50 text-gray-400 hover:text-indigo-600 transition-colors"><Copy size={12} /></button>}
 {side !== "client" && <>
-              <button onClick={e => { e.stopPropagation(); onToggleHighlight?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center transition-colors" style={{ color: highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : undefined }} title={highlightedIds?.has(node.id ?? node.code) ? t("am_remove_highlight") : t("am_highlight_row")}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill={highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : "none"} stroke={highlightedIds?.has(node.id ?? node.code) ? "#f59e0b" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-              </button>
               <button onClick={e => { e.stopPropagation(); onDelete?.(node.id ?? node.code); }} onMouseDown={e => e.stopPropagation()} className="w-6 h-6 rounded flex items-center justify-center hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors"><Trash2 size={13} /></button>
             </>}
             {side === "client" && mappingKind === "report" && (
@@ -3639,17 +3702,18 @@ function SaveMappingForm({ name, setName, description, setDescription, error, on
 function Panel({ title, subtitle, accent, onExpandAll, onCollapseAll, isExpanded, extra, children }) {
   const t = useT();
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 flex flex-col overflow-hidden shadow-sm">
-      <div className="px-5 py-3 border-b border-gray-100 flex items-center gap-4 flex-shrink-0" style={{ backgroundColor: `${accent}06` }}>
-        <div className="w-[3px] h-9 rounded-full flex-shrink-0" style={{ backgroundColor: accent }} />
+    <div className="bg-white rounded-2xl flex flex-col overflow-hidden"
+      style={{ border: "1px solid rgba(15,23,42,0.06)", boxShadow: "0 1px 2px rgba(15,23,42,0.04), 0 8px 24px -16px rgba(15,23,42,0.20)" }}>
+      <div className="px-5 pt-3.5 pb-3 flex items-center gap-3 flex-shrink-0"
+        style={{ background: `linear-gradient(180deg, ${accent}0A 0%, ${accent}03 100%)`, borderBottom: `1px solid ${accent}12` }}>
         <div className="flex-1 min-w-0">
-          <p className="font-black text-[13px] leading-tight" style={{ color: accent }}>{title}</p>
-          <p className="text-[10px] text-gray-400 font-semibold uppercase tracking-[0.12em] mt-0.5">{subtitle}</p>
+          <p className="font-black text-[13.5px] leading-tight tracking-[-0.01em]" style={{ color: accent }}>{title}</p>
+          <p className="text-[9.5px] text-gray-400 font-bold uppercase tracking-[0.16em] mt-1">{subtitle}</p>
         </div>
         {extra && <div className="flex-shrink-0 flex items-center">{extra}</div>}
         <button onClick={isExpanded ? onCollapseAll : onExpandAll}
-          className="w-7 h-7 rounded-lg flex items-center justify-center transition-all hover:scale-110 flex-shrink-0"
-          style={{ background: `${accent}10`, color: accent }}
+          className="w-7 h-7 rounded-lg flex items-center justify-center transition-all duration-200 hover:brightness-95 active:scale-95 flex-shrink-0"
+          style={{ background: isExpanded ? accent : `${accent}12`, color: isExpanded ? "#fff" : accent }}
           title={isExpanded ? t("am_collapse_all") : t("am_expand_all")}>
           {isExpanded
             ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
@@ -3661,14 +3725,26 @@ function Panel({ title, subtitle, accent, onExpandAll, onCollapseAll, isExpanded
   );
 }
 function PanelToolbar({ search, setSearch, placeholder, count, total }) {
+  const [focused, setFocused] = useState(false);
   return (
     <div className="flex items-center gap-2 mb-3 flex-shrink-0">
-      <div className="flex-1 flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-1.5">
-        <Search size={12} className="text-gray-400 flex-shrink-0" />
-        <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder={placeholder} className="text-xs outline-none text-gray-700 w-full bg-transparent placeholder:text-gray-300" />
-        {search && <button onClick={() => setSearch("")}><X size={11} className="text-gray-400 hover:text-gray-600" /></button>}
+      <div className="flex-1 flex items-center gap-2 rounded-xl px-3 py-2 transition-all duration-200"
+        style={{
+          background: focused ? "#fff" : "#f6f7f9",
+          border: `1.5px solid ${focused ? "rgba(26,47,138,0.35)" : "transparent"}`,
+          boxShadow: focused ? "0 0 0 3px rgba(26,47,138,0.08)" : "none",
+        }}>
+        <Search size={13} className="flex-shrink-0 transition-colors" style={{ color: focused ? "#1a2f8a" : "#9ca3af" }} />
+        <input type="text" value={search} onChange={e => setSearch(e.target.value)}
+          onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+          placeholder={placeholder}
+          className="text-xs outline-none text-gray-700 w-full bg-transparent placeholder:text-gray-300 font-medium" />
+        {search && <button onClick={() => setSearch("")} className="flex-shrink-0"><X size={12} className="text-gray-400 hover:text-gray-600" /></button>}
       </div>
-      {search && count !== total && <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded">{count}/{total}</span>}
+      {search && count !== total && (
+        <span className="text-[10px] font-black tracking-wide px-2 py-1 rounded-lg flex-shrink-0"
+          style={{ color: "#b45309", background: "#fef3c7" }}>{count}/{total}</span>
+      )}
     </div>
   );
 }

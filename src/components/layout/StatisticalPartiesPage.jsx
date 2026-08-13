@@ -36,7 +36,13 @@ const ICON_MAP = {
 };
 const ICON_KEYS = Object.keys(ICON_MAP);
 
-const YEARS  = Array.from({ length: 6 }, (_, i) => new Date().getFullYear() - i);
+// Rango de años: varios atrás (histórico) y varios adelante (forecast/proyecciones).
+const YEARS_PAST = 6;   // años hacia atrás incluyendo el actual
+const YEARS_FUTURE = 5; // años hacia adelante para cargar a futuro
+const YEARS = Array.from({ length: YEARS_PAST + YEARS_FUTURE }, (_, i) => {
+  const base = new Date().getFullYear() + YEARS_FUTURE;
+  return base - i;
+}); // p.ej. 2031 … 2020 (descendente, con futuro primero)
 const MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 // A = Jan, B = Feb, ..., L = Dec
 const COL_LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L"];
@@ -394,7 +400,11 @@ function downloadBlueprint({ companyOpts, dimGroups, dimsByGroup, mode = "shared
   });
 
 const wb = XLSX.utils.book_new();
-  const lastYears = Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - i);
+// Incluir años futuros para cargar forecasts/proyecciones desde la plantilla.
+  const lastYears = Array.from({ length: YEARS_PAST + YEARS_FUTURE }, (_, i) => {
+    const base = new Date().getFullYear() + YEARS_FUTURE;
+    return base - i;
+  });
 
   const setCell = (sheet, r, c, value, style) => {
     const addr = XLSX.utils.encode_cell({ r, c });
@@ -2381,10 +2391,10 @@ const fmt = (n) => formatNumber(n, decimalMode);
   const [editing, setEditing] = useState(null); // { dimCode, month }
   const [editingText, setEditingText] = useState("");
 
-  const beginEdit = (dimCode, month) => {
+const beginEdit = (dimCode, month) => {
     const cell = yearVals[dimCode]?.[month];
     const raw = cell?.formula ?? (cell?.value != null ? String(cell.value) : "");
-    setEditing({ dimCode, month });
+setEditing({ dimCode, month });
     setEditingText(raw);
   };
   const commitEdit = () => {
@@ -2555,22 +2565,27 @@ return (
                           data-cell="1" data-dim-idx={di} data-month-idx={mi}
                           style={{ width: 100, minWidth: 100 }}>
 {isEditing ? (
-                            <input
+<input
                               autoFocus
                               type="text"
                               value={editingText}
-                              onChange={e => setEditingText(e.target.value)}
+            onChange={e => setEditingText(e.target.value)}
                               onBlur={commitEdit}
                               onKeyDown={e => {
                                 if (e.key === "Enter") { e.preventDefault(); commitEdit(); }
                                 else if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
                               }}
-                              className="w-full text-center px-1 py-1.5 rounded-lg font-mono tabular-nums font-black text-[12px] outline-none"
+className="w-full text-center px-1 py-1.5 rounded-lg font-mono tabular-nums font-black text-[12px] outline-none"
 style={{
-                                background: "white",
+                                background: "#ffffff",
                                 border: `1px solid ${NAVY}`,
                                 color: NAVY,
-minWidth: 84,
+                                WebkitTextFillColor: NAVY,
+                                opacity: 1,
+                                minWidth: 84,
+                                height: 32,
+                                position: "relative",
+                                zIndex: 30,
                                 boxSizing: "border-box",
                                 display: "block",
                               }}
@@ -3404,7 +3419,7 @@ background: "transparent",
                     />
                   }
                 >
-                  <div className="grid grid-cols-3 gap-1.5">
+<div className="grid grid-cols-4 gap-1.5">
                     {YEARS.map(y => {
                       const active = draft.years.includes(String(y));
                       return (
@@ -3481,7 +3496,7 @@ right={
 {companyOpts.length === 0 ? (
                     <LoadingOrEmpty metaLoading={metaLoading} label={T("sp_label_companies")} locale={locale} />
                   ) : filteredCompanies.length > 0 ? (
-                    <div className="max-h-[280px] overflow-y-auto sp-scroll sp-glass-row">
+<div className="sp-glass-row">
                       {filteredCompanies.map((c, i) => {
                         const active = draft.companies.includes(c.value);
                         return (

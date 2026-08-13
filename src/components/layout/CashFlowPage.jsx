@@ -3508,12 +3508,17 @@ onExportPdf={viewsMode ? undefined : () => {
         }}
         onMappingsClick={viewsMode ? undefined : () => setViewsMode("landing")}
         mappingsQuickAccess={viewsMode ? [] : recentMappings}
-        onQuickApplyMapping={async (m) => {
+onQuickApplyMapping={async (m) => {
           try {
-            const mod = await import(m.kind === "report" ? "../../lib/cashflowReportMappingsApi" : "../../lib/cashflowMappingsApi");
-            const full = await mod.getMapping(m.id);
-handleApplyMapping(full ?? m.raw, m.kind);
-          } catch { /* ignore */ }
+            if (m.kind === "report") {
+              // El API de reporte no tiene getMapping; m.raw ya trae cf_tree.
+              handleApplyMapping(m.raw, "report");
+            } else {
+              const mod = await import("../../lib/cashflowMappingsApi");
+              const full = mod.getMapping ? await mod.getMapping(m.id) : null;
+              handleApplyMapping(full ?? m.raw, "structure");
+            }
+          } catch (e) { console.error("[CF quick apply] error:", e); }
         }}
       />
 
@@ -3700,13 +3705,11 @@ handleApplyMapping(full ?? m, "structure");
                       const isActive = activeMapping?.mapping_id === m.mapping_id;
                       return (
                         <button key={m.mapping_id}
-                          onClick={async () => {
-                            try {
-                              const { getMapping } = await import("../../lib/cashflowReportMappingsApi");
-                              const full = await getMapping(m.mapping_id);
-handleApplyMapping(full ?? m, "report");
-                              setViewsMode(null);
-                            } catch { /* ignore */ }
+onClick={() => {
+                            // El API de reporte no tiene getMapping; la fila del listado
+                            // ya trae cf_tree (select=*), la aplicamos directamente.
+                            handleApplyMapping(m, "report");
+                            setViewsMode(null);
                           }}
                           className="text-left bg-white rounded-xl border-2 p-4 transition-all hover:shadow-md group flex flex-col"
                           style={{ borderColor: isActive ? "#CF305D" : "#f3f4f6", background: isActive ? "#CF305D06" : "white" }}>
