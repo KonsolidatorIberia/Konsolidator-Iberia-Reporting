@@ -752,10 +752,9 @@ list: { title: kindLabel, back: onBack },
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <PageHeader
-        kicker={t("cfm_kicker")}
-        title={cfg.title}
-        titleSuffix={view === "mapper" && editingMapping?.name ? editingMapping.name : undefined}
+<PageHeader
+title="Cash Flow"
+        titleSuffix={mappingKind === "report" ? "Reporte" : "Estructura"}
         tabs={[]}
         activeTab={null}
         onTabChange={() => {}}
