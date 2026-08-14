@@ -1085,10 +1085,15 @@ const renderHtml = useCallback((tpl) => {
     });
   }, [pivot, rowLabel]);
 
+const lastSyncedRef = useRef(null);
   useEffect(() => {
-    if (!edRef.current || document.activeElement === edRef.current) return;
-    edRef.current.innerHTML = renderHtml(template) || '<p style="color:#9CA3AF;font-style:italic">Escribe el texto de la memoria… usa “Variable” para insertar valores de la tabla.</p>';
-  }, [template, renderHtml]);
+    if (!edRef.current) return;
+    if (document.activeElement === edRef.current) return;
+    const sig = `${note.id}\u0000${template}`;
+    if (lastSyncedRef.current === sig) return;
+    lastSyncedRef.current = sig;
+    edRef.current.innerHTML = renderHtml(template) || "";
+  }, [note.id, template, renderHtml]);
 
   useEffect(() => {
     if (!edRef.current) return;
@@ -1107,7 +1112,7 @@ const serialize = () => {
     let html = clone.innerHTML.replace(/<div>/g, "<p>").replace(/<\/div>/g, "</p>");
     // No persistir el placeholder como contenido real.
     const text = clone.textContent.replace(/\u00A0/g, " ").trim();
-    if (text.startsWith("Escribe el texto de la memoria")) return "";
+if (!text) return "";
     return html;
   };
   const pushChange = () => onChange && onChange(serialize());
@@ -1144,7 +1149,8 @@ const tbBtn = { width: 32, height: 32, borderRadius: 7, display: "grid", placeIt
 
   return (
     <div>
-      <style>{`@keyframes mnVarPulse{0%{background:#BFE9D5}100%{background:#E7F6EF}}`}</style>
+<style>{`@keyframes mnVarPulse{0%{background:#BFE9D5}100%{background:#E7F6EF}}
+        [data-mn-placeholder]:empty::before{content:attr(data-mn-placeholder);color:#9CA3AF;font-style:italic;pointer-events:none;}`}</style>
       <div style={{ display: "flex", alignItems: "center", gap: 3, padding: "7px 9px", background: "#fff", border: "1px solid #E5E7EB", borderRadius: "12px 12px 0 0", borderBottom: "none", flexWrap: "wrap" }}>
 <button style={tbBtn} title="Negrita" onMouseDown={(e) => { e.preventDefault(); exec("bold"); }}><Bold size={15} /></button>
         <button style={tbBtn} title="Cursiva" onMouseDown={(e) => { e.preventDefault(); exec("italic"); }}><Italic size={15} /></button>
@@ -1153,7 +1159,8 @@ const tbBtn = { width: 32, height: 32, borderRadius: 7, display: "grid", placeIt
           <button onMouseDown={(e) => { e.preventDefault(); openPicker(e); }} style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 7, padding: "7px 12px", borderRadius: 8, background: "#E7F6EF", color: "#0F9B6C", fontSize: 12, fontWeight: 700, border: "none", cursor: "pointer" }}><Sparkles size={14} /> Variable</button>
         )}
       </div>
-      <div ref={edRef} contentEditable suppressContentEditableWarning onInput={pushChange} onMouseUp={saveSel} onKeyUp={saveSel}
+<div ref={edRef} contentEditable suppressContentEditableWarning onInput={pushChange} onMouseUp={saveSel} onKeyUp={saveSel}
+        data-mn-placeholder="Escribe el texto de la memoria… usa «Variable» para insertar valores de la tabla."
 style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: "0 0 12px 12px", padding: "22px 26px", minHeight: 150, outline: "none", fontFamily: font, fontSize: size + "px", lineHeight: spacing, fontWeight: weight, color: "#22252E" }} />
       {picker && (
         <>
@@ -1597,9 +1604,45 @@ const handleCellEdit = useCallback((rowId, colId, value) => {
     });
   }, [mutateCustomRows]);
 
-const enableTable = useCallback(() => {
+const removeTable = useCallback(() => {
     if (!activeNoteId) return;
-    setNotes(prev => prev.map(n => n.id === activeNoteId ? { ...n, has_table: true, _table_enabled: true } : n));
+    if (!window.confirm("¿Eliminar esta tabla? Se borrarán sus filas y datos, y podrás elegir otro tipo.")) return;
+    setNotes(prev => prev.map(n => {
+      if (n.id !== activeNoteId) return n;
+      // El botón solo aparece en tablas activadas a mano o custom, así que dejamos el
+      // epígrafe sin tabla (vuelve al placeholder para elegir otro tipo).
+      return {
+        ...n,
+        has_table: false,
+        _table_enabled: false,
+        _table_type: null,
+        _custom_rows: [],
+        _cell_variables: {},
+        _col_periods: {},
+      };
+    }));
+    setOverridesByNote(prev => { const next = new Map(prev); next.delete(activeNoteId); return next; });
+  }, [activeNoteId]);
+
+const enableTable = useCallback((tableType = null) => {
+    if (!activeNoteId) return;
+    // Si el tipo trae filas de ejemplo (addons), las inyectamos como filas custom.
+    const tt = tableType ? TABLE_TYPES[tableType] : null;
+    const seedRows = Array.isArray(tt?.rows) ? tt.rows : [];
+    setNotes(prev => prev.map(n => {
+      if (n.id !== activeNoteId) return n;
+      const existing = Array.isArray(n._custom_rows) ? n._custom_rows : [];
+      const seedOps = seedRows.map((r, i) => ({
+        op: "add", id: `seed-${Date.now()}-${i}`, label: r.label,
+        level: r.level ?? 0, is_subtotal: !!r.is_subtotal, is_total: !!r.is_total, after: null,
+      }));
+      return {
+        ...n, has_table: true, _table_enabled: true,
+        _table_type: tableType ?? n._table_type ?? null,
+        // Solo inyectamos seeds si la nota no tenía ya filas custom.
+        _custom_rows: existing.length > 0 ? existing : [...existing, ...seedOps],
+      };
+    }));
   }, [activeNoteId]);
 
   // Crear un epígrafe personalizado (número 26+). config: { title, description,
@@ -1747,33 +1790,40 @@ const [groupAccounts, setGroupAccounts] = useState([]); // chart of accounts del
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+// Headers con token FRESCO de Supabase (evita fallos por expiración ~1h).
+  const authHeaders = useCallback(async () => {
+    let jwt = token;
+    try {
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      jwt = session?.access_token ?? token;
+    } catch { /* usa el prop token */ }
+    return { Authorization: `Bearer ${jwt}`, Accept: "application/json" };
+  }, [token]);
+
 // Load chart of accounts (group-accounts) — para clasificar por AccountType real
   useEffect(() => {
     if (!token) return;
-    fetch(`${BASE_URL}/v2/group-accounts`, {
-      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
-    })
+    authHeaders().then(h => fetch(`${BASE_URL}/v2/group-accounts`, { headers: h }))
       .then(r => r.ok ? r.json() : { value: [] })
       .then(j => {
         const arr = j.value ?? (Array.isArray(j) ? j : []);
         setGroupAccounts(arr);
       })
       .catch(() => setGroupAccounts([]));
-  }, [token]);
+  }, [token, authHeaders]);
 
   // Load cash-flow mapping (group account → CF account)
   useEffect(() => {
     if (!token) return;
-    fetch(`${BASE_URL}/v2/mapped-cashflow-accounts`, {
-      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
-    })
+    authHeaders().then(h => fetch(`${BASE_URL}/v2/mapped-cashflow-accounts`, { headers: h }))
       .then(r => r.ok ? r.json() : { value: [] })
       .then(j => {
         const arr = j.value ?? (Array.isArray(j) ? j : []);
         setCfMapping(arr);
       })
       .catch(() => setCfMapping([]));
-  }, [token]);
+  }, [token, authHeaders]);
 
 // Load notes + rows + cols for current template
   useEffect(() => {
@@ -1854,7 +1904,7 @@ return (json.value ?? (Array.isArray(json) ? json : []))
     } catch {
       return [];
     }
-}, [token, source, structure, company]);
+}, [token, source, structure, topParent]);
 
 // Carga (con caché) un periodo arbitrario para columnas reancladas.
   const ensurePeriod = useCallback(async (yr, mo) => {
@@ -2065,14 +2115,16 @@ return {
           cell_overrides: overrides,
           custom_rows: n._custom_rows ?? [],
 cell_variables: n._cell_variables ?? {},
-          col_periods: n._col_periods ?? {},
+col_periods: n._col_periods ?? {},
           table_enabled: !!n._table_enabled,
+          // table_type se guarda para CUALQUIER epígrafe (no solo custom), para
+          // persistir el tipo de tabla elegido al activarla manualmente.
+          table_type: n._table_type ?? null,
           // Epígrafes personalizados (26+): guardar su metadata para recrearlos al cargar.
           is_custom: !!n._is_custom_note,
           custom_title: n._is_custom_note ? (n._custom_title ?? n.title) : null,
           custom_description: n._is_custom_note ? (n._custom_description ?? n.description ?? "") : null,
           has_narrative: n._is_custom_note ? (n._has_narrative !== false) : true,
-          table_type: n._is_custom_note ? (n._table_type ?? "none") : null,
           updated_at: nowIso,
         };
       });
@@ -2096,11 +2148,13 @@ cell_variables: n._cell_variables ?? {},
   const hydrateFromSave = useCallback((states) => {
     if (!Array.isArray(states)) return;
     // Overrides → Map<noteId, Map<key, number>>, resolviendo note_number → note.id
-    const idByNumber = new Map(notes.map(n => [n.note_number, n.id]));
+const idByNumber = new Map(notes.map(n => [n.note_number, n.id]));
     setOverridesByNote(() => {
       const next = new Map();
       states.forEach(s => {
-        const noteId = idByNumber.get(s.note_number);
+        const noteId = s.is_custom
+          ? `custom-note-${s.note_number}-${s.save_id ?? "x"}`
+          : idByNumber.get(s.note_number);
         if (!noteId) return;
         const ov = s.cell_overrides || {};
         const keys = Object.keys(ov);
@@ -2116,6 +2170,7 @@ cell_variables: n._cell_variables ?? {},
       const updated = prev.map(n => {
         const s = states.find(x => x.note_number === n.note_number);
         if (!s) return n;
+const savedType = s.table_type && s.table_type !== "none" ? s.table_type : null;
         return {
 ...n,
           default_narrative: s.narrative ?? n.default_narrative,
@@ -2123,6 +2178,9 @@ cell_variables: n._cell_variables ?? {},
           _cell_variables: s.cell_variables ?? {},
           _col_periods: s.col_periods ?? {},
           _table_enabled: !!s.table_enabled,
+          _table_type: savedType ?? n._table_type ?? null,
+          // Si activó una tabla manualmente (table_enabled con tipo), has_table=true.
+          has_table: n.has_table || !!s.table_enabled,
         };
       });
       // Epígrafes personalizados guardados (is_custom) que no están ya en la lista.
@@ -2326,7 +2384,8 @@ setNotes(prev => prev.map(n => {
 
 const [colPeriodPopup, setColPeriodPopup] = useState(null); // { colId, label } | null
 const [ccTagPopup, setCcTagPopup] = useState(null); // { rowId, label, current, mode } | null
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false); // índice colapsado (solo números)
+const [sidebarCollapsed, setSidebarCollapsed] = useState(false); // índice colapsado (solo números)
+  const [tableTypePicker, setTableTypePicker] = useState(false); // elegir tipo de tabla al activar
 
   // Asigna/quita el cc_tag (y modo) de una fila → auto-relleno desde el estándar.
   const setRowCcTag = useCallback((rowId, tag, mode) => {
@@ -2493,9 +2552,31 @@ colPeriodSources,
         nRows = applyCustomRows(baseRows, customOps);
       }
 
-      // Pivot base de esta nota (para valores calculados de plantilla).
-      const basePivot = (baseRows.length && baseCols.length)
-        ? buildPivot({ note: n, rows: baseRows, columns: baseCols, sources: accountSources, overrides: ov })
+// cc_tags de esta nota → cuentas resueltas (auto-relleno) para el export.
+      const ccByRowExp = {};
+      nRows.forEach(r => {
+        const tag = r.cc_tag ?? r._cc_tag;
+        if (!tag) return;
+        const bucket = ccTagIndex.byTag.get(tag);
+        if (!bucket) return;
+        const mode = r.cc_mode ?? r._cc_mode ?? "all";
+        const set = mode === "interco" ? bucket.interco : mode === "normal" ? bucket.normal : bucket.all;
+        ccByRowExp[r.id] = [...set];
+      });
+
+// Periodos reanclados de esta nota → pivots del periodo elegido (para el export).
+      const cpExp = n._col_periods;
+      let colPeriodSourcesExp = null;
+      if (cpExp && Object.keys(cpExp).length > 0) {
+        colPeriodSourcesExp = {};
+        Object.entries(cpExp).forEach(([colId, p]) => {
+          if (p?.year && p?.month) colPeriodSourcesExp[colId] = sourcesForPeriod(p.year, p.month);
+        });
+      }
+
+      // Pivot base de esta nota (con cc_tags, interco y periodos reanclados, igual que en pantalla).
+      const basePivot = (nRows.length && nCols.length)
+        ? buildPivot({ note: n, rows: nRows, columns: nCols, sources: accountSources, overrides: ov, ccCodesByRow: ccByRowExp, intercoByCode, colPeriodSources: colPeriodSourcesExp })
         : new Map();
 
       // Valor efectivo de una celda (misma prioridad que en pantalla).
@@ -2555,11 +2636,31 @@ colPeriodSources,
         return `<b style="color:#0B7A54">${num}</b>`;
       });
 
-      const hasTable = nRows.length > 0 && nCols.length > 0;
-      return { note: n, rows: nRows, columns: nCols, values, resolvedNarrative, hasTable };
-    });
-  }, [notes, rowsByNote, colsByNote, accountSources, overridesByNote, applyCustomRows, resolveVariableValue]);
+// Resumen de variables y cc_tags empleados en este cuadro (para el export).
+      const usedVariables = [];
+      if (cvars) {
+        Object.entries(cvars).forEach(([k, vr]) => {
+          const [rid, cid] = k.split("|");
+          const row = nRows.find(r => r.id === rid);
+          const col = nCols.find(c => c.id === cid);
+          const terms = (vr?.terms ?? []).map(t => `${t.sign === "-" ? "−" : "+"}${t.code}`).join(" ");
+          usedVariables.push({ row: row?.label ?? rid, col: col?.label ?? cid, detail: terms || (vr?.source ?? "") });
+        });
+      }
+      const usedCcTags = [];
+      nRows.forEach(r => {
+        const tag = r.cc_tag ?? r._cc_tag;
+        if (!tag) return;
+        const mode = r.cc_mode ?? r._cc_mode ?? "all";
+        const modeLbl = mode === "interco" ? "intercompañía" : mode === "normal" ? "terceros" : "todas";
+        const codes = ccByRowExp[r.id] ?? [];
+        usedCcTags.push({ row: r.label, tag, mode: modeLbl, codes });
+      });
 
+      const hasTable = nRows.length > 0 && nCols.length > 0;
+      return { note: n, rows: nRows, columns: nCols, values, resolvedNarrative, hasTable, usedVariables, usedCcTags };
+    });
+}, [notes, rowsByNote, colsByNote, accountSources, overridesByNote, applyCustomRows, resolveVariableValue, ccTagIndex, intercoByCode, sourcesForPeriod]);
   const handleExportExcel = useCallback(async () => {
     try {
       await loadScript("https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js");
@@ -2603,7 +2704,7 @@ const NAVY = "FF1A2F8A";
         cover.getCell(`B${row}`).value = note.title;
       });
 
-      exportData.forEach(({ note, rows: nRows, columns: nCols, values, resolvedNarrative, hasTable }) => {
+      exportData.forEach(({ note, rows: nRows, columns: nCols, values, resolvedNarrative, hasTable, usedVariables, usedCcTags }) => {
         const sheetName = `N${note.note_number}`.slice(0, 31);
         const ws = wb.addWorksheet(sheetName);
         const lastCol = Math.max(nCols.length + 1, 2);
@@ -2661,8 +2762,34 @@ const NAVY = "FF1A2F8A";
             });
           });
 
-          ws.getColumn(1).width = 42;
+ws.getColumn(1).width = 42;
           for (let i = 2; i <= lastCol; i++) ws.getColumn(i).width = 18;
+          cursor = headerRowIdx + 1 + nRows.length;
+        }
+
+        // Sección "Origen de los datos": cc_tags y variables empleados.
+        if ((usedCcTags?.length || usedVariables?.length)) {
+          cursor += 2;
+          ws.mergeCells(cursor, 1, cursor, lastCol);
+          const h = ws.getCell(cursor, 1);
+          h.value = "Origen de los datos";
+          h.font = { bold: true, size: 9, color: { argb: "FF0B7A54" } };
+          cursor++;
+          (usedCcTags ?? []).forEach(t => {
+            ws.mergeCells(cursor, 1, cursor, lastCol);
+            const c = ws.getCell(cursor, 1);
+            c.value = `• ${t.row}: etiqueta ${t.tag} (${t.mode})${t.codes?.length ? ` — cuentas: ${t.codes.join(", ")}` : ""}`;
+            c.font = { size: 9, color: { argb: "FF374151" } };
+            c.alignment = { wrapText: true, vertical: "top" };
+            cursor++;
+          });
+          (usedVariables ?? []).forEach(v => {
+            ws.mergeCells(cursor, 1, cursor, lastCol);
+            const c = ws.getCell(cursor, 1);
+            c.value = `• ${v.row} · ${v.col}: variable ${v.detail}`;
+            c.font = { size: 9, color: { argb: "FF374151" } };
+            cursor++;
+          });
         }
       });
 
@@ -2697,7 +2824,7 @@ const handleExportPdf = useCallback(() => {
       `<div class="toc-row"><span class="toc-n">${note.note_number}</span><span class="toc-t">${esc(note.title)}</span></div>`
     ).join("");
 
-    const pages = exportData.map(({ note, rows: nRows, columns: nCols, values, resolvedNarrative, hasTable }) => `
+const pages = exportData.map(({ note, rows: nRows, columns: nCols, values, resolvedNarrative, hasTable, usedVariables, usedCcTags }) => `
       <section class="note-page">
         <div class="note-head">
           <span class="note-badge">${note.note_number}</span>
@@ -2722,6 +2849,16 @@ const handleExportPdf = useCallback(() => {
             `).join("")}
           </tbody>
         </table>` : ""}
+        ${(usedCcTags?.length || usedVariables?.length) ? `
+        <div class="sources">
+          <p class="sources-h">Origen de los datos</p>
+          ${usedCcTags?.length ? `<ul>${usedCcTags.map(t =>
+            `<li><b>${esc(t.row)}</b>: etiqueta ${esc(t.tag)} (${esc(t.mode)})${t.codes?.length ? ` — cuentas: ${esc(t.codes.join(", "))}` : ""}</li>`
+          ).join("")}</ul>` : ""}
+          ${usedVariables?.length ? `<ul>${usedVariables.map(v =>
+            `<li><b>${esc(v.row)} · ${esc(v.col)}</b>: variable ${esc(v.detail)}</li>`
+          ).join("")}</ul>` : ""}
+        </div>` : ""}
       </section>
     `).join("");
 
@@ -2756,7 +2893,11 @@ const handleExportPdf = useCallback(() => {
   td.num { text-align:right; font-variant-numeric:tabular-nums; }
   td.zero { color:#cbd5e1; }
   td.neg { color:#dc2626; }
-  tr.total td { background:#f4f6fb; font-weight:800; color:${primary}; border-top:2px solid ${primary}; }
+tr.total td { background:#f4f6fb; font-weight:800; color:${primary}; border-top:2px solid ${primary}; }
+  .sources { margin-top:10px; padding:8px 10px; background:#f0fdf4; border-left:3px solid #0B7A54; border-radius:4px; }
+  .sources-h { font-size:9px; font-weight:800; text-transform:uppercase; letter-spacing:0.5px; color:#0B7A54; margin:0 0 4px; }
+  .sources ul { margin:2px 0; padding-left:16px; }
+  .sources li { font-size:9px; color:#374151; line-height:1.5; }
   tbody tr:nth-child(even):not(.total) td { background:#fbfcff; }
 </style></head>
 <body>
@@ -2804,7 +2945,7 @@ const handleExportWord = useCallback(() => {
       `<tr><td style="width:34pt;font-weight:bold;color:#1A2F8A;">${note.note_number}</td><td>${esc(note.title)}</td></tr>`
     ).join("");
 
-    const sections = exportData.map(({ note, rows: nRows, columns: nCols, values, resolvedNarrative, hasTable }) => `
+   const sections = exportData.map(({ note, rows: nRows, columns: nCols, values, resolvedNarrative, hasTable, usedVariables, usedCcTags }) => `
       <h2 style="color:#1A2F8A;font-size:16pt;margin-top:18pt;border-bottom:1.5pt solid #1A2F8A;padding-bottom:4pt;">
         Nota ${note.note_number} — ${esc(note.title)}
       </h2>
@@ -2824,13 +2965,23 @@ const handleExportWord = useCallback(() => {
             const rowStyle = isTotal
               ? 'style="background:#f4f6fb;font-weight:bold;color:#1A2F8A;border-top:1.5pt solid #1A2F8A;"'
               : 'style="border-bottom:0.5pt solid #eef1f6;"';
-            return `<tr ${rowStyle}>
+return `<tr ${rowStyle}>
               <td style="padding:5pt 8pt;">${esc(r.label)}</td>
               ${nCols.map(c => wcell(values[r.id]?.[c.id])).join("")}
             </tr>`;
           }).join("")}
         </tbody>
       </table>` : ""}
+      ${(usedCcTags?.length || usedVariables?.length) ? `
+      <div style="margin-top:8pt;padding:6pt 9pt;background:#f0fdf4;border-left:2pt solid #0B7A54;">
+        <p style="font-size:8pt;font-weight:bold;text-transform:uppercase;letter-spacing:0.5pt;color:#0B7A54;margin:0 0 3pt;">Origen de los datos</p>
+        ${usedCcTags?.length ? usedCcTags.map(t =>
+          `<p style="font-size:8.5pt;color:#374151;margin:1pt 0;">• <b>${esc(t.row)}</b>: etiqueta ${esc(t.tag)} (${esc(t.mode)})${t.codes?.length ? ` — cuentas: ${esc(t.codes.join(", "))}` : ""}</p>`
+        ).join("") : ""}
+        ${usedVariables?.length ? usedVariables.map(v =>
+          `<p style="font-size:8.5pt;color:#374151;margin:1pt 0;">• <b>${esc(v.row)} · ${esc(v.col)}</b>: variable ${esc(v.detail)}</p>`
+        ).join("") : ""}
+      </div>` : ""}
     `).join("");
 
     const html = `<!doctype html>
@@ -3051,6 +3202,7 @@ headerActions={[
                 </div>
                 <div className="rounded-xl overflow-hidden">
 <NarrativeEditor
+                    key={activeNote.id}
                     note={activeNote}
                     rows={effectiveRows}
                     columns={effectiveCols}
@@ -3058,29 +3210,38 @@ headerActions={[
                     colors={colors}
                     textSettings={textSettings}
                     onChange={(tpl) => {
-                      setNotes(prev => prev.map(n => n.id === activeNote.id ? { ...n, default_narrative: tpl } : n));
+                     setNotes(prev => prev.map(n => n.id === activeNoteId ? { ...n, default_narrative: tpl } : n));
                     }}
                   />
                 </div>
               </div>
 
 {!activeNote.has_table && (
-                <button onClick={enableTable}
+                <button onClick={() => setTableTypePicker(true)}
                   className="w-full rounded-xl border-2 border-dashed border-gray-200 bg-gray-50 px-5 py-8 text-center transition-colors hover:border-gray-300 hover:bg-gray-100">
                   <Plus size={20} className="mx-auto text-gray-300 mb-2" />
                   <p className="text-xs font-black text-gray-400 uppercase tracking-widest">Añadir tabla de datos</p>
-                  <p className="text-[11px] text-gray-400 mt-1">Este epígrafe no tiene tabla. Haz clic para crear una y empezar a añadir filas y valores.</p>
+                  <p className="text-[11px] text-gray-400 mt-1">Este epígrafe no tiene tabla. Haz clic para elegir el tipo de tabla y empezar.</p>
                 </button>
               )}
 
               {activeNote.has_table && (
                 <div>
-                  <div className="flex items-center gap-2 mb-3">
+<div className="flex items-center gap-2 mb-3">
                     <Settings2 size={12} style={{ color: colors.primary }} />
                     <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">
-                      Tabla de movimientos
+                      {activeNote._table_type && TABLE_TYPES[activeNote._table_type]
+                        ? TABLE_TYPES[activeNote._table_type].label
+                        : "Tabla de movimientos"}
                     </p>
                     {loadingData && <Loader2 size={11} className="animate-spin text-gray-400" />}
+                    {(activeNote._table_enabled || activeNote._is_custom_note) && (
+                      <button onClick={removeTable}
+                        className="ml-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-red-600 hover:bg-red-50 transition-colors"
+                        title="Eliminar esta tabla y elegir otra">
+                        <Trash2 size={12} /> Eliminar tabla
+                      </button>
+                    )}
                   </div>
 {(currentRows.length === 0 && !loadingData && !tableManuallyEnabled) ? (
                     <div className="rounded-xl border-2 border-dashed border-gray-200 bg-gray-50 px-5 py-10 text-center">
@@ -3108,7 +3269,37 @@ colPeriods={activeNote._col_periods ?? null}
         </div>
       </div>
 
-{ccTagPopup && (
+{tableTypePicker && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setTableTypePicker(false)}>
+          <div className="w-[460px] max-w-full rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2 rounded-t-2xl">
+              <Settings2 size={15} style={{ color: colors.primary }} />
+              <p className="text-sm font-black text-gray-800">Elige el tipo de tabla</p>
+            </div>
+            <div className="px-5 py-4 space-y-2 max-h-[60vh] overflow-y-auto">
+              {Object.entries(TABLE_TYPES).map(([id, t]) => (
+                <button key={id}
+                  onClick={() => { enableTable(id); setTableTypePicker(false); }}
+                  className="w-full text-left px-4 py-3 rounded-xl border border-gray-200 hover:border-gray-300 hover:bg-gray-50 transition-colors">
+                  <p className="text-[13px] font-black text-gray-800">{t.label}</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">
+                    {t.columns.map(c => c.label).join(" · ")}
+                    {Array.isArray(t.rows) && t.rows.length > 0 ? ` · ${t.rows.length} filas de ejemplo` : ""}
+                  </p>
+                </button>
+              ))}
+            </div>
+            <div className="px-5 py-3 border-t border-gray-100 flex justify-end">
+              <button onClick={() => setTableTypePicker(false)}
+                className="px-4 py-2 rounded-lg text-[11px] font-bold uppercase tracking-widest text-gray-500 hover:bg-gray-100">
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {ccTagPopup && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
           onClick={() => setCcTagPopup(null)}>
           <div className="w-[440px] max-w-full rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
