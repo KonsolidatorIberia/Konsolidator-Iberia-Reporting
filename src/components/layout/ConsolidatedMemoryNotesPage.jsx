@@ -22,11 +22,7 @@ const TABLE_TYPES = {
     { id: "c-cur",  label: "Ejercicio actual",   col_type: "value" },
     { id: "c-prev", label: "Ejercicio anterior", col_type: "value" },
   ]},
-related:  { label: "Partes vinculadas", columns: [
-    { id: "c-group", label: "Otras empresas del grupo",          col_type: "value" },
-    { id: "c-key",   label: "Personal clave de la dirección",    col_type: "value" },
-  ]},
-  // ── Addons Genesal (Nota 23) ──────────────────────────────────────
+// ── Addons Genesal (Nota 23) ──────────────────────────────────────
   // 23.1 Operaciones con vinculadas: columnas grupo/personal clave + conceptos
   // de ejemplo (editables/borrables). Catálogo dinámico → el usuario ajusta filas.
   related_ops: {
@@ -703,7 +699,7 @@ return (
 // values come from the auto-built pivot keyed by (rowId, colId).
 function MovementsTable({ rows, columns, pivot, overrides, onCellEdit, onAddRow, onRenameRow, onDeleteRow, onEnable,
                          cellVariables, accountItems, onSetVariable, resolveVariable,
-                         colPeriods, onColHeaderClick }) {
+                         colPeriods, onColHeaderClick, onSetRowCcTag }) {
   const { colors } = useSettings();
   const header2Style = useTypo("header2");
   const body1Style = useTypo("body1");
@@ -717,7 +713,9 @@ function MovementsTable({ rows, columns, pivot, overrides, onCellEdit, onAddRow,
   };
   const editable = !!(onAddRow || onRenameRow || onDeleteRow);
 
-if (!rows.length || !columns.length) {
+// Solo mostramos el placeholder si NO hay columnas. Con columnas pero sin filas,
+  // renderizamos la tabla (cabecera + botón "añadir fila") para poder empezar.
+  if (!columns.length) {
     return (
       <button
         onClick={onEnable}
@@ -787,10 +785,21 @@ return (
                         style={rowStyle}
                       />
                     ) : (
-                      <span className="inline-flex items-center gap-1.5">
+<span className="inline-flex items-center gap-1.5">
                         <span>{row.label}</span>
+                        {(row.cc_tag || row._cc_tag) && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-black tracking-wide"
+                            style={{ background: "#E7F6EF", color: "#0B7A54" }}
+                            title={`Auto: ${row.cc_tag || row._cc_tag} · ${row.cc_mode || row._cc_mode || "all"}`}>
+                            <Library size={9} /> {(row.cc_mode || row._cc_mode) === "interco" ? "IC" : (row.cc_mode || row._cc_mode) === "normal" ? "no-IC" : "auto"}
+                          </span>
+                        )}
                         {editable && !isTotal && (
 <span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1.5 ml-2">
+                            {onSetRowCcTag && (
+                              <button onClick={() => onSetRowCcTag(row)} title="Vincular a cuentas por etiqueta (auto-relleno)"
+                                className="p-1 rounded hover:bg-emerald-100 text-gray-500 hover:text-emerald-600"><Library size={14} /></button>
+                            )}
                             <button onClick={() => startRename(row)} title="Renombrar fila"
                               className="p-1 rounded hover:bg-gray-200 text-gray-500 hover:text-gray-800"><Settings2 size={14} /></button>
                             <button onClick={() => onDeleteRow?.(row.id)} title="Eliminar fila"
@@ -1178,7 +1187,7 @@ style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: "0 0 12p
 //   AUTO-GENERATION ENGINE
 //   Builds a pivot keyed by `${rowId}|${colId}` from uploaded-accounts.
 // ═══════════════════════════════════════════════════════════════════════
-function buildPivot({ note, rows, columns, sources, overrides, colPeriodSources = null }) {
+function buildPivot({ note, rows, columns, sources, overrides, colPeriodSources = null, ccCodesByRow = null, intercoByCode = null }) {
   // sources lleva rolled + raw por bucket; raw es el fallback de prefix-match.
   const {
     curBalance, curBalanceRaw, prevBalance, prevBalanceRaw,
@@ -1210,10 +1219,11 @@ function buildPivot({ note, rows, columns, sources, overrides, colPeriodSources 
     return { cur: ps.balance, curRaw: ps.balanceRaw, prev: ps.balance, prevRaw: ps.balanceRaw };
   };
 
-  rows.forEach(row => {
+rows.forEach(row => {
     if (row.is_total) return;
     const codes = row.account_codes ?? [];
-    if (codes.length === 0) return;
+    const ccCodes = ccCodesByRow?.[row.id] ?? null;
+    if (codes.length === 0 && !(ccCodes && ccCodes.length)) return;
 
 columns.forEach(col => {
       const key = `${row.id}|${col.id}`;
@@ -1276,15 +1286,21 @@ case "closing":
           value = sumCodes(curBalance, depCodes, curBalanceRaw);
           break;
         }
-case "manual":
+        case "manual":
           value = 0;
           break;
-        case "value":
-          // Columna de importe simple (addons): suma las cuentas de la fila en el
-          // periodo actual del bucket de la nota (balance por defecto). Si la fila
-          // no tiene cuentas asignadas, sale 0 (rellenable a mano o con variable).
-          value = sumCodes(cur, codes, curRaw);
+case "value": {
+          const ccCodes = ccCodesByRow?.[row.id];
+          const isInterco = (row._cc_mode ?? row.cc_mode) === "interco";
+          if (ccCodes && ccCodes.length) console.log('[CCVAL2] fila', row.id, 'mode', row._cc_mode ?? row.cc_mode, 'isInterco', isInterco, 'hasIntercoMap', !!intercoByCode, 'mapSize', intercoByCode?.size, 'codes', ccCodes, 'lookup', ccCodes.map(c => intercoByCode?.get(c)));
+          if (ccCodes && ccCodes.length && isInterco && intercoByCode) {
+            value = ccCodes.reduce((s, c) => s + (intercoByCode.get(c) ?? 0), 0);
+          } else {
+            const useCodes = (ccCodes && ccCodes.length) ? ccCodes : codes;
+            value = sumCodes(cur, useCodes, curRaw);
+          }
           break;
+        }
         case "text":
           // Columna de texto (p.ej. Moneda en el cuadro FX): no es numérica.
           value = 0;
@@ -1382,10 +1398,55 @@ result = Function(`"use strict"; return (${expr})`)();
 //   MAIN
 // ═══════════════════════════════════════════════════════════════════════
 export default function ConsolidatedMemoryNotesPage({
-token,
+token, activeStandardKey = null,
   sources: sourcesProp = [], structures: structuresProp = [], companies: companiesProp = [],
   consolidations: consolidationsProp = [], groupStructure: groupStructureProp = [],
 }) {
+  // ── Estándar del cliente: índice cc_tag → cuentas (para auto-relleno) ──
+  const [ccTagIndex, setCcTagIndex] = useState({ byTag: new Map(), catalog: [] });
+  useEffect(() => {
+if (!activeStandardKey || !String(activeStandardKey).startsWith("CUSTOM-")) { queueMicrotask(() => setCcTagIndex({ byTag: new Map(), catalog: [] })); return; }
+    let cancelled = false;
+    (async () => {
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      const jwt = session?.access_token ?? token;
+     const sbHeaders = { Authorization: `Bearer ${jwt}`, apikey: SUPABASE_APIKEY, Accept: "application/json" };
+      // Cuentas del estándar con su cc_tag (paginado).
+      const rows = [];
+      let offset = 0;
+      while (true) {
+        const url = `${SUPABASE_URL}/standard_statement_rows?select=account_code,cc_tag,statement&standard_key=eq.${encodeURIComponent(activeStandardKey)}&cc_tag=not.is.null&limit=1000&offset=${offset}`;
+        const r = await fetch(url, { headers: sbHeaders });
+        if (!r.ok) break;
+        const batch = await r.json();
+        if (!Array.isArray(batch) || batch.length === 0) break;
+        rows.push(...batch);
+        if (batch.length < 1000) break;
+        offset += 1000;
+        if (offset > 20000) break;
+      }
+      // Catálogo de cc_tags disponibles.
+      let catalog = [];
+      try {
+        const rc = await fetch(`${SUPABASE_URL}/cc_tag_catalog?select=cc_tag,statement,display_name,sort_order&order=statement.asc,sort_order.asc`, { headers: sbHeaders });
+        if (rc.ok) catalog = await rc.json();
+      } catch { /* noop */ }
+      if (cancelled) return;
+      // Índice: cc_tag → { all:Set, interco:Set, normal:Set } de account_codes.
+      const byTag = new Map();
+      rows.forEach(r => {
+        const tag = r.cc_tag; const code = String(r.account_code);
+        if (!tag || !code) return;
+        if (!byTag.has(tag)) byTag.set(tag, { all: new Set(), interco: new Set(), normal: new Set() });
+        const b = byTag.get(tag);
+        b.all.add(code);
+        if (code.endsWith("i")) b.interco.add(code); else b.normal.add(code);
+      });
+setCcTagIndex({ byTag, catalog: Array.isArray(catalog) ? catalog : [] });
+    })();
+    return () => { cancelled = true; };
+  }, [activeStandardKey, token]);
   // La consolidada carga su propia metadata (routes.jsx no le pasa estos props).
   const [sources, setSources] = useState(sourcesProp);
   const [structures, setStructures] = useState(structuresProp);
@@ -1538,7 +1599,7 @@ const handleCellEdit = useCallback((rowId, colId, value) => {
 
 const enableTable = useCallback(() => {
     if (!activeNoteId) return;
-    setNotes(prev => prev.map(n => n.id === activeNoteId ? { ...n, _table_enabled: true } : n));
+    setNotes(prev => prev.map(n => n.id === activeNoteId ? { ...n, has_table: true, _table_enabled: true } : n));
   }, [activeNoteId]);
 
   // Crear un epígrafe personalizado (número 26+). config: { title, description,
@@ -1635,17 +1696,25 @@ const escId = String(rowId).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }, [mutateCustomRows, activeNoteId]);
 
   // Aplica las ops de custom_rows sobre las filas base de plantilla → filas a renderizar.
-  const applyCustomRows = useCallback((baseRows, customOps) => {
+const applyCustomRows = useCallback((baseRows, customOps) => {
     const ops = Array.isArray(customOps) ? customOps : [];
     const hidden = new Set(ops.filter(o => o.op === "hide").map(o => String(o.id)));
     const renames = new Map(ops.filter(o => o.op === "rename").map(o => [String(o.id), o.label]));
-    // 1) Filas de plantilla, sin ocultas, con renombrados aplicados.
+    // cc_tag por fila (op "cctag"): auto-relleno desde el estándar del cliente.
+    const ccByRow = new Map(ops.filter(o => o.op === "cctag").map(o => [String(o.id), { tag: o.cc_tag, mode: o.cc_mode ?? "interco" }]));
+    const withCc = (r) => {
+      const cc = ccByRow.get(String(r.id));
+      return cc ? { ...r, _cc_tag: cc.tag, _cc_mode: cc.mode } : r;
+    };
+    // 1) Filas de plantilla, sin ocultas, con renombrados y cc_tag aplicados.
     let out = (baseRows || [])
       .filter(r => !hidden.has(String(r.id)))
-      .map(r => renames.has(String(r.id)) ? { ...r, label: renames.get(String(r.id)), _renamed: true } : r);
+      .map(r => renames.has(String(r.id)) ? { ...r, label: renames.get(String(r.id)), _renamed: true } : r)
+      .map(withCc);
     // 2) Insertar las filas "add" en su posición (after). Las sin `after` van al final.
-ops.filter(o => o.op === "add").forEach(o => {
-      const newRow = { id: o.id, label: o.label, level: o.level ?? 0, is_total: !!o.is_total, is_subtotal: !!o.is_subtotal, _custom: true };
+    ops.filter(o => o.op === "add").forEach(o => {
+      let newRow = { id: o.id, label: o.label, level: o.level ?? 0, is_total: !!o.is_total, is_subtotal: !!o.is_subtotal, _custom: true };
+      newRow = withCc(newRow);
       if (o.after == null) { out = [...out, newRow]; return; }
       const idx = out.findIndex(r => String(r.id) === String(o.after));
       if (idx < 0) out = [...out, newRow];
@@ -1653,8 +1722,8 @@ ops.filter(o => o.op === "add").forEach(o => {
     });
     return out;
 }, []);
-
 const [currentRows, setCurrentRows] = useState([]); // uploaded-accounts current period
+  const [intercoRows, setIntercoRows] = useState([]); // filas rol Contribution interco (Nota 23)
   const [prevRows, setPrevRows]       = useState([]); // uploaded-accounts prev period
   // Caché de periodos arbitrarios para columnas reancladas: Map<"year-month", rows>.
   const [periodCache, setPeriodCache] = useState(() => new Map());
@@ -1779,7 +1848,7 @@ setLoadingTemplate(false);
       if (!res.ok) return [];
       const json = await res.json();
       // Solo filas rol Group (totales consolidados post-eliminación).
-      return (json.value ?? (Array.isArray(json) ? json : []))
+return (json.value ?? (Array.isArray(json) ? json : []))
         .filter(r => (r.CompanyRole ?? r.companyRole ?? "") === "Group")
         .filter(r => !r.OriginCompanyShortName?.trim() && !r.CounterpartyShortName?.trim());
     } catch {
@@ -1787,7 +1856,7 @@ setLoadingTemplate(false);
     }
 }, [token, source, structure, company]);
 
-  // Carga (con caché) un periodo arbitrario para columnas reancladas.
+// Carga (con caché) un periodo arbitrario para columnas reancladas.
   const ensurePeriod = useCallback(async (yr, mo) => {
     const key = `${yr}-${mo}`;
     if (periodCache.has(key)) return periodCache.get(key);
@@ -1795,6 +1864,43 @@ setLoadingTemplate(false);
     setPeriodCache(prev => { const next = new Map(prev); next.set(key, rows); return next; });
     return rows;
   }, [periodCache, fetchUploaded]);
+
+  // Filas interco (rol Contribution) del periodo actual, para la Nota 23 de partes
+  // vinculadas: son los aportes ANTES de eliminar, donde las cuentas i tienen saldo.
+  const fetchInterco = useCallback(async (yr, mo) => {
+    if (!yr || !mo || !source || !structure || !topParent) return [];
+    const filter = `Year eq ${yr} and Month eq ${mo} and Source eq '${source}' and GroupStructure eq '${structure}' and GroupShortName eq '${topParent}'`;
+    try {
+      const res = await fetch(
+        `${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(filter)}`,
+        { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }
+      );
+      if (!res.ok) return [];
+      const json = await res.json();
+      // Filas rol Contribution (aportes de cada empresa antes de eliminar).
+      return (json.value ?? (Array.isArray(json) ? json : []))
+        .filter(r => (r.CompanyRole ?? r.companyRole ?? "") === "Contribution");
+    } catch { return []; }
+  }, [token, source, structure, topParent]);
+
+useEffect(() => {
+    if (!year || !month || !source || !structure || !topParent) { queueMicrotask(() => setIntercoRows([])); return; }
+    let cancelled = false;
+    fetchInterco(year, month).then(rows => { if (!cancelled) setIntercoRows(rows); });
+    return () => { cancelled = true; };
+  }, [year, month, source, structure, topParent, fetchInterco]);
+
+  // Importe interco por cuenta: code → AmountYTD sumado (todas las contrapartidas).
+  const intercoByCode = useMemo(() => {
+    const m = new Map();
+    (intercoRows || []).forEach(r => {
+      const code = String(r.AccountCode ?? r.accountCode ?? "");
+      if (!code) return;
+      const amt = Number(r.AmountYTD ?? r.amountYTD ?? 0) || 0;
+      m.set(code, (m.get(code) ?? 0) + amt);
+    });
+    return m;
+  }, [intercoRows]);
 
 // Load uploaded data when filters change
 
@@ -2218,7 +2324,23 @@ setNotes(prev => prev.map(n => {
     }));
   }, [activeNoteId]);
 
-  const [colPeriodPopup, setColPeriodPopup] = useState(null); // { colId, label } | null
+const [colPeriodPopup, setColPeriodPopup] = useState(null); // { colId, label } | null
+const [ccTagPopup, setCcTagPopup] = useState(null); // { rowId, label, current, mode } | null
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false); // índice colapsado (solo números)
+
+  // Asigna/quita el cc_tag (y modo) de una fila → auto-relleno desde el estándar.
+  const setRowCcTag = useCallback((rowId, tag, mode) => {
+    if (!activeNoteId) return;
+    setNotes(prev => prev.map(n => {
+      if (n.id !== activeNoteId) return n;
+      // Guardamos el tag/modo como override de fila en _custom_rows (op "cctag"),
+      // así funciona tanto en filas de plantilla como custom y persiste.
+      const ops = Array.isArray(n._custom_rows) ? [...n._custom_rows] : [];
+      const filtered = ops.filter(o => !(o.op === "cctag" && o.id === rowId));
+      if (tag) filtered.push({ op: "cctag", id: rowId, cc_tag: tag, cc_mode: mode ?? "interco" });
+      return { ...n, _custom_rows: filtered };
+    }));
+  }, [activeNoteId]);
 
   // Precarga en el caché los periodos reanclados de la nota activa.
   useEffect(() => {
@@ -2274,19 +2396,38 @@ setNotes(prev => prev.map(n => {
     return out;
   }, [activeNote, sourcesForPeriod]);
 
+// Cuentas resueltas por fila desde su cc_tag (auto-relleno). { rowId: [codes] }.
+  // Modo: "interco" (sufijo i), "normal" (sin i), "all". Default interco para
+  // columnas de partes vinculadas; el usuario elige al asignar el tag.
+const ccCodesByRow = useMemo(() => {
+    const out = {};
+    (effectiveRows || []).forEach(r => {
+      const tag = r.cc_tag ?? r._cc_tag;
+      if (!tag) return;
+      const bucket = ccTagIndex.byTag.get(tag);
+      if (!bucket) return;
+      const mode = r.cc_mode ?? r._cc_mode ?? "all";
+      const set = mode === "interco" ? bucket.interco : mode === "normal" ? bucket.normal : bucket.all;
+      out[r.id] = [...set];
+    });
+    return out;
+}, [effectiveRows, ccTagIndex]);
+
   // Build pivot for active note
   const pivot = useMemo(() => {
     if (!activeNote || !activeNote.has_table) return new Map();
     if (currentRows.length === 0 && prevRows.length === 0) return new Map();
 return buildPivot({
       note: activeNote,
-      rows: activeRows,
-      columns: activeCols,
+      rows: effectiveRows,
+      columns: effectiveCols,
       sources: accountSources,
       overrides: overridesByNote.get(activeNote.id) ?? null,
-      colPeriodSources,
+colPeriodSources,
+      ccCodesByRow: ccCodesByRow,
+      intercoByCode,
     });
-}, [activeNote, activeRows, activeCols, accountSources, overridesByNote, currentRows.length, prevRows.length, colPeriodSources]);
+}, [activeNote, effectiveRows, effectiveCols, accountSources, overridesByNote, currentRows.length, prevRows.length, colPeriodSources, ccCodesByRow, intercoByCode]);
 
   // Pivot efectivo: valor real de cada celda (variable > override > pivot base),
   // sobre las filas/columnas efectivas (incluye filas custom). Lo usa el editor de
@@ -2776,16 +2917,26 @@ headerActions={[
 
       <div className="flex-1 min-h-0 flex gap-4">
 
-        <div className="w-[280px] flex-shrink-0 bg-white rounded-2xl border border-gray-100 shadow-xl flex flex-col overflow-hidden">
-<div className="px-4 py-3 border-b border-gray-100">
+<div className={`${sidebarCollapsed ? "w-[64px]" : "w-[280px]"} flex-shrink-0 bg-white rounded-2xl border border-gray-100 shadow-xl flex flex-col overflow-hidden transition-[width] duration-200`}>
+          <style>{`.mn-hide-scroll::-webkit-scrollbar{width:0;height:0;display:none}`}</style>
+          <div className="px-3 py-3 border-b border-gray-100">
             <div className="flex items-center gap-2">
-              <BookOpen size={13} style={{ color: colors.primary }} />
-              <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: colors.primary }}>
-                Notas · {templates.find(t => t.id === templateId)?.label}
-              </p>
-              <span className="ml-auto text-[10px] font-bold text-gray-400">{notes.length}</span>
+              {!sidebarCollapsed && <BookOpen size={13} style={{ color: colors.primary }} />}
+              {!sidebarCollapsed && (
+                <p className="text-[10px] font-black uppercase tracking-widest truncate" style={{ color: colors.primary }}>
+                  Notas · {templates.find(t => t.id === templateId)?.label}
+                </p>
+              )}
+              <button onClick={() => setSidebarCollapsed(v => !v)}
+                className={`${sidebarCollapsed ? "mx-auto" : "ml-auto"} w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover:bg-gray-100`}
+                style={{ color: colors.primary }}
+                title={sidebarCollapsed ? "Expandir índice" : "Colapsar índice"}>
+                {sidebarCollapsed
+                  ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+                  : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>}
+              </button>
             </div>
-            {lastSavedInfo && (
+            {!sidebarCollapsed && lastSavedInfo && (
               <p className="text-[9px] text-gray-400 mt-1 truncate" title={`Guardado por ${lastSavedInfo.by ?? "—"}`}>
                 Última edición: {lastSavedInfo.by ?? "—"}
                 {lastSavedInfo.at ? ` · ${new Date(lastSavedInfo.at).toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""}
@@ -2793,11 +2944,31 @@ headerActions={[
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+     <div className={`flex-1 overflow-y-auto ${sidebarCollapsed ? "p-1.5 space-y-1 mn-hide-scroll" : "p-2 space-y-0.5"}`}
+            style={sidebarCollapsed ? { scrollbarWidth: "none", msOverflowStyle: "none" } : undefined}>
             {loadingTemplate ? (
               <div className="flex items-center justify-center py-12">
                 <Loader2 size={16} className="animate-spin text-gray-300" />
               </div>
+            ) : sidebarCollapsed ? (
+              <>
+                {notes.map(n => (
+                  <button key={n.id} onClick={() => setActiveNoteId(n.id)}
+                    title={`Nota ${n.note_number} — ${n.title}`}
+                    className="w-full h-9 rounded-lg flex items-center justify-center text-[11px] font-black transition-colors"
+                    style={n.id === activeNoteId
+                      ? { background: colors.primary, color: "#fff" }
+                      : { background: `${colors.primary}0D`, color: colors.primary }}>
+                    {n.note_number}
+                  </button>
+                ))}
+                <button onClick={() => setAddNoteModal(true)}
+                  title="Añadir epígrafe"
+                  className="w-full h-9 rounded-lg flex items-center justify-center border-2 border-dashed transition-colors hover:bg-gray-50"
+                  style={{ borderColor: `${colors.primary}40`, color: colors.primary }}>
+                  <Plus size={14} />
+                </button>
+              </>
             ) : (
 <>
                 {notes.map(n => (
@@ -2893,6 +3064,15 @@ headerActions={[
                 </div>
               </div>
 
+{!activeNote.has_table && (
+                <button onClick={enableTable}
+                  className="w-full rounded-xl border-2 border-dashed border-gray-200 bg-gray-50 px-5 py-8 text-center transition-colors hover:border-gray-300 hover:bg-gray-100">
+                  <Plus size={20} className="mx-auto text-gray-300 mb-2" />
+                  <p className="text-xs font-black text-gray-400 uppercase tracking-widest">Añadir tabla de datos</p>
+                  <p className="text-[11px] text-gray-400 mt-1">Este epígrafe no tiene tabla. Haz clic para crear una y empezar a añadir filas y valores.</p>
+                </button>
+              )}
+
               {activeNote.has_table && (
                 <div>
                   <div className="flex items-center gap-2 mb-3">
@@ -2917,8 +3097,9 @@ headerActions={[
                      accountItems={accountItems}
                      onSetVariable={setCellVariable}
                      resolveVariable={resolveVariableValue}
-                     colPeriods={activeNote._col_periods ?? null}
-                     onColHeaderClick={(col) => setColPeriodPopup({ colId: col.id, label: col.label })} />
+colPeriods={activeNote._col_periods ?? null}
+                     onColHeaderClick={(col) => setColPeriodPopup({ colId: col.id, label: col.label })}
+                     onSetRowCcTag={ccTagIndex.catalog.length > 0 ? ((row) => setCcTagPopup({ rowId: row.id, label: row.label, current: row.cc_tag ?? row._cc_tag ?? null, mode: row.cc_mode ?? row._cc_mode ?? "interco" })) : undefined} />
                   )}
 </div>
               )}
@@ -2927,7 +3108,64 @@ headerActions={[
         </div>
       </div>
 
-{colPeriodPopup && (
+{ccTagPopup && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setCcTagPopup(null)}>
+          <div className="w-[440px] max-w-full rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2 rounded-t-2xl">
+              <Library size={15} style={{ color: "#0B7A54" }} />
+              <p className="text-sm font-black text-gray-800">Auto-relleno · «{ccTagPopup.label}»</p>
+            </div>
+            <div className="px-5 py-4 space-y-4">
+              <p className="text-[11px] text-gray-400 -mt-1">
+                Vincula esta fila a una etiqueta de cuenta del estándar. El valor se calcula
+                sumando las cuentas de esa etiqueta (recalculado por periodo).
+              </p>
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1 block">Etiqueta (cc_tag)</label>
+                <FancyDropdown
+                  value={ccTagPopup.current ?? ""}
+                  options={[{ v: "", n: "— Sin auto-relleno —" }, ...ccTagIndex.catalog.map(c => ({ v: c.cc_tag, n: `${c.cc_tag}` }))]}
+                  onChange={(v) => setCcTagPopup(p => ({ ...p, current: v || null }))}
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1 block">Cuentas a incluir</label>
+                <div className="flex gap-1.5">
+                  {[["interco", "Solo intercompañía (i)"], ["normal", "Solo terceros"], ["all", "Todas"]].map(([v, lbl]) => (
+                    <button key={v} onClick={() => setCcTagPopup(p => ({ ...p, mode: v }))}
+                      className={`flex-1 px-2 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-colors ${ccTagPopup.mode === v ? "text-white" : "bg-gray-100 text-gray-500 hover:bg-gray-200"}`}
+                      style={ccTagPopup.mode === v ? { background: "#0B7A54" } : undefined}>
+                      {lbl}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {ccTagPopup.current && (() => {
+                const b = ccTagIndex.byTag.get(ccTagPopup.current);
+                const set = b ? (ccTagPopup.mode === "interco" ? b.interco : ccTagPopup.mode === "normal" ? b.normal : b.all) : null;
+                return (
+                  <div className="rounded-xl bg-gray-50 px-3 py-2">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-1">Cuentas ({set ? set.size : 0})</p>
+                    <p className="text-[11px] font-mono text-gray-600 break-words">{set && set.size ? [...set].join(", ") : "—"}</p>
+                  </div>
+                );
+              })()}
+            </div>
+            <div className="px-5 py-3 border-t border-gray-100 flex justify-between">
+              <button onClick={() => { setRowCcTag(ccTagPopup.rowId, null); setCcTagPopup(null); }}
+                className="px-4 py-2 rounded-lg text-[11px] font-bold uppercase tracking-widest text-gray-500 hover:bg-gray-100">
+                Quitar
+              </button>
+              <button onClick={() => { setRowCcTag(ccTagPopup.rowId, ccTagPopup.current, ccTagPopup.mode); setCcTagPopup(null); }}
+                className="px-4 py-2 rounded-lg text-[11px] font-bold uppercase tracking-widest text-white" style={{ background: "#0B7A54" }}>
+                Aplicar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {colPeriodPopup && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
           onClick={() => setColPeriodPopup(null)}>
 <div className="w-[380px] max-w-full rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
