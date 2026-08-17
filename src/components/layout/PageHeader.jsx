@@ -826,6 +826,7 @@ export default function PageHeader({
   filters = [],
 periodToggle,
   compareToggle,
+  multiToggle,
   currencyToggle,
 aiToggle,
   scopeToggle,
@@ -1133,7 +1134,7 @@ onMouseLeave={() => {
         <div className="flex-grow" />
 
 {/* Inline toggles (period + compare + AI) + Export/Mappings — collapse when More filters hover is active */}
-       {(periodToggle || compareToggle || aiToggle || onExportPdf || onMappingsClick || currencyToggle) && (
+      {(periodToggle || compareToggle || multiToggle || aiToggle || onExportPdf || onMappingsClick || currencyToggle) && (
           <>
             <SoftDivider />
 <div
@@ -1294,9 +1295,29 @@ onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareTog
                   }}
                   onMouseEnter={e => { if (!compareToggle.active) { e.currentTarget.style.transform = "scale(1.03)"; e.currentTarget.style.background = `${colors.primary}12`; } }}
                   onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; if (!compareToggle.active) e.currentTarget.style.background = "rgba(26,47,138,0.06)"; }}>
-                  <GitCompareArrows size={13} strokeWidth={compareToggle.active ? 2.4 : 2} />
+<GitCompareArrows size={13} strokeWidth={compareToggle.active ? 2.4 : 2} />
 <span className="hidden 2xl:inline text-[10px] font-black uppercase tracking-wider">
                     {t("btn_compare") ?? "CMP"}
+                  </span>
+                </button>
+              )}
+              {multiToggle && (
+                <button
+                  onClick={() => multiToggle.onClick()}
+                  title={multiToggle.active ? "Multi-periodo activo — editar selección" : "Sumar varios meses/años"}
+                  className="flex items-center gap-1.5 px-3 h-9 rounded-full flex-shrink-0"
+                  style={{
+                    background: multiToggle.active ? colors.primary : "rgba(26,47,138,0.06)",
+                    color: multiToggle.active ? "white" : colors.primary,
+                    border: multiToggle.active ? `1px solid ${colors.primary}` : "1px solid rgba(26,47,138,0.1)",
+                    boxShadow: multiToggle.active ? "0 4px 12px -2px rgba(26,47,138,0.35)" : "0 1px 3px -1px rgba(26,47,138,0.1)",
+                    transition: `all 240ms ${SMOOTH}`,
+                  }}
+                  onMouseEnter={e => { if (!multiToggle.active) { e.currentTarget.style.transform = "scale(1.03)"; e.currentTarget.style.background = `${colors.primary}12`; } }}
+                  onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; if (!multiToggle.active) e.currentTarget.style.background = "rgba(26,47,138,0.06)"; }}>
+<CalendarRange size={13} strokeWidth={multiToggle.active ? 2.4 : 2} />
+                  <span className="hidden 2xl:inline text-[10px] font-black uppercase tracking-wider">
+                    {multiToggle.active ? (multiToggle.label ?? "MULTI") : "MULTI"}
                   </span>
                 </button>
               )}

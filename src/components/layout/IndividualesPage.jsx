@@ -184,13 +184,13 @@ function DataTable({
 </div>
       {filtered.length > 0 ? (
 <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-         <div className="scrollbar-hide" style={{ height: 'calc(100vh - 160px)', overflowY: 'auto', overflowX: 'auto' }}>
-          <table className="w-full k-sticky-table">
+<div className="scrollbar-hide" style={{ height: 'calc(100vh - 160px)', overflowY: 'auto', overflowX: 'auto' }}>
+          <table className="k-sticky-table" style={{ width: "max-content", minWidth: "100%", tableLayout: "auto", borderCollapse: "collapse" }}>
 <thead>
   <tr className="border-b border-gray-100 bg-[#1a2f8a]/5">
-                  <th className="text-left px-4 py-3 text-xs font-black text-gray-400 uppercase tracking-widest w-10 bg-[#eef1fb]">#</th>
+<th className="text-center px-4 py-3 text-xs font-black text-gray-400 uppercase tracking-widest w-10 bg-[#eef1fb]">#</th>
                   {cols.map((col) => (
-<th key={col} className="text-left px-4 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest whitespace-nowrap bg-[#eef1fb]">                      {formatColumnLabel(col)}
+<th key={col} className="text-center px-4 py-3 text-xs font-black text-[#1a2f8a] uppercase tracking-widest whitespace-nowrap bg-[#eef1fb]">                      {formatColumnLabel(col)}
                     </th>
                   ))}
                 </tr>
@@ -198,9 +198,9 @@ function DataTable({
               <tbody>
                 {filtered.map((row, i) => (
                   <tr key={i} className={`border-b border-gray-50 last:border-0 hover:bg-gray-50/60 transition-colors ${i % 2 !== 0 ? "bg-gray-50/30" : ""}`}>
-                    <td className="px-4 py-2.5 text-gray-300 text-xs font-mono">{i + 1}</td>
+<td className="px-4 py-2.5 text-center text-gray-300 text-xs font-mono">{i + 1}</td>
                     {cols.map((col, j) => (
-                      <td key={j} className="px-4 py-2.5 text-gray-700 whitespace-nowrap">{formatCellValue(row[col])}</td>
+                      <td key={j} className="px-4 py-2.5 text-center text-gray-700 whitespace-nowrap">{formatCellValue(row[col])}</td>
                     ))}
                   </tr>
                 ))}
@@ -314,7 +314,7 @@ function ErrorBox({ error, onRetry }) {
 }
 
 function FilterPill({ label, value, onChange, options, dark = false, labelStyle = "", valueStyle = "" }) {
-  const [open, setOpen] = useState(false);
+const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const display = options.find(o => o.value === value)?.label ?? null;
   const filterTypo = useTypo("filter");
@@ -6903,6 +6903,7 @@ breakers = { pl: {}, bs: {}, cf: {} },
 savedPlLiteral = null,
   savedHighlightedIds = null,
 ytdOnly = false,
+  multiMode = false,
 }) {
 
 
@@ -7891,25 +7892,11 @@ const sumYtdH = (nd) => {
 }, []);
 const getHistPrev = useCallback((h, code) => {
   if (Number(h.month) === 1) return 0;
-  const curN = h.map.get(code);
-  if (!curN) return 0;
-  // Mirror sumNode's traversal but read prev amounts from h.aPrevLeafIdxOnce (keyed by localAccountCode)
-const sumPrevH = (n) => {
-    if (!n) return 0;
-    if (n.type === "localAccount" || n.type === "dimension" || n.type === "plain") {
-      return h.aPrevLeafIdxOnce?.get(String(n.code)) ?? 0;
-    }
-    // Mirror sumNode: if it has children, trust their roll-up.
-    if (n.children && n.children.length > 0) {
-      let s = 0;
-      n.children.forEach(c => { s += sumPrevH(c); });
-      return s;
-    }
-    let s = 0;
-    n.uploadLeaves?.forEach(l => { s += sumPrevH(l); });
-    return s;
-  };
-  return sumPrevH(curN);
+  // Prev via the same sumNode traversal YTD uses, against the prev month's tree
+  // (h.prevMap, built from h.prevData). Reading a leaf index by code lost "plain"
+  // leaves (no code) and rolled-up nodes → prev came out 0 → monthly == ytd.
+  const prevN = h.prevMap?.get(code);
+  return prevN ? sumNode(prevN) : 0;
 }, []);
 
 const getCmp2Ytd = useCallback((code) => { const n = cmp2NodeByCode.get(code); return n ? sumNode(n) : 0; }, [cmp2NodeByCode]);
@@ -8845,13 +8832,13 @@ title={Object.keys(expandedMap).some(k => k.startsWith('saved-') && expandedMap[
                       <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{co}</span>
                     </th>
                   )) : (
-<th className="text-center py-3 whitespace-nowrap k-sticky-head" style={{ cursor: "pointer" }}
-                      onClick={toggleHistory}
-                      title={historyExpanded ? t("hide_history") : t("show_last_6_months")}>
+<th className="text-center py-3 whitespace-nowrap k-sticky-head" style={{ cursor: multiMode ? "default" : "pointer" }}
+                      onClick={multiMode ? undefined : toggleHistory}
+                      title={multiMode ? "" : (historyExpanded ? t("hide_history") : t("show_last_6_months"))}>
                       <div className="flex items-center justify-center gap-3">
-                        <span key={ytdOnly ? "ytd" : "monthly"} className="font-black tracking-tight inline-block"
+<span key={multiMode ? "total" : (ytdOnly ? "ytd" : "monthly")} className="font-black tracking-tight inline-block"
                           style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em" }}>
-                          {(ytdOnly ? t("mode_ytd") : t("mode_monthly")).split("").map((ch, i) => (
+                          {(multiMode ? (t("mode_total") ?? "TOTAL") : (ytdOnly ? t("mode_ytd") : t("mode_monthly"))).split("").map((ch, i) => (
                             <span key={i} className="inline-block"
                               style={{
                                 animation: `letterMorph 420ms cubic-bezier(0.34, 1.56, 0.64, 1) ${i * 35}ms both`,
@@ -9152,23 +9139,14 @@ onClick={hasDrill ? (e) => { e.stopPropagation(); toggle(rowKey); } : undefined}
                               }
                               return ytd - (-prevTotal);
                             }
-                            const ytd = -sumNode(histGaNode);
+const ytd = -sumNode(histGaNode);
                             if (ytdOnly) return ytd;
-                            const sumPrevH = (n) => {
-                              if (!n) return 0;
-                              if (n.type === "localAccount" || n.type === "dimension" || n.type === "plain") {
-                                return h.aPrevLeafIdxOnce?.get(String(n.code)) ?? 0;
-                              }
-                              if (n.uploadLeaves?.length > 0) {
-                                let s = 0;
-                                n.uploadLeaves.forEach(l => { s += sumPrevH(l); });
-                                return s;
-                              }
-                              let s = 0;
-                              (n.children || []).forEach(c => { s += sumPrevH(c); });
-                              return s;
-                            };
-                            const prevYtd = Number(h.month) === 1 ? 0 : -sumPrevH(histGaNode);
+                            // Prev must mirror YTD's sumNode traversal, but against the PREV
+                            // month's tree (h.prevMap, built from h.prevData). Reading a leaf
+                            // index by code failed for "plain" leaves (no code) and rolled-up
+                            // nodes, so prev came out 0 → monthly == ytd.
+                            const prevGaNode = h.prevMap?.get(String(nd.code));
+                            const prevYtd = Number(h.month) === 1 ? 0 : -(prevGaNode ? sumNode(prevGaNode) : 0);
                             return ytd - prevYtd;
                           };
                           const histVal = computeHistForNode(node);
@@ -10030,9 +10008,9 @@ style={{ color: !ytdOnly ? (colors.primary ?? "#1a2f8a") : `${(colors.quaternary
     <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{co}</span>
   </th>
 )) : (
-<th className="text-center py-3 whitespace-nowrap k-sticky-head" style={{ width: "200px", cursor: (compareMode || multiCompany) ? "default" : "pointer" }}
-  onClick={toggleHistory}
- title={(compareMode || multiCompany) ? "" : (historyExpanded ? t("hide_history") : t("show_last_12_months"))}>
+<th className="text-center py-3 whitespace-nowrap k-sticky-head" style={{ width: "200px", cursor: (compareMode || multiCompany || multiMode) ? "default" : "pointer" }}
+onClick={multiMode ? undefined : toggleHistory}
+ title={(compareMode || multiCompany || multiMode) ? "" : (historyExpanded ? t("hide_history") : t("show_last_12_months"))}>
   <span key={ytdOnly ? "ytd" : "monthly"} className="font-black tracking-tight inline-block"
     style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em" }}>
     {(ytdOnly ? t("mode_ytd") : t("mode_monthly")).split("").map((ch, i) => (
@@ -10996,6 +10974,7 @@ function BSDeviationCells({ a, b, typoStyle }) {
 
 
 function BalanceSheet({ plCompareMode = false, externalAccColWidth, onAccColWidthChange, multiCompany = false, selectedCompanies = [], externalBsDrillMap, externalSetBsDrillMap, onHistoryExpandedChange, externalHistoryExpanded, externalHistoryMonths, onHistoryMonthsChange, groupAccounts, uploadedAccounts, loading, error, month, year, source, structure, company, sources, structures, companies, dimGroups, token, journalEntries = [], journalEntriesCmp = [], journalEntriesCmp2 = [], journalEntriesCmp3 = [], onCompareChange, dimensionActive = false,upDimGroup = "", upDimension = "", upDimGroups = [], upDimensions = [], filteredDims = [], externalCmp2Enabled, onBsCmp2EnabledChange,breakers = { pl: {}, bs: {}, cf: {} }, pgcBsMapping = null, savedBsLiteral = null,
+  multiMode = false,
   compareMode, setCompareMode,
   cmpYear, setCmpYear, cmpMonth, setCmpMonth, cmpSource, setCmpSource, cmpStructure, setCmpStructure, cmpCompany, setCmpCompany,
   cmpData, setCmpData,
@@ -11075,9 +11054,9 @@ setHistoryLoading(false);
   }, [year, month, fetchBSHistoryMonth, setHistoryMonths]);
 
 const toggleBSHistory = useCallback(() => {
-    if (compareMode || multiCompany || plCompareMode) return;
+    if (compareMode || multiCompany || plCompareMode || multiMode) return;
     setHistoryExpanded(!historyExpanded);
-}, [compareMode, multiCompany, plCompareMode, historyExpanded, setHistoryExpanded]);
+}, [compareMode, multiCompany, plCompareMode, multiMode, historyExpanded, setHistoryExpanded]);
 
 // Single sync effect: fetches when expanded turns on or period changes; clears when off.
   // Skips refetch on remount when nothing actually changed.
@@ -13453,9 +13432,9 @@ title={Object.keys(bsDrillMap).some(k => k.startsWith('bssaved-') && bsDrillMap[
                       <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{co}</span>
                     </th>
                   )) : (
-<th className="text-center py-3 whitespace-nowrap k-sticky-head" style={{ width: "200px", cursor: compareMode ? "default" : "pointer" }}
-                      onClick={compareMode ? undefined : toggleBSHistory}
-                      title={compareMode ? "" : historyExpanded ? t("hide_history") : t("show_last_6_months")}>
+<th className="text-center py-3 whitespace-nowrap k-sticky-head" style={{ width: "200px", cursor: (compareMode || multiMode) ? "default" : "pointer" }}
+                      onClick={(compareMode || multiMode) ? undefined : toggleBSHistory}
+                      title={(compareMode || multiMode) ? "" : historyExpanded ? t("hide_history") : t("show_last_6_months")}>
                       <span className="font-black tracking-tight inline-block"
                         style={{ color: colors.primary, fontSize: 16, letterSpacing: "-0.02em", animation: "kBadgesPop 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.22s both" }}>
                         {t("col_actual")}
@@ -14622,7 +14601,191 @@ function useAnimatedNumber(target, duration = 800) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target, duration]);
 
-  return display;
+return display;
+}
+
+// ── Selector de meses por año (pill del header, modo multi-periodo) ──────
+// Muestra, por cada año seleccionado, su fila de 12 meses para marcar. Sin año
+// seleccionado en multi, cae a un selector de mes simple (modo single).
+const MONTH_LABELS = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+function MonthsByYearPill({ periods, singleYear, singleMonth, onChange }) {
+  const { colors } = useSettings();
+  const [open, setOpen] = useState(false);
+  const [hover, setHover] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    function h(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+// Si no hay periodos multi pero sí un año single, lo tratamos como un periodo
+  // editable para poder marcar varios meses de ese año directamente.
+  const effPeriods = periods.length > 0
+    ? periods
+    : (singleYear ? [{ year: String(singleYear), months: singleMonth ? [Number(singleMonth)] : [] }] : []);
+  const hasYears = effPeriods.length > 0;
+const toggleMonth = (year, mo) => {
+    const next = effPeriods.map(p => {
+      if (p.year !== year) return p;
+      const has = p.months.includes(mo);
+      return { ...p, months: has ? p.months.filter(m => m !== mo) : [...p.months, mo].sort((a, b) => a - b) };
+    });
+    onChange(next);
+  };
+  const setYearMonths = (year, months) => onChange(effPeriods.map(p => p.year === year ? { ...p, months } : p));
+
+  // Etiqueta del pill.
+const withMonths = effPeriods.filter(p => p.months?.length);
+const totalMonths = withMonths.reduce((s, p) => s + p.months.length, 0);
+  const label = hasYears
+    ? (totalMonths === 0 ? "Elige meses"
+        : totalMonths === 1
+          ? (MONTH_LABELS[withMonths[0].months[0] - 1] ?? "1 mes")
+          : `${totalMonths} meses`)
+    : (singleMonth ? (MONTH_LABELS[Number(singleMonth) - 1] ?? "Mes") : "Mes");
+
+const showLabel = hover || open;
+  return (
+    <div ref={ref} className="relative flex-shrink-0"
+      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
+      <button onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-2 rounded-xl select-none overflow-hidden"
+       style={{ padding: "8px 12px", background: open || hover ? `${colors.primary}0F` : "transparent", transition: "background 220ms cubic-bezier(0.4,0,0.2,1)", lineHeight: 1 }}>
+<span className="inline-flex items-center overflow-hidden whitespace-nowrap"
+          style={{ maxWidth: showLabel ? 100 : 0, opacity: showLabel ? 1 : 0, transition: "max-width 280ms cubic-bezier(0.4,0,0.2,1), opacity 220ms" }}>
+          <span className="text-[9px] font-black uppercase tracking-[0.18em] leading-none pr-2" style={{ color: colors.primary, opacity: 0.55 }}>Mes</span>
+        </span>
+        <span className="truncate text-[13px] font-bold" style={{ color: colors.primary, maxWidth: 140 }}>{label}</span>
+        <ChevronDown size={11} style={{ color: colors.primary, opacity: 0.4, transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 280ms" }} />
+      </button>
+{open && (
+<div className="absolute z-[9999] mt-2 left-0 w-[180px] rounded-2xl overflow-hidden"
+          style={{ background: "rgba(255,255,255,0.97)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: "1px solid rgba(26,47,138,0.08)", boxShadow: "0 20px 50px -12px rgba(26,47,138,0.18)" }}>
+          <div className="p-1.5 max-h-72 overflow-y-auto" style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}>
+            {effPeriods.map((p, pi) => {
+              const allOn = p.months.length === 12;
+              return (
+                <div key={p.year} className={pi > 0 ? "mt-1 pt-1 border-t border-gray-100" : ""}>
+                  {/* Cabecera del año con "todos/ninguno" */}
+                  <button onClick={() => setYearMonths(p.year, allOn ? [] : [1,2,3,4,5,6,7,8,9,10,11,12])}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-black uppercase tracking-widest flex items-center gap-3"
+                    style={{ color: "#1a2f8a" }}
+                    onMouseEnter={e => { e.currentTarget.style.background = "rgba(26,47,138,0.06)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>
+                    <span className="w-4 h-4 rounded-md border flex items-center justify-center flex-shrink-0"
+                      style={{ backgroundColor: allOn ? "#1a2f8a" : "#fff", borderColor: allOn ? "#1a2f8a" : "#d4d4d8" }}>
+                      {allOn && <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2 6L5 9L10 3" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                    </span>
+                    {p.year}
+                  </button>
+                  {/* Lista vertical de meses */}
+                  {MONTH_LABELS.map((lbl, i) => {
+                    const mo = i + 1;
+                    const on = p.months.includes(mo);
+                    return (
+                      <button key={mo} onClick={() => toggleMonth(p.year, mo)}
+                        className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-3"
+                        style={{ color: "#475569" }}
+                        onMouseEnter={e => { e.currentTarget.style.background = "rgba(26,47,138,0.10)"; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>
+                        <span className="w-4 h-4 rounded-md border flex items-center justify-center flex-shrink-0"
+                          style={{ backgroundColor: on ? "#1a2f8a" : "#fff", borderColor: on ? "#1a2f8a" : "#d4d4d8" }}>
+                          {on && <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2 6L5 9L10 3" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        </span>
+                        <span>{lbl}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// (obsoleto) Modal antiguo — ya no se usa; se conserva por compatibilidad.
+function MultiPeriodModal({ years, initialPeriods, onClose, onApply }) {
+  const [periods, setPeriods] = useState(() => {
+    const base = (initialPeriods && initialPeriods.length) ? initialPeriods.map(p => ({ year: String(p.year), months: [...(p.months || [])] })) : [];
+    return base;
+  });
+  const [pickYear, setPickYear] = useState("");
+
+  const addYear = (y) => {
+    if (!y || periods.some(p => p.year === String(y))) return;
+    setPeriods(prev => [...prev, { year: String(y), months: [] }].sort((a, b) => Number(a.year) - Number(b.year)));
+    setPickYear("");
+  };
+  const removeYear = (y) => setPeriods(prev => prev.filter(p => p.year !== y));
+  const toggleMonth = (y, mo) => setPeriods(prev => prev.map(p => {
+    if (p.year !== y) return p;
+    const has = p.months.includes(mo);
+    return { ...p, months: has ? p.months.filter(m => m !== mo) : [...p.months, mo].sort((a, b) => a - b) };
+  }));
+  const allMonths = (y) => setPeriods(prev => prev.map(p => p.year === y ? { ...p, months: [1,2,3,4,5,6,7,8,9,10,11,12] } : p));
+  const noMonths = (y) => setPeriods(prev => prev.map(p => p.year === y ? { ...p, months: [] } : p));
+
+  const availableYears = years.filter(y => !periods.some(p => p.year === String(y)));
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="w-[560px] max-w-full rounded-2xl bg-white shadow-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
+          <Calendar size={16} className="text-blue-600" />
+          <p className="text-sm font-black text-gray-800">Seleccionar periodos a sumar</p>
+        </div>
+        <div className="px-5 py-4 space-y-4 overflow-y-auto">
+          <div className="flex items-center gap-2">
+            <select value={pickYear} onChange={e => setPickYear(e.target.value)}
+              className="px-3 py-2 rounded-lg border border-gray-200 text-sm">
+              <option value="">Añadir año…</option>
+              {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+            <button onClick={() => addYear(pickYear)} disabled={!pickYear}
+              className="px-3 py-2 rounded-lg bg-blue-600 text-white text-xs font-bold disabled:opacity-40">Añadir</button>
+          </div>
+
+          {periods.length === 0 && (
+            <p className="text-xs text-gray-400 italic">Añade uno o más años y elige sus meses. Un año sin meses marcados se ignora.</p>
+          )}
+
+          {periods.map(p => (
+            <div key={p.year} className="rounded-xl border border-gray-200 p-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm font-black text-gray-800">{p.year}</p>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => allMonths(p.year)} className="text-[10px] font-bold text-blue-600 hover:underline">Todo el año</button>
+                  <button onClick={() => noMonths(p.year)} className="text-[10px] font-bold text-gray-400 hover:underline">Ninguno</button>
+                  <button onClick={() => removeYear(p.year)} className="text-[10px] font-bold text-red-500 hover:underline">Quitar</button>
+                </div>
+              </div>
+              <div className="grid grid-cols-6 gap-1.5">
+                {MONTH_LABELS.map((lbl, i) => {
+                  const mo = i + 1;
+                  const on = p.months.includes(mo);
+                  return (
+                    <button key={mo} onClick={() => toggleMonth(p.year, mo)}
+                      className={`px-2 py-1.5 rounded-lg text-[11px] font-bold transition-colors ${on ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-500 hover:bg-gray-200"}`}>
+                      {lbl}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 flex justify-between">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-xs font-bold text-gray-500 hover:bg-gray-100">Cancelar</button>
+          <button onClick={() => onApply(periods.filter(p => p.months.length))}
+            className="px-4 py-2 rounded-lg bg-blue-600 text-white text-xs font-bold">Aplicar</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const AccountsDashboard = React.memo(function AccountsDashboard({ token, onNavigate, sources = [], structures = [], companies = [], dimensions = [], activeStandardKey = null }) {
@@ -14803,6 +14966,13 @@ const handleTabChange = (newTab) => {
   // ── Filter state (shared — used by Uploaded and Report tabs) ──
 const [upYear, setUpYear] = useState("");
   const [upMonth, setUpMonth] = useState("");
+  // ── Multi-periodo (sumar rango de meses/años) ──────────────────────
+  // multiPeriods: [{ year: "2024", months: [7,8,9] }, ...]. multiMode activa el
+  // modo "total del rango": una sola columna, toggle mensual/YTD oculto.
+  const [multiMode, setMultiMode] = useState(false);
+  const [multiPeriods, setMultiPeriods] = useState([]); // [{year, months:[]}]
+const [multiData, setMultiData] = useState([]);       // uploaded-accounts sintético (suma de movimientos)
+  const [multiLoading, setMultiLoading] = useState(false);
   // When the period changes while history is expanded, clear both history arrays
 // so each side re-fetches against the new period (handles unmounted tab too).
 const histPeriodRef = useRef(`${upYear}-${upMonth}`);
@@ -15603,9 +15773,120 @@ const fetchPrev = useCallback(async (year, month, source, structure, companies) 
     if (!res.ok) { setPrevData([]); return; }
     const json = await res.json();
     setPrevData(json.value ?? (Array.isArray(json) ? json : []));
-  } catch { setPrevData([]); }
+} catch { setPrevData([]); }
   finally { setPrevLoading(false); }
 }, [headers]);
+
+// ── Multi-periodo: carga el YTD de un mes concreto ────────────────────
+const fetchMonthYtd = useCallback(async (year, month, source, structure, companies) => {
+  const coFilter = buildCompanyFilter(companies);
+  if (!year || !month || !source || !structure || !coFilter) return [];
+  try {
+    const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and ${coFilter}`;
+    const res = await fetch(
+      `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
+      { headers: headers() }
+    );
+    if (!res.ok) return [];
+    const json = await res.json();
+    return json.value ?? (Array.isArray(json) ? json : []);
+  } catch { return []; }
+}, [headers]);
+
+// Suma los movimientos (YTD(m) − YTD(m−1)) de todos los meses seleccionados y
+// construye un uploaded-accounts sintético con el total en AmountYTD/AmountPeriod.
+// Divide una lista de meses en tramos contiguos. [7,8,9,11] → [[7,8,9],[11]].
+const splitContiguous = (months) => {
+  const sorted = [...new Set(months)].sort((a, b) => a - b);
+  const runs = [];
+  let run = [];
+  sorted.forEach(m => {
+    if (run.length === 0 || m === run[run.length - 1] + 1) run.push(m);
+    else { runs.push(run); run = [m]; }
+  });
+  if (run.length) runs.push(run);
+  return runs;
+};
+
+const loadMultiPeriods = useCallback(async (periods, source, structure, companies) => {
+  const coFilter = buildCompanyFilter(companies);
+  if (!periods?.length || !source || !structure || !coFilter) { setMultiData([]); return; }
+  setMultiLoading(true);
+  try {
+    // Determinar los meses frontera a cargar por año, según tramos y sueltos.
+    // Para un tramo contiguo [a..b]: total = YTD(b) − YTD(a−1) → cargamos b y a−1.
+    // Para un mes suelto m aislado: monthly = YTD(m) − YTD(m−1) → cargamos m y m−1.
+    // En ambos casos, un tramo/suelto que empieza en enero no resta nada (YTD(0)=0).
+    const need = new Map(); // "y-m" → {year, month, sign}  (no usamos sign en la carga)
+    const plan = []; // { year, addKey, subKey|null }  para cada tramo/suelto
+    periods.forEach(p => {
+      const runs = splitContiguous(p.months || []);
+      runs.forEach(run => {
+        const first = run[0];
+        const last = run[run.length - 1];
+        const addKey = `${p.year}-${last}`;                 // YTD del último mes del tramo
+        const subMonth = first - 1;                          // mes anterior al primero
+        const subKey = subMonth >= 1 ? `${p.year}-${subMonth}` : null;
+        need.set(addKey, { year: p.year, month: last });
+        if (subKey) need.set(subKey, { year: p.year, month: subMonth });
+        plan.push({ addKey, subKey });
+      });
+    });
+// Cargar solo los meses frontera necesarios (mucho menos que todos los meses).
+    const entries = [...need.values()];
+    const results = await Promise.all(entries.map(e => fetchMonthYtd(e.year, e.month, source, structure, companies)));
+// Clave compuesta: cuenta + cuenta local + dimensión (misma granularidad que
+    // buildTree, que desglosa por localAccountCode/dimensionCode). Así no perdemos hojas.
+    const rowKey = (r) => {
+      const code = r.AccountCode ?? r.accountCode ?? "";
+      const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
+      const dim = r.DimensionCode ?? r.dimensionCode ?? "";
+      return `${code}\u0000${lac}\u0000${dim}`;
+    };
+    const ytdByKey = new Map(); // "y-m" → Map(compositeKey → { row, ytd sumado })
+    entries.forEach((e, i) => {
+      const m = new Map();
+      (results[i] || []).forEach(r => {
+        const code = r.AccountCode ?? r.accountCode;
+        if (code == null) return;
+        const key = rowKey(r);
+        const ytd = Number(r.AmountYTD ?? r.amountYTD ?? 0) || 0;
+        if (m.has(key)) {
+          m.get(key).ytd += ytd;
+        } else {
+          m.set(key, { row: r, ytd });
+        }
+      });
+      ytdByKey.set(`${e.year}-${e.month}`, m);
+    });
+// Sumar cada tramo: YTD(addKey) − YTD(subKey).
+    const acc = new Map(); // code → { row base, amount }
+    plan.forEach(({ addKey, subKey }) => {
+      const add = ytdByKey.get(addKey) ?? new Map();
+      const sub = subKey ? (ytdByKey.get(subKey) ?? new Map()) : new Map();
+    
+add.forEach((entry, code) => {
+        const ytdAdd = entry.ytd;
+        const subEntry = sub.get(code);
+        const ytdSub = subEntry ? subEntry.ytd : 0;
+        const val = ytdAdd - ytdSub;
+        if (!acc.has(code)) acc.set(code, { row: entry.row, amount: 0 });
+        acc.get(code).amount += val;
+      });
+      // Cuentas presentes en sub pero no en add: su saldo se cerró; restarlas.
+      sub.forEach((entry, code) => {
+        if (add.has(code)) return;
+        if (!acc.has(code)) acc.set(code, { row: entry.row, amount: 0 });
+        acc.get(code).amount -= entry.ytd;
+      });
+    });
+const synthetic = [...acc.values()].map(({ row, amount }) => ({
+      ...row, AmountYTD: amount, amountYTD: amount, AmountPeriod: amount, amountPeriod: amount,
+    }));
+    setMultiData(synthetic);
+  } catch { setMultiData([]); }
+  finally { setMultiLoading(false); }
+}, [fetchMonthYtd]);
 
 const fetchCmp = useCallback(async (year, month, source, structure, company) => {
   if (!year || !month || !source || !structure || !company) return;
@@ -15686,6 +15967,15 @@ useEffect(() => {
     fetchJournal(upYear, upMonth, upSource, upStructure, upCompaniesDebounced);
   }
 }, [upSource, upStructure, upYear, upMonth, upCompaniesDebounced, fetchUploaded, fetchPrev, fetchJournal]);
+
+// Recarga el total multi-periodo cuando cambian los periodos o el contexto.
+useEffect(() => {
+  if (multiMode && upSource && upStructure && upCompaniesDebounced.length > 0 && multiPeriods.some(p => p.months?.length)) {
+    loadMultiPeriods(multiPeriods, upSource, upStructure, upCompaniesDebounced);
+  } else if (!multiMode) {
+    setMultiData([]);
+  }
+}, [multiMode, multiPeriods, upSource, upStructure, upCompaniesDebounced, loadMultiPeriods]);
 
 const fetchJournalCmp = useCallback(async (year, month, source, structure, company) => {
   if (!year || !month || !source || !structure || !company) { setJrnCmpData([]); return; }
@@ -15827,8 +16117,16 @@ useEffect(() => { unlockCountUpForInitialLoad(1500); }, []);
   const cmp2PrevUploadedAccountsMemo = useMemo(() => cmp2PrevData.filter(r => rowMatchesDimMulti(r, cmp2DimGroups, cmp2Dimensions)), [cmp2PrevData, cmp2DimGroups, cmp2Dimensions]);
   const cmp3UploadedAccountsMemo = useMemo(() => cmp3Data.filter(r => rowMatchesDimMulti(r, cmp3DimGroups, cmp3Dimensions)), [cmp3Data, cmp3DimGroups, cmp3Dimensions]);
 const cmp3PrevUploadedAccountsMemo = useMemo(() => cmp3PrevData.filter(r => rowMatchesDimMulti(r, cmp3DimGroups, cmp3Dimensions)), [cmp3PrevData, cmp3DimGroups, cmp3Dimensions]);
-  const upUploadedAccountsMemo = useMemo(() => upData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions)), [upData, upDimGroups, upDimensions]);
-  const upPrevUploadedAccountsMemo = useMemo(() => prevData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions)), [prevData, upDimGroups, upDimensions]);
+const upUploadedAccountsMemo = useMemo(() => {
+    // En modo multi-periodo, el "actual" es el total sintético del rango.
+const base = multiMode ? multiData : upData;
+    return base.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions));
+  }, [multiMode, multiData, upData, upDimGroups, upDimensions]);
+  const upPrevUploadedAccountsMemo = useMemo(() => {
+    // En multi-periodo no hay "mes anterior": el total ya está en el actual, prev = [].
+    if (multiMode) return [];
+    return prevData.filter(r => rowMatchesDimMulti(r, upDimGroups, upDimensions));
+  }, [multiMode, prevData, upDimGroups, upDimensions]);
   useEffect(() => {
   if (compareMode && cmpSource && cmpStructure && cmpYear && cmpMonth && cmpCompany) {
     fetchCmp(cmpYear, cmpMonth, cmpSource, cmpStructure, cmpCompany);
@@ -16417,10 +16715,55 @@ kicker={viewsMode ? t("kicker_accounts_views") : t("kicker_accounts")}
   onTabChange={handleTabChange}
   onBack={viewsMode ? () => { if (viewsMode === "landing") setViewsMode(null); else setViewsMode("landing"); } : undefined}
 filters={viewsMode ? [] : [
-    { label: t("filter_year"),     value: upYear,     onChange: setUpYear,
-      options: YEARS.map(y => ({ value: String(y), label: String(y) })) },
-    { label: t("filter_month"),    value: upMonth,    onChange: setUpMonth,
-      options: MONTHS.map(m => ({ value: String(m.value), label: m.label })) },
+    // Tab PL: año/mes se vuelven multi-periodo (varios años, meses por año).
+(activeTab === "pl" && !plHistoryExpanded) ? {
+      label: t("filter_year"), multiselect: true,
+values: multiPeriods.length ? multiPeriods.map(p => p.year) : (upYear ? [upYear] : []),
+      onChange: (vs) => {
+        const years = (vs && vs.length) ? vs.map(String) : [];
+        setMultiPeriods(prev => {
+          const byYear = new Map(prev.map(p => [p.year, p]));
+          const next = years.map(y => byYear.get(y) ?? { year: y, months: [] })
+            .sort((a, b) => Number(a.year) - Number(b.year));
+          return next;
+        });
+        // Al deseleccionar todo, salir del modo multi y volver a single.
+        if (!years.length) { setMultiMode(false); setMultiData([]); }
+        else {
+          // Si solo un año y sin meses aún, precargar upYear para el modo single.
+          if (years.length === 1) setUpYear(years[0]);
+        }
+      },
+      options: YEARS.map(y => ({ value: String(y), label: String(y) })),
+    } : {
+      label: t("filter_year"), value: upYear, onChange: setUpYear,
+      options: YEARS.map(y => ({ value: String(y), label: String(y) })),
+    },
+(activeTab === "pl" && !plHistoryExpanded) ? {
+      label: t("filter_month"),
+      render: () => (
+        <MonthsByYearPill
+          periods={multiPeriods}
+          singleYear={upYear} singleMonth={upMonth}
+          onSingle={(y, m) => { setUpYear(y); setUpMonth(m); setMultiMode(false); setMultiData([]); }}
+          onChange={(next) => {
+            setMultiPeriods(next);
+            const withMonths = next.filter(p => p.months?.length);
+            // Multi si hay >1 año con meses, o un año con >1 mes.
+            const isMulti = withMonths.length > 1 || (withMonths.length === 1 && withMonths[0].months.length > 1);
+            setMultiMode(isMulti);
+            if (!isMulti && withMonths.length === 1) {
+              // Un solo mes de un solo año → modo single normal.
+              setUpYear(withMonths[0].year); setUpMonth(String(withMonths[0].months[0]));
+              setMultiData([]);
+            }
+          }}
+        />
+      ),
+    } : {
+      label: t("filter_month"), value: upMonth, onChange: setUpMonth,
+      options: MONTHS.map(m => ({ value: String(m.value), label: m.label })),
+    },
     { label: t("filter_source"),   value: upSource,   onChange: setUpSource,
       options: effectiveSources.map(s => { const v = typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s); return { value: v, label: v }; }) },
     { label: t("filter_structure"),value: upStructure,onChange: setUpStructure,
@@ -16469,10 +16812,11 @@ filters={viewsMode ? [] : [
     return { value: v, label: l };
   }) },
   ]}
-periodToggle={!viewsMode && activeTab === "pl" ? {
+periodToggle={!viewsMode && activeTab === "pl" && !multiMode ? {
     value: ytdOnly ? "ytd" : "monthly",
     onChange: (next) => setYtdOnly(next === "ytd"),
   } : null}
+
 compareToggle={
     viewsMode ? null :
 activeTab === "pl" ? {
@@ -16522,7 +16866,6 @@ onExportXlsx={(!viewsMode && (activeTab === "pl" || activeTab === "bs"))
   ? () => { setExportOpts(o => ({ ...o, format: "xlsx" })); setExportModal(true); }
   : undefined}
 />
-
 
 {activeMapping && !activeMapping.is_hidden && (
   <div className="flex items-center gap-2 mt-3 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm">
@@ -16950,7 +17293,9 @@ selectedCompanies={upCompaniesDebounced}
   externalHistoryExpanded={plHistoryExpanded}
   externalHistoryMonths={plHistoryMonths}
   onHistoryMonthsChange={setPlHistoryMonths}
-  ytdOnly={ytdOnly}
+ytdOnly={multiMode ? true : ytdOnly}
+  multiMode={multiMode}
+  multiPeriods={multiPeriods}
   dimensionActive={(upDimGroups?.length > 0) || (upDimensions?.length > 0)}
 groupAccounts={enrichedGrpData}
   dimensions={effectiveDimensions}
@@ -17109,6 +17454,7 @@ savedHighlightedIds={activeMapping?.highlightedIds ?? null}
 <BalanceSheet
 externalAccColWidth={accColWidth}
   onAccColWidthChange={setAccColWidth}
+  multiMode={multiMode}
   multiCompany={upCompanies.length > 1}
   selectedCompanies={upCompanies}
   externalBsDrillMap={bsDrillMap}

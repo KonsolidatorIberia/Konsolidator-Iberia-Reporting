@@ -317,8 +317,9 @@ nav_mappings: "Mappings",
     btn_signing_in:     "Signing in…",
 
     // ── Period modes ─────────────────────────────
-    mode_ytd:           "YTD",
+mode_ytd:           "YTD",
     mode_monthly:       "Monthly",
+    mode_total:         "TOTAL",
     mode_mtd:           "MTD",
 
     // ── Summary / Detailed ───────────────────────
@@ -1631,8 +1632,9 @@ nav_mappings: "Mappings",
     btn_signing_in:     "Logger ind…",
 
     // ── Period modes ─────────────────────────────
-    mode_ytd:           "ÅTD",
+mode_ytd:           "ÅTD",
     mode_monthly:       "Månedlig",
+    mode_total:         "TOTAL",
     mode_mtd:           "MTD",
 
     // ── Summary / Detailed ───────────────────────
@@ -3018,8 +3020,9 @@ nav_mappings: "Mapeos",
     btn_signing_in:     "Iniciando sesión…",
 
     // ── Period modes ─────────────────────────────
-    mode_ytd:           "YTD",
+mode_ytd:           "YTD",
     mode_monthly:       "Mensual",
+    mode_total:         "TOTAL",
     mode_mtd:           "AcMes",
 
     // ── Summary / Detailed ───────────────────────
@@ -4336,7 +4339,7 @@ btn_compare: "Comparar", btn_compare_with: "Comparar com",
     btn_collapse_all: "Recolher tudo", btn_show_data: "Mostrar dados",
     btn_hide_data: "Ocultar dados", btn_sign_in: "Entrar", btn_signing_in: "A entrar…",
 
-    mode_ytd: "YTD", mode_monthly: "Mensal", mode_mtd: "MTD",
+mode_ytd: "YTD", mode_monthly: "Mensal", mode_mtd: "MTD", mode_total: "TOTAL",
     view_summary: "Resumo", view_detailed: "Detalhado",
     loading_data: "A carregar dados…", loading_meta: "A carregar metadados…",
     loading_kpis: "A gerar KPIs consolidados…",
