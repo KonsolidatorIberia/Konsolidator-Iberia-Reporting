@@ -12,16 +12,47 @@
      StructureViews.jsx   → pestañas de empresas y periodos
      structureShared.js   → textos, API, colores y disposición del árbol
      structure.module.css → estilos
+     studio/              → estructuras propias (planes Pro y Max)
+
+   Los clientes Base ven la estructura de Konsolidator (solo lectura); los
+   Pro y Max configuran la suya (studio/StructureStudio.jsx).
    ══════════════════════════════════════════════════════════════════════ */
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Building2, GitBranch, CalendarRange, RefreshCw, AlertTriangle, CheckCircle2, Unlink, Crown } from "lucide-react";
-import { useSettings, useT } from "../../components/layout/SettingsContext.jsx";
+import { useSettings, useSettingsControls, useT } from "../../components/layout/SettingsContext.jsx";
 import PageHeader from "../../components/layout/PageHeader.jsx";
 import ProgressLoader from "../../components/framework/ProgressLoader.jsx";
 import { apiFetch, buildNodes, treeIndex, ccyColor, ownColor, initials, fmtPct, useStText } from "./structureShared.js";
 import { OrgCanvas, DetachedRail } from "./StructureTree.jsx";
 import { CompaniesView, PeriodsView } from "./StructureViews.jsx";
+import { loadAccess, isProTier } from "./studio/studioApi.js";
 import s from "./structure.module.css";
+
+const StructureStudio = lazy(() => import("./studio/StructureStudio.jsx"));
+
+// Plan del cliente: Pro y Max configuran su estructura; el resto, la de Konsolidator
+export default function StructurePage(props) {
+  const { userId } = useSettingsControls();
+  const [access, setAccess] = useState(null);
+  useEffect(() => {
+    let off = false;
+    if (!userId) return undefined;
+    loadAccess(userId)
+      .then(a => { if (!off) setAccess({ ...a, userId }); })
+      .catch(() => { if (!off) setAccess({ tier: null, userId }); });
+    return () => { off = true; };
+  }, [userId]);
+  // Hasta saber el plan no se pinta nada (así no se lanza la página Base para nada)
+  if (!userId || access?.userId !== userId) return <div className={s.page} />;
+  if (access.companyId && isProTier(access.tier)) {
+    return (
+      <Suspense fallback={<div className={s.page} />}>
+        <StructureStudio token={props.token} access={access} />
+      </Suspense>
+    );
+  }
+  return <KonsolidatorStructurePage {...props} />;
+}
 
 const ENDPOINTS = [
   { key: "groupStructure", path: "/v2/group-structure", step: "gs" },
@@ -31,7 +62,7 @@ const ENDPOINTS = [
   { key: "periods", path: "/v2/periods", step: "pe" },
 ];
 
-export default function StructurePage({ token, structures: sharedStructures = [], companies: sharedCompanies = [] }) {
+function KonsolidatorStructurePage({ token, structures: sharedStructures = [], companies: sharedCompanies = [] }) {
   const t = useT();
   const tx = useStText();
   const { colors } = useSettings();

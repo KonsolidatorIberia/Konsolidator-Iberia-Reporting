@@ -13,7 +13,7 @@
    ════════════════════════════════════════════════════════════════ */
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { useSettings } from "../../components/layout/SettingsContext.jsx";
+import { useLocale } from "../../components/layout/SettingsContext.jsx";
 import {
   ArrowRight, Check, ChevronLeft, X, BookOpen, Sparkles, Building, Network, CalendarRange, FileText,
   LayoutGrid, AlignLeft, Braces, Table2, Columns3, ArrowUpDown, Layers, Search, Link2, ListChecks,
@@ -1064,8 +1064,8 @@ const PAGES = [
    botón de icono de la barra) toma ese estilo y muestra el texto como tooltip. */
 export function GuideButton({ locale, className, label = true }) {
   const [open, setOpen] = useState(false);
-  const settings = useSettings();
-  const lc = locale ?? settings?.locale;
+  const appLocale = useLocale();
+  const lc = locale ?? appLocale;
   const L = TEXT[pickLang(lc)];
   return (
     <>

@@ -30,7 +30,7 @@ import {
 } from "./memoryEngine.js";
 import styles from "./MemoryEditor.module.css";
 import { GuideButton } from "./MemoryGuide.jsx";
-import { useSettings, useT } from "../../components/layout/SettingsContext.jsx";
+import { useLocale, useT } from "../../components/layout/SettingsContext.jsx";
 import { L, setMemoryT } from "./memoryI18n.js";
 
 const cx = (...c) => c.filter(Boolean).join(" ");
@@ -77,7 +77,7 @@ export default function MemoryEditor({
   // Idioma de la app: lo usan el editor y el motor (L)
   const T = useT();
   setMemoryT(T);
-  const locale = useSettings()?.locale ?? "es";
+  const locale = useLocale();
   const mem = presentation.memory ?? {};
   const notes = useMemo(() => (mem.notes ?? []).map(fixNote), [mem.notes]);
   const period = mem.period ?? {};

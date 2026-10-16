@@ -3,7 +3,7 @@
    da / pt), lectura de la API, colores por moneda y participación, nodos
    del organigrama y su disposición.
    ══════════════════════════════════════════════════════════════════════ */
-import { useSettings } from "../../components/layout/SettingsContext.jsx";
+import { useLocale } from "../../components/layout/SettingsContext.jsx";
 
 /* ── Textos nuevos (los de siempre siguen viniendo de i18n: st_*) ───── */
 const TX = {
@@ -93,7 +93,7 @@ const TX = {
   },
 };
 export function useStText() {
-  const { locale } = useSettings();
+  const locale = useLocale();
   return TX[locale] ?? TX[String(locale ?? "").slice(0, 2)] ?? TX.en;
 }
 
