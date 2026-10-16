@@ -19,7 +19,7 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallba
 import { X, RefreshCw, Download, Filter, TrendingUp, BarChart2, Layers, Search } from "lucide-react";
 import ConsolidationTrail from "./ConsolidationTrail.jsx";
 import PageHeader, { FilterPill as HeaderFilterPill } from "../../components/layout/PageHeader.jsx";
-import { useTypo, useSettings } from "../../components/layout/SettingsContext";
+import { useTypo, useSettings, useLocale } from "../../components/layout/SettingsContext";
 import { t } from "../../lib/i18n";
 import { BASE, TYPE_ORDER, buildTree, apiRows, isAbort, pickPeriodFromRuns, periodKey, fmtBytes, hashText } from "./consolidationSheetUtils.js";
 import { generateSheetXlsxMulti, generateSheetPdf } from "./consolidationSheetExports.js";
@@ -48,7 +48,8 @@ const _sb1 = useTypo("subbody1");
 const _u1 = useTypo("underscore1");
 const _u2 = useTypo("underscore2");
 const _fs = useTypo("filter");
-const { colors: _colors, locale } = useSettings();
+const { colors: _colors } = useSettings();
+const locale = useLocale();
 const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
 
 // Stabilize references — useTypo/useSettings return new objects each render,

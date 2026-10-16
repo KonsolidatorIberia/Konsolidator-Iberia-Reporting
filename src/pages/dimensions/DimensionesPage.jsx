@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Library, CheckCircle2, TrendingUp, BarChart2, Download, Layers, Pencil, FileText } from "lucide-react";
 
 
-import { useTypo, useSettings, useSettingsControls } from "../../components/layout/SettingsContext";
+import { useTypo, useSettings, useSettingsControls, useLocale } from "../../components/layout/SettingsContext";
 import { useLatestPeriod } from "../../components/layout/LatestPeriodContext.jsx";
 import { t } from "../../lib/i18n";
 import PageHeader, { FilterPill as HeaderFilterPill, MultiFilterPill } from "../../components/layout/PageHeader.jsx";
@@ -369,7 +369,7 @@ function buildTree(accounts, standardMapping = null) {
   const EMPTY_LEAVING = new Set();
 const DimensionRow = React.memo(function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, getLocalVal = null, getCmpLocalVal = null, localPivot = null, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null, valCache = null, cmpCache = null, isAnimatingData = false, tableJustLoaded = false, cmpRecentlyToggled = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), drillLeaving = EMPTY_LEAVING, onToggleDrillAccount = null, statementType = "pl", selGroups = new Set(), selDims = new Set(), sign = -1, groupAccounts = [], masterCompany = "", computeDrillCompanyRows = null, dimNameToCodes = null }) {
 const subbody2Style = useTypo("subbody2");
-  const { locale } = useSettings();
+  const locale = useLocale();
   const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
   const code = node.AccountCode;
   const visibleChildren = excludeCodes
@@ -686,7 +686,8 @@ const header2Style = useTypo("header2");
   const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
   const subbody2Style = useTypo("subbody2");
-const { colors, locale } = useSettings();
+const { colors } = useSettings();
+const locale = useLocale();
   const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
 
 // Account header search — magnifier toggles to input, matches highlight in yellow.
@@ -4632,7 +4633,8 @@ const PeriodChip = ({ letter, color, label, filters, MONTHS, companies = [] }) =
 };
 
 export default function DimensionesPage({ token, onNavigate, sources: rawSources = [], structures: rawStructures = [], companies: rawCompanies = [], dimensions: rawDimensions = [], cachedPeriod = null, activeStandardKey = null }) {
-const { colors, locale } = useSettings();
+const { colors } = useSettings();
+const locale = useLocale();
 const { access } = useCurrentUserResourceAccess();
 
 // Resource-access filter: for each "kind" (source/structure/company/dimension/mapping)

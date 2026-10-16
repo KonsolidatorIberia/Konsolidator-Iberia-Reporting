@@ -20,7 +20,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
-import { useTypo, useSettings } from "../../components/layout/SettingsContext";
+import { useTypo, useSettings, useLocale } from "../../components/layout/SettingsContext";
 import { t } from "../../lib/i18n";
 import { Loader2, X, RefreshCw, Filter, TrendingUp, Download, BarChart2, Layers, Search, FileText } from "lucide-react";
 import PageHeader, { FilterPill as HeaderFilterPill } from "../../components/layout/PageHeader.jsx";
@@ -30,9 +30,6 @@ import { SyncedTable } from "./ContributiveTable.jsx";
 import { DrilldownModal, JournalsModal, MappingsLanding, MappingsLibrary, ContributiveLoader, CompareBusy } from "./ContributiveParts.jsx";
 import ContributiveCharts, { ChartsToggle } from "./ContributiveCharts.jsx";
 
-// Vista elegida (tabla o gráficos): se recuerda en este navegador
-const VIEW_KEY = "konsolidator:contrib-view";
-const readView = () => { try { return localStorage.getItem(VIEW_KEY) === "charts" ? "charts" : "table"; } catch { return "table"; } };
 
 // Peticiones que mide el cargador
 const META_REQUESTS = 6;   // periodos, escenarios, estructuras, sociedades, estructura de grupo, consolidaciones
@@ -46,7 +43,8 @@ const header2Style = useTypo("header2");
   const filterStyle = useTypo("filter");
   const underscore1Style = useTypo("underscore1");
   const underscore2Style = useTypo("underscore2");
-const { colors, locale } = useSettings();
+const { colors } = useSettings();
+const locale = useLocale();
   const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
   const [periods,       setPeriods]       = useState([]);
   const [sources,       setSources]       = useState([]);
@@ -58,8 +56,8 @@ const { colors, locale } = useSettings();
   const [month,      setMonth]      = useState("");
   const [source,     setSource]     = useState("");
   const [structure,  setStructure]  = useState("DefaultStructure");
-// En la vista de gráficos no existe "Todos": si se abre en gráficos, empieza en P&G
-const [typeFilter, setTypeFilter] = useState(() => (readView() === "charts" ? "P/L" : ""));
+// Se abre siempre en el desglose de cuentas (tabla), con todos los tipos
+const [typeFilter, setTypeFilter] = useState("");
   // Also reset expansion when a mapping flips on/off (the id space changes).
   const [selectedCompanies, setSelectedCompanies] = useState([]);
 // User-defined column order (drag-and-drop). Empty array = use natural order.
@@ -157,13 +155,12 @@ const [drilldown,       setDrilldown]       = useState(null);
   // viewsMode controls the mappings UI overlay: null | "landing" | "structure" | "report"
   const [viewsMode, setViewsMode] = useState(null);
   // Tabla o gráficos, y qué cuenta / sociedad se analiza en los gráficos
-  const [view, setViewState] = useState(readView);
+  const [view, setViewState] = useState("table");
   const [chartNav, setChartNav] = useState({ focus: null, co: null });
   // Al pasar a gráficos, "Todos" no aplica: se va a P&G
   const setView = useCallback((v) => {
     setViewState(v);
     if (v === "charts") setTypeFilter(tf => (tf === "" ? "P/L" : tf));
-    try { localStorage.setItem(VIEW_KEY, v); } catch { /* sin almacenamiento */ }
   }, []);
   // "Ver en gráficos" desde una fila: abre su estado y la cuenta
   const analyzeAccount = useCallback((node) => {

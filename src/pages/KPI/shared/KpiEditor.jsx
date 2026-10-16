@@ -21,7 +21,7 @@ import {
   Library, Sparkles, Sigma, Tag, Building2, Layers, Info, Play, Droplets, Landmark,
   TrendingUp, Gauge, LineChart as LineIcon, Wand2, Calculator, ShieldCheck, GitBranch, Clock,
 } from "lucide-react";
-import { useSettings } from "../../../components/layout/SettingsContext";
+import { useSettings, useLocale } from "../../../components/layout/SettingsContext";
 import { useKpiText } from "./kpiText.js";
 import k from "./kpiShared.module.css";
 
@@ -131,7 +131,8 @@ export default function KpiEditor({
   renderFormulaBuilder, renderSlotPicker,
   formatValue,
 }) {
-  const { colors, locale } = useSettings();
+  const { colors } = useSettings();
+  const locale = useLocale();
   const kt = useKpiText(locale);
   const primary = colors?.primary ?? "#1a2f8a";
 

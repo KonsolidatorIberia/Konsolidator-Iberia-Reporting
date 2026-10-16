@@ -5,7 +5,7 @@
 import React, { createContext, useContext, useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useDeferredValue } from "react";
 import { t } from "../../lib/i18n";
 import { createPortal } from "react-dom";
-import { useTypo, useSettings } from "../../components/layout/SettingsContext";
+import { useTypo, useLocale } from "../../components/layout/SettingsContext";
 import styles from "./Contributive.module.css";
 import { ChevronDown, X, Search, BarChart2 } from "lucide-react";
 import { SUB_COLS, fmtAmt, getContributionCurrency, pgcSort, computeLiteralForCompany, computeLiteralJournalForCompany, computeLiteralCounterpartyForCompany, INDENT, getCompanyCurrency } from "./contributiveUtils.js";
@@ -766,7 +766,7 @@ const [dragCol, setDragCol] = useState(null);
   const [exitingCols, setExitingCols] = useState(new Set());
 const [headerHover, setHeaderHover] = useState(null);
   const onHeaderHover = setHeaderHover;
-  const { locale } = useSettings();
+  const locale = useLocale();
   const analyzeCtx = useMemo(() => (onAnalyze ? { open: onAnalyze, label: t(locale, "ctg_analyze") } : null), [onAnalyze, locale]);
   // La ayuda se cierra al desplazar la tabla (se quedaría flotando fuera de sitio)
   useEffect(() => {

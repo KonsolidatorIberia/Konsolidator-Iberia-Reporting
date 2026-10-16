@@ -8,7 +8,7 @@ import {
   Home, ShoppingCart, Wrench, Flame,
 } from "lucide-react";
 import PageHeader from "./PageHeader.jsx";
-import { useSettings } from "./SettingsContext";
+import { useLocale } from "./SettingsContext";
 import { t } from "../../lib/i18n";
 import { supabase } from "../../lib/supabaseClient";
 import * as XLSX from "xlsx-js-style";
@@ -1330,7 +1330,7 @@ export default function StatisticalPartiesPage({
   companies: propCompanies = [],
   dimensions: propDimensions = [],
 }) {
-const { locale } = useSettings();
+const locale = useLocale();
   const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
 
   // ── Self-fetch fallback ────────────────────────────────────

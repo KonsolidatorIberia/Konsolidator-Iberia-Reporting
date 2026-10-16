@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Download, Loader2, X } from "lucide-react";
-import { useSettings } from "../../../components/layout/SettingsContext";
+import { useLocale } from "../../../components/layout/SettingsContext";
 import ProgressLoader from "../../../components/framework/ProgressLoader.jsx";
 import { closesNeeded, describePeriods } from "./cashFlowUtils.js";
 import styles from "./CashFlow.module.css";
@@ -38,7 +38,7 @@ const CF_TEXT = {
   },
 };
 export function useCfText() {
-  const { locale } = useSettings();
+  const locale = useLocale();
   return CF_TEXT[locale] ?? CF_TEXT[String(locale ?? "").slice(0, 2)] ?? CF_TEXT.en;
 }
 

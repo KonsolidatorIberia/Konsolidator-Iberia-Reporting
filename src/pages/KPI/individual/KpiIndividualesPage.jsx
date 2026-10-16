@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from "react";
-import { useTypo, useSettings, useSettingsControls } from "../../../components/layout/SettingsContext";
+import { useTypo, useSettings, useSettingsControls, useLocale } from "../../../components/layout/SettingsContext";
 import { useLatestPeriod } from "../../../components/layout/LatestPeriodContext.jsx";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
@@ -3585,7 +3585,7 @@ function describeVariationNode(node, accountCodeLabels = new Map()) {
 // Aquí solo se le pasan las piezas propias de esta página: constructor de
 // fórmulas, selector de cuentas y secciones de la biblioteca.
 function KpiEditorModal({ kpi, onSave, onClose, onReset, onEditLibraryKpi, onDeleteLibraryKpi, onDuplicate, allLocalKpis = [], systemKpis = [], accountCodes, localAccounts = [], groupAccountsList = [], accountCodeLabels = new Map(), builtInIds = new Set(), currentUserId, dimsByAccount = new Map(), localDimsByAccount = new Map(), parties = [], partyContext = null, evalPartyValue = null, variationCompanies = [], companyLabelsMap = new Map(), variationDimensions = [], accountsWithData = { group: new Set(), local: new Set() }, presetContext = null }) {
-  const { locale } = useSettings();
+  const locale = useLocale();
   const librarySections = useMemo(() => {
     const base = buildLibrarySections((k, fb) => t(locale, k, fb));
     return presetContext ? enhancePresetLibrary(base, presetContext) : base;
@@ -3626,7 +3626,7 @@ ccTagToCodes, sectionCodes, sumAccountCodes, groupDescendantsMap,
   colors,
   initialState,
 }) {
-  const { locale: graphLocale } = useSettings();
+  const graphLocale = useLocale();
   const gt = useKpiText(graphLocale);
   // Default: end = anchor year/month, start = 12 months earlier
   const anchorY = parseInt(year) || new Date().getFullYear();
@@ -4309,7 +4309,8 @@ const groupAccounts = groupAccountsProp.length > 0 ? groupAccountsProp : groupAc
 const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
   const filterStyle = useTypo("filter");
-const { colors, locale } = useSettings();
+const { colors } = useSettings();
+const locale = useLocale();
 const { companyId: settingsCompanyId } = useSettingsControls();
 const tt = (k, fb) => t(locale, k, fb);
   const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();

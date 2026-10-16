@@ -23,3 +23,6 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# graphify (mapa del código, se regenera solo)
+graphify-out/

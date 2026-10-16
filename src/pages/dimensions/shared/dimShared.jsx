@@ -10,7 +10,7 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useContext } from "react";
 import { ChevronDown, Search, X, Building2 } from "lucide-react";
 import JSZip from "jszip";
-import { useTypo, useSettings } from "../../../components/layout/SettingsContext";
+import { useTypo, useSettings, useLocale } from "../../../components/layout/SettingsContext";
 import { t } from "../../../lib/i18n";
 import ProgressLoader from "../../../components/framework/ProgressLoader.jsx";
 import dimCss from "./dimensions.module.css";
@@ -508,7 +508,7 @@ export const INDENT = 14;
 
 /* ── Accounts Tab ─────────────────────────────────────────── */
 export function AccountsTab({ data }) {
-  const { locale } = useSettings();
+  const locale = useLocale();
   const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
   const [search, setSearch] = useState("");
   const cols = data.length > 0 ? Object.keys(data[0]) : [];
@@ -614,7 +614,7 @@ const UI_TEXT = {
   },
 };
 export function useDimText() {
-  const { locale } = useSettings();
+  const locale = useLocale();
   return UI_TEXT[locale] ?? UI_TEXT[String(locale ?? "").slice(0, 2)] ?? UI_TEXT.en;
 }
 

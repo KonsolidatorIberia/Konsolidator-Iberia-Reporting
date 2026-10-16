@@ -19,7 +19,7 @@ const AdminOnboardingPage         = lazy(() => import("../components/pages/Admin
 const PresentationsPage           = lazy(() => import("../pages/presentations/index.js"));
 import { useEffect, useMemo, useRef } from "react";
 import { useCurrentUserPermissions, useCurrentUserResourceAccess } from "../lib/userPermissionsApi";
-import { useSettings } from "../components/layout/SettingsContext";
+import { useSettings, useLocale } from "../components/layout/SettingsContext";
 import { t } from "../lib/i18n";
 import ProgressLoader from "../components/framework/ProgressLoader.jsx";
 function AccessDenied() {
@@ -58,7 +58,8 @@ const OPENING = { es: "Abriendo", en: "Opening", da: "Åbner", pt: "A abrir" };
 const PREPARING = { es: "Preparando la página", en: "Preparing the page", da: "Forbereder siden", pt: "A preparar a página" };
 
 function PageFallback({ page }) {
-  const { colors, locale } = useSettings();
+  const { colors } = useSettings();
+  const locale = useLocale();
   const lang = OPENING[locale] ? locale : String(locale ?? "").slice(0, 2);
   const navKey = PAGE_NAV_KEY[page];
   const name = navKey ? t(locale, navKey, "") : "";

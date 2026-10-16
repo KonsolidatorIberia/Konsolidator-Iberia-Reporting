@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from "react";
-import { useTypo, useSettings } from "../../../components/layout/SettingsContext";
+import { useTypo, useSettings, useLocale } from "../../../components/layout/SettingsContext";
 import { useLatestPeriod } from "../../../components/layout/LatestPeriodContext.jsx";
 import { t } from "../../../lib/i18n";
 import {
@@ -2514,7 +2514,7 @@ function SearchableList({ items, value, onChange, placeholder = "Buscar..." }) {
 }
 
 function KpiRefPicker({ kpiList, kpiId, setKpiId, builtInIds }) {
-  const { locale } = useSettings();
+  const locale = useLocale();
   const tt = useCallback((k, fb) => t(locale, k, fb), [locale]);
   const [search, setSearch] = useState("");
   const filtered = kpiList.filter(k => !search.trim() || k.label.toLowerCase().includes(search.toLowerCase()));
@@ -2553,7 +2553,7 @@ function KpiRefPicker({ kpiList, kpiId, setKpiId, builtInIds }) {
 }
 
 function AccountPicker({ items, value, onChange, dimsByAccount = new Map(), codesWithData = null }) {
-  const { locale } = useSettings();
+  const locale = useLocale();
   const tt = useCallback((k, fb) => t(locale, k, fb), [locale]);
   const [search, setSearch] = useState("");
   const [expandedDims, setExpandedDims] = useState(new Set());
@@ -2634,7 +2634,7 @@ function AccountPicker({ items, value, onChange, dimsByAccount = new Map(), code
 }
 
 function PartyPicker({ parties, partyContext, evalPartyValue, value, onChange }) {
-  const { locale } = useSettings();
+  const locale = useLocale();
   const tt = useCallback((k, fb) => t(locale, k, fb), [locale]);
   const [search, setSearch] = useState("");
   // Applicable = party covers at least one company in scope, the current
@@ -2698,7 +2698,7 @@ function PartyPicker({ parties, partyContext, evalPartyValue, value, onChange })
 }
 
 function SlotPicker({ onSelect, onClose, kpiList, accountCodes, accountCodeLabels = new Map(), accountsWithData = new Set(), builtInIds = new Set(), dimsByAccount = new Map(), parties = [], partyContext = null, evalPartyValue = null }) {
-  const { locale } = useSettings();
+  const locale = useLocale();
   const tt = useCallback((k, fb) => t(locale, k, fb), [locale]);
   const [step, setStep] = useState("type");
   const [type, setType] = useState(null);
@@ -2859,7 +2859,7 @@ const OP_SYMBOL = { "+": "+", "-": "−", "*": "×", "/": "÷" };
 const VARIABLE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
 function TextFormulaBuilder({ formula, onChange, kpiList, accountCodes, accountCodeLabels = new Map(), accountsWithData = new Set(), builtInIds = new Set(), dimsByAccount = new Map(), parties = [], partyContext = null, evalPartyValue = null }) {
-  const { locale } = useSettings();
+  const locale = useLocale();
   const tt = useCallback((k, fb) => t(locale, k, fb), [locale]);
   const [expression, setExpression] = useState(() => formula?.type === "text" ? formula.expression ?? "" : "");
   const [variables, setVariables] = useState(() => formula?.type === "text" ? formula.variables ?? {} : {});
@@ -2986,7 +2986,7 @@ function describeVariationNode(node, accountCodeLabels = new Map()) {
 // Aquí solo se le pasan las piezas propias de esta página: constructor de
 // fórmulas, selector de cuentas, plantillas y secciones de la biblioteca.
 function KpiEditorModal({ kpi, onSave, onClose, onReset, onEditLibraryKpi, onDeleteLibraryKpi, onDuplicate, kpiList, allLocalKpis = [], systemKpis = [], accountCodes, accountCodeLabels = new Map(), accountsWithData = new Set(), builtInIds = new Set(), currentUserId, dimsByAccount = new Map(), parties = [], partyContext = null, evalPartyValue = null, variationCompanies = [], companyLabelsMap = new Map(), variationDimensions = [], presetContext = null }) {
-  const { locale } = useSettings();
+  const locale = useLocale();
   const tt = useCallback((k, fb) => t(locale, k, fb), [locale]);
   const librarySections = useMemo(() => {
     const base = buildLibrarySections(tt);
@@ -3027,7 +3027,7 @@ scope = "consolidated",
 groupDescendants = new Map(),
   partiesById = new Map(),
 }) {
-  const { locale } = useSettings();
+  const locale = useLocale();
   const gt = useKpiText(locale);
   const anchorY = parseInt(new Date().getFullYear());
   const anchorM = new Date().getMonth() + 1;
@@ -3592,7 +3592,8 @@ export default function ConsolidatedKpiPage({ token, groupAccounts: groupAccount
 }, []);
 const body1Style   = useTypo("body1");
   const underscore3Style = useTypo("underscore3");
-  const { colors, locale } = useSettings();
+  const { colors } = useSettings();
+  const locale = useLocale();
   const tt = useCallback((k, fb) => t(locale, k, fb), [locale]);
   const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();
 

@@ -23,7 +23,7 @@ import {
   BarChart3, Check, ChevronDown, Search, X, Table2, PanelRightClose, PanelRightOpen, PanelLeftClose, PanelLeftOpen,
   ArrowUpRight, ArrowDownRight, Minus, LineChart as LineIcon,
 } from "lucide-react";
-import { useSettings } from "../../../components/layout/SettingsContext";
+import { useLocale } from "../../../components/layout/SettingsContext";
 import ProgressLoader from "../../../components/framework/ProgressLoader.jsx";
 import { useKpiText } from "./kpiText.js";
 import g from "./kpiGraph.module.css";
@@ -63,7 +63,7 @@ function compact(v) {
 // Filtros
 // ════════════════════════════════════════════════════════════════════════
 export function GraphFilterCard({ primary, title, busy, children, picker, right, below }) {
-  const { locale } = useSettings();
+  const locale = useLocale();
   const kt = useKpiText(locale);
   return (
     <div className={g.filterCard} style={{ "--g-primary": primary }}>
@@ -132,7 +132,7 @@ export function GraphAddCompare({ id, color, onClick }) {
 
 // ── Selector de KPIs ────────────────────────────────────────────────────
 export function GraphKpiPicker({ kpis, isSystem, selected, onToggle, cap, colorOf }) {
-  const { locale } = useSettings();
+  const locale = useLocale();
   const kt = useKpiText(locale);
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -229,7 +229,7 @@ export default function KpiGraphPanel({
   rows = [], series = [], fmt, loading = false, progress = null, empty = null,
   primary = "#1a2f8a", secondary = "#CF305D", chartRef, compareMode = false, tableDefaultOpen = true,
 }) {
-  const { locale } = useSettings();
+  const locale = useLocale();
   const kt = useKpiText(locale);
   // Vista: "both" (gráfico + tabla), "chart" (solo gráfico) o "table" (solo
   // tabla). Se recuerda en este navegador.

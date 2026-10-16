@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Library, CheckCircle2, TrendingUp, BarChart2, Download, Layers, Pencil, FileText } from "lucide-react";
 
 
-import { useTypo, useSettings } from "../../components/layout/SettingsContext";
+import { useTypo, useSettings, useLocale } from "../../components/layout/SettingsContext";
 import { useLatestPeriod } from "../../components/layout/LatestPeriodContext.jsx";
 import { t } from "../../lib/i18n";
 import PageHeader, { FilterPill as HeaderFilterPill } from "../../components/layout/PageHeader.jsx";
@@ -526,7 +526,8 @@ const header2Style = useTypo("header2");
   const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
   const subbody2Style = useTypo("subbody2");
-const { colors, locale } = useSettings();
+const { colors } = useSettings();
+const locale = useLocale();
   const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
 
 // Account header search — magnifier toggles to input, matches highlight in yellow.
@@ -3308,7 +3309,8 @@ drillExpanded={drillExpanded} drillCache={drillCache} drillLoadingSet={drillLoad
 /* ── Main ─────────────────────────────────────────────────── */
 /* ── Main ─────────────────────────────────────────────────── */
 export default function ConsolidatedDimensionesPage({ token, onNavigate, sources = [], structures = [], companies = [], dimensions = [], activeStandardKey = null }) {
-const { colors, locale } = useSettings();
+const { colors } = useSettings();
+const locale = useLocale();
 const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
 const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();
 

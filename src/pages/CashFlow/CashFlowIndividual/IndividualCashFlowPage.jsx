@@ -18,7 +18,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { useState, useEffect, useRef, useMemo, useCallback, useDeferredValue } from "react";
 import { Loader2, Layers, FileText, Library, CheckCircle2, Pencil, X } from "lucide-react";
-import { useTypo, useSettings } from "../../../components/layout/SettingsContext";
+import { useTypo, useSettings, useLocale } from "../../../components/layout/SettingsContext";
 import PageHeader, { FilterPill as HeaderFilterPill } from "../../../components/layout/PageHeader.jsx";
 import { useCurrentUserResourceAccess } from "../../../lib/userPermissionsApi";
 import { t } from "../../../lib/i18n";
@@ -44,7 +44,8 @@ export default function IndividualCashFlowPage({ token, onNavigate, activeStanda
 const body1Style = useTypo("body1");
   const body2Style = useTypo("body2");
   const subbody1Style = useTypo("subbody1");
-  const { colors, locale } = useSettings();
+  const { colors } = useSettings();
+  const locale = useLocale();
   const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
 const { access: resourceAccess } = useCurrentUserResourceAccess();
 
