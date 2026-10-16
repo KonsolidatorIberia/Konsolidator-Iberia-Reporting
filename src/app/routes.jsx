@@ -1,7 +1,7 @@
 import { lazy, Suspense } from "react";
 
 const HomePage                    = lazy(() => import("../components/layout/HomePage.jsx"));
-const IndividualesPage            = lazy(() => import("../pages/individuals/IndividualesPage.jsx"));
+const IndividualesPage            = lazy(() => import("../pages/Individuals/IndividualesPage.jsx"));
 const KpiIndividualesPage         = lazy(() => import("../pages/KPI/individual/KpiIndividualesPage.jsx"));
 const ContributivePage            = lazy(() => import("../pages/Contributive/index.js"));
 const DimensionesPage             = lazy(() => import("../pages/dimensions/DimensionesPage.jsx"));
