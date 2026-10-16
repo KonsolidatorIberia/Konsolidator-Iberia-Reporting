@@ -1,0 +1,134 @@
+/* ══════════════════════════════════════════════════════════════════════
+   Sábana de consolidación — mismo lenguaje que el cash flow y el
+   contributivo: separadores animados, filas que reaccionan al ratón,
+   códigos en chip e importes en píldora. --cs-primary llega de la página.
+   ══════════════════════════════════════════════════════════════════════ */
+.csTable {
+  --cs-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --cs-ease: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --cs-hover: color-mix(in srgb, var(--cs-primary, #1a2f8a) 4%, #fff);
+  --cs-up: #0f9f6e;
+  --cs-down: #d9365b;
+  font-size: 12.5px;
+  color: #0f172a;
+}
+
+/* ── Filas ───────────────────────────────────────────────────────────── */
+.csTable tbody tr.row > td {
+  height: 46px;
+  border-bottom: 1px solid #f0f2f7;
+  white-space: nowrap;
+  transition: background-color 220ms var(--cs-soft), color 180ms ease;
+}
+.csTable tbody tr.row > td:not(:first-child) { text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
+.csTable tbody tr.row:hover > td { background-color: var(--cs-hover) !important; }
+
+/* Barra de acento a la izquierda */
+.csTable tbody tr.row > td:first-child { position: sticky; }
+.csTable tbody tr.row > td:first-child::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  width: 4px;
+  height: 0;
+  border-radius: 4px;
+  background: var(--cs-primary, #1a2f8a);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--cs-primary, #1a2f8a) 55%, transparent);
+  transform: translateY(-50%);
+  transition: height 320ms var(--cs-ease);
+  pointer-events: none;
+}
+.csTable tbody tr.row:hover > td:first-child::before { height: 24px; }
+.csTable tbody tr.row > td:first-child > div { transition: transform 280ms var(--cs-soft); }
+.csTable tbody tr.row:hover > td:first-child > div { transform: translateX(3px); }
+
+/* Subtotales: nombre en primario, línea superior */
+.csTable tbody tr.sumRow > td { border-top: 1px solid #e3e7f0; }
+.csTable tbody tr.sumRow > td:not(:first-child) { font-weight: 800; }
+
+/* Código de cuenta en chip */
+.code {
+  padding: 2px 7px;
+  border-radius: 7px;
+  background: #f3f5fa;
+  color: #7c879c !important;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10.5px !important;
+  font-weight: 600;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+.csTable tbody tr:hover .code { background: color-mix(in srgb, var(--cs-primary, #1a2f8a) 10%, #fff); color: var(--cs-primary, #1a2f8a) !important; }
+
+/* Importe en píldora: se ilumina bajo el cursor */
+.val {
+  display: inline-block;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 220ms var(--cs-soft), color 180ms ease, transform 260ms var(--cs-ease), box-shadow 220ms ease;
+}
+.csTable tbody td:hover > .val {
+  background: #fff;
+  color: var(--cs-primary, #1a2f8a);
+  transform: scale(1.06);
+  box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--cs-primary, #1a2f8a) 55%, transparent),
+              0 0 0 1px color-mix(in srgb, var(--cs-primary, #1a2f8a) 14%, transparent);
+}
+.zero { color: #cfd5e1 !important; font-weight: 500; }
+.neg { color: #e11d48; }
+.deltaUp { color: var(--cs-up); background: color-mix(in srgb, var(--cs-up) 9%, transparent); }
+.deltaDown { color: var(--cs-down); background: color-mix(in srgb, var(--cs-down) 8%, transparent); }
+
+/* ── Separadores de sección ──────────────────────────────────────────── */
+.bk > td { padding: 10px 0 6px !important; background: #fff; border: 0; }
+.bkCell { overflow: visible; }
+.bkBar {
+  position: sticky;
+  left: 0;
+  width: var(--cs-view-w, 100%);
+  max-width: 100%;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  border-radius: 8px;
+  background: linear-gradient(90deg,
+    var(--sec) 0%,
+    color-mix(in srgb, var(--sec) 92%, #fff) 22%,
+    color-mix(in srgb, var(--sec) 55%, #fff) 52%,
+    color-mix(in srgb, var(--sec) 14%, #fff) 82%,
+    color-mix(in srgb, var(--sec) 4%, #fff) 100%);
+  background-size: 160% 100%;
+  transform-origin: left center;
+  animation: bkGrow 700ms var(--cs-soft) both, bkFlow 9s ease-in-out 700ms infinite alternate;
+}
+.bkBar::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 30%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transform: translateX(-120%);
+  animation: bkShine 4.8s ease-in-out 1s infinite;
+  pointer-events: none;
+}
+.bkTitle {
+  position: relative;
+  z-index: 1;
+  padding-left: 20px;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+@keyframes bkGrow { from { transform: scaleX(0.04); opacity: 0.4; } to { transform: scaleX(1); opacity: 1; } }
+@keyframes bkFlow { from { background-position: 0% 0; } to { background-position: 100% 0; } }
+@keyframes bkShine { 0% { transform: translateX(-120%); } 45%, 100% { transform: translateX(420%); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .bkBar, .bkBar::after { animation: none; }
+}

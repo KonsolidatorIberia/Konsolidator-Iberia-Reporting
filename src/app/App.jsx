@@ -3,7 +3,7 @@ import { useSessionGuard } from "../hooks/useSessionGuard.js";
 import InactivityWarning from "../components/InactivityWarning.jsx";
 import { Routes, Route } from "react-router-dom";
 import Login from "../auth/Login.jsx";
-import AdminPortal from "../auth/AdminPortal.jsx";
+import AdminPortal from "../auth/admin/AdminPortal.jsx";
 import Signup from "../auth/Signup.jsx";
 import ReportingActivationPanel from "../auth/ReportingActivationPanel.jsx";
 import BlockedPanel from "../auth/BlockedPanel.jsx";
@@ -12,6 +12,8 @@ import AppRoutes from "./routes.jsx";
 import { SettingsProvider } from "../components/layout/SettingsContext.jsx";
 import { LatestPeriodProvider } from "../components/layout/LatestPeriodContext.jsx";
 import EpicLoader from "../components/layout/EpicLoader.jsx";
+// Registro de uso para Actividad en el centro de control (sesiones, páginas, tiempo)
+import UsageBeacon from "../lib/UsageBeacon.jsx";
 
 // Silence Recharts noisy "width(-1) and height(-1)" warning in dev.
 // Charts render correctly after the first measure pass; this is just spam.
@@ -259,13 +261,16 @@ function AuthenticatedApp({
       >
         <Shell key={refreshKey} user={user} onLogout={onLogout} onRefresh={onRefresh}>
           {(activePage, onNavigate) => (
-            <AppRoutes
-              token={token}
-              user={user}
-              activePage={activePage}
-              onNavigate={onNavigate}
-              preloadedData={preloadedData}
-            />
+            <>
+              <UsageBeacon page={activePage} />
+              <AppRoutes
+                token={token}
+                user={user}
+                activePage={activePage}
+                onNavigate={onNavigate}
+                preloadedData={preloadedData}
+              />
+            </>
           )}
         </Shell>
       </div>

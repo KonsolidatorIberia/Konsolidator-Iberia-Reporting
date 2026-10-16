@@ -1,0 +1,454 @@
+/* ══════════════════════════════════════════════════════════════════════
+   Contribución — estilos de la tabla, con el mismo lenguaje que el cash
+   flow: separadores animados, filas que reaccionan al ratón, códigos en
+   chip e importes que se destacan. --ct-primary llega del componente.
+   ══════════════════════════════════════════════════════════════════════ */
+.ctTable {
+  --ct-row-hover: color-mix(in srgb, var(--ct-primary, #1a2f8a) 4%, #fff);
+  --ct-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --ct-ease: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ── Filas (igual que el cash flow) ──────────────────────────────────── */
+.ctTable {
+  --ct-up: #0f9f6e;
+  --ct-down: #d9365b;
+  --ct-neg: #e11d48;
+  --ct-muted: #cfd5e1;
+}
+
+.ctTable tbody tr:not(.bk) > td {
+  border-bottom: 1px solid #f0f2f7;
+  transition: background-color 240ms var(--ct-soft), color 200ms ease;
+}
+
+/* Fila bajo el ratón: tinte suave en toda la fila */
+.ctTable tbody tr:not(.bk):hover > td {
+  background-color: var(--ct-row-hover) !important;
+}
+
+/* Barra de acento a la izquierda, que crece con un pequeño brillo */
+.ctTable tbody tr:not(.bk) > td:first-child::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  width: 4px;
+  height: 0;
+  border-radius: 4px;
+  background: var(--ct-primary, #1a2f8a);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--ct-primary, #1a2f8a) 55%, transparent);
+  transform: translateY(-50%);
+  transition: height 320ms var(--ct-ease);
+  pointer-events: none;
+}
+
+.ctTable tbody tr:not(.bk):hover > td:first-child::before { height: 24px; }
+
+/* El nombre se desplaza un poco al pasar el ratón */
+.ctTable tbody tr:not(.bk) > td:first-child > div { transition: transform 280ms var(--ct-soft); }
+.ctTable tbody tr:not(.bk):hover > td:first-child > div { transform: translateX(3px); }
+
+/* Importe en píldora: se ilumina bajo el cursor */
+.val {
+  position: relative;
+  z-index: 1;
+  display: inline-block;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 220ms var(--ct-soft), color 180ms ease, transform 260ms var(--ct-ease), box-shadow 220ms ease;
+}
+
+.ctTable tbody td:hover > .val,
+.ctTable tbody td:hover > span > .val {
+  background: #fff;
+  color: var(--ct-primary, #1a2f8a);
+  transform: scale(1.06);
+  box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--ct-primary, #1a2f8a) 55%, transparent),
+              0 0 0 1px color-mix(in srgb, var(--ct-primary, #1a2f8a) 14%, transparent);
+}
+
+.zero { color: var(--ct-muted) !important; font-weight: 500; }
+.neg { color: var(--ct-neg); }
+.up { color: var(--ct-up) !important; }
+.down { color: var(--ct-down) !important; }
+
+/* Comparación: periodo B, Δ y Δ% con tintes crecientes del primario */
+.ctTable .cmp1 { background-color: color-mix(in srgb, var(--ct-primary, #1a2f8a) 2.5%, #fff) !important; }
+.ctTable .cmp2 { background-color: color-mix(in srgb, var(--ct-primary, #1a2f8a) 5%, #fff) !important; }
+.ctTable .cmp3 { background-color: color-mix(in srgb, var(--ct-primary, #1a2f8a) 8%, #fff) !important; }
+.ctTable tbody tr:not(.bk):hover > td.cmp1,
+.ctTable tbody tr:not(.bk):hover > td.cmp2,
+.ctTable tbody tr:not(.bk):hover > td.cmp3 { background-color: color-mix(in srgb, var(--ct-primary, #1a2f8a) 9%, #fff) !important; }
+
+/* Variaciones: tinte suave detrás de la cifra según suba o baje */
+.deltaUp { background: color-mix(in srgb, var(--ct-up) 9%, transparent); }
+.deltaDown { background: color-mix(in srgb, var(--ct-down) 8%, transparent); }
+
+.thCmp span {
+  font-size: 11px !important;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  color: color-mix(in srgb, var(--ct-primary, #1a2f8a) 65%, transparent) !important;
+  opacity: 1 !important;
+}
+
+/* Código de cuenta en chip */
+.code {
+  padding: 2px 7px;
+  border-radius: 7px;
+  background: #f3f5fa;
+  color: #7c879c !important;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10.5px !important;
+  font-weight: 600;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+
+.ctTable tbody tr:hover .code {
+  background: color-mix(in srgb, var(--ct-primary, #1a2f8a) 10%, #fff);
+  color: var(--ct-primary, #1a2f8a) !important;
+}
+
+/* Cabecera: tinte al pasar por una sociedad */
+.ctTable thead th { transition: background-color 200ms ease; }
+.ctTable thead th:hover { background-color: color-mix(in srgb, var(--ct-primary, #1a2f8a) 4%, #fff); }
+
+/* ── Separadores de sección ──────────────────────────────────────────── */
+.bk > td { padding: 10px 0 6px !important; background: #fff; border: 0; }
+
+.bkCell { overflow: visible; }
+
+.bkBar {
+  position: sticky;
+  left: 0;
+  width: var(--ct-view-w, 100%);
+  max-width: 100%;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  border-radius: 8px;
+  background: linear-gradient(90deg,
+    var(--sec) 0%,
+    color-mix(in srgb, var(--sec) 92%, #fff) 22%,
+    color-mix(in srgb, var(--sec) 55%, #fff) 52%,
+    color-mix(in srgb, var(--sec) 14%, #fff) 82%,
+    color-mix(in srgb, var(--sec) 4%, #fff) 100%);
+  background-size: 160% 100%;
+  transform-origin: left center;
+  animation: bkGrow 700ms var(--ct-soft) var(--bk-delay, 0ms) both,
+             bkFlow 9s ease-in-out calc(var(--bk-delay, 0ms) + 700ms) infinite alternate;
+}
+
+.bkDark { filter: brightness(0.85); }
+
+.bkBar::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 30%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transform: translateX(-120%);
+  animation: bkShine 4.8s ease-in-out 1s infinite;
+  pointer-events: none;
+}
+
+.bkTitle {
+  position: relative;
+  z-index: 1;
+  padding-left: 20px;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+@keyframes bkGrow { from { transform: scaleX(0.04); opacity: 0.4; } to { transform: scaleX(1); opacity: 1; } }
+@keyframes bkFlow { from { background-position: 0% 0; } to { background-position: 100% 0; } }
+@keyframes bkShine { 0% { transform: translateX(-120%); } 45%, 100% { transform: translateX(420%); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .bkBar, .bkBar::after { animation: none; }
+}
+
+/* ══ Columnas por sociedad ═════════════════════════════════════════════
+   Cada sociedad empieza con una separación clara; desplegada, su bloque de
+   desglose (Uploaded, AJE, RJE, EJE, SYS, CFA) lleva una banda propia y el
+   IC cierra el bloque. */
+.ctTable .coStart { border-left: 2px solid color-mix(in srgb, var(--ct-primary, #1a2f8a) 16%, #fff) !important; }
+.ctTable .coEnd { border-right: 2px solid color-mix(in srgb, var(--ct-primary, #1a2f8a) 16%, #fff) !important; }
+
+/* Sociedad desplegada: su columna principal y su cabecera se marcan */
+.ctTable thead th.coOpen { background: color-mix(in srgb, var(--ct-primary, #1a2f8a) 7%, #fff) !important; box-shadow: inset 0 -3px 0 var(--ct-primary, #1a2f8a); }
+.ctTable tbody td.coOpen { background-color: color-mix(in srgb, var(--ct-primary, #1a2f8a) 3.5%, #fff) !important; font-weight: 700; }
+
+/* Banda del desglose: tono violáceo suave que se intensifica columna a columna */
+.ctTable .subCell,
+.ctTable .subTh {
+  background-color: color-mix(in srgb, #6d5bd0 calc(3% + var(--sub-i, 0) * 1.2%), #fff) !important;
+  border-left: 1px dashed color-mix(in srgb, #6d5bd0 22%, #fff) !important;
+}
+.ctTable .subFirst { border-left: 2px solid color-mix(in srgb, #6d5bd0 35%, #fff) !important; }
+.ctTable tbody tr:not(.bk):hover > td.subCell { background-color: color-mix(in srgb, #6d5bd0 10%, #fff) !important; }
+.ctTable .subTh span:first-child { color: #5b4bc4 !important; opacity: 1 !important; }
+
+/* IC (lo que otras sociedades contabilizan contra ésta): banda rosa */
+.ctTable .icCell,
+.ctTable .icTh {
+  background-color: color-mix(in srgb, #cf305d 5%, #fff) !important;
+  border-left: 1px dashed color-mix(in srgb, #cf305d 30%, #fff) !important;
+}
+.ctTable tbody tr:not(.bk):hover > td.icCell { background-color: color-mix(in srgb, #cf305d 10%, #fff) !important; }
+.ctTable .icCell .val:not(.zero):not(.neg) { color: #cf305d; }
+
+/* Cabecera de sociedad: subrayado animado al pasar el ratón */
+.thCo { position: sticky; }
+.thCo::after {
+  content: "";
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: 8px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--ct-primary, #1a2f8a);
+  transform: scaleX(0);
+  transition: transform 320ms var(--ct-soft);
+}
+.thCo:hover::after { transform: scaleX(1); }
+
+/* Divisa de la columna en chip */
+.ccy {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--ct-primary, #1a2f8a) 70%, transparent);
+  background: color-mix(in srgb, var(--ct-primary, #1a2f8a) 7%, transparent);
+}
+
+/* Nombre que se desplaza si no cabe (al pasar el ratón por la cabecera) */
+.marquee { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.marqueeText { display: inline-block; }
+th:hover .marqueeOn { text-overflow: clip; }
+th:hover .marqueeOn .marqueeText { animation: marquee var(--dur, 3s) ease-in-out 250ms infinite alternate; }
+@keyframes marquee { 0%, 12% { transform: translateX(0); } 88%, 100% { transform: translateX(var(--shift, 0)); } }
+
+/* Asa para ajustar el ancho de la columna de cuentas */
+.resizer {
+  position: absolute;
+  top: 0;
+  right: -5px;
+  bottom: 0;
+  z-index: 5;
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.resizer::after {
+  content: "";
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: 4px;
+  width: 2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ct-primary, #1a2f8a) 18%, transparent);
+  transition: background 160ms ease, top 220ms var(--ct-soft), bottom 220ms var(--ct-soft);
+}
+.resizer:hover::after, .resizer:focus-visible::after, .resizerOn::after { top: 6px; bottom: 6px; background: var(--ct-primary, #1a2f8a); }
+
+/* Columna de cuentas: recorta el nombre al ancho elegido */
+.ctTable tbody tr:not(.bk) > td:first-child { overflow: hidden; }
+
+/* Cabecera de cuentas: al estrecharla, el título se recorta (los botones de
+   buscar y expandir siempre quedan visibles) */
+.ctTable thead th:first-child { overflow: hidden; }
+.ctTable thead th:first-child > div,
+.ctTable thead th:first-child > div > div { min-width: 0; }
+.ctTable thead th:first-child > div > div > *:not(button) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctTable thead th:first-child button { flex-shrink: 0; }
+
+/* Cabeceras del desglose: el nombre de la sociedad se recorta si no cabe */
+.ctTable .subTh > div,
+.ctTable .icTh > div { min-width: 0; overflow: hidden; }
+.ctTable .subTh span:last-child,
+.ctTable .icTh span:last-child { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+
+/* ══ Mismo aspecto que la tabla del cash flow ══════════════════════════
+   Estas reglas igualan tipografía, alturas, fondos y cabeceras con la tabla
+   del cash flow (tienen prioridad sobre las clases y estilos en línea
+   heredados de la versión anterior de la página). */
+.ctTable { font-size: 12.5px; color: #0f172a; }
+
+/* Cabecera con vidrio */
+.ctTable thead th {
+  height: 68px !important;
+  background: rgba(255, 255, 255, 0.92) !important;
+  backdrop-filter: saturate(1.4) blur(22px);
+  -webkit-backdrop-filter: saturate(1.4) blur(22px);
+  border-bottom: 1px solid #f0f2f7 !important;
+}
+.ctTable thead th:first-child { background: #fff !important; }
+.ctTable thead th.thCo:hover { background: color-mix(in srgb, var(--ct-primary, #1a2f8a) 5%, #fff) !important; }
+.ctTable thead th.coOpen { background: color-mix(in srgb, var(--ct-primary, #1a2f8a) 7%, #fff) !important; }
+.ctTable thead th.cmp1 { background: color-mix(in srgb, var(--ct-primary, #1a2f8a) 2.5%, #fff) !important; }
+.ctTable thead th.cmp2 { background: color-mix(in srgb, var(--ct-primary, #1a2f8a) 5%, #fff) !important; }
+.ctTable thead th.cmp3 { background: color-mix(in srgb, var(--ct-primary, #1a2f8a) 8%, #fff) !important; }
+.ctTable thead th.subTh { background-color: color-mix(in srgb, #6d5bd0 calc(3% + var(--sub-i, 0) * 1.2%), #fff) !important; }
+.ctTable thead th.icTh { background-color: color-mix(in srgb, #cf305d 5%, #fff) !important; }
+
+/* Filas: 46 px, sin saltos de línea, mismo color de fondo */
+.ctTable tbody tr.row > td {
+  height: 46px !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  font-size: 12.5px !important;
+  background-color: #fff;
+  white-space: nowrap;
+}
+.ctTable tbody tr.row > td:not(:first-child) {
+  text-align: center;
+  font-weight: 600 !important;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+.ctTable tbody tr.row > td:first-child {
+  padding-right: 24px !important;
+  border-right: 1px solid #f0f2f7;
+}
+.ctTable tbody tr.row > td:first-child > div { min-width: 0; overflow: hidden; }
+.ctTable tbody tr.row > td:first-child span:not(.code) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #1f2937;
+  font-weight: 500;
+}
+
+/* Subtotales: nombre en primario y en negrita, con línea superior */
+.ctTable tbody tr.sumRow > td { border-top: 1px solid #e3e7f0; border-bottom-color: #e3e7f0 !important; }
+.ctTable tbody tr.sumRow > td:first-child span:not(.code) { color: var(--ct-primary, #1a2f8a) !important; font-weight: 800 !important; }
+.ctTable tbody tr.sumRow > td:not(:first-child) { font-weight: 800 !important; }
+
+/* Columna consolidada del grupo y %: discretas, como columnas de apoyo */
+.ctTable .pctCell { background-color: #fafbfe !important; border-right: 1px dashed #e6e9f2; }
+.pct { font-size: 11px; font-weight: 700; color: #6366f1; padding: 3px 8px; }
+
+/* Columnas de comparación en el cuerpo (mismos tintes que el cash flow) */
+.ctTable tbody tr.row > td.cmp1 { background-color: color-mix(in srgb, var(--ct-primary, #1a2f8a) 2.5%, #fff) !important; }
+.ctTable tbody tr.row > td.cmp2 { background-color: color-mix(in srgb, var(--ct-primary, #1a2f8a) 5%, #fff) !important; }
+.ctTable tbody tr.row > td.cmp3 { background-color: color-mix(in srgb, var(--ct-primary, #1a2f8a) 8%, #fff) !important; }
+.ctTable tbody tr.row > td.up { color: var(--ct-up) !important; }
+.ctTable tbody tr.row > td.down { color: var(--ct-down) !important; }
+.ctTable tbody tr.row > td.zero { color: var(--ct-muted) !important; }
+
+/* Hover de fila por encima de todo (como en el cash flow) */
+.ctTable tbody tr.row:hover > td { background-color: var(--ct-row-hover) !important; }
+.ctTable tbody tr.row:hover > td.cmp1,
+.ctTable tbody tr.row:hover > td.cmp2,
+.ctTable tbody tr.row:hover > td.cmp3,
+.ctTable tbody tr.row:hover > td.subCell { background-color: color-mix(in srgb, var(--ct-primary, #1a2f8a) 9%, #fff) !important; }
+
+/* Columna "Dif.": vacía ("—") cuando el desglose explica el total; si no,
+   la cifra se resalta en ámbar para que se vea el descuadre. */
+.ctTable .diffTh span:first-child { color: #b45309 !important; }
+.diffBad { color: #b45309 !important; background: #fef3c7; font-weight: 800; }
+
+.ctTable .diffCell { border-left: 1px solid #fde68a !important; }
+
+/* ── Ayuda de las cabeceras (sociedad desplegada y sus subcolumnas) ─────
+   Tarjeta clara junto a la cabecera, con una franja del color de la
+   columna y una flecha que apunta a ella. Aparece con un pequeño retraso
+   para no parpadear al pasar el ratón de una cabecera a otra. */
+.tip {
+  --tip-c: #1a2f8a;
+  position: fixed;
+  z-index: 9998;
+  pointer-events: none;
+  padding: 14px 16px 14px 18px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(14px) saturate(1.3);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  border: 1px solid color-mix(in srgb, var(--tip-c) 14%, #fff);
+  box-shadow: 0 24px 60px -24px color-mix(in srgb, var(--tip-c) 55%, transparent), 0 2px 8px rgba(15, 23, 42, 0.06);
+  animation: tipIn 260ms cubic-bezier(0.34, 1.56, 0.64, 1) 160ms both;
+  transform-origin: var(--tip-arrow) top;
+}
+.tip::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  left: calc(var(--tip-arrow) - 6px);
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border-left: 1px solid color-mix(in srgb, var(--tip-c) 14%, #fff);
+  border-top: 1px solid color-mix(in srgb, var(--tip-c) 14%, #fff);
+  transform: rotate(45deg);
+  border-top-left-radius: 3px;
+}
+.tip::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--tip-c);
+}
+.tip_company { --tip-c: var(--ct-primary, #1a2f8a); }
+.tip_sub { --tip-c: #6d5bd0; }
+.tip_ic { --tip-c: #cf305d; }
+.tipKicker {
+  margin: 0;
+  font-size: 9.5px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--tip-c) 70%, #94a3b8);
+}
+.tipTitle { margin: 4px 0 6px; font-size: 14px; font-weight: 900; letter-spacing: -0.01em; color: #0f172a; line-height: 1.25; }
+.tipBody { margin: 0; font-size: 12px; line-height: 1.55; color: #475569; }
+@keyframes tipIn { from { opacity: 0; transform: translateY(-4px) scale(0.97); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .tip { animation: none; } }
+
+/* Columnas del periodo B: entran deslizándose al activar la comparación */
+.ctTable .cmp1, .ctTable .cmp2, .ctTable .cmp3 { animation: cmpCellIn 380ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.ctTable .cmp2 { animation-delay: 40ms; }
+.ctTable .cmp3 { animation-delay: 80ms; }
+@keyframes cmpCellIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .ctTable .cmp1, .ctTable .cmp2, .ctTable .cmp3 { animation: none; } }
+
+/* Mientras llegan los datos del periodo B, sus celdas brillan en vez de
+   enseñar desviaciones contra cero */
+.cmpWait td.cmp1 > span, .cmpWait td.cmp2 > span, .cmpWait td.cmp3 > span {
+  color: transparent !important;
+  background: linear-gradient(90deg, #eef1f7 0%, color-mix(in srgb, var(--ct-primary, #1a2f8a) 10%, #f4f6fb) 45%, #eef1f7 90%) !important;
+  background-size: 220% 100% !important;
+  animation: cmpWait 1.3s ease-in-out infinite;
+  box-shadow: none !important;
+}
+@keyframes cmpWait { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+
+/* ── "Ver en gráficos" junto al nombre de la cuenta ─────────────────── */
+.analyzeBtn {
+  flex: none; margin-left: 8px; width: 22px; height: 22px; border: 0; border-radius: 7px; display: inline-grid; place-items: center; cursor: pointer;
+  color: #1a2f8a; background: rgba(26, 47, 138, 0.08); opacity: 0; transform: scale(0.7);
+  transition: opacity 160ms ease, transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1), background 160ms ease, color 160ms ease;
+}
+.row:hover .analyzeBtn, .analyzeBtn:focus-visible { opacity: 1; transform: none; }
+.analyzeBtn:hover { background: #1a2f8a; color: #fff; }
+.analyzeBtn:focus-visible { outline: 2px solid rgba(26, 47, 138, 0.45); outline-offset: 1px; }

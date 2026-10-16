@@ -1,0 +1,202 @@
+/* Sidebar — estilos estáticos. Los valores que dependen del estado (ancho
+   abierto/cerrado, opacidades, posición del indicador) siguen inline en el JSX.
+   Variables recibidas desde Sidebar.jsx:
+     --k-primary       color primario del tema
+     --k-primary-soft  primario con alfa (fondo de hover)
+     --k-text          color de texto body1
+     --k-text-sub      color de texto body2 (submenú) */
+
+.aside {
+  flex-shrink: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  transition: width 350ms cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+/* Tarjeta blanca común a logo, navegación y usuario */
+.card {
+  background: #fff;
+  border-radius: 1rem;
+  border: 1px solid #f3f4f6;
+  box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+}
+
+/* ── Logo ── */
+.logo {
+  height: 7vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+
+.logoFull,
+.logoIcon {
+  position: absolute;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.logoFull { height: 1.5rem; }
+.logoIcon { height: 2rem; width: 2rem; }
+
+/* ── Navegación ── */
+.nav {
+  flex: 1 1 0%;
+  display: flex;
+  flex-direction: column;
+  padding: 0.75rem 0;
+  overflow: visible;
+  position: relative;
+}
+
+.indicator {
+  position: absolute;
+  left: 10px;
+  background: var(--k-primary);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.row { position: relative; }
+
+.navBtn {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0.625rem 1rem 0.625rem 1.25rem;
+  border: 0;
+  background-color: transparent;
+  color: var(--k-text);
+  font: inherit;
+  cursor: pointer;
+  transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.navBtn:hover:not(.onPill):not(.settingsActive) {
+  background-color: var(--k-primary-soft);
+  color: var(--k-primary);
+}
+
+/* Fila activa: el texto va en blanco sobre el indicador */
+.onPill { color: #fff; }
+
+.settingsActive { color: var(--k-primary); }
+
+.icon {
+  flex-shrink: 0;
+  min-width: 16px;
+}
+
+.label {
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 9999px;
+  flex-shrink: 0;
+  margin-left: 0.5rem;
+}
+
+.dotWhite   { background-color: #fff; }
+.dotPrimary { background-color: var(--k-primary); }
+.dotChild   { margin-left: 0.25rem; }
+
+/* ── Submenú ── */
+.submenu {
+  overflow: hidden;
+  transition: max-height 300ms cubic-bezier(0.4, 0, 0.2, 1), opacity 200ms ease;
+}
+
+.childBtn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem 0.5rem 2.5rem;
+  border: 0;
+  background-color: transparent;
+  color: var(--k-text-sub);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.childBtn:hover:not(.childActive) {
+  background-color: var(--k-primary-soft);
+  color: var(--k-primary);
+}
+
+.childActive { color: var(--k-primary); }
+
+.childLabel { white-space: nowrap; }
+
+@keyframes navSlideIn {
+  from { opacity: 0; transform: translateX(-6px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* El retardo escalonado por fila llega inline como animation-delay */
+.childIn { animation: navSlideIn 200ms ease both; }
+
+/* ── Ajustes ── */
+.settingsWrap {
+  margin-top: auto;
+  padding-top: 0.5rem;
+  border-top: 1px solid #f3f4f6;
+}
+
+/* ── Usuario ── */
+.userCard {
+  padding: 0.75rem;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 6vh;
+}
+
+.userInner {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  width: 100%;
+}
+
+.avatar {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background-color: var(--k-primary);
+  color: #fff;
+  font-size: 0.75rem;
+  line-height: 1rem;
+  font-weight: 900;
+}
+
+.username {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1rem;
+  font-weight: 600;
+  color: #374151;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

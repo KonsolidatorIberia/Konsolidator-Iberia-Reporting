@@ -1,0 +1,128 @@
+/* ══════════════════════════════════════════════════════════════════════
+   KPIs (individual y consolidado) — tabla de KPIs con el mismo lenguaje
+   que el resto de páginas modernizadas (sábana, cash flow, individuales):
+     · filas que reaccionan al ratón: fondo suave + barra de acento
+     · valores en píldora; si el KPI tiene benchmark, la píldora toma su
+       color (muy sano / sano / no sano) en vez de pintar toda la celda
+     · comparación: Δ y Δ% en píldoras verde / roja
+     · columna Total / Media fija a la derecha, con su propio fondo
+   --kpi-primary llega de la página (color principal de Ajustes).
+   ══════════════════════════════════════════════════════════════════════ */
+.root {
+  --kpi-primary: #1a2f8a;
+  --kpi-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --kpi-ease: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --kpi-hover: color-mix(in srgb, var(--kpi-primary) 4%, #fff);
+  --kpi-line: #eef1f6;
+  --kpi-up: #0f9f6e;
+  --kpi-down: #d9365b;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 18px 40px -24px rgba(26, 47, 138, 0.22) !important;
+}
+
+/* ── Cabecera ────────────────────────────────────────────────────────── */
+.root table > thead > tr > th { box-shadow: inset 0 -1px 0 #e6eaf2; }
+
+/* ── Filas ───────────────────────────────────────────────────────────── */
+.root table > tbody > tr {
+  border-bottom: 1px solid var(--kpi-line) !important;
+  background: #fff;
+  transition: background-color 200ms var(--kpi-soft);
+}
+.root table > tbody > tr:hover { background: var(--kpi-hover) !important; }
+.root table > tbody > tr > td { transition: background-color 200ms var(--kpi-soft); }
+/* Primera columna (nombre del KPI): fija, con su fondo y barra de acento */
+.root table > tbody > tr > td:first-child { background: #fff !important; }
+.root table > tbody > tr:hover > td:first-child { background: var(--kpi-hover) !important; }
+.root table > tbody > tr > td:first-child::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 50%;
+  width: 4px;
+  height: 0;
+  border-radius: 4px;
+  background: var(--kpi-primary);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--kpi-primary) 55%, transparent);
+  transform: translateY(-50%);
+  transition: height 320ms var(--kpi-ease);
+  pointer-events: none;
+}
+.root table > tbody > tr:hover > td:first-child::before { height: 26px; }
+.root table > tbody > tr > td:first-child > div { transition: transform 280ms var(--kpi-soft); }
+.root table > tbody > tr:hover > td:first-child > div { transform: translateX(3px); }
+
+/* Columnas de comparación: fondo muy suave para leerlas como un bloque */
+.cmpCell { background: color-mix(in srgb, var(--kpi-primary) 2.5%, transparent) !important; }
+.cmpFirst { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--kpi-primary) 10%, transparent); }
+.root table > thead > tr > th.cmpHead { background: color-mix(in srgb, var(--kpi-primary) 3%, #fff) !important; }
+.root table > thead > tr > th.cmpHead.cmpFirst { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--kpi-primary) 10%, transparent), inset 0 -1px 0 #e6eaf2; }
+
+/* Total / Media: fija a la derecha */
+.total {
+  background: color-mix(in srgb, var(--kpi-primary) 5%, #fff) !important;
+  box-shadow: inset 1px 0 0 #e6eaf2;
+}
+.root table > tbody > tr:hover > td.total { background: color-mix(in srgb, var(--kpi-primary) 8%, #fff) !important; }
+.totalTag { margin-left: 5px; font-size: 9px; font-weight: 700; color: #a3abbd; text-transform: uppercase; letter-spacing: 0.06em; }
+
+/* ── Valores ─────────────────────────────────────────────────────────── */
+.val {
+  display: inline-block;
+  padding: 4px 11px;
+  margin: -4px 0;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 220ms var(--kpi-soft), transform 260ms var(--kpi-ease), box-shadow 220ms ease;
+}
+td:hover > .val {
+  background: #fff;
+  transform: scale(1.06);
+  box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--kpi-primary) 55%, transparent),
+              0 0 0 1px color-mix(in srgb, var(--kpi-primary) 14%, transparent);
+}
+/* Con benchmark: la píldora lleva el color del rango */
+.toned {
+  background: color-mix(in srgb, var(--tone) 9%, #fff);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 22%, transparent);
+}
+td:hover > .toned {
+  background: color-mix(in srgb, var(--tone) 12%, #fff);
+  box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--tone) 60%, transparent),
+              inset 0 0 0 1px color-mix(in srgb, var(--tone) 30%, transparent);
+}
+.toneDot { display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--tone); vertical-align: 1px; }
+
+/* Δ y Δ%: píldora verde (sube) o roja (baja) */
+.dev {
+  display: inline-block;
+  padding: 3px 10px;
+  margin: -3px 0;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  transition: transform 240ms var(--kpi-ease);
+}
+.devUp { color: var(--kpi-up) !important; background: color-mix(in srgb, var(--kpi-up) 10%, transparent); }
+.devDown { color: var(--kpi-down) !important; background: color-mix(in srgb, var(--kpi-down) 9%, transparent); }
+.devPct { font-size: 11px; }
+.devZero { color: #9aa3b5 !important; background: #f3f5fa; }
+td:hover > .dev { transform: scale(1.06); }
+.devUp span, .devDown span { color: inherit !important; }
+
+/* ── Botón "Añadir KPI" ──────────────────────────────────────────────── */
+.addRow { border-top: 1px solid #eef1f6 !important; background: #fcfdff; }
+
+/* ── Cargador: ocupa el sitio de la tabla ────────────────────────────── */
+.loaderBox {
+  position: relative;
+  flex: 1;
+  min-height: 360px;
+  border-radius: 20px;
+  background: #fff;
+  border: 1px solid #eef1f6;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .val, .dev { transition: none; }
+}

@@ -1,25 +1,27 @@
 import { lazy, Suspense } from "react";
 
 const HomePage                    = lazy(() => import("../components/layout/HomePage.jsx"));
-const IndividualesPage            = lazy(() => import("../components/layout/IndividualesPage.jsx"));
-const KpiIndividualesPage         = lazy(() => import("../components/layout/KpiIndividualesPage"));
-const ContributivePage            = lazy(() => import("../components/layout/ContributivePage.jsx"));
-const DimensionesPage             = lazy(() => import("../components/layout/DimensionesPage.jsx"));
-const ConsolidationSheetPage      = lazy(() => import("../components/layout/ConsolidationSheetPage.jsx"));
-const StructurePage               = lazy(() => import("../components/layout/StructurePage.jsx"));
-const SettingsPage                = lazy(() => import("../components/layout/SettingsPage.jsx"));
-const CashFlowPage                = lazy(() => import("../components/layout/CashFlowPage.jsx"));
-const IndividualCashFlowPage      = lazy(() => import("../components/layout/IndividualCashFlowPage.jsx"));
-const MemoryNotesPage             = lazy(() => import("../components/layout/MemoryNotesPage.jsx"));
-const ConsolidatedDimensionesPage = lazy(() => import("../components/layout/ConsolidatedDimensionesPage.jsx"));
-const ConsolidatedMemoryNotesPage = lazy(() => import("../components/layout/ConsolidatedMemoryNotesPage.jsx"));
-const ConsolidatedKpiPage         = lazy(() => import("../components/layout/ConsolidatedKpiPage.jsx"));
+const IndividualesPage            = lazy(() => import("../pages/individuals/IndividualesPage.jsx"));
+const KpiIndividualesPage         = lazy(() => import("../pages/KPI/individual/KpiIndividualesPage.jsx"));
+const ContributivePage            = lazy(() => import("../pages/Contributive/index.js"));
+const DimensionesPage             = lazy(() => import("../pages/dimensions/DimensionesPage.jsx"));
+const ConsolidationSheetPage      = lazy(() => import("../pages/ConsolidationSheet/index.js"));
+const StructurePage               = lazy(() => import("../pages/structure/index.js"));
+const SettingsPage                = lazy(() => import("../pages/Settings/index.js"));
+const CashFlowPage                = lazy(() => import("../pages/CashFlow/CashFlowConsolidated/index.js"));
+const IndividualCashFlowPage      = lazy(() => import("../pages/CashFlow/CashFlowIndividual/index.js"));
+const ConsolidatedDimensionesPage = lazy(() => import("../pages/dimensions/ConsolidatedDimensionesPage.jsx"));
+const ConsolidatedKpiPage         = lazy(() => import("../pages/KPI/consolidated/ConsolidatedKpiPage.jsx"));
 const MappingsPage                = lazy(() => import("../components/layout/MappingsPage.jsx"));
 const StatisticalPartiesPage = lazy(() => import("../components/layout/StatisticalPartiesPage.jsx"));
 const CashFlowMappingsView        = lazy(() => import("../components/views/CashFlowMappingsView.jsx"));
 const AdminOnboardingPage         = lazy(() => import("../components/pages/AdminOnboardingPage.jsx"));
-import { useMemo } from "react";
+const PresentationsPage           = lazy(() => import("../pages/presentations/index.js"));
+import { useEffect, useMemo, useRef } from "react";
 import { useCurrentUserPermissions, useCurrentUserResourceAccess } from "../lib/userPermissionsApi";
+import { useSettings } from "../components/layout/SettingsContext";
+import { t } from "../lib/i18n";
+import ProgressLoader from "../components/framework/ProgressLoader.jsx";
 function AccessDenied() {
   return (
     <div className="flex items-center justify-center h-full p-8">
@@ -34,10 +36,50 @@ function AccessDenied() {
   );
 }
 
-function PageFallback() {
+// Las antiguas páginas de notas de la memoria (Individual / Consolidado) llevan
+// ahora a Presentaciones › Notas de memoria y usan su permiso.
+const MEMORY_KEYS = new Set(["presentations-memory", "individual-memory-notes", "consolidated-notes"]);
+
+/* Cargador mientras se descarga el código de la página (y los permisos).
+   Es el cargador común (ProgressLoader) en modo relevo: cuando la página
+   monta su propio cargador, este le pasa el porcentaje y la posición, así
+   que se ve uno solo de principio a fin (antes asomaba unos segundos un
+   círculo pequeño antes del bueno). */
+const PAGE_NAV_KEY = {
+  "home": "nav_home", "individual-data": "nav_data", "individual-contributive": "nav_contributive",
+  "consolidated-sheet": "nav_sheet", "individual-cashflow": "nav_cashflow", "consolidated-cashflow": "nav_cashflow",
+  "individual-dimensiones": "nav_dimensions", "consolidated-dimensiones": "nav_dimensions",
+  "individual-kpis": "nav_kpis", "consolidated-kpis": "nav_kpis", "mappings": "nav_mappings",
+  "cashflow-mappings": "nav_mappings", "structure": "nav_structure", "settings": "nav_settings",
+  "statistical-parties": "nav_statistical_parties", "individual-memory-notes": "nav_memory_notes",
+  "consolidated-notes": "nav_memory_notes", "presentations-memory": "nav_memory_notes",
+};
+const OPENING = { es: "Abriendo", en: "Opening", da: "Åbner", pt: "A abrir" };
+const PREPARING = { es: "Preparando la página", en: "Preparing the page", da: "Forbereder siden", pt: "A preparar a página" };
+
+function PageFallback({ page }) {
+  const { colors, locale } = useSettings();
+  const lang = OPENING[locale] ? locale : String(locale ?? "").slice(0, 2);
+  const navKey = PAGE_NAV_KEY[page];
+  const name = navKey ? t(locale, navKey, "") : "";
+  const area = String(page ?? "").startsWith("consolidated") ? t(locale, "nav_consolidated", "")
+    : String(page ?? "").startsWith("individual") ? t(locale, "nav_individual", "") : "";
   return (
-    <div className="flex items-center justify-center h-full">
-      <div className="w-6 h-6 rounded-full border-2 border-gray-200 border-t-[#1a2f8a] animate-spin" />
+    <div className="relative h-full min-h-0">
+      <ProgressLoader
+        relay
+        hideSteps
+        primary={colors?.primary ?? "#1a2f8a"}
+        secondary={colors?.secondary ?? "#CF305D"}
+        title={name ? `${OPENING[lang] ?? OPENING.en} ${name}` : (PREPARING[lang] ?? PREPARING.en)}
+        subtitle={area || undefined}
+        // Descargar el código es solo el principio: se queda en un ~10 %
+        // y la página sigue desde ahí con sus propias fases.
+        steps={[
+          { key: "page", label: "page", weight: 1, state: "active" },
+          { key: "rest", label: "rest", weight: 9, state: "pending" },
+        ]}
+      />
     </div>
   );
 }
@@ -70,15 +112,45 @@ const sharedData = useMemo(() => {
     };
 }, [rawData, accessLoaded, access]);
 
+  // ── Botón "atrás" del navegador ──────────────────────────────────────
+  // Cada página del menú deja una entrada en el historial. Al pulsar "atrás"
+  // desde cualquiera de ellas se vuelve a Inicio, en lugar de salir de la
+  // app. La navegación interna de una página (p. ej. abrir una presentación)
+  // conserva su entrada y la gestiona la propia página.
+  const activeRef = useRef(activePage);
+  useEffect(() => { activeRef.current = activePage; }, [activePage]);
+  useEffect(() => {
+    const st = window.history.state ?? {};
+    if (st.appPage === activePage) return;
+    if (activePage === "home") {
+      window.history.replaceState({ ...st, appPage: "home" }, "");
+      return;
+    }
+    window.history.pushState({ appPage: activePage }, "");
+  }, [activePage]);
+  useEffect(() => {
+    const onPop = (e) => {
+      const st = e.state ?? {};
+      const current = activeRef.current;
+      if (current === "home") return;                    // desde Inicio, "atrás" sale de la app
+      if (st.appPage && st.appPage === current) return;  // navegación interna de la página
+      window.history.replaceState({ ...st, appPage: "home" }, "");
+      onNavigate?.("home");
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [onNavigate]);
+
   // Block rendering until both page perms and resource access have loaded.
   // Avoids passing transient/empty data to children (which can cause hook
   // count mismatches in chart libraries like Recharts that bail out on
   // zero-sized containers).
-  if (!loaded || !accessLoaded) return <PageFallback />;
+  if (!loaded || !accessLoaded) return <PageFallback page={activePage} />;
 
   if (activePage !== "user") {
     const allowed = activePage === "settings"
       ? (can("settings-personalization") || can("settings-security"))
+      : MEMORY_KEYS.has(activePage) ? can("presentations-memory")
       : can(activePage);
     if (!allowed) return <AccessDenied pageKey={activePage} />;
   }
@@ -175,24 +247,8 @@ if (activePage === "cashflow-mappings") {
     );
   }
 
-  if (activePage === "individual-memory-notes") return (
-    <MemoryNotesPage
-      token={token}
-      sources={sharedData.sources ?? []}
-      structures={sharedData.structures ?? []}
-      companies={sharedData.companies ?? []}
-    />
-  );
-
 if (activePage === "consolidated-kpis") return (
     <ConsolidatedKpiPage
-      token={token}
-      activeStandardKey={rawData?.activeStandardKey ?? null}
-    />
-  );
-
-if (activePage === "consolidated-notes") return (
-    <ConsolidatedMemoryNotesPage
       token={token}
       activeStandardKey={rawData?.activeStandardKey ?? null}
     />
@@ -211,6 +267,22 @@ if (activePage === "consolidated-dimensiones") return (
 if (activePage === "statistical-parties") return (
     <StatisticalPartiesPage
       token={token}
+      companies={sharedData.companies ?? []}
+      dimensions={sharedData.dimensions ?? []}
+    />
+  );
+// Las notas de la memoria están ahora en Presentaciones (pestaña Memorias).
+// Si algo todavía abre las páginas antiguas, se va ahí.
+// Presentaciones tiene dos entradas en el menú: PowerPoint y Notas de la memoria.
+// Los enlaces antiguos a las notas (Individual / Consolidado) van a la segunda.
+if (activePage === "presentations" || activePage === "presentations-memory" || activePage === "individual-memory-notes" || activePage === "consolidated-notes") return (
+    <PresentationsPage
+      key={activePage === "presentations" ? "deck" : "memory"}
+      docType={activePage === "presentations" ? "deck" : "memory"}
+      token={token}
+      activeStandardKey={rawData?.activeStandardKey ?? null}
+      sources={sharedData.sources ?? []}
+      structures={sharedData.structures ?? []}
       companies={sharedData.companies ?? []}
       dimensions={sharedData.dimensions ?? []}
     />
@@ -250,7 +322,7 @@ return (
 
 export default function AppRoutes(props) {
   return (
-    <Suspense fallback={<PageFallback />}>
+    <Suspense fallback={<PageFallback page={props.activePage} />}>
       <AppRoutesInner {...props} />
     </Suspense>
   );

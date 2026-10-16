@@ -1,0 +1,382 @@
+/* ══════════════════════════════════════════════════════════════════════
+   Individuales (P&L y balance) — mismo lenguaje que la sábana de
+   consolidación, el cash flow y el contributivo:
+     · separadores de sección con degradado animado
+     · filas que reaccionan al ratón (fondo suave + barra de acento)
+     · códigos de cuenta en chip
+     · importes en píldora que se ilumina bajo el cursor
+     · desviaciones con fondo verde / rojo suave
+   --ind-primary llega de la página (color principal de Ajustes).
+   Las tablas son las de siempre (.k-sticky-table): aquí solo cambia
+   cómo se ven.
+   ══════════════════════════════════════════════════════════════════════ */
+.root {
+  --ind-primary: #1a2f8a;
+  --ind-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --ind-ease: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ind-hover: color-mix(in srgb, var(--ind-primary) 4%, #fff);
+  --ind-line: #f0f2f7;
+  --ind-up: #0f9f6e;
+  --ind-down: #d9365b;
+}
+
+/* ── Cabecera de la tabla ────────────────────────────────────────────── */
+.root :global(.k-sticky-table) > thead > tr > th {
+  box-shadow: inset 0 -1px 0 #e8ecf4;
+}
+
+/* ── Filas ───────────────────────────────────────────────────────────── */
+/* La línea y el fondo van en la fila (no en las celdas) para que lleguen
+   hasta el borde derecho aunque la fila tenga menos celdas que columnas */
+.root :global(.k-sticky-table) > tbody > tr:not(.bk) {
+  box-shadow: inset 0 -1px 0 var(--ind-line);
+  transition: background-color 220ms var(--ind-soft);
+}
+.root :global(.k-sticky-table) > tbody > tr:not(.bk) > td {
+  transition: background-color 220ms var(--ind-soft), color 180ms ease;
+}
+/* La primera columna (fija) tapa la fila: lleva su propia línea */
+.root :global(.k-sticky-table) > tbody > tr:not(.bk) > td:global(.k-sticky-acc) { box-shadow: inset 0 -1px 0 var(--ind-line); }
+/* Fondo bajo el cursor: una sombra interior que rellena toda la fila */
+.root :global(.k-sticky-table) > tbody > tr:not(.bk):hover {
+  box-shadow: inset 0 -1px 0 var(--ind-line), inset 0 0 0 100vmax var(--ind-hover);
+}
+.root :global(.k-sticky-table) > tbody > tr:not(.bk):hover > td:global(.k-sticky-acc) { background-color: var(--ind-hover) !important; }
+/* Las coincidencias de la búsqueda siguen marcadas aunque pases el ratón */
+.root :global(.k-sticky-table) > tbody > tr[class*="fef3c7"]:hover { box-shadow: inset 0 -1px 0 var(--ind-line), inset 0 0 0 100vmax #fdedb5; }
+.root :global(.k-sticky-table) > tbody > tr[class*="fef3c7"]:hover > td:global(.k-sticky-acc) { background-color: #fdedb5 !important; }
+
+/* Barra de acento a la izquierda de la fila bajo el cursor */
+.root :global(.k-sticky-table) > tbody > tr > td:global(.k-sticky-acc)::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 50%;
+  width: 4px;
+  height: 0;
+  border-radius: 4px;
+  background: var(--ind-primary);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--ind-primary) 55%, transparent);
+  transform: translateY(-50%);
+  transition: height 320ms var(--ind-ease);
+  pointer-events: none;
+}
+.root :global(.k-sticky-table) > tbody > tr:not(.bk):hover > td:global(.k-sticky-acc)::before { height: 22px; }
+.root :global(.k-sticky-table) > tbody > tr > td:global(.k-sticky-acc) > div { transition: transform 280ms var(--ind-soft); }
+.root :global(.k-sticky-table) > tbody > tr:not(.bk):hover > td:global(.k-sticky-acc) > div { transform: translateX(3px); }
+
+/* Código de cuenta en chip */
+.root :global(.k-sticky-table) td:global(.k-sticky-acc) span:global(.font-mono) {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 7px;
+  background: #f3f5fa;
+  color: #7c879c !important;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace !important;
+  font-size: 10.5px !important;
+  font-weight: 600 !important;
+  line-height: 1.5;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+.root :global(.k-sticky-table) tr:hover td:global(.k-sticky-acc) span:global(.font-mono) {
+  background: color-mix(in srgb, var(--ind-primary) 10%, #fff);
+  color: var(--ind-primary) !important;
+}
+
+/* ── Importes ────────────────────────────────────────────────────────── */
+.amt { font-variant-numeric: tabular-nums; }
+.val {
+  display: inline-block;
+  padding: 4px 10px;
+  margin: -4px 0;          /* la píldora no hace la fila más alta */
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 220ms var(--ind-soft), color 180ms ease, transform 260ms var(--ind-ease), box-shadow 220ms ease;
+}
+.amt:hover > .val:not(.zero) {
+  background: #fff;
+  color: var(--ind-primary);
+  transform: scale(1.06);
+  box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--ind-primary) 55%, transparent),
+              0 0 0 1px color-mix(in srgb, var(--ind-primary) 14%, transparent);
+}
+.amt:hover > .val.neg { color: var(--ind-down); }
+.zero { color: #cfd5e1 !important; font-weight: 500 !important; }
+.neg { color: #e11d48; }
+
+/* Desviaciones: píldora con fondo suave */
+.dev {
+  display: inline-block;
+  padding: 3px 9px;
+  margin: -3px 0;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  transition: transform 240ms var(--ind-ease);
+}
+.devPct { font-size: 0.92em; }
+.devUp { color: var(--ind-up) !important; background: color-mix(in srgb, var(--ind-up) 9%, transparent); }
+.devDown { color: var(--ind-down) !important; background: color-mix(in srgb, var(--ind-down) 8%, transparent); }
+.dev.zero { background: none; }
+.amt:hover > .dev:not(.zero) { transform: scale(1.06); }
+
+/* ── Separadores de sección ──────────────────────────────────────────── */
+.root :global(.k-sticky-table) > tbody > tr.bk > td {
+  padding: 12px 0 6px !important;
+  background: #fff;
+  border: 0;
+}
+.bkCell { overflow: visible; }
+.bkBar {
+  position: sticky;
+  left: 0;
+  width: var(--ind-view-w, 100%);
+  max-width: 100%;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  border-radius: 9px;
+  background: linear-gradient(90deg,
+    var(--sec) 0%,
+    color-mix(in srgb, var(--sec) 92%, #fff) 22%,
+    color-mix(in srgb, var(--sec) 55%, #fff) 52%,
+    color-mix(in srgb, var(--sec) 14%, #fff) 82%,
+    color-mix(in srgb, var(--sec) 4%, #fff) 100%);
+  background-size: 125% 100%;
+  transform-origin: left center;
+  animation: bkGrow 700ms var(--ind-soft) both, bkFlow 9s ease-in-out 700ms infinite alternate;
+}
+.bkBar::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 30%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transform: translateX(-120%);
+  animation: bkShine 4.8s ease-in-out 1s infinite;
+  pointer-events: none;
+}
+.bkTitle {
+  position: relative;
+  z-index: 1;
+  padding-left: 22px;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+@keyframes bkGrow { from { transform: scaleX(0.04); opacity: 0.4; } to { transform: scaleX(1); opacity: 1; } }
+@keyframes bkFlow { from { background-position: 0% 0; } to { background-position: 100% 0; } }
+@keyframes bkShine { 0% { transform: translateX(-120%); } 45%, 100% { transform: translateX(420%); } }
+
+/* ── Histórico de meses (pulsar en Mensual / Actual) ─────────────────── */
+/* Cabecera pulsable: se ilumina al pasar el ratón */
+.root :global(.k-sticky-table) > thead > tr > th.histHead {
+  transition: background-color 200ms var(--ind-soft);
+}
+.root :global(.k-sticky-table) > thead > tr > th.histHead:hover {
+  background: color-mix(in srgb, var(--ind-primary) 4%, #fff) !important;
+}
+/* Píldora "Últimos 6 meses ›" bajo el título */
+.histHint {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 19px;
+  margin-top: 5px;
+  padding: 0 6px 0 7px;
+  border-radius: 999px;
+  background: #f3f5fa;
+  color: #8f99ad;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  transition: background-color 220ms var(--ind-soft), color 200ms ease, box-shadow 220ms ease;
+}
+/* Un brillo suave una sola vez al cargar, para que se note que está ahí */
+.histHint::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.9), transparent);
+  transform: translateX(-130%);
+  animation: histGlint 1.1s ease-in-out 1.2s 1 both;
+  pointer-events: none;
+}
+.histHintText { display: inline-block; animation: histText 260ms var(--ind-soft) both; }
+.histChevron { transition: transform 320ms var(--ind-ease); }
+th.histHead:hover .histHint {
+  background: color-mix(in srgb, var(--ind-primary) 10%, #fff);
+  color: var(--ind-primary);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ind-primary) 16%, transparent);
+}
+th.histHead:hover .histChevron { transform: translateX(2px); }
+.histHintOpen { background: color-mix(in srgb, var(--ind-primary) 9%, #fff); color: var(--ind-primary); }
+.histHintOpen .histChevron { transform: rotate(180deg); }
+th.histHead:hover .histHintOpen .histChevron { transform: rotate(180deg) translateX(2px); }
+.histHintBusy { color: var(--ind-primary); }
+
+/* Columnas del histórico: entran en ola desde la columna actual y salen
+   en orden inverso antes de quitarse */
+.root :global(.k-sticky-table) [data-hcol] {
+  animation: histIn 460ms var(--ind-soft) both;
+}
+.root :global(.k-sticky-table) [data-hcol="1"] { animation-delay: 45ms; }
+.root :global(.k-sticky-table) [data-hcol="2"] { animation-delay: 90ms; }
+.root :global(.k-sticky-table) [data-hcol="3"] { animation-delay: 135ms; }
+.root :global(.k-sticky-table) [data-hcol="4"] { animation-delay: 180ms; }
+.root :global(.k-sticky-table) [data-hcol="5"] { animation-delay: 225ms; }
+/* Separación sutil entre el periodo actual y el histórico */
+.root :global(.k-sticky-table) [data-hcol="0"] { box-shadow: inset 1px 0 0 #edf0f6; }
+.root :global(.k-sticky-table) > thead > tr > th[data-hcol] { color: color-mix(in srgb, var(--ind-primary) 85%, #fff); }
+
+.histLeaving [data-hcol] { animation: histOut 190ms ease-in both !important; }
+.histLeaving [data-hcol="4"], .histLeaving [data-hcol="5"] { animation-delay: 0ms !important; }
+.histLeaving [data-hcol="3"] { animation-delay: 25ms !important; }
+.histLeaving [data-hcol="2"] { animation-delay: 50ms !important; }
+.histLeaving [data-hcol="1"] { animation-delay: 75ms !important; }
+.histLeaving [data-hcol="0"] { animation-delay: 100ms !important; }
+
+@keyframes histIn {
+  from { opacity: 0; transform: translateX(-16px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes histOut {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translateX(-12px); }
+}
+@keyframes histText { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@keyframes histGlint { 0% { transform: translateX(-130%); } 100% { transform: translateX(330%); } }
+
+/* ── Multiperiodo ────────────────────────────────────────────────────── */
+/* Bajo "TOTAL": cuántos meses y cuáles, por año */
+.multiBadge {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  margin-top: 4px;
+  animation: histText 320ms var(--ind-soft) both;
+}
+.multiCount {
+  display: inline-flex;
+  align-items: center;
+  height: 17px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ind-primary) 10%, #fff);
+  color: var(--ind-primary);
+  font-size: 9.5px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.multiLine {
+  display: inline-flex;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: #7c879c;
+  white-space: nowrap;
+}
+.multiLine b { font-weight: 800; color: #4b5568; }
+.multiMore { font-size: 10px; font-weight: 800; color: #9aa3b5; }
+
+/* Mientras se calcula: la tabla se queda atrás, atenuada, y el cargador
+   aparece encima (sin vaciarla ni mostrar "sin datos") */
+.multiBusy :global(.k-sticky-table) {
+  opacity: 0.35;
+  filter: saturate(0.4);
+  transition: opacity 260ms ease, filter 260ms ease;
+}
+.multiLoader {
+  z-index: 40 !important;
+  background: rgba(248, 250, 253, 0.55) !important;
+  backdrop-filter: blur(3px) !important;
+}
+
+/* ── Comparativo: entrada y salida ──────────────────────────────────── */
+/* Columnas B / C / D: la cabecera aparece y después el valor, la Δ y la Δ% */
+.root :global(.k-sticky-table) th[data-ccol] { animation: cmpHeadIn 460ms var(--ind-ease) both; }
+.root :global(.k-sticky-table) td[data-ccol] { animation: cmpIn 480ms var(--ind-soft) both; }
+.root :global(.k-sticky-table) td[data-ccol="v"] { animation-delay: 60ms; }
+.root :global(.k-sticky-table) td[data-ccol="d"] { animation-delay: 130ms; }
+.root :global(.k-sticky-table) td[data-ccol="p"] { animation-delay: 200ms; }
+.cmpLeaving [data-ccol] { animation: cmpOut 220ms ease-in both !important; }
+.cmpLeaving td[data-ccol="p"], .cmpLeaving td[data-ccol="d"] { animation-delay: 0ms !important; }
+.cmpLeaving td[data-ccol="v"] { animation-delay: 50ms !important; }
+.cmpLeaving th[data-ccol] { animation-delay: 90ms !important; }
+
+/* Panel de filtros del comparativo: se despliega y se recoge */
+
+@keyframes cmpIn {
+  from { opacity: 0; transform: translateX(14px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes cmpHeadIn {
+  from { opacity: 0; transform: translateY(-6px) scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes cmpOut {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translateX(10px); }
+}
+
+/* ── Multiempresa ────────────────────────────────────────────────────── */
+/* Columnas de empresa: entran en ola, una tras otra */
+.root :global(.k-sticky-table) [data-mcol] { animation: histIn 460ms var(--ind-soft) both; }
+.root :global(.k-sticky-table) [data-mcol="1"] { animation-delay: 50ms; }
+.root :global(.k-sticky-table) [data-mcol="2"] { animation-delay: 100ms; }
+.root :global(.k-sticky-table) [data-mcol="3"] { animation-delay: 150ms; }
+.root :global(.k-sticky-table) [data-mcol="4"] { animation-delay: 200ms; }
+.root :global(.k-sticky-table) [data-mcol="5"] { animation-delay: 250ms; }
+.root :global(.k-sticky-table) [data-mcol="6"] { animation-delay: 300ms; }
+.root :global(.k-sticky-table) [data-mcol="7"] { animation-delay: 350ms; }
+/* Cabecera: código con su punto de color y razón social debajo */
+.coHead { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; max-width: 190px; }
+.coCode {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 14px; font-weight: 900; letter-spacing: -0.02em;
+}
+.coCode i {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--co-tone);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--co-tone) 16%, transparent);
+}
+.coLegal {
+  max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 10.5px; font-weight: 600; color: #8f99ad;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .root :global(.k-sticky-table) [data-ccol], .root :global(.k-sticky-table) [data-mcol], .cmpLeaving [data-ccol] { animation: none !important; }
+  .histHintHidden { transition: none; }
+  .bkBar, .bkBar::after { animation: none; }
+  .val, .dev { transition: none; }
+  .histHint::after, .histHintText { animation: none; }
+  .root :global(.k-sticky-table) [data-hcol], .histLeaving [data-hcol] { animation: none !important; }
+}
+/* En comparativo el aviso del histórico se oculta pero conserva su hueco:
+   así la cabecera no cambia de altura al abrir o cerrar la comparación. */
+.histHintHidden {
+  opacity: 0 !important;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 180ms ease, visibility 0s linear 180ms;
+}
+
+/* Cargadores de Individuales (cargador común) */
+.pageLoader { z-index: 100 !important; border-radius: 16px; }
+.cardLoader { z-index: 20 !important; background: rgba(250, 251, 254, 0.9) !important; backdrop-filter: none !important; }
+/* Mientras está el cargador de página no se pinta otro debajo */
+.pageLoader ~ * .cardLoader { visibility: hidden; }

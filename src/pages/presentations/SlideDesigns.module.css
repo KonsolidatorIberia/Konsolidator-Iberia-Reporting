@@ -1,0 +1,784 @@
+/* Diseños de diapositiva. Lienzo lógico 1280×720; cada diseño es una clase
+   con el id de DESIGNS en PresentationsPage.jsx. Los colores editables
+   llegan como variables --c-<clave> (bg, bg2, bg3, title, text, accent,
+   deco, deco2, deco3) desde SlideCanvas, con sus valores por defecto en
+   DESIGNS. Aquí solo se decide dónde se usa cada color. */
+
+.frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: #fff;
+}
+
+.slide {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1280px;
+  height: 720px;
+  transform-origin: 0 0;
+  overflow: hidden;
+  font-family: inherit;
+  background: var(--c-bg);
+  color: var(--c-title);
+  /* Espacios de datos: derivan del color de texto del diseño */
+  --slot-fg: var(--c-text);
+  --slot-border: color-mix(in srgb, var(--c-text) 38%, transparent);
+  --slot-bg: color-mix(in srgb, var(--c-text) 7%, transparent);
+}
+
+.content {
+  position: absolute;
+  inset: 0 96px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  z-index: 2;
+}
+
+.title {
+  margin: 0;
+  max-width: 980px;
+  font-size: 64px;
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+  color: var(--c-title);
+}
+
+.subtitle {
+  margin: 22px 0 0;
+  max-width: 900px;
+  font-size: 26px;
+  font-weight: 500;
+  line-height: 1.35;
+  opacity: 0.8;
+  color: var(--c-text);
+}
+
+.ph { opacity: 0.42; }
+.subtitle.ph { opacity: 0.35; }
+
+.num {
+  position: absolute;
+  right: 56px;
+  bottom: 40px;
+  z-index: 3;
+  font-size: 16px;
+  font-weight: 700;
+  opacity: 0.55;
+  color: var(--c-title);
+}
+
+.decorA,
+.decorB {
+  position: absolute;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.accent { display: none; }
+
+/* ── 1. Limpio ─────────────────────────────── */
+.clean .decorA { left: 0; top: 0; bottom: 0; width: 18px; background: var(--c-accent); }
+.clean .accent {
+  display: block; width: 72px; height: 6px; border-radius: 3px;
+  margin-bottom: 30px; background: var(--c-accent);
+}
+
+/* ── 2. Konsolidator ───────────────────────── */
+.navy .decorA {
+  width: 980px; height: 980px; right: -340px; top: -420px; border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--c-accent) 75%, var(--c-deco)) 0%, transparent 62%);
+}
+.navy .decorB {
+  left: 0; right: 0; bottom: 0; height: 8px;
+  background: linear-gradient(90deg, var(--c-accent), var(--c-deco), var(--c-deco2));
+}
+
+/* ── 3. Aurora ─────────────────────────────── */
+.aurora {
+  background:
+    radial-gradient(at 12% 18%, var(--c-deco) 0, transparent 48%),
+    radial-gradient(at 88% 26%, var(--c-deco2) 0, transparent 52%),
+    radial-gradient(at 62% 96%, var(--c-deco3) 0, transparent 50%),
+    var(--c-bg);
+}
+.aurora .decorA {
+  right: 120px; top: 110px; width: 260px; height: 260px; border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--c-title) 28%, transparent);
+}
+.aurora .decorB {
+  right: 190px; top: 180px; width: 120px; height: 120px; border-radius: 50%;
+  background: color-mix(in srgb, var(--c-title) 12%, transparent);
+}
+
+/* ── 4. Geométrico ─────────────────────────── */
+.geometric .content { right: 470px; }
+.geometric .decorA {
+  width: 640px; height: 640px; right: -170px; bottom: -270px; border-radius: 50%;
+  background: var(--c-accent);
+}
+.geometric .decorB {
+  width: 190px; height: 190px; right: 330px; top: 70px; border-radius: 50%;
+  border: 26px solid color-mix(in srgb, var(--c-accent) 30%, transparent);
+}
+.geometric .num { color: #ffffff; opacity: 0.8; }
+
+/* ── 5. Editorial ──────────────────────────── */
+.editorial .title {
+  font-family: Georgia, "Times New Roman", serif;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-size: 68px;
+}
+.editorial .subtitle {
+  font-family: Georgia, "Times New Roman", serif;
+  font-style: italic;
+}
+.editorial .decorA { left: 96px; right: 96px; top: 64px; height: 2px; background: var(--c-deco); }
+.editorial .decorB { left: 96px; right: 96px; bottom: 64px; height: 1px; background: var(--c-deco2); }
+.editorial .accent { display: block; width: 16px; height: 16px; margin-bottom: 28px; background: var(--c-accent); }
+.editorial .num { font-family: Georgia, "Times New Roman", serif; bottom: 84px; }
+.editorial { --slot-bg: transparent; }
+
+/* ── 6. Técnico ────────────────────────────── */
+.grid {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--c-deco) 14%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--c-deco) 14%, transparent) 1px, transparent 1px);
+  background-size: 40px 40px;
+  --slot-fg: var(--c-accent);
+  --slot-border: color-mix(in srgb, var(--c-accent) 45%, transparent);
+  --slot-bg: color-mix(in srgb, var(--c-accent) 5%, transparent);
+}
+.grid .subtitle { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 24px; }
+.grid .num { color: var(--c-accent); font-family: ui-monospace, Menlo, Consolas, monospace; opacity: 0.9; }
+.grid .decorA { inset: 0; background: radial-gradient(ellipse at center, transparent 35%, var(--c-bg) 92%); }
+.grid .accent { display: block; width: 140px; height: 6px; margin-bottom: 30px; background: var(--c-accent); }
+
+/* ── 7. Diagonal ───────────────────────────── */
+.diagonal .content { left: 620px; right: 80px; }
+.diagonal .title { font-size: 58px; }
+.diagonal .decorA { inset: 0; background: linear-gradient(115deg, var(--c-accent) 0 44%, transparent 44%); }
+.diagonal .decorB {
+  left: 90px; bottom: 80px; width: 230px; height: 230px; border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.38);
+}
+
+/* ── 8. Cristal ────────────────────────────── */
+.glass { background: linear-gradient(135deg, var(--c-bg) 0%, var(--c-bg2) 50%, var(--c-bg3) 100%); }
+.glass .content { left: 160px; right: 160px; }
+.glass .decorA {
+  left: 90px; right: 90px; top: 110px; bottom: 110px; border-radius: 36px;
+  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  box-shadow: 0 30px 60px -20px rgba(40, 20, 90, 0.35);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+.glass .decorB {
+  z-index: 0; left: -90px; top: -110px; width: 420px; height: 420px; border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+/* ── 9. Ondas ──────────────────────────────── */
+.waves .content { bottom: 190px; }
+.waves .decorA {
+  left: -12%; right: -12%; bottom: -390px; height: 560px; border-radius: 50%;
+  background: color-mix(in srgb, var(--c-accent) 16%, var(--c-bg));
+}
+.waves .decorB {
+  left: 30%; right: -30%; bottom: -430px; height: 560px; border-radius: 50%;
+  background: color-mix(in srgb, var(--c-accent) 42%, var(--c-bg));
+}
+.waves .num { color: #ffffff; opacity: 0.9; }
+
+/* ── 10. Minimal oscuro ────────────────────── */
+.minimal .title { font-size: 72px; letter-spacing: -0.03em; }
+.minimal .num { color: var(--c-text); }
+.minimal .accent { display: block; width: 88px; height: 4px; margin-bottom: 34px; background: var(--c-accent); }
+
+/* ══════════════════════════════════════════════════════════════════════
+   Distribuciones de contenido (todas menos la portada): cabecera con el
+   título y rejilla de espacios de datos. La zona útil se ajusta por diseño
+   con --safe-t/--safe-r/--safe-b/--safe-l.
+   ══════════════════════════════════════════════════════════════════════ */
+.area {
+  position: absolute;
+  top: var(--safe-t, 60px);
+  right: var(--safe-r, 80px);
+  bottom: var(--safe-b, 80px);
+  left: var(--safe-l, 80px);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+
+.head { flex-shrink: 0; }
+
+.slide.isContent .hTitle {
+  max-width: none;
+  font-size: 42px;
+  line-height: 1.1;
+}
+
+.slide.isContent .hSub {
+  margin-top: 8px;
+  font-size: 18px;
+}
+
+.slide.isContent .accent { margin-bottom: 16px; }
+
+.slots {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 20px;
+}
+
+.slot {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  border: 2px dashed var(--slot-border);
+  border-radius: 18px;
+  background: var(--slot-bg);
+  color: var(--slot-fg);
+}
+
+.slotLabel {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/* Espacio de texto: cabecera con icono y líneas de párrafo de muestra */
+.slotText {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 18px;
+  padding: 26px 28px;
+}
+
+.textHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.textLines {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.textLines span {
+  display: block;
+  height: 12px;
+  border-radius: 6px;
+  background: currentColor;
+  opacity: 0.18;
+}
+
+.textLines span:nth-child(2) { width: 94%; }
+.textLines span:nth-child(3) { width: 98%; }
+.textLines span:nth-child(4) { width: 88%; }
+.textLines span:nth-child(5) { width: 62%; }
+
+/* Ajustes de decoración y zona útil por diseño cuando hay contenido */
+.clean.isContent { --safe-l: 96px; }
+
+.editorial.isContent { --safe-t: 96px; --safe-b: 104px; }
+
+.geometric.isContent .decorA { width: 260px; height: 260px; right: -90px; bottom: -110px; }
+.geometric.isContent .decorB { width: 110px; height: 110px; right: 60px; top: -34px; border-width: 16px; }
+.geometric.isContent { --safe-r: 96px; }
+
+.diagonal.isContent .decorA { background: linear-gradient(115deg, var(--c-accent) 0 9%, transparent 9%); }
+.diagonal.isContent .decorB { display: none; }
+.diagonal.isContent { --safe-l: 190px; }
+
+.glass.isContent .decorA { left: 40px; right: 40px; top: 36px; bottom: 36px; border-radius: 28px; }
+.glass.isContent { --safe-t: 72px; --safe-r: 80px; --safe-b: 80px; --safe-l: 80px; }
+
+.waves.isContent .decorA { bottom: -500px; }
+.waves.isContent .decorB { bottom: -520px; }
+.waves.isContent { --safe-b: 100px; }
+
+.aurora.isContent .decorA { right: -70px; top: -70px; width: 220px; height: 220px; }
+.aurora.isContent .decorB { display: none; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   Contenido: edición en el sitio, KPIs y textos
+   ══════════════════════════════════════════════════════════════════════ */
+.editable {
+  outline: none;
+  cursor: text;
+  border-radius: 8px;
+  transition: box-shadow 150ms ease;
+}
+
+.editable:hover { box-shadow: 0 0 0 2px color-mix(in srgb, var(--c-title) 18%, transparent); }
+.editable:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--c-title) 35%, transparent); }
+
+.editable:empty::before {
+  content: attr(data-ph);
+  opacity: 0.42;
+  pointer-events: none;
+}
+
+.slotClickable { cursor: pointer; transition: border-color 150ms ease, background 150ms ease; }
+.slotClickable:hover {
+  border-color: var(--slot-fg);
+  background: color-mix(in srgb, var(--c-text) 11%, transparent);
+}
+
+/* KPI con valor: tarjeta con nombre, cifra y origen. Los tamaños se ajustan
+   al espacio con unidades de contenedor (cqw/cqh). */
+.slotKpi {
+  container-type: size;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 3%;
+  padding: 0 7%;
+  border-style: solid;
+  border-width: 1.5px;
+  border-color: color-mix(in srgb, var(--c-text) 22%, transparent);
+  text-align: left;
+  overflow: hidden;
+}
+
+.kpiLabel {
+  max-width: 100%;
+  font-size: min(5.2cqw, 14cqh, 24px);
+  font-weight: 700;
+  color: var(--c-text);
+  opacity: 0.9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kpiValue {
+  max-width: 100%;
+  font-size: min(12.5cqw, 36cqh, 76px);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--c-title);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.kpiLoading { opacity: 0.35; }
+
+.kpiMeta {
+  max-width: 100%;
+  font-size: min(3.8cqw, 10cqh, 16px);
+  font-weight: 600;
+  color: var(--c-text);
+  opacity: 0.65;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Texto escrito: sin borde en la diapositiva final; en el escenario el
+   propio campo muestra el contorno al pasar el ratón o al escribir. */
+.slotTextFilled {
+  border-color: transparent;
+  background: transparent;
+  padding: 6px 8px;
+}
+
+.textBody {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  padding: 16px 18px;
+  font-size: 22px;
+  line-height: 1.5;
+  color: var(--c-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Comparativo del KPI */
+.kpiDelta {
+  max-width: 100%;
+  font-size: min(4.4cqw, 11cqh, 19px);
+  font-weight: 700;
+  color: var(--c-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kpiDeltaVs { font-weight: 600; opacity: 0.7; }
+.kpiUp { color: #16a34a; }
+.kpiDown { color: #e11d48; }
+.navy .kpiUp, .aurora .kpiUp, .grid .kpiUp, .minimal .kpiUp, .glass .kpiUp { color: #4ade80; }
+.navy .kpiDown, .aurora .kpiDown, .grid .kpiDown, .minimal .kpiDown, .glass .kpiDown { color: #fb7185; }
+
+/* Aviso de KPI con filtros propios (solo en el editor): un icono discreto,
+   sin cambiar el aspecto de la tarjeta. */
+.slotKpi { position: relative; }
+
+.kpiFixed {
+  position: absolute;
+  top: 7%;
+  right: 5%;
+  display: inline-flex;
+  color: #f59e0b;
+  opacity: 0.9;
+  line-height: 0;
+}
+
+/* Resaltado al llegar desde el panel de variables */
+@keyframes slotPulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--c-title) 0%, transparent); }
+  30%  { box-shadow: 0 0 0 6px color-mix(in srgb, #f59e0b 85%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, #f59e0b 0%, transparent); }
+}
+
+.slotHighlight {
+  position: relative;
+  animation: slotPulse 850ms ease-out 3;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Gráficas de KPIs: área de dibujo + leyenda (la leyenda nunca se oculta:
+   a la derecha si el espacio es ancho, debajo si no).
+   ══════════════════════════════════════════════════════════════════════ */
+.slotChart {
+  position: relative;
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 18px 22px 16px;
+  border-style: solid;
+  border-width: 1.5px;
+  border-color: color-mix(in srgb, var(--c-text) 18%, transparent);
+  overflow: hidden;
+}
+
+.chart {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.chartRow { flex-direction: row; gap: 26px; }
+
+.chartMain {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chartCaption {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--c-text);
+  opacity: 0.75;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chartPlot {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.chartSvg {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+
+.chartGrid {
+  stroke: color-mix(in srgb, var(--c-text) 20%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 4 6;
+}
+
+.chartZero {
+  stroke: color-mix(in srgb, var(--c-text) 45%, transparent);
+  stroke-width: 1.5;
+}
+
+.chartAxis {
+  fill: var(--c-text);
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+}
+
+.chartEmpty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--c-text);
+  opacity: 0.6;
+}
+
+.chartLegend {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 26px;
+}
+
+.chartRow .chartLegend {
+  width: 30%;
+  max-width: 340px;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  justify-content: center;
+  gap: 16px;
+}
+
+.legendItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.legendSwatch {
+  flex: none;
+  width: 24px;
+  height: 6px;
+  border-radius: 3px;
+}
+
+.legendText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.legendLabel {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--c-title);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.legendSub {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text);
+  opacity: 0.75;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.legendValue {
+  flex: none;
+  margin-left: 4px;
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--c-title);
+  font-variant-numeric: tabular-nums;
+}
+
+.chartRow .legendValue { margin-left: auto; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   Texto enriquecido (títulos, subtítulos y textos): listas, tamaños y
+   formatos que produce la barra de formato.
+   ══════════════════════════════════════════════════════════════════════ */
+.rich b, .rich strong { font-weight: 800; }
+.rich i, .rich em { font-style: italic; }
+.rich u { text-decoration: underline; }
+.rich s, .rich strike { text-decoration: line-through; }
+.rich ul, .rich ol { margin: 0.2em 0; padding-left: 1.3em; }
+.rich ul { list-style: disc; }
+.rich ol { list-style: decimal; }
+.rich li { margin: 0.12em 0; }
+.rich p, .rich div { margin: 0; }
+.rich font[size="1"] { font-size: 0.65em; }
+.rich font[size="2"] { font-size: 0.8em; }
+.rich font[size="3"] { font-size: 1em; }
+.rich font[size="4"] { font-size: 1.15em; }
+.rich font[size="5"] { font-size: 1.35em; }
+.rich font[size="6"] { font-size: 1.7em; }
+.rich font[size="7"] { font-size: 2.1em; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   Bloque de cuentas individuales
+   ══════════════════════════════════════════════════════════════════════ */
+.slotAccounts {
+  position: relative;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 16px 22px 14px;
+  border-style: solid;
+  border-width: 1.5px;
+  border-color: color-mix(in srgb, var(--c-text) 18%, transparent);
+  overflow: hidden;
+}
+
+.accCaption {
+  flex: none;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--c-text);
+  opacity: 0.75;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.accTable {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.accRow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--c-text) 14%, transparent);
+  color: var(--c-title);
+}
+
+.accRow:last-child { border-bottom: 0; }
+
+.accName {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.accCode {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--c-text);
+  opacity: 0.7;
+  font-size: 0.85em;
+}
+
+.accValue {
+  flex: none;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.accSum .accName, .accSum .accValue { font-weight: 800; }
+
+.accMore {
+  flex: none;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--c-text);
+  opacity: 0.7;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Bloque "Sábana de consolidación": cabecera de columnas y filas en
+   rejilla (cuentas + Consolidado / Eliminaciones / Contribución /
+   sociedades / Resto). Consolidado destacado; eliminaciones en su tono.
+   ══════════════════════════════════════════════════════════════════════ */
+.sheetHead {
+  flex: none;
+  display: grid;
+  align-items: end;
+  gap: 10px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid color-mix(in srgb, var(--c-text) 22%, transparent);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--c-text);
+}
+
+.sheetHeadCell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.sheetRow {
+  flex: none;
+  display: grid;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--c-text) 12%, transparent);
+  color: var(--c-title);
+}
+
+.sheetRow:last-child { border-bottom: 0; }
+
+.sheetCell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.sheetNeg { color: #e11d48; }
+
+/* Consolidado: la columna principal */
+.sheetCol_cons { font-weight: 800; color: var(--c-accent, var(--c-title)); }
+.sheetHead .sheetCol_cons { color: var(--c-accent, var(--c-title)); }
+/* Eliminaciones: tono propio */
+.sheetCol_elim { color: #b45309; }
+.sheetRow .sheetCol_elim.sheetNeg { color: #c2410c; }
+/* Contribución total y resto: separadas visualmente de las sociedades */
+.sheetCol_contrib { font-weight: 800; }
+.sheetCol_rest { font-style: italic; opacity: 0.85; }
+
+/* Contributivo desplegado: cargado, asientos y total */
+.sheetCol_upload { font-weight: 600; }
+.sheetCol_journal { color: #6d5bd0; }
+.sheetHead .sheetCol_journal { color: #6d5bd0; }
+.sheetCol_company { font-weight: 700; }
+
+/* Exportación (PowerPoint): sin textos de ejemplo ni huecos vacíos, que en
+   la app sirven para editar pero en el documento final no deben verse. */
+.exporting .ph { visibility: hidden; }
+.exporting .slot:has(> .slotLabel),
+.exporting .slot:has(> .textHead) { visibility: hidden; }

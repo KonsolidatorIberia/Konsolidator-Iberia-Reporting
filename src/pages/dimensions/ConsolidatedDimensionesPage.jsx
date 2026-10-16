@@ -1,0 +1,4819 @@
+import React, { useState, useEffect, useMemo, useCallback, useRef, useDeferredValue } from "react";
+import { createPortal } from "react-dom";
+
+import { ChevronDown, ChevronRight, Loader2, X, RefreshCw, Library, CheckCircle2, TrendingUp, BarChart2, Download, Layers, Pencil, FileText } from "lucide-react";
+
+
+import { useTypo, useSettings } from "../../components/layout/SettingsContext";
+import { useLatestPeriod } from "../../components/layout/LatestPeriodContext.jsx";
+import { t } from "../../lib/i18n";
+import PageHeader, { FilterPill as HeaderFilterPill } from "../../components/layout/PageHeader.jsx";
+import ExcelJS from "exceljs";
+import { saveAs } from "file-saver";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import {
+  repairDimXlsx, DimAmountCell, DimDiffCell, DimPctCell, BASE_URL, SUPABASE_URL, SUPABASE_APIKEY, detectStandard, STANDARD_TO_PL_TABLE, evalFormulaWithCcTags, CC_TAG_SYNONYMS, normalizeLabel, extractSectionsFromTree, buildSavedMappingLiteral, MONTHS, YEARS, C, parseDimensions, parseAmt, pgcSort, INDENT, AccountsTab,
+  dimCss, DimCompaniesContext, DimMonthsPill, DimMultiBadge, DimMultiLoader, isMultiSelection, periodsKey, sumPeriodRows, DimBreakerRow, CmpReveal, CmpPeriodTag, useDimAccSqueeze, dimCmpTableClass, dimDrillBtnClass, DimDrillBtnInner, DimDrillHead, DimDrillLoading, DimDrillEmpty, dimDrillRowClass, DimCompanyCell, DIM_CO_TONES, DimPageLoader, useDimText, CMP_OUT_MS, DRILL_OUT_MS,
+} from "./shared/dimShared.jsx";
+
+
+const SB_HEADERS = {
+  apikey:        SUPABASE_APIKEY,
+  Authorization: `Bearer ${SUPABASE_APIKEY}`,
+};
+const sbGet = (path) =>
+  fetch(`${SUPABASE_URL}/${path}`, { headers: SB_HEADERS }).then(r => r.json());
+
+
+
+
+// Catálogo de KPIs (usa el sbGet de esta página)
+async function loadKpiLibrary() {
+  const defs = await sbGet("kpi_definitions?select=*&order=sort_order.asc");
+  if (!Array.isArray(defs)) return [];
+  return defs.map(d => ({
+    id:       d.id,
+    label:    d.label,
+    category: d.category ?? "",
+    format:   d.format ?? "currency",
+    formula:  d.formula,
+  }));
+}
+
+async function loadStandardMapping(standard, groupAccounts) {
+  const plTable = STANDARD_TO_PL_TABLE[standard];
+  if (!plTable) return null;
+
+  const plRows = await sbGet(`${plTable}?select=account_code,account_name,section_code,parent_code,is_sum,cc_tag`);
+  const allRows = Array.isArray(plRows) ? plRows : [];
+
+  // Build code → cc_tag from the taxonomy table (pgc_pl_rows etc).
+  const codeCcTag = new Map();
+  for (const r of allRows) {
+    if (r.cc_tag) codeCcTag.set(String(r.account_code), r.cc_tag);
+  }
+
+  // Build child → parent from groupAccounts so we can walk a posting account
+  // up to whatever ancestor carries a cc_tag.
+  const parentOf = new Map();
+  for (const ga of (groupAccounts || [])) {
+    if (ga.AccountCode && ga.SumAccountCode) {
+      parentOf.set(String(ga.AccountCode), String(ga.SumAccountCode));
+    }
+  }
+
+  // Helper: for a given account code (which may not be in the taxonomy at all,
+  // because journals can have posting codes outside it), walk its parent chain
+  // until we hit a code that has a cc_tag. Returns the cc_tag string, or null.
+  const resolveCcTag = (code) => {
+    let cur = String(code);
+    let hops = 0;
+    while (cur && hops < 25) {
+      if (codeCcTag.has(cur)) return codeCcTag.get(cur);
+      cur = parentOf.get(cur);
+      hops++;
+    }
+    return null;
+  };
+
+  // Eager precompute for groupAccounts (used by `cc` evaluator's fallback path).
+  const ccTagToCodes = new Map();
+  for (const ga of (groupAccounts || [])) {
+    const code = String(ga.AccountCode);
+    const foundTag = resolveCcTag(code);
+    if (foundTag) {
+      if (!ccTagToCodes.has(foundTag)) ccTagToCodes.set(foundTag, []);
+      ccTagToCodes.get(foundTag).push(code);
+    }
+  }
+
+return { ccTagToCodes, resolveCcTag };
+}
+
+
+// Hook: load standard mapping + KPI library reactively
+function useKpiResolver(groupAccounts) {
+  const standard = useMemo(() => detectStandard(groupAccounts), [groupAccounts]);
+const [loadedStandard, setLoadedStandard] = useState(null);
+  const [loaded, setLoaded] = useState({
+    kpiList: [],
+    ccTagToCodes: new Map(),
+    resolveCcTag: () => null,
+  });
+
+useEffect(() => {
+    if (!standard) return; // initial state already represents "no standard"
+    let cancelled = false;
+    Promise.all([loadStandardMapping(standard, groupAccounts), loadKpiLibrary()])
+      .then(([mapping, kpiList]) => {
+        if (cancelled) return;
+        setLoaded({
+          kpiList,
+          ccTagToCodes: mapping?.ccTagToCodes ?? new Map(),
+          resolveCcTag: mapping?.resolveCcTag ?? (() => null),
+        });
+        setLoadedStandard(standard);
+      })
+      .catch(e => {
+        if (cancelled) return;
+        console.error("[DimResolver] load failed:", e);
+        setLoadedStandard(standard);
+      });
+    return () => { cancelled = true; };
+  }, [standard, groupAccounts]);
+
+  const ready = !standard || loadedStandard === standard;
+  return { ...loaded, standard, ready };
+}
+
+
+function convertSavedMappingTree(tree) {
+  if (!Array.isArray(tree) || tree.length === 0) return null;
+  const rows = new Map();
+  const instances = [];
+  const sections = new Map();
+  let sortCounter = 0;
+  let defaultSecCounter = 0;
+  let synthIdCounter = 0;
+
+  // Walker handles BOTH styles: recursive (breakers own code children) and
+  // linear/sibling (breakers and codes at same level; breaker sets running
+  // section for subsequent siblings).
+  function walk(nodes, depth, initialParentSection) {
+    let currentSection = initialParentSection;
+    for (const node of nodes || []) {
+      if (!node) continue;
+      if (node.kind === "breaker") {
+        const secCode = node.sectionCode || `section_${defaultSecCounter++}`;
+        if (!sections.has(secCode)) {
+          sections.set(secCode, {
+            label: String(node.name ?? "Section"),
+            color: node.color || "#1a2f8a",
+          });
+        }
+        currentSection = secCode;
+        if (Array.isArray(node.children) && node.children.length > 0) {
+          walk(node.children, depth, secCode);
+        }
+      } else {
+        const code = String(node.code ?? "");
+        if (!code) continue;
+        const sec = currentSection || "_default";
+        if (!sections.has(sec)) sections.set(sec, { label: "", color: "#1a2f8a" });
+        const instanceId = String(node.id ?? `synth-${code}-${synthIdCounter++}`);
+        const dims = Array.isArray(node.dims) ? node.dims.map(String).filter(Boolean) : [];
+        const info = {
+          section: sec,
+          sortOrder: sortCounter++,
+          isSum: true,
+          showInSummary: !!node.showInSummary,
+          level: depth,
+          parent_code: node.parent_code ?? node.SumAccountCode ?? null,
+        };
+        if (!rows.has(code)) rows.set(code, info);
+        instances.push({
+          instanceId,
+          code,
+          name: node.name ?? "",
+          dims,
+          ...info,
+        });
+        if (Array.isArray(node.children) && node.children.length > 0) {
+          walk(node.children, depth + 1, sec);
+        }
+      }
+    }
+  }
+  walk(tree, 0, null);
+  if (rows.size === 0 && instances.length === 0) return null;
+  return { rows, sections, instances };
+}
+
+
+function buildTree(accounts) {
+  // Normalize field names (API returns camelCase, our pivot uses PascalCase)
+  const normalized = accounts.map(a => ({
+    ...a,
+    AccountCode:    a.AccountCode    ?? a.accountCode    ?? "",
+    AccountName:    a.AccountName    ?? a.accountName    ?? "",
+    SumAccountCode: a.SumAccountCode ?? a.sumAccountCode ?? "",
+  })).filter(a => a.AccountCode);
+
+  const sorted = [...normalized].sort(pgcSort);
+  const map = new Map();
+  sorted.forEach(a => map.set(a.AccountCode, { ...a, children: [] }));
+
+  // Detect chart type: PGC uses `.S`-suffixed summary accounts; Danish/numeric
+  // standards just have a hierarchy of numeric codes where any account can have
+  // children. The two need different attachment rules.
+  const hasPgcSummaries = sorted.some(a => /\.S$/i.test(a.AccountCode));
+
+const roots = [];
+  sorted.forEach(a => {
+    // Defend against self-referencing SumAccountCode rows that would otherwise
+    // attach a node as its own child and break every recursion downstream.
+    const isSelfRef = a.SumAccountCode && String(a.SumAccountCode) === String(a.AccountCode);
+    const parent = !isSelfRef && a.SumAccountCode ? map.get(a.SumAccountCode) : null;
+
+    // Attach to parent when:
+    // - PGC: parent must NOT be a `.S` summary (PGC quirk: `.S` siblings, not parents)
+    // - Numeric / Danish: any existing parent in the map is valid
+    const canAttach = parent && (hasPgcSummaries ? !/\.S$/i.test(parent.AccountCode) : true);
+
+    if (canAttach) {
+      parent.children.push(map.get(a.AccountCode));
+    } else {
+      // PGC-only filter: drop numeric leaves whose `.S` parent isn't in the map
+      // (those are orphans of an unloaded section). Doesn't apply to non-PGC.
+      if (hasPgcSummaries) {
+        const isNum   = /^\d/.test(a.AccountCode);
+        const missing = a.SumAccountCode && !map.has(a.SumAccountCode);
+        if (isNum && missing) return;
+      }
+      roots.push(map.get(a.AccountCode));
+    }
+  });
+  return roots;
+}
+
+
+const EMPTY_LEAVING = new Set();
+const DimensionRow = React.memo(function DimensionRow({ node, depth, expandedSet, onToggle, dimCols, getVal, getCmpVal, compareMode, cmpVisible, cmpExiting, body1Style, body2Style, header2Style, colors, excludeCodes = null, rowIndex = 0, searchQuery = "", searchExpansionSet = null, valCache = null, cmpCache = null, isAnimatingData = false, tableJustLoaded = false, cmpRecentlyToggled = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), drillLeaving = EMPTY_LEAVING, onToggleDrillAccount = null, statementType = "pl", selGroups = new Set(), selDims = new Set(), sign = -1, groupAccounts = [], masterTopParent = "", computeDrillCompanyRows = null }) {
+  const subbody2Style = useTypo("subbody2");
+  const code = node.AccountCode;
+  const visibleChildren = excludeCodes
+    ? (node.children || []).filter(c => !excludeCodes.has(String(c.AccountCode)))
+    : (node.children || []);
+  const hasChildren = visibleChildren.length > 0;
+  const isExpanded = expandedSet.has(code) || (searchExpansionSet?.has(String(code)) ?? false);
+  const q = (searchQuery ?? "").trim().toLowerCase();
+  const isMatch = !!q && (String(code ?? "").toLowerCase().includes(q) || String(node.AccountName ?? node.accountName ?? "").toLowerCase().includes(q));
+
+  // Rollup logic: when a node has children that produce a non-zero sum, trust
+  // the children — the journal often carries the same money at BOTH the summary
+  // AccountCode and its leaf postings, so adding self on top double-counts.
+  // Fall back to self's own value only when every child resolves to zero (covers
+  // accounts posted directly at the summary level with no separate leaf rows).
+const getNodeVal = (dimKey) => {
+    const sumNode = (n, depth = 0) => {
+      if (depth > 25) return 0;
+      const k = `${n.AccountCode}|${dimKey}`;
+      if (valCache) {
+        const cached = valCache.get(k);
+        if (cached !== undefined) return cached;
+      }
+let v;
+      const selfVal = getVal(n.AccountCode, dimKey);
+      if (n.children && n.children.length > 0) {
+        if (selfVal !== 0) {
+          v = selfVal;
+        } else {
+          v = n.children.reduce((s, c) => s + sumNode(c, depth + 1), 0);
+        }
+      } else {
+        v = selfVal;
+      }
+if (valCache) valCache.set(k, v);
+      return v;
+    };
+    return sumNode(node);
+  };
+
+  const getCmpNodeVal = (dimKey) => {
+    if (!getCmpVal) return 0;
+    const sumNode = (n, depth = 0) => {
+      if (depth > 25) return 0;
+      const k = `${n.AccountCode}|${dimKey}`;
+      if (cmpCache) {
+        const cached = cmpCache.get(k);
+        if (cached !== undefined) return cached;
+      }
+let v;
+      const selfVal = getCmpVal(n.AccountCode, dimKey);
+      if (n.children && n.children.length > 0) {
+        if (selfVal !== 0) {
+          v = selfVal;
+        } else {
+          v = n.children.reduce((s, c) => s + sumNode(c, depth + 1), 0);
+        }
+      } else {
+        v = selfVal;
+      }
+      if (cmpCache) cmpCache.set(k, v);
+      return v;
+    };
+    return sumNode(node);
+  };
+
+const rowTotal = dimCols.reduce((s, d) => s + getNodeVal(d.code ?? "__none__"), 0);
+  const rowStyle = depth === 0 ? body1Style : body2Style;
+  // DEBUG: log B.PL parent render to confirm how the parent gets 18.227
+  if (String(code) === "B.PL" || String(code) === "A.PL") {
+    const dimDump = {};
+    dimCols.forEach(d => { dimDump[d.code ?? "__none__"] = getNodeVal(d.code ?? "__none__"); });
+  }
+
+  return (
+    <>
+<tr
+        className={`border-b border-gray-100 ${isMatch ? "bg-[#fef3c7]" : "bg-white hover:bg-[#eef1fb]/60"}`}
+        style={tableJustLoaded && rowIndex < 25 ? { animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(rowIndex, 25) * 35 + 50}ms both` } : undefined}
+      >
+<td
+          className={`py-2.5 sticky left-0 z-10 border-r border-gray-100 ${isMatch ? "bg-[#fef3c7]" : "bg-white"}`}
+          style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 480, willChange: "transform" }}
+          onClick={() => hasChildren && onToggle(code)}
+        >
+<div className={`flex items-center group/row ${hasChildren ? "cursor-pointer" : ""}`}>
+            {hasChildren
+              ? <span className="flex-shrink-0 mr-2" style={{ color: colors.primary }}>
+                  {isExpanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
+                </span>
+              : <span className="inline-block mr-2" style={{ width: 12 }} />}
+<span className="flex-shrink-0 mr-2 font-mono text-gray-400" style={subbody2Style}>{code}</span>
+            <span className="truncate max-w-[280px]" style={rowStyle}>{(() => {
+              const n = String(node.AccountName ?? node.accountName ?? "");
+              return n ? n.charAt(0).toUpperCase() + n.slice(1).toLowerCase() : "";
+            })()}</span>
+{onToggleDrillAccount && !compareMode && (() => {
+              const isDrilled = drillExpanded.has(code);
+              return (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onToggleDrillAccount({ code, name: node.AccountName ?? node.accountName ?? "" }); }}
+                  className={dimDrillBtnClass(isDrilled)}
+                  title={isDrilled ? "Cerrar contribución por filial" : "Ver contribución por filial"}
+                >
+                  <DimDrillBtnInner kind="sub" />
+                </button>
+              );
+            })()}
+          </div>
+        </td>
+{dimCols.map(dim => {
+          const dk = dim.code ?? "__none__";
+          const val = getNodeVal(dk);
+          const cmpVal = getCmpNodeVal(dk);
+          const diff = val - cmpVal;
+          const pct = cmpVal !== 0 ? (diff / Math.abs(cmpVal)) * 100 : null;
+          const devColor = diff === 0 ? "#D1D5DB" : diff > 0 ? "#059669" : "#EF4444";
+          return (
+            <React.Fragment key={dk}>
+              <DimAmountCell value={val} typoStyle={rowStyle} animate={isAnimatingData} />
+{cmpVisible && <>
+                <DimAmountCell value={cmpVal} typoStyle={rowStyle} animate={isAnimatingData} ccol="c" />
+                <DimDiffCell value={diff} animate={isAnimatingData} color={devColor} width={110} />
+                <DimPctCell value={pct} animate={isAnimatingData} color={devColor} width={90} />
+              </>}
+            </React.Fragment>
+          );
+        })}
+{!cmpVisible && <DimAmountCell value={rowTotal} typoStyle={rowStyle} animate={isAnimatingData} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
+      </tr>
+{drillExpanded.has(code) && (() => {
+        const rows = drillCache.get(code);
+        const loading = drillLoadingSet.has(code);
+        if (loading || !rows) {
+          return (
+            <DimDrillLoading key={`${code}__drill_loading`} span={(dimCols?.length ?? 0) * (cmpVisible ? 4 : 1) + 2} kind="sub" pad={16 + (depth + 1) * INDENT + 22} leaving={drillLeaving.has(code)} />
+          );
+        }
+        // Build descendant set so a drilled sum-account aggregates its leaves.
+        const descSet = new Set([String(code)]);
+        const collect = (parentCode) => {
+          (groupAccounts || []).forEach(ga => {
+            const ac = String(ga.AccountCode ?? ga.accountCode ?? "");
+            const sm = String(ga.SumAccountCode ?? ga.sumAccountCode ?? "");
+            if (sm === parentCode && !descSet.has(ac)) { descSet.add(ac); collect(ac); }
+          });
+        };
+        collect(String(code));
+        const targetType = statementType === "bs" ? "B/S" : "P/L";
+// Delegate the per-topParent breakdown to PivotTab, which has access to
+        // `pivot`, `prevPivotMain`, `parentOf`, `viewMode`, and the drill rows.
+        // PivotTab returns rows shaped [coCode, { name, dims: Map<dimKey, number> }].
+        // This single source of truth guarantees:
+        //   - Master topParent sub-row matches the parent exactly (uses the master pivot).
+        //   - Monthly view subtracts the prev-month YTD per topParent (uses drillPrevRows).
+        //   - YTD view returns YTD directly.
+        const companyRows = computeDrillCompanyRows
+          ? computeDrillCompanyRows({ accountCode: code, descSet, targetType, sign, dimCols })
+          : [];
+        if (companyRows.length === 0) {
+          return (
+            <DimDrillEmpty key={`${code}__drill_empty`} span={(dimCols?.length ?? 0) * (cmpVisible ? 4 : 1) + 2} label={"Ninguna filial con contribución"} pad={16 + (depth + 1) * INDENT + 22} leaving={drillLeaving.has(code)} />
+          );
+        }
+        return [<DimDrillHead key={`${code}__drill_head`} span={1 + (dimCols?.length ?? 0) * (cmpVisible ? 4 : 1) + (cmpVisible ? 0 : 1)} count={companyRows.length} kind="sub" pad={16 + (depth + 1) * INDENT + 22} leaving={drillLeaving.has(code)} />, ...companyRows.map(([co, info], i) => {
+          const rowTotal = dimCols.reduce((s, d) => s + (info.dims.get(d.code ?? "__none__") ?? 0), 0);
+          return (
+            <tr key={`${code}__drill_${co}`} className={dimDrillRowClass(drillLeaving.has(code))} style={{ "--i": Math.min(i, 12), "--co-tone": DIM_CO_TONES[i % DIM_CO_TONES.length] }}>
+<DimCompanyCell co={co} name={info.name} index={i} pad={16 + (depth + 1) * INDENT + 22} />
+              {dimCols.map(d => {
+                const dk = d.code ?? "__none__";
+                const v = info.dims.get(dk) ?? 0;
+                if (!cmpVisible) return <DimAmountCell key={dk} value={v} typoStyle={body2Style} animate={isAnimatingData} />;
+                // Compare mode in drilled rows: only show A column, leave others blank
+                return (
+                  <React.Fragment key={dk}>
+                    <DimAmountCell value={v} typoStyle={body2Style} animate={isAnimatingData} />
+                    <td data-ccol="c" />
+                    <td data-ccol="c" />
+                    <td data-ccol="c" />
+                  </React.Fragment>
+                );
+              })}
+              {!cmpVisible && <DimAmountCell value={rowTotal} typoStyle={body2Style} animate={isAnimatingData} extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
+            </tr>
+          );
+        })];
+      })()}
+{isExpanded && hasChildren && visibleChildren.map((child, ci) => (
+<DimensionRow key={child.AccountCode} node={child} depth={depth + 1}
+          expandedSet={expandedSet} onToggle={onToggle}
+          dimCols={dimCols} getVal={getVal} getCmpVal={getCmpVal} compareMode={compareMode} cmpVisible={cmpVisible} cmpExiting={cmpExiting}
+          body1Style={body1Style} body2Style={body2Style}
+          header2Style={header2Style} colors={colors}
+          excludeCodes={excludeCodes} rowIndex={rowIndex + ci + 1}
+          searchQuery={searchQuery} searchExpansionSet={searchExpansionSet}
+          valCache={valCache} cmpCache={cmpCache}
+          isAnimatingData={isAnimatingData} tableJustLoaded={tableJustLoaded} cmpRecentlyToggled={cmpRecentlyToggled}
+drillExpanded={drillExpanded} drillCache={drillCache} drillLoadingSet={drillLoadingSet} drillLeaving={drillLeaving}
+          onToggleDrillAccount={onToggleDrillAccount} statementType={statementType}
+          selGroups={selGroups} selDims={selDims} sign={sign} subbody2Style={subbody2Style} groupAccounts={groupAccounts}
+          masterTopParent={masterTopParent} computeDrillCompanyRows={computeDrillCompanyRows} />
+      ))}
+    </>
+  );
+  
+}, (prev, next) => {
+  // Skip re-render if this row's own state didn't change.
+  if (prev.node !== next.node) return false;
+  if (prev.depth !== next.depth) return false;
+  if (prev.dimCols !== next.dimCols) return false;
+  if (prev.getVal !== next.getVal) return false;
+  if (prev.getCmpVal !== next.getCmpVal) return false;
+  if (prev.compareMode !== next.compareMode) return false;
+  if (prev.cmpVisible !== next.cmpVisible) return false;
+  if (prev.searchQuery !== next.searchQuery) return false;
+  if (prev.valCache !== next.valCache) return false;
+  if (prev.cmpCache !== next.cmpCache) return false;
+  if (prev.isAnimatingData !== next.isAnimatingData) return false;
+  if (prev.tableJustLoaded !== next.tableJustLoaded) return false;
+if (prev.cmpRecentlyToggled !== next.cmpRecentlyToggled) return false;
+  if (prev.onToggleDrillAccount !== next.onToggleDrillAccount) return false;
+  if (prev.statementType !== next.statementType) return false;
+  if (prev.selGroups !== next.selGroups) return false;
+  if (prev.selDims !== next.selDims) return false;
+  if (prev.sign !== next.sign) return false;
+if (prev.groupAccounts !== next.groupAccounts) return false;
+  if (prev.masterTopParent !== next.masterTopParent) return false;
+  if (prev.computeDrillCompanyRows !== next.computeDrillCompanyRows) return false;
+// Re-render if drill state changed anywhere — sets are immutable so a
+  // reference change means *something* toggled, and we need to propagate it
+  // so child rows can react if their own drill state changed too. Skipping
+  // this caused drills at deeper levels to get "stuck" because the memo
+  // bailed out before noticing their state had flipped.
+  if (prev.drillExpanded !== next.drillExpanded) return false;
+  if (prev.drillCache !== next.drillCache) return false;
+  if (prev.drillLoadingSet !== next.drillLoadingSet) return false;
+  if (prev.drillLeaving !== next.drillLeaving) return false;
+  const code = prev.node.AccountCode;
+  const prevExpanded = prev.expandedSet.has(code) || (prev.searchExpansionSet?.has(String(code)) ?? false);
+  const nextExpanded = next.expandedSet.has(code) || (next.searchExpansionSet?.has(String(code)) ?? false);
+  if (prevExpanded !== nextExpanded) return false;
+  // If this row IS expanded, its descendants are mounted inside it. A change
+  // elsewhere in expandedSet/searchExpansionSet could be a descendant toggling —
+  // we must re-render so the new Set instance flows down the tree. When collapsed,
+  // there are no descendants to update, so we can safely skip.
+  if (nextExpanded) {
+    if (prev.expandedSet !== next.expandedSet) return false;
+    if (prev.searchExpansionSet !== next.searchExpansionSet) return false;
+  }
+  return true;
+});
+
+
+/* ── Pivot Tab ────────────────────────────────────────────── */
+function PivotTab({ data, multiPeriods = null, dimensions, groupAccounts = [], selGroups = new Set(), selDims = new Set(), compareMode, statementType = "pl", externalViewMode = null, sources = [], structures = [], token = "", masterYear = "", masterMonth = "", masterSource = "", masterStructure = "", masterTopParent = "", kpiList = [], ccTagToCodes = new Map(), resolveCcTag = () => null, plMapping = null, bsMapping = null, plLiteral = null, bsLiteral = null, exportRef = null, hasCustomMapping = false, drillExpanded = new Set(), drillCache = new Map(), drillLoadingSet = new Set(), drillLeaving = EMPTY_LEAVING, drillPrevRows = [], onToggleDrillAccount = () => {} }) {
+
+// Shared: check if a literal-node's `dims` matches a dimension column key.
+// Mapping instances store dims as "Group:Name" but columns use codes ("1", etc.)
+// Resolves via the dimensions catalog when needed.
+const nodeDimMatchesKey = React.useCallback((nodeDims, dimKey) => {
+  if (!nodeDims || nodeDims.length === 0) return true;
+  const dkStr = String(dimKey);
+  return nodeDims.some(d => {
+    const s = String(d);
+    if (s === dkStr) return true;
+    const i = s.indexOf(":");
+    const nameOrValue = i === -1 ? s : s.slice(i + 1);
+    const groupHint   = i === -1 ? "" : s.slice(0, i);
+    if (String(nameOrValue) === dkStr) return true;
+    for (const dd of (dimensions || [])) {
+      const gg = String(dd.DimensionGroup ?? dd.dimensionGroup ?? "");
+      const nn = String(dd.DimensionName ?? dd.dimensionName ?? "");
+      const cc = String(dd.DimensionCode ?? dd.dimensionCode ?? "");
+      if (!cc) continue;
+      if (groupHint && groupHint !== gg) continue;
+      if (nn === nameOrValue && cc === dkStr) return true;
+    }
+    return false;
+  });
+}, [dimensions]);
+
+const header2Style = useTypo("header2");
+  const body1Style = useTypo("body1");
+  const body2Style = useTypo("body2");
+  const subbody2Style = useTypo("subbody2");
+const { colors, locale } = useSettings();
+  const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
+
+// Account header search — magnifier toggles to input, matches highlight in yellow.
+  const [searchActive, setSearchActive] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const debouncedQuery = useDeferredValue(searchQuery);
+  const searchInputRef = useRef(null);
+
+  // Summary/Detailed toggle (only used in non-compare mode). statementType
+  // is lifted to DimensionesPage to drive PageHeader tabs.
+const summaryMode = false; // always Detailed
+  // `cmpExiting` is the only stored state — `cmpVisible` is derived.
+  // Trigger logic runs at render (adjust-state-on-prop-change); the actual
+  // exit timer lives in an effect keyed off `cmpExiting`.
+  const [cmpExiting, setCmpExiting] = useState(false);
+  const [prevCompareMode, setPrevCompareMode] = useState(compareMode);
+  if (prevCompareMode !== compareMode) {
+    setPrevCompareMode(compareMode);
+    if (compareMode) {
+      if (cmpExiting) setCmpExiting(false); // re-entered before exit finished
+    } else {
+      setCmpExiting(true); // start exit animation
+    }
+  }
+const cmpVisible = compareMode || cmpExiting;
+
+  useEffect(() => {
+    if (!cmpExiting) return;
+    const t = setTimeout(() => setCmpExiting(false), CMP_OUT_MS + 20);
+    return () => clearTimeout(t);
+  }, [cmpExiting]);
+
+
+  const headerRef = useRef(null);
+  const bodyRef   = useRef(null);
+  const onBodyScroll   = useCallback(() => { if (headerRef.current) headerRef.current.scrollLeft = bodyRef.current.scrollLeft; }, []);
+  const onHeaderScroll = useCallback(() => { if (bodyRef.current)   bodyRef.current.scrollLeft = headerRef.current.scrollLeft; }, []);
+
+// Each tab keeps its own expansion state — switching tabs doesn't lose what
+// you had open, and going back restores it.
+  const [expandedSetPL, setExpandedSetPL] = useState(new Set());
+  const [expandedSetBS, setExpandedSetBS] = useState(new Set());
+  const expandedSet    = statementType === "pl" ? expandedSetPL    : expandedSetBS;
+  const setExpandedSet = statementType === "pl" ? setExpandedSetPL : setExpandedSetBS;
+
+// Track viewport so we can window large render passes.
+  const [scrollTop, setScrollTop] = useState(0);
+  const [bodyHeight, setBodyHeight] = useState(800);
+
+  // Three short-lived animation flags. Each one gates a specific animation so
+  // it only fires on the event that warrants it, never during scroll or expand.
+  //   - isAnimatingData : true for ~1s after pivot identity changes (count-up)
+  //   - tableJustLoaded : true for ~1.5s after data load (row slide-in)
+  //   - cmpRecentlyToggled : true for ~500ms after compare flips (cmp cells in/out)
+  const [isAnimatingData, setIsAnimatingData] = useState(false);
+  const [tableJustLoaded, setTableJustLoaded] = useState(false);
+  const [cmpRecentlyToggled, setCmpRecentlyToggled] = useState(false);
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    let ticking = false;
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        setScrollTop(el.scrollTop);
+        ticking = false;
+      });
+    };
+    const syncView = () => el.style.setProperty("--dim-view-w", `${el.clientWidth}px`);
+    const ro = new ResizeObserver(() => { setBodyHeight(el.clientHeight); syncView(); });
+    syncView();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    ro.observe(el);
+    setBodyHeight(el.clientHeight);
+return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); };
+  }, []);
+
+const toggleExpand = useCallback(code => {
+    setExpandedSet(prev => {
+      const n = new Set(prev);
+      if (n.has(code)) n.delete(code); else n.add(code);
+      return n;
+    });
+  }, [setExpandedSet]);
+
+// Build pivot from data
+const { accountMap: allAccountMap, dimCols, pivot } = useMemo(() => {
+    if (!data.length) return { accountMap: new Map(), dimCols: [], pivot: new Map() };
+
+    // Filter rows by selected group: keep rows that have AT LEAST ONE dim
+    // in the selected group, OR rows with no dim at all (totals).
+const rows = selGroups.size === 0
+      ? data
+      : data.filter(r => {
+          const pairs = parseDimensions(r.Dimensions);
+          if (pairs.length === 0) return true;
+          return pairs.some(([group, code]) => {
+            if (!selGroups.has(group)) return false;
+            if (selDims.size > 0 && !selDims.has(code)) return false;
+            return true;
+          });
+        });
+
+// Get codes that actually have data in this period (with their names from data rows)
+    const dataAccountInfo = new Map();
+    rows.forEach(r => {
+      const code = r.AccountCode ?? r.accountCode ?? "";
+      if (!code) return;
+      const lac = r.LocalAccountCode ?? r.localAccountCode ?? "";
+      if (lac && lac !== "—") return;
+const acType = r.AccountType ?? r.accountType ?? "";
+      const targetType = statementType === "bs" ? "B/S" : "P/L";
+      if (acType && acType !== targetType) return;
+      if (!dataAccountInfo.has(code)) {
+        dataAccountInfo.set(code, {
+          AccountCode: code,
+          AccountName: r.AccountName ?? r.accountName ?? "",
+          SumAccountCode: r.SumAccountCode ?? r.sumAccountCode ?? "",
+          AccountType: acType,
+        });
+      }
+    });
+
+    // Build groupAccounts lookup (hierarchy source)
+    const groupMap = new Map();
+    (groupAccounts || []).forEach(a => {
+      const code = a.AccountCode ?? a.accountCode ?? "";
+      if (!code) return;
+const acType = a.AccountType ?? a.accountType ?? "";
+      const targetType = statementType === "bs" ? "B/S" : "P/L";
+      if (acType && acType !== targetType) return;
+      groupMap.set(code, {
+        AccountCode: code,
+        AccountName: a.AccountName ?? a.accountName ?? "",
+        SumAccountCode: a.SumAccountCode ?? a.sumAccountCode ?? "",
+        AccountType: acType,
+        IsSumAccount: a.IsSumAccount ?? a.isSumAccount ?? false,
+      });
+    });
+
+    // Build accountMap: prefer groupAccounts (has hierarchy) but fall back to data
+    const accountMap = new Map();
+    if (groupMap.size > 0) {
+      // Walk up the hierarchy: include every ancestor of accounts that have data
+      const includeWithAncestors = (code) => {
+        if (accountMap.has(code)) return;
+        const a = groupMap.get(code);
+        if (!a) {
+          // Code exists in data but not in groupAccounts — add it as orphan
+          const fallback = dataAccountInfo.get(code);
+          if (fallback) accountMap.set(code, fallback);
+          return;
+        }
+        accountMap.set(code, a);
+        if (a.SumAccountCode) includeWithAncestors(a.SumAccountCode);
+      };
+      dataAccountInfo.forEach((_, code) => includeWithAncestors(code));
+    } else {
+      // No groupAccounts — flat list from data
+      dataAccountInfo.forEach((info, code) => accountMap.set(code, info));
+    }
+
+// Unique dim columns — derived from the journal's Dimensions field.
+    // When a Dim Group is selected, we restrict columns to that group; otherwise
+    // we show ALL groups together (each dim code as its own column).
+    const dimNameLookup = new Map();
+    (dimensions || []).forEach(d => {
+      const code = d.code ?? d.Code ?? d.dimensionCode ?? d.DimensionCode ?? "";
+      const name = d.name ?? d.Name ?? d.dimensionName ?? d.DimensionName ?? code;
+      if (code) dimNameLookup.set(String(code), name);
+    });
+
+    const dimMap = new Map();  // code → { code, name, group }
+    rows.forEach(r => {
+      const pairs = parseDimensions(r.Dimensions);
+      if (pairs.length === 0) {
+        if (!dimMap.has("__none__")) dimMap.set("__none__", { code: null, name: T("no_dimension"), group: null });
+        return;
+      }
+      for (const [group, code] of pairs) {
+      if (selGroups.size > 0 && !selGroups.has(group)) continue;
+        if (selDims.size > 0 && !selDims.has(code)) continue;
+        if (!dimMap.has(code)) dimMap.set(code, { code, name: dimNameLookup.get(code) ?? code, group });
+      }
+    });
+    const dimCols = [...dimMap.values()].sort((a, b) => {
+      if (!a.code && b.code) return 1;
+      if (a.code && !b.code) return -1;
+      return (a.name ?? "").localeCompare(b.name ?? "");
+    });
+
+    // Build pivot: for each row, for each dim it carries (matching the selected
+    // group, if any), add the amount into the (account, dimCode) cell.
+    const pivot = new Map();
+    rows.forEach(r => {
+      const role = r.CompanyRole ?? r.companyRole ?? "";
+      if (role !== "Parent" && role !== "Contribution") return;
+      const ac  = r.AccountCode ?? r.accountCode ?? "";
+      const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? r.AmountPeriod ?? r.amountPeriod ?? 0);
+const acType = r.AccountType ?? r.accountType ?? "";
+      if (!ac) return;
+     // Keep all rows including leaf-level postings — descendants roll up via parentOf
+const targetType = statementType === "bs" ? "B/S" : "P/L";
+      if (acType && acType !== targetType) return;
+
+      const pairs = parseDimensions(r.Dimensions);
+      if (pairs.length === 0) {
+        if (!pivot.has(ac)) pivot.set(ac, new Map());
+        pivot.get(ac).set("__none__", (pivot.get(ac).get("__none__") ?? 0) + amt);
+        return;
+      }
+
+      for (const [group, code] of pairs) {
+        if (selGroups.size > 0 && !selGroups.has(group)) continue;
+        if (selDims.size > 0 && !selDims.has(code)) continue;
+        if (!pivot.has(ac)) pivot.set(ac, new Map());
+        pivot.get(ac).set(code, (pivot.get(ac).get(code) ?? 0) + amt);
+      }
+    });
+
+return { accountMap, dimCols, pivot };
+}, [data, selGroups, selDims, groupAccounts, statementType, dimensions, T]);
+
+// Row slide-in fires only when the table itself appears: first time data lands,
+// or when the user switches between PL and BS. Filter changes / view-mode
+// toggles produce the count-up animation but never re-slide rows.
+const hasLoadedOnceRef = useRef(false);
+useEffect(() => {
+  if (pivot.size === 0) return;
+  if (!hasLoadedOnceRef.current) {
+    hasLoadedOnceRef.current = true;
+    setTableJustLoaded(true);
+    const t = setTimeout(() => setTableJustLoaded(false), 1500);
+    return () => clearTimeout(t);
+  }
+}, [pivot]);
+
+// Statement type switch (PL ↔ BS) also re-runs the slide-in — it's effectively
+// a different table appearing.
+useEffect(() => {
+  if (!hasLoadedOnceRef.current) return; // skip initial mount; handled above
+  setTableJustLoaded(true);
+  const t = setTimeout(() => setTableJustLoaded(false), 1500);
+  return () => clearTimeout(t);
+}, [statementType]);
+
+// Flip the flag at render on cmpVisible change, then clear it in an effect.
+const [prevCmpVisibleForToggle, setPrevCmpVisibleForToggle] = useState(cmpVisible);
+if (prevCmpVisibleForToggle !== cmpVisible) {
+  setPrevCmpVisibleForToggle(cmpVisible);
+  setCmpRecentlyToggled(true);
+}
+useEffect(() => {
+  if (!cmpRecentlyToggled) return;
+  const t = setTimeout(() => setCmpRecentlyToggled(false), 720);
+  return () => clearTimeout(t);
+}, [cmpRecentlyToggled]);
+
+const [colOrder, setColOrder] = useState(null); // null = use natural order
+  const [draggingCol, setDraggingCol] = useState(null);
+  const [dragOverCol, setDragOverCol] = useState(null);
+
+  const orderedDimCols = useMemo(() => {
+    if (!colOrder) return dimCols;
+    const map = new Map(dimCols.map(d => [d.code ?? "__none__", d]));
+    return colOrder.map(k => map.get(k)).filter(Boolean);
+  }, [dimCols, colOrder]);
+
+// Reset col order only when the actual set of dim codes changes, not on compare toggle.
+  // Done during render (React's recommended pattern for "adjust state on prop change")
+  // rather than in an effect — avoids an extra render cycle.
+  const dimColKeys = useMemo(() => dimCols.map(d => d.code ?? "__none__").join(","), [dimCols]);
+  const [prevDimColKeys, setPrevDimColKeys] = useState(dimColKeys);
+  if (prevDimColKeys !== dimColKeys) {
+    setPrevDimColKeys(dimColKeys);
+    setColOrder(null);
+  }
+
+  const expandAll = useCallback(() => {
+    const literal = statementType === "pl" ? plLiteral : bsLiteral;
+    if (literal && literal.length > 0) {
+      const keys = [];
+      literal.forEach((section, secIdx) => {
+        const walk = (node, parentPath) => {
+          if (node.children && node.children.length > 0) {
+            keys.push(`litrow-${secIdx}-${parentPath}-${node.id}`);
+            node.children.forEach(c => walk(c, `${parentPath}-${node.id}`));
+          }
+        };
+        section.nodes.forEach(n => walk(n, "root"));
+      });
+      setExpandedSet(new Set(keys));
+      return;
+    }
+setExpandedSet(new Set([...allAccountMap.keys()]));
+  }, [allAccountMap, plLiteral, bsLiteral, statementType, setExpandedSet]);
+
+const collapseAll = useCallback(() => setExpandedSet(new Set()), [setExpandedSet]);
+
+const sign = statementType === "pl" ? -1 : 1;
+
+
+  // Compare filter states
+
+const [cmp2Source, setCmp2Source]       = useState(masterSource);
+  const [cmp2Year, setCmp2Year]           = useState(masterYear);
+  const [cmp2Month, setCmp2Month]         = useState(masterMonth);
+  const [cmp2Structure, setCmp2Structure] = useState(masterStructure);
+// La perspectiva de compare SIEMPRE coincide con la del filtro general — no es
+  // elegible por separado. Alias derivado (reactivo) en vez de estado propio.
+  const cmp2TopParent = masterTopParent;
+// Grupos/dimensiones de compare SIEMPRE heredan del filtro general — no se
+  // eligen aparte. Alias derivados (memoizados para conservar identidad estable).
+  const cmp2SelGroups = useMemo(() => new Set(selGroups), [selGroups]);
+  const cmp2SelDims   = useMemo(() => new Set(selDims),   [selDims]);
+const [cmp3Source]    = useState(masterSource);
+  const [cmp3Year]      = useState(masterYear);
+  const [cmp3Month]     = useState(masterMonth);
+  const [cmp3Structure] = useState(masterStructure);
+  const [cmp3TopParent]   = useState(masterTopParent);
+
+const [line, setLine] = useState("all");
+const viewMode = externalViewMode ?? "monthly";
+const [prevPivot] = useState(new Map());
+  const [prevPivotMain, setPrevPivotMain] = useState(new Map());
+  const [prevPivot2, setPrevPivot2] = useState(new Map());
+  const [prevPivot3, setPrevPivot3] = useState(new Map());
+
+const getVal = useCallback((ac, dk) => {
+    const ytd = (pivot.get(ac)?.get(dk) ?? 0) * sign;
+    if (viewMode === "ytd") return ytd;
+    if (pivot.size === 0) return ytd; // no data → no phantom negative
+    const prevYtd = (prevPivotMain.get(ac)?.get(dk) ?? 0) * sign;
+    return ytd - prevYtd;
+  }, [pivot, prevPivotMain, sign, viewMode]);
+
+// Shared rollup cache. New Map() when underlying data changes; otherwise
+  // the same Map is reused across every DimensionRow + expand/collapse, so
+  // walking the BS tree only happens once per node per render cycle.
+ // `getVal` referenced solely as cache-invalidation key — when its identity
+  // changes (data/sign/viewMode shifts), the cache resets.
+  const valCache = useMemo(() => { void getVal; return new Map(); }, [getVal]);
+
+  const [cmp2Data, setCmp2Data] = useState([]);
+  const [cmp3Data, setCmp3Data] = useState([]);
+const [, setCmp2Loading] = useState(false);
+  const [, setCmp3Loading] = useState(false);
+
+const buildPivot = useCallback((rows, grpFilter = selGroups, dimFilter = selDims) => {
+    const p = new Map();
+    rows.forEach(r => {
+      const role = r.CompanyRole ?? r.companyRole ?? "";
+      if (role !== "Parent" && role !== "Contribution") return;
+      const ac  = r.AccountCode ?? r.accountCode ?? "";
+      const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+const acType = r.AccountType ?? r.accountType ?? "";
+      if (!ac) return;
+      // Keep all rows including leaf-level postings — descendants roll up via parentOf
+      const targetType = statementType === "bs" ? "B/S" : "P/L";
+      if (acType && acType !== targetType) return;
+
+      const pairs = parseDimensions(r.Dimensions);
+      if (pairs.length === 0) {
+        if (!p.has(ac)) p.set(ac, new Map());
+        p.get(ac).set("__none__", (p.get(ac).get("__none__") ?? 0) + amt);
+        return;
+      }
+
+      for (const [group, code] of pairs) {
+        if (grpFilter.size > 0 && !grpFilter.has(group)) continue;
+        if (dimFilter.size > 0 && !dimFilter.has(code)) continue;
+        if (!p.has(ac)) p.set(ac, new Map());
+        p.get(ac).set(code, (p.get(ac).get(code) ?? 0) + amt);
+      }
+    });
+    return p;
+}, [selGroups, selDims, statementType]);
+
+const pivot2 = useMemo(() => buildPivot(cmp2Data, cmp2SelGroups, cmp2SelDims), [cmp2Data, cmp2SelGroups, cmp2SelDims, buildPivot]);
+  const pivot3 = useMemo(() => buildPivot(cmp3Data), [cmp3Data, buildPivot]);
+
+// Same cache-invalidation pattern as valCache — deps are referenced via
+  // `void` so ESLint sees them as used.
+  const cmpCache = useMemo(() => {
+    void pivot2; void prevPivot2; void sign; void viewMode;
+    return new Map();
+  }, [pivot2, prevPivot2, sign, viewMode]);
+
+
+const fetchCmpData = useCallback(async (yr, mo, src, str, co, setter, loadSetter) => {
+    if (!yr || !mo || !src || !str || !co) return;
+    loadSetter(true);
+    try {
+      const filter = `Year eq ${yr} and Month eq ${mo} and Source eq '${src}' and GroupStructure eq '${str}' and GroupShortName eq '${co}'`;
+      const res = await fetch(
+        `${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(filter)}`,
+        { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Cache-Control": "no-cache" } }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      setter(json.value ?? (Array.isArray(json) ? json : []));
+    } catch { setter([]); }
+    finally { loadSetter(false); }
+  }, [token]);
+
+// Fetch prev month for main period (non-compare monthly mode)
+  useEffect(() => {
+    if (viewMode !== "monthly" || !masterYear || !masterMonth || !masterSource || !masterStructure || !masterTopParent) return;
+    const mo = Number(masterMonth);
+    const yr = Number(masterYear);
+    const prevMo = mo === 1 ? 12 : mo - 1;
+    const prevYr = mo === 1 ? yr - 1 : yr;
+    fetchCmpData(String(prevYr), String(prevMo), masterSource, masterStructure, masterTopParent, (d) => setPrevPivotMain(buildPivot(d)), () => {});
+  }, [viewMode, masterYear, masterMonth, masterSource, masterStructure, masterTopParent, fetchCmpData, buildPivot]);
+
+
+useEffect(() => {
+    if (compareMode) fetchCmpData(cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2TopParent, setCmp2Data, setCmp2Loading);
+  }, [compareMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2TopParent, fetchCmpData]);
+
+  useEffect(() => {
+    if (compareMode) fetchCmpData(cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3TopParent, setCmp3Data, setCmp3Loading);
+  }, [compareMode, cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3TopParent, fetchCmpData]);
+
+  useEffect(() => {
+    if (!compareMode || viewMode !== "monthly" || !cmp2Year || !cmp2Month || !cmp2Source || !cmp2Structure || !cmp2TopParent) return;
+    const mo = Number(cmp2Month);
+    const yr = Number(cmp2Year);
+    const prevMo = mo === 1 ? 12 : mo - 1;
+    const prevYr = mo === 1 ? yr - 1 : yr;
+    fetchCmpData(String(prevYr), String(prevMo), cmp2Source, cmp2Structure, cmp2TopParent, (d) => setPrevPivot2(buildPivot(d)), () => {});
+  }, [compareMode, viewMode, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2TopParent, fetchCmpData, buildPivot]);
+
+  useEffect(() => {
+    if (!compareMode || viewMode !== "monthly" || !cmp3Year || !cmp3Month || !cmp3Source || !cmp3Structure || !cmp3TopParent) return;
+    const mo = Number(cmp3Month);
+    const yr = Number(cmp3Year);
+    const prevMo = mo === 1 ? 12 : mo - 1;
+    const prevYr = mo === 1 ? yr - 1 : yr;
+    fetchCmpData(String(prevYr), String(prevMo), cmp3Source, cmp3Structure, cmp3TopParent, (d) => setPrevPivot3(buildPivot(d)), () => {});
+  }, [compareMode, viewMode, cmp3Year, cmp3Month, cmp3Source, cmp3Structure, cmp3TopParent, fetchCmpData, buildPivot]);
+
+  const cmpSources    = [...new Set(sources.map(s => typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
+  const cmpYears      = YEARS.map(y => ({ value: String(y), label: String(y) }));
+  const cmpMonths     = MONTHS.map(m => ({ value: String(m.value), label: T(`month_${m.value}`) }));
+  const cmpStructures = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
+const ACOL = 480, TCOL = 150;
+// Columna "Cuenta": se ajusta sin saltos al abrir y cerrar el comparativo
+const accColHeadRef = useRef(null);
+const accColBodyRef = useRef(null);
+const accThRef = useRef(null);
+useDimAccSqueeze([accColHeadRef, accColBodyRef], accThRef, compareMode, cmpVisible, ACOL);
+const cmpTableCls = dimCmpTableClass({ entering: cmpRecentlyToggled && cmpVisible && !cmpExiting, leaving: cmpExiting, back: cmpRecentlyToggled && !cmpVisible });
+  const CMP_COL = 140, DELTA_COL = 110, PCT_COL = 90;
+  const MIN_DCOL = 140;
+
+  const dimColWidths = useMemo(() => {
+    return orderedDimCols.map(dim => {
+      const nameLen = (dim.name ?? "").length;
+      return Math.max(MIN_DCOL, nameLen * 9 + 40);
+    });
+  }, [orderedDimCols]);
+
+  const totalWidth = cmpVisible
+    ? ACOL + dimColWidths.reduce((s, w) => s + w + CMP_COL + DELTA_COL + PCT_COL, 0)
+    : ACOL + dimColWidths.reduce((s, w) => s + w, 0) + TCOL;
+
+  // Compute which KPI lines actually produce data given the current 3 pivots
+  // and dim columns. Lines that evaluate to 0 across every dim col (in every
+  // scenario) are dropped from the dropdown. We always keep "All".
+  const lineOptions = useMemo(() => {
+    const visibleDims = dimCols.filter(d => !!d.code);
+    const evalKpiAcrossDims = (kpi, p, pPrev) => {
+      // Returns true as soon as any dim column has a non-zero result.
+      for (const dim of visibleDims) {
+        const dk = dim.code;
+        const flat = new Map();
+        p.forEach((dimMap, acCode) => {
+          const ytd = dimMap.get(dk) ?? 0;
+          if (viewMode === "monthly" && pPrev) {
+            const prevYtd = pPrev.get(acCode)?.get(dk) ?? 0;
+            flat.set(acCode, ytd - prevYtd);
+          } else {
+            flat.set(acCode, ytd);
+          }
+        });
+        const cache = new Map();
+const v = evalFormulaWithCcTags(kpi.formula, flat, cache, kpiList, ccTagToCodes, resolveCcTag);
+        if (v !== null && !isNaN(v) && Math.abs(v) > 0.005) return true;
+      }
+      return false;
+    };
+
+    const opts = [{ value: "all", label: "All" }];
+    kpiList
+      .filter(k => k.format !== "percent")
+      .forEach(k => {
+        const has = evalKpiAcrossDims(k, pivot, prevPivot)
+                 || evalKpiAcrossDims(k, pivot2, prevPivot2)
+                 || evalKpiAcrossDims(k, pivot3, prevPivot3);
+        if (has) opts.push({ value: k.id, label: k.label });
+      });
+    return opts;
+ }, [kpiList, ccTagToCodes, resolveCcTag, dimCols, viewMode, pivot, prevPivot, pivot2, prevPivot2, pivot3, prevPivot3]);
+
+// If the selected line was filtered out (no data anymore), reset to "all".
+  // Done during render — React's recommended pattern for adjusting state on
+  // derived-value changes (no extra render, no lint exception needed).
+  if (line !== "all" && !lineOptions.some(o => o.value === line)) {
+    setLine("all");
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // Filter & order accounts by accountType + Supabase mapping
+  // (Hooks must run unconditionally — placed BEFORE early return)
+  // ─────────────────────────────────────────────────────────
+const activeMapping = statementType === "pl" ? plMapping : bsMapping;
+
+const displayedTree = useMemo(() => {
+    if (!data.length) return [];
+    const targetAccountType = statementType === "pl" ? ["P/L", "DIS"] : ["B/S"];
+
+    // Build the FULL chart-of-accounts hierarchy from groupAccounts (filtered
+    // to this statement type). Previously this only included accounts that had
+    // journal data this period + their ancestors, which dropped the leaf
+    // postings the user expects to see when drilling down.
+    const groupMap = new Map();
+    (groupAccounts || []).forEach(a => {
+      const code = a.AccountCode ?? a.accountCode ?? "";
+      const acType = a.AccountType ?? a.accountType ?? "";
+      if (!code) return;
+      if (!targetAccountType.includes(acType)) return;
+      groupMap.set(code, {
+        AccountCode: code,
+        AccountName: a.AccountName ?? a.accountName ?? "",
+        SumAccountCode: a.SumAccountCode ?? a.sumAccountCode ?? "",
+        AccountType: acType,
+        IsSumAccount: a.IsSumAccount ?? a.isSumAccount ?? false,
+      });
+    });
+
+    // Fallback for data-only codes (codes that exist in the journal but aren't
+    // in groupAccounts — orphan postings). Add them so they're not silently lost.
+    data.forEach(r => {
+      const role = r.CompanyRole ?? r.companyRole ?? "";
+      if (role !== "Parent" && role !== "Contribution") return;
+      const code = r.AccountCode ?? r.accountCode ?? "";
+      if (!code || groupMap.has(code)) return;
+      const acType = r.AccountType ?? r.accountType ?? "";
+      if (!targetAccountType.includes(acType)) return;
+      groupMap.set(code, {
+        AccountCode: code,
+        AccountName: r.AccountName ?? r.accountName ?? "",
+        SumAccountCode: r.SumAccountCode ?? r.sumAccountCode ?? "",
+        AccountType: acType,
+      });
+    });
+
+const tree = buildTree([...groupMap.values()]);
+    return tree;
+ }, [data, groupAccounts, statementType]);
+const treeIndex = useMemo(() => {
+  const idx = new Map();
+  const walk = (nodes) => nodes.forEach(n => { idx.set(String(n.AccountCode), n); walk(n.children || []); });
+  walk(displayedTree);
+  (groupAccounts || []).forEach(a => {
+    const code = String(a.AccountCode ?? a.accountCode ?? "");
+    if (code && !idx.has(code)) {
+      idx.set(code, {
+        AccountCode: code,
+        AccountName: a.AccountName ?? a.accountName ?? "",
+        SumAccountCode: a.SumAccountCode ?? a.sumAccountCode ?? "",
+        AccountType: a.AccountType ?? a.accountType ?? "",
+        children: [],
+      });
+    }
+  });
+  return idx;
+}, [displayedTree, groupAccounts]);
+const displayedTreeIndex = useMemo(() => {
+  const idx = new Map();
+  const walk = (nodes) => nodes.forEach(n => { idx.set(String(n.AccountCode), n); walk(n.children || []); });
+  walk(displayedTree);
+  return idx;
+}, [displayedTree]);
+
+const isCustomMapping = hasCustomMapping;
+  const orderedRows = useMemo(() => {
+    if (activeMapping?.rows) {
+if (isCustomMapping) {
+        const gaMap = new Map();
+        (groupAccounts || []).forEach(a => {
+          const code = String(a.AccountCode ?? a.accountCode ?? "");
+          if (code) gaMap.set(code, a);
+        });
+        // Iterate INSTANCES so same code with different dims renders as
+        // separate rows. Falls back to rows Map if instances[] is absent.
+        const src = Array.isArray(activeMapping.instances) && activeMapping.instances.length > 0
+          ? activeMapping.instances
+          : [...activeMapping.rows.entries()]
+              .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+              .map(([code, info]) => ({ instanceId: code, code, dims: [], ...info }));
+// Drop rows whose parent is another row in the SAME section — those are
+        // children and must appear only when their parent is expanded (via
+        // DimensionRow's children), not as their own top-level row. Without this
+        // every nested account (e.g. A.06.B under A.06) shows up flat.
+const rowsInfo = activeMapping.rows;
+        const codesInSrc = new Set(src.map(x => String(x.code)));
+        const isChildOfSameSection = (code) => {
+          const info = rowsInfo.get(String(code));
+          if (!info) return false;
+          const parent = (info.parent_code ?? info.parentCode) ? String(info.parent_code ?? info.parentCode) : null;
+          if (!parent || !codesInSrc.has(parent)) return false;
+          const pInfo = rowsInfo.get(parent);
+          return !!(pInfo && (pInfo.isSum ?? pInfo.is_sum) && pInfo.section === info.section);
+        };
+        return src
+          .slice()
+          .filter(inst => !isChildOfSameSection(inst.code))
+          .sort((a, b) => a.sortOrder - b.sortOrder)
+          .map(inst => {
+            const code = inst.code;
+            let base;
+            if (displayedTreeIndex.has(code)) base = displayedTreeIndex.get(code);
+            else if (treeIndex.has(code)) base = treeIndex.get(code);
+            else {
+              const ga = gaMap.get(code);
+              if (ga) base = {
+                AccountCode: code,
+                AccountName: ga.AccountName ?? ga.accountName ?? code,
+                SumAccountCode: ga.SumAccountCode ?? ga.sumAccountCode ?? "",
+                children: [],
+              };
+            }
+            if (!base) return null;
+            return {
+              ...base,
+              _instanceId: inst.instanceId,
+              _dims: inst.dims || [],
+            };
+          })
+          .filter(Boolean);
+      }
+// Default standard mapping — respect Summary/Detailed toggle
+      const filterFn = summaryMode ? (info => info.showInSummary) : (info => info.isSum);
+      // Keep only TOP-LEVEL rows. A row whose parent is another kept row in the
+      // same section is a child — it must appear via its parent's expand, not
+      // as its own top-level row. Without this, nested accounts (A.01.A under
+      // A.01) render flat at the same level.
+      const rowsInfo = activeMapping.rows;
+      const parentOfInfo = (info) => {
+        const p = info.parent_code ?? info.parentCode ?? info.SumAccountCode ?? info.sumAccountCode ?? null;
+        return p ? String(p) : null;
+      };
+      const kept = [...rowsInfo.entries()].filter(([, info]) => filterFn(info));
+      const keptCodes = new Set(kept.map(([code]) => String(code)));
+const isChildOfSameSection = ([, info]) => {
+        const parent = parentOfInfo(info);
+        if (!parent || !keptCodes.has(parent)) return false;
+        const pInfo = rowsInfo.get(parent);
+        return !!(pInfo && (pInfo.isSum ?? pInfo.is_sum) && pInfo.section === info.section);
+      };
+      return kept
+        .filter(entry => !isChildOfSameSection(entry))
+        .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+        .map(([code]) => treeIndex.get(code))
+        .filter(Boolean);
+    }
+return displayedTree;
+  }, [activeMapping, isCustomMapping, summaryMode, treeIndex, displayedTree, displayedTreeIndex, groupAccounts]);
+
+const dividerMap = useMemo(() => {
+    if (!activeMapping?.rows || !activeMapping?.sections) return {};
+    const palette = [colors.primary, colors.secondary, colors.tertiary];
+    const seen = new Set();
+    const out = {};
+    let i = 0;
+    // Use instance-level section when available (mapping with dims support)
+    const instBySortOrder = new Map();
+    if (Array.isArray(activeMapping.instances)) {
+      activeMapping.instances.forEach(inst => instBySortOrder.set(inst.instanceId, inst));
+    }
+    for (const node of orderedRows) {
+      const instInfo = node._instanceId ? instBySortOrder.get(node._instanceId) : null;
+      const m = instInfo ?? activeMapping.rows.get(String(node.AccountCode));
+      if (!m) continue;
+      if (seen.has(m.section)) continue;
+      seen.add(m.section);
+      const sec = activeMapping.sections.get(m.section);
+      if (sec) {
+        const key = String(node._instanceId ?? node.AccountCode);
+      out[key] = { label: sec.label, color: sec.color || palette[i] };
+        i++;
+      }
+    }
+return out;
+  }, [activeMapping, orderedRows, colors]);
+
+  // Row keys that must be force-expanded because a descendant matches the search.
+  const searchExpansionSet = useMemo(() => {
+    const q = debouncedQuery.trim().toLowerCase();
+    if (!q) return null;
+    const result = new Set();
+    const matchesText = (...vals) => vals.some(v => String(v ?? "").toLowerCase().includes(q));
+
+    const literal = statementType === "pl" ? plLiteral : bsLiteral;
+    if (literal) {
+      literal.forEach((section, secIdx) => {
+        const walk = (node, parentPath) => {
+          const rowKey = `litrow-${secIdx}-${parentPath}-${node.id}`;
+          let descMatch = false;
+          (node.children || []).forEach(child => {
+            if (walk(child, `${parentPath}-${node.id}`)) descMatch = true;
+          });
+          const self = matchesText(node.code, node.name);
+          if (descMatch || self) result.add(rowKey);
+          return descMatch || self;
+        };
+        section.nodes.forEach(n => walk(n, "root"));
+      });
+    }
+
+    const walkFlat = (node) => {
+      let any = false;
+      (node.children || []).forEach(child => { if (walkFlat(child)) any = true; });
+      const self = matchesText(node.AccountCode, node.AccountName);
+      if (any || self) result.add(String(node.AccountCode));
+      return any || self;
+    };
+    (orderedRows || []).forEach(walkFlat);
+
+    return result;
+  }, [debouncedQuery, plLiteral, bsLiteral, statementType, orderedRows]);
+
+const { parentOf } = useMemo(() => {
+  const childrenByParent = new Map();
+  const parentOf = new Map();
+  const sources = [
+    ...(groupAccounts || []).map(a => ({
+      ac: String(a.AccountCode ?? a.accountCode ?? ""),
+      sum: String(a.SumAccountCode ?? a.sumAccountCode ?? ""),
+    })),
+    ...data.map(r => ({
+      ac: String(r.AccountCode ?? r.accountCode ?? ""),
+      sum: String(r.SumAccountCode ?? r.sumAccountCode ?? ""),
+    })),
+  ];
+  sources.forEach(({ ac, sum }) => {
+    if (ac && sum && ac !== sum) {
+      if (!childrenByParent.has(sum)) childrenByParent.set(sum, []);
+      if (!childrenByParent.get(sum).includes(ac)) childrenByParent.get(sum).push(ac);
+      parentOf.set(ac, sum);
+    }
+  });
+  // OVERRIDE from mapping (custom standard hierarchy is authoritative).
+  const applyOverride = (ac, sum) => {
+    const acS = String(ac);
+    const sumS = sum ? String(sum) : "";
+    const oldParent = parentOf.get(acS);
+    if (oldParent && childrenByParent.has(oldParent)) {
+      const arr = childrenByParent.get(oldParent);
+      const idx = arr.indexOf(acS);
+      if (idx >= 0) arr.splice(idx, 1);
+    }
+    if (sumS && acS !== sumS) {
+      parentOf.set(acS, sumS);
+      if (!childrenByParent.has(sumS)) childrenByParent.set(sumS, []);
+      if (!childrenByParent.get(sumS).includes(acS)) childrenByParent.get(sumS).push(acS);
+    } else {
+      parentOf.delete(acS);
+    }
+  };
+  if (plMapping?.rows) {
+    plMapping.rows.forEach((info, code) => {
+      applyOverride(code, info.parent_code);
+    });
+  }
+  if (bsMapping?.rows) {
+    bsMapping.rows.forEach((info, code) => {
+      applyOverride(code, info.parent_code);
+    });
+  }
+return { childrenByParent, parentOf };
+}, [groupAccounts, data, plMapping, bsMapping]);
+
+// Precompute rolled-up pivots: walk the source pivot ONCE; for each posting,
+// add its value to itself + every ancestor via parentOf. After this, looking up
+// a sum-code's total is a single Map.get instead of a full pivot scan. This is
+// the difference between O(N) per lookup and O(1) — the BS literal path was
+// calling the old version thousands of times per render.
+const rollUpPivot = useCallback((p) => {
+  const r = new Map();
+  if (!p || p.size === 0) return r;
+  p.forEach((dimMap, ac) => {
+    dimMap.forEach((val, dk) => {
+      // self
+      let m = r.get(ac);
+      if (!m) { m = new Map(); r.set(ac, m); }
+      m.set(dk, (m.get(dk) ?? 0) + val);
+      // ancestors
+      let cur = parentOf.get(ac);
+      let hops = 0;
+      while (cur && hops < 25) {
+        let am = r.get(cur);
+        if (!am) { am = new Map(); r.set(cur, am); }
+        am.set(dk, (am.get(dk) ?? 0) + val);
+        cur = parentOf.get(cur);
+        hops++;
+      }
+    });
+  });
+  return r;
+}, [parentOf]);
+
+const rolledPivot      = useMemo(() => rollUpPivot(pivot),         [pivot,         rollUpPivot]);
+// Guard: empty current period → empty prev pivot, so monthly deltas compute
+// (0 − 0) not (0 − prevYTD) phantom negatives. "Not reported" ≠ 0.
+const rolledPrevPivot  = useMemo(() => (pivot.size  === 0 ? new Map() : rollUpPivot(prevPivotMain)), [pivot,  prevPivotMain, rollUpPivot]);
+const rolledPivot2     = useMemo(() => rollUpPivot(pivot2),        [pivot2,        rollUpPivot]);
+const rolledPrevPivot2 = useMemo(() => (pivot2.size === 0 ? new Map() : rollUpPivot(prevPivot2)),    [pivot2, prevPivot2,    rollUpPivot]);
+
+const getValWithDescendants = useCallback((code, dk) => {
+  const ytd = (rolledPivot.get(code)?.get(dk) ?? 0) * sign;
+  const prevYtd = (rolledPrevPivot.get(code)?.get(dk) ?? 0) * sign;
+return viewMode === "ytd" ? ytd : ytd - prevYtd;
+}, [rolledPivot, rolledPrevPivot, viewMode, sign]);
+
+const getCmpValWithDescendants = useCallback((code, dk) => {
+  const ytd = (rolledPivot2.get(code)?.get(dk) ?? 0) * sign;
+  if (viewMode === "ytd") return ytd;
+  const prevYtd = (rolledPrevPivot2.get(code)?.get(dk) ?? 0) * sign;
+  return ytd - prevYtd;
+}, [rolledPivot2, rolledPrevPivot2, viewMode, sign]);
+
+// Builds the per-topParent breakdown for one drilled account by REPLICATING THE
+// EXACT SAME ALGORITHM the parent row uses (DimensionRow.sumNode), one topParent
+// at a time. The parent walks `node.children` recursively, falling back to its
+// own pivot value when children sum to zero. We do the same per topParent.
+//
+// Why we can't use rolledPivot directly: rolledPivot aggregates through
+// parentOf, which double-counts nodes that appear as both a direct child AND
+// elsewhere in the chart. sumNode walks ONLY the visible tree, so it matches
+// what the user sees on screen.
+const computeDrillCompanyRows = useCallback(({ accountCode, descSet, targetType, sign: rowSign, dimCols: rowDimCols }) => {
+const drillRows = drillCache.get(accountCode);
+  if (!drillRows) return [];
+  const masterCo = String(masterTopParent ?? "").trim().toLowerCase();
+
+  // Helper: build a flat per-topParent pivot { ac → Map<dk, amount> } from a
+  // raw rows array, applying the same filters the master useMemo applies.
+  // Master topParent is skipped (we use master's `pivot` directly for it).
+  const buildPerCompanyPivots = (rows) => {
+    const out = new Map();
+    (rows || []).forEach(r => {
+      const ac = String(r.AccountCode ?? r.accountCode ?? "");
+      if (!ac) return;
+      const acType = r.AccountType ?? r.accountType ?? "";
+      if (acType && acType !== targetType) return;
+      const co = r.CompanyShortName ?? r.companyShortName ?? "—";
+      if (String(co).trim().toLowerCase() === masterCo) return;
+      const coN = r.CompanyLegalName ?? r.companyLegalName ?? co;
+      const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+      if (!out.has(co)) out.set(co, { name: coN, pivot: new Map() });
+      const p = out.get(co).pivot;
+      const pairs = parseDimensions(r.Dimensions);
+      if (pairs.length === 0) {
+        if (!p.has(ac)) p.set(ac, new Map());
+        p.get(ac).set("__none__", (p.get(ac).get("__none__") ?? 0) + amt);
+        return;
+      }
+      for (const [group, codeP] of pairs) {
+        if (selGroups.size > 0 && !selGroups.has(group)) continue;
+        if (selDims.size > 0 && !selDims.has(codeP)) continue;
+        if (!p.has(ac)) p.set(ac, new Map());
+        p.get(ac).set(codeP, (p.get(ac).get(codeP) ?? 0) + amt);
+      }
+    });
+    return out;
+  };
+
+  const currentPivots = buildPerCompanyPivots(drillRows);
+  const prevPivots = viewMode === "monthly" ? buildPerCompanyPivots(drillPrevRows) : new Map();
+
+  // Build sumNode(node, dk) replicating DimensionRow.sumNode EXACTLY, but
+  // parameterized by the per-topParent pivot pair. This is the same algorithm
+  // the parent uses, so the numbers MUST match.
+  const buildSumNode = (pCurrent, pPrev) => {
+const getValFor = (code, dk) => {
+      const ytd = (pCurrent.get(code)?.get(dk) ?? 0) * rowSign;
+      if (viewMode === "ytd") return ytd;
+      if (pCurrent.size === 0) return ytd; // no data → no phantom negative
+      const prevYtd = (pPrev.get(code)?.get(dk) ?? 0) * rowSign;
+      return ytd - prevYtd;
+    };
+    const cache = new Map();
+    const sumNode = (n, dk, depth = 0) => {
+      if (depth > 25) return 0;
+      const k = `${n.AccountCode}|${dk}`;
+      const cached = cache.get(k);
+      if (cached !== undefined) return cached;
+      let v;
+      if (n.children && n.children.length > 0) {
+        const childSum = n.children.reduce((s, c) => s + sumNode(c, dk, depth + 1), 0);
+        v = childSum !== 0 ? childSum : getValFor(n.AccountCode, dk);
+      } else {
+        v = getValFor(n.AccountCode, dk);
+      }
+      cache.set(k, v);
+      return v;
+    };
+    return sumNode;
+  };
+
+  // Find the tree node for accountCode. We rebuild the same tree DimensionRow
+  // would walk: from groupAccounts filtered to this statement type. If the
+  // node isn't in the tree (e.g. it's a mapping-taxonomy node like "B.PL"
+  // that doesn't exist in groupAccounts), fall back to a synthetic node whose
+  // children are every descendant from descSet.
+  const findNode = (nodes, code) => {
+    for (const n of nodes) {
+      if (String(n.AccountCode) === String(code)) return n;
+      const found = findNode(n.children || [], code);
+      if (found) return found;
+    }
+    return null;
+  };
+  let drillNode = findNode(displayedTree, accountCode);
+  if (!drillNode) {
+    // Synthetic node: aggregate every descendant code as a flat child list.
+    drillNode = {
+      AccountCode: accountCode,
+      AccountName: accountCode,
+      children: [...descSet]
+        .filter(c => String(c) !== String(accountCode))
+        .map(c => {
+          const ga = groupAccounts.find(g => String(g.AccountCode ?? g.accountCode) === String(c));
+          return {
+            AccountCode: c,
+            AccountName: ga?.AccountName ?? ga?.accountName ?? c,
+            children: [],
+          };
+        }),
+    };
+  }
+
+  const result = [];
+
+  // Master topParent: use master pivot maps directly so the row matches the
+  // parent value byte-for-byte (and respects monthly/YTD toggle correctly).
+  if (masterTopParent) {
+    let legalName = masterTopParent;
+    for (const r of drillRows) {
+      const co = r.CompanyShortName ?? r.companyShortName ?? "";
+      if (String(co).trim().toLowerCase() === masterCo) {
+        legalName = r.CompanyLegalName ?? r.companyLegalName ?? co;
+        break;
+      }
+    }
+    const sumNode = buildSumNode(pivot, prevPivotMain);
+    const dims = new Map();
+    rowDimCols.forEach(d => {
+      const dk = d.code ?? "__none__";
+      dims.set(dk, sumNode(drillNode, dk));
+    });
+    const anyNonZero = [...dims.values()].some(v => v !== 0);
+    if (anyNonZero) result.push([masterTopParent, { name: legalName, dims }]);
+  }
+
+  // Other companies: each gets its own sumNode walker over its own pivot pair.
+  currentPivots.forEach((info, co) => {
+    const prev = prevPivots.get(co)?.pivot ?? new Map();
+    const sumNode = buildSumNode(info.pivot, prev);
+    const dims = new Map();
+    rowDimCols.forEach(d => {
+      const dk = d.code ?? "__none__";
+      dims.set(dk, sumNode(drillNode, dk));
+    });
+    const anyNonZero = [...dims.values()].some(v => v !== 0);
+    if (anyNonZero) result.push([co, { name: info.name, dims }]);
+  });
+
+  result.sort((a, b) => a[1].name.localeCompare(b[1].name));
+  return result;
+}, [drillCache, drillPrevRows, masterTopParent, selGroups, selDims, pivot, prevPivotMain, viewMode, displayedTree, groupAccounts]);
+
+
+const handleExportXlsx = useCallback(async (opts = {}) => {
+    const includePL = opts.statements?.pl ?? (statementType === "pl");
+    const includeBS = opts.statements?.bs ?? (statementType === "bs");
+if (!includePL && !includeBS) { alert(T("export_select_statement_alert")); return; }
+    const drilldown = opts.drilldown !== false;
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = "Konsolidator";
+
+const periodLabel = (y, m) => {
+      const mm = parseInt(m);
+      return `${T(`month_${mm}`)} ${y}`;
+    };
+    const toArgbHex = (hex) => "FF" + String(hex ?? "#1a2f8a").replace("#", "").toUpperCase().padStart(6, "0");
+
+    const buildSimplePivot = (rows, stType) => {
+      const p = new Map();
+      rows.forEach(r => {
+        const role = r.CompanyRole ?? r.companyRole ?? "";
+        if (role !== "Parent" && role !== "Contribution") return;
+        const ac = r.AccountCode ?? r.accountCode ?? "";
+        const acType = r.AccountType ?? r.accountType ?? "";
+        const targetType = stType === "bs" ? "B/S" : "P/L";
+        if (!ac || (acType && acType !== targetType)) return;
+        const pairs = parseDimensions(r.Dimensions);
+        const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+        if (pairs.length === 0) {
+          if (!p.has(ac)) p.set(ac, new Map());
+          p.get(ac).set("__none__", (p.get(ac).get("__none__") ?? 0) + amt);
+          return;
+        }
+        for (const [grp, code] of pairs) {
+          if (selGroups.size > 0 && !selGroups.has(grp)) continue;
+          if (selDims.size > 0 && !selDims.has(code)) continue;
+          if (!p.has(ac)) p.set(ac, new Map());
+          p.get(ac).set(code, (p.get(ac).get(code) ?? 0) + amt);
+        }
+      });
+      return p;
+    };
+
+const writeSheetForStatement = (stType, viewLevel = null) => {
+      const isActive = stType === statementType;
+      const useLiteral = viewLevel === null;
+      const sign = stType === "pl" ? -1 : 1;
+      const literal = stType === "pl" ? plLiteral : bsLiteral;
+      const sheetView = isActive ? viewMode : "ytd";
+      const sheetCompare = cmpVisible && (opts.includeCompare !== false);
+      const showTotals  = !sheetCompare && (opts.includeTotals !== false);
+      const showBreakers = opts.includeBreakers !== false;
+
+const pivotMain = isActive ? pivot : buildSimplePivot(data, stType);
+      // Guard: empty current period → empty prev pivot, so monthly deltas are
+      // (0 − 0) not (0 − prevYTD) phantom negatives. Matches on-screen.
+      const prevMain  = (pivotMain.size === 0) ? new Map() : (isActive ? prevPivotMain : new Map());
+      const pivotCmp  = cmpVisible ? (isActive ? pivot2 : buildSimplePivot(cmp2Data, stType)) : new Map();
+      const prevCmp   = (pivotCmp.size === 0) ? new Map() : (isActive ? prevPivot2 : new Map());
+
+      // Descendant-aware rollup (literal mode) — matches on-screen getValWithDescendants
+      const sumPivotFor = (p, code, dk) => {
+        if (!p || p.size === 0) return 0;
+        let total = 0;
+        p.forEach((dimMap, ac) => {
+          if (ac === code) { total += (dimMap.get(dk) ?? 0) * sign; return; }
+          let cur = parentOf.get(ac);
+          let hops = 0;
+          while (cur && hops < 25) {
+            if (cur === code) { total += (dimMap.get(dk) ?? 0) * sign; break; }
+            cur = parentOf.get(cur); hops++;
+          }
+        });
+        return total;
+      };
+      const valFor = (code, dk) => {
+        const ytd = sumPivotFor(pivotMain, code, dk);
+        if (sheetView === "ytd") return ytd;
+        return ytd - sumPivotFor(prevMain, code, dk);
+      };
+      const cmpValFor = (code, dk) => {
+        const ytd = sumPivotFor(pivotCmp, code, dk);
+        if (sheetView === "ytd") return ytd;
+        return ytd - sumPivotFor(prevCmp, code, dk);
+      };
+
+      // Flat lookup (tree mode) — matches on-screen DimensionRow.sumNode
+      const flatVal = (code, dk) => {
+        const ytd = (pivotMain.get(code)?.get(dk) ?? 0) * sign;
+        if (sheetView === "ytd") return ytd;
+        return ytd - (prevMain.get(code)?.get(dk) ?? 0) * sign;
+      };
+      const flatCmpVal = (code, dk) => {
+        const ytd = (pivotCmp.get(code)?.get(dk) ?? 0) * sign;
+        if (sheetView === "ytd") return ytd;
+        return ytd - (prevCmp.get(code)?.get(dk) ?? 0) * sign;
+      };
+const sumTreeForDim = (n, dk, depth = 0) => {
+        if (depth > 25) return 0;
+        if (n.children && n.children.length > 0) {
+          const childSum = n.children.reduce((s, c) => s + sumTreeForDim(c, dk, depth + 1), 0);
+          if (childSum !== 0) return childSum;
+        }
+        return flatVal(n.code, dk);
+      };
+      const sumTreeCmpForDim = (n, dk, depth = 0) => {
+        if (depth > 25) return 0;
+        if (n.children && n.children.length > 0) {
+          const childSum = n.children.reduce((s, c) => s + sumTreeCmpForDim(c, dk, depth + 1), 0);
+          if (childSum !== 0) return childSum;
+        }
+        return flatCmpVal(n.code, dk);
+      };
+
+      const visibleDims = orderedDimCols;
+      const subColsPerDim = sheetCompare ? 4 : 1;
+      const totalCols = 1 + visibleDims.length * subColsPerDim + (showTotals ? 1 : 0);
+
+const subLines = [];
+      if (masterYear && masterMonth) {
+        const seg = [`📅 ${periodLabel(masterYear, masterMonth)}`];
+        if (masterSource)    seg.push(`${T("file_field_source")}: ${masterSource}`);
+        if (masterStructure) seg.push(`${T("file_field_structure")}: ${masterStructure}`);
+        if (masterTopParent)   seg.push(`${T("file_field_company")}: ${masterTopParent}`);
+        subLines.push(seg.join("    ·    "));
+      }
+      const viewLevelLabel = viewLevel === "summary" ? T("file_level_summary") : viewLevel === "detailed" ? T("file_level_detailed") : T("file_level_mapped");
+      subLines.push(`${T("file_field_statement")}: ${stType.toUpperCase()}    ·    ${T("file_field_level")}: ${viewLevelLabel}    ·    ${T("file_field_view")}: ${sheetView === "ytd" ? T("mode_ytd") : T("mode_monthly")}${sheetCompare ? `    ·    ${T("file_compare_on")}` : ""}${!isActive ? `    ·    ${T("file_compare_off_note")}` : ""}`);
+      subLines.push(`${T("file_field_dim_groups")}: ${selGroups.size > 0 ? [...selGroups].join(", ") : T("all")}    ·    ${T("file_field_dims")}: ${selDims.size > 0 ? [...selDims].join(", ") : T("all")}`);
+      if (sheetCompare && cmp2Year && cmp2Month) {
+        const seg = [`🆚 ${T("file_vs_prefix")} ${periodLabel(cmp2Year, cmp2Month)}`];
+        if (cmp2Source)    seg.push(`${T("file_field_source")}: ${cmp2Source}`);
+        if (cmp2Structure) seg.push(`${T("file_field_structure")}: ${cmp2Structure}`);
+        if (cmp2TopParent)   seg.push(`${T("file_field_company")}: ${cmp2TopParent}`);
+        subLines.push(seg.join("    ·    "));
+      }
+
+      const sheetNameSuffix = viewLevel === "summary" ? " Summary" : viewLevel === "detailed" ? " Detailed" : "";
+      const ws = wb.addWorksheet(`Dim ${stType.toUpperCase()}${sheetNameSuffix}`, {
+        views: [{ state: "frozen", xSplit: 1, ySplit: 1 + subLines.length + 1 + (sheetCompare ? 2 : 1) }],
+       properties: { outlineLevelRow: 1, summaryBelow: true },
+      });
+
+ws.mergeCells(1, 1, 1, totalCols);
+      const titleCell = ws.getCell(1, 1);
+      titleCell.value = stType === "pl" ? T("file_dimensions_pl") : T("file_dimensions_bs");
+      titleCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+      titleCell.font = { name: "Calibri", size: 16, bold: true, color: { argb: C.white } };
+      titleCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+      ws.getRow(1).height = 28;
+
+      subLines.forEach((line, i) => {
+        const r = 2 + i;
+        ws.mergeCells(r, 1, r, totalCols);
+        const c = ws.getCell(r, 1);
+        c.value = line;
+        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+        c.font = { name: "Calibri", size: 10, color: { argb: "FFE0E7FF" } };
+        c.alignment = { vertical: "middle", horizontal: "left", indent: 1, wrapText: true };
+        ws.getRow(r).height = 18;
+      });
+
+      let curRow = 2 + subLines.length;
+      ws.getRow(curRow).height = 6;
+      curRow++;
+
+      if (sheetCompare) {
+        const r1 = curRow, r2 = curRow + 1;
+        const sup = ws.getRow(r1); sup.height = 22;
+        const sub = ws.getRow(r2); sub.height = 18;
+const acc = sup.getCell(1);
+        acc.value = T("file_col_account");
+        acc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+        acc.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+        acc.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+        ws.mergeCells(r1, 1, r2, 1);
+        visibleDims.forEach((d, i) => {
+          const startCol = 2 + i * 4;
+          const sCell = sup.getCell(startCol);
+          sCell.value = d.name ?? d.code ?? "—";
+          sCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+          sCell.font = { name: "Calibri", size: 11, bold: true, color: { argb: C.white } };
+          sCell.alignment = { vertical: "middle", horizontal: "center" };
+          ws.mergeCells(r1, startCol, r1, startCol + 3);
+          [T("file_col_a"), T("file_col_sigma_cmp"), T("file_col_delta_amt"), T("file_col_delta_pct")].forEach((lbl, j) => {
+            const cc = sub.getCell(startCol + j);
+            cc.value = lbl;
+            cc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: j === 1 ? "FFCF305D" : (j >= 2 ? "FF13225C" : C.primary) } };
+            cc.font = { name: "Calibri", size: 9, bold: true, color: { argb: C.white } };
+            cc.alignment = { vertical: "middle", horizontal: "center" };
+          });
+        });
+        curRow = r2 + 1;
+      } else {
+        const hRow = ws.getRow(curRow); hRow.height = 24;
+const headers = [T("file_col_account"), ...visibleDims.map(d => d.name ?? d.code ?? "—")];
+        if (showTotals) headers.push(T("file_col_total"));
+headers.forEach((h, i) => {
+          const c = hRow.getCell(i + 1);
+          c.value = h;
+          c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: C.primary } };
+          c.font = { name: "Calibri", size: 10, bold: true, color: { argb: C.white } };
+c.alignment = { vertical: "middle", horizontal: "center" };
+          if (i >= 1) c.border = { left: { style: "medium", color: { argb: C.white } } };
+        });
+        curRow++;
+      }
+
+      const writeNum = (rowN, colN, val, fillArgb, opts2 = {}) => {
+        const cell = ws.getCell(rowN, colN);
+        if (val == null || !Number.isFinite(val) || val === 0) {
+          cell.value = "—";
+          cell.font = { name: "Calibri", size: 10, color: { argb: C.gray400 }, bold: !!opts2.bold };
+        } else {
+          cell.value = val;
+          cell.numFmt = opts2.percent ? '0.0"%"' : '#,##0.00;[Red]-#,##0.00';
+          cell.font = {
+            name: "Calibri", size: 10, bold: !!opts2.bold,
+            color: { argb: opts2.colorOverride ?? (val < 0 ? C.red : "FF1A2F8A") },
+          };
+        }
+cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fillArgb } };
+        cell.alignment = { vertical: "middle", horizontal: "center" };
+        // Borde izquierdo en cada columna de datos (dimensión / total) para
+        // dividirlas verticalmente. La columna 1 (Account) no lleva.
+        cell.border = {
+          bottom: { style: "thin", color: { argb: "FFE5E7EB" } },
+          ...(colN >= 2 ? { left: { style: "medium", color: { argb: toArgbHex(colors.primary) } } } : {}),
+        };
+      };
+
+const leafVal = (n, dimKey) => {
+        if (n.dims && n.dims.length > 0) {
+          if (!nodeDimMatchesKey(n.dims, dimKey)) return 0;
+        }
+        return valFor(n.code, dimKey);
+      };
+      const sumLitForDim = (n, dimKey, depth = 0) => {
+        if (depth > 50) return 0;
+        if (n.isSum && n.children && n.children.length > 0) {
+          return n.children.reduce((s, c) => s + sumLitForDim(c, dimKey, depth + 1), 0);
+        }
+        return leafVal(n, dimKey);
+      };
+const leafCmpVal = (n, dimKey) => {
+        if (n.dims && n.dims.length > 0) {
+          if (!nodeDimMatchesKey(n.dims, dimKey)) return 0;
+        }
+        return cmpValFor(n.code, dimKey);
+      };
+      const sumLitCmpForDim = (n, dimKey, depth = 0) => {
+        if (depth > 50) return 0;
+        if (n.isSum && n.children && n.children.length > 0) {
+          return n.children.reduce((s, c) => s + sumLitCmpForDim(c, dimKey, depth + 1), 0);
+        }
+        return leafCmpVal(n, dimKey);
+      };
+
+      let dataIdx = 0;
+      let maxDepth = 0;
+const renderRow = (node, depth, mode = "literal", excludeCodes = null) => {
+        if (depth > 50 || !node) return;  // cycle / runaway guard
+        const mainSum = mode === "tree" ? sumTreeForDim : sumLitForDim;
+        const cmpSum  = mode === "tree" ? sumTreeCmpForDim : sumLitCmpForDim;
+        maxDepth = Math.max(maxDepth, depth);
+        const band = dataIdx % 2 === 0 ? C.band1 : C.band2;
+        dataIdx++;
+        const labelCell = ws.getCell(curRow, 1);
+        const codeStr = String(node.code ?? "").trim();
+        const nameStr = String(node.name ?? node.code ?? "").trim() || "—";
+        const labelRuns = [];
+        if (codeStr) labelRuns.push({ text: `${codeStr}  `, font: { name: "Calibri", size: 9, color: { argb: "FF6B7280" } } });
+        labelRuns.push({ text: nameStr, font: { name: "Calibri", size: 11, bold: !!node.isSum, color: { argb: "FF1A2F8A" } } });
+        labelCell.value = labelRuns.length === 1 ? nameStr : { richText: labelRuns };
+        labelCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: band } };
+        labelCell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+        labelCell.border = { bottom: { style: "thin", color: { argb: "FFE5E7EB" } } };
+
+        let rowTotal = 0;
+        visibleDims.forEach((dim, i) => {
+          const dk = dim.code ?? "__none__";
+          const a = mainSum(node, dk);
+          rowTotal += a;
+          if (sheetCompare) {
+            const startCol = 2 + i * 4;
+            const c = cmpSum(node, dk);
+            const delta    = (Number.isFinite(a) && Number.isFinite(c)) ? a - c : null;
+            const deltaPct = (Number.isFinite(a) && Number.isFinite(c) && Math.abs(c) > 1e-9) ? ((a - c) / Math.abs(c)) * 100 : null;
+            writeNum(curRow, startCol,     a, band,        { bold: node.isSum });
+            writeNum(curRow, startCol + 1, c, "FFFAFBFF",  { bold: node.isSum });
+            writeNum(curRow, startCol + 2, delta,    "FFF5F7FF", { bold: node.isSum, colorOverride: (delta == null || delta === 0) ? null : (delta < 0 ? C.red : "FF059669") });
+            writeNum(curRow, startCol + 3, deltaPct, "FFF0F3FF", { bold: node.isSum, percent: true, colorOverride: deltaPct == null ? null : (deltaPct < 0 ? C.red : "FF059669") });
+          } else {
+            writeNum(curRow, 2 + i, a, band, { bold: node.isSum });
+          }
+        });
+        if (showTotals) {
+          writeNum(curRow, 2 + visibleDims.length, rowTotal, C.highlight, { bold: true });
+        }
+        if (drilldown) {
+          const row = ws.getRow(curRow);
+          const cappedDepth = Math.min(7, depth);
+          row.outlineLevel = cappedDepth;
+          if (cappedDepth > 0) row.hidden = true;
+        }
+curRow++;
+
+        // drilldown OFF = informe resumido: solo el nivel superior (depth 0),
+        // sin recorrer los hijos. Con drilldown ON se emiten todos los niveles
+        // (con outline/acordeón).
+        if (drilldown && node.children && node.children.length > 0) {
+          node.children.forEach(c => {
+            // Skip children that will render at the top level as their own row
+            // (mirrors on-screen DimensionRow's excludeCodes behavior). Values
+            // still roll up correctly because sumTreeForDim walks the full tree
+            // — this only affects what's emitted as a separate row.
+            if (excludeCodes && excludeCodes.has(String(c.code ?? c.AccountCode ?? ""))) return;
+            renderRow(c, depth + 1, mode, excludeCodes);
+          });
+        }
+      };
+const treeAsLit = (n, depth, visited = new WeakSet()) => {
+        if (!n || depth > 50 || visited.has(n)) {
+          return {
+            id: String(n?.AccountCode ?? ""), code: String(n?.AccountCode ?? ""),
+            name: n?.AccountName ?? n?.accountName ?? "",
+            dims: null, isSum: false, depth, children: [],
+          };
+        }
+        visited.add(n);
+        return {
+          id: String(n.AccountCode), code: String(n.AccountCode),
+          name: n.AccountName ?? n.accountName ?? "",
+          dims: null, isSum: (n.children?.length ?? 0) > 0, depth,
+          children: (n.children || []).map(c => treeAsLit(c, depth + 1, visited)),
+        };
+      };
+
+const renderSectionBar = (label, colorArgb) => {
+        ws.mergeCells(curRow, 1, curRow, totalCols);
+        const cell = ws.getCell(curRow, 1);
+        cell.value = String(label).toUpperCase();
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: colorArgb } };
+        cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: C.white } };
+        cell.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+        // Marco medium en primario arriba y abajo para delimitar cada sección.
+        // En celdas combinadas hay que fijar el borde en TODAS las columnas del
+        // rango para que el borde exterior se pinte.
+        const secBorder = toArgbHex(colors.primary);
+        for (let cc = 1; cc <= totalCols; cc++) {
+          const bc = ws.getCell(curRow, cc);
+          bc.border = {
+            top:    { style: "medium", color: { argb: secBorder } },
+            bottom: { style: "medium", color: { argb: secBorder } },
+          };
+        }
+        ws.getRow(curRow).height = 22;
+        curRow++;
+        dataIdx = 0;
+};
+
+      if (useLiteral && literal && literal.length > 0) {
+        // Custom mapping literal mode — matches on-screen literal renderer
+        // Palette matches in-app dividerMap
+        const inAppPaletteLit = [
+          toArgbHex(colors.primary),
+          toArgbHex(colors.secondary),
+          toArgbHex(colors.tertiary),
+        ];
+        let litSectionIdx = 0;
+        literal.forEach(section => {
+if (section.label && showBreakers) {
+            // Usa el color REAL del breaker (igual que la app en modo override);
+            // la paleta cíclica queda solo como último recurso.
+            const barColor = toArgbHex(section.color)
+              || inAppPaletteLit[litSectionIdx % inAppPaletteLit.length];
+            renderSectionBar(section.label, barColor);
+            litSectionIdx++;
+          }
+          section.nodes.forEach(n => renderRow(n, 0, "literal"));
+        });
+} else {
+        // No-literal mode (Summary or Detailed view): rebuild a tree from groupAccounts
+        // + the statement's mapping. Same logic as the on-screen Summary/Detailed toggle.
+        const mappingForSt = stType === "pl" ? plMapping : bsMapping;
+        const gaMap = new Map();
+        (groupAccounts || []).forEach(a => {
+          const code = String(a.AccountCode ?? a.accountCode ?? "");
+          if (!code) return;
+          gaMap.set(code, {
+            AccountCode: code,
+            AccountName: a.AccountName ?? a.accountName ?? "",
+            SumAccountCode: String(a.SumAccountCode ?? a.sumAccountCode ?? ""),
+            AccountType: a.AccountType ?? a.accountType ?? "",
+            IsSumAccount: !!(a.IsSumAccount ?? a.isSumAccount),
+          });
+        });
+        const targetType = stType === "bs" ? "B/S" : "P/L";
+        const stCodes = new Set();
+        gaMap.forEach((ga, code) => {
+          if (!ga.AccountType || ga.AccountType === targetType) stCodes.add(code);
+        });
+        const childrenIdx = new Map();
+        stCodes.forEach(code => {
+          const ga = gaMap.get(code);
+          const parent = ga.SumAccountCode;
+          if (parent && stCodes.has(parent) && parent !== code) {
+            if (!childrenIdx.has(parent)) childrenIdx.set(parent, []);
+            childrenIdx.get(parent).push(code);
+          }
+        });
+const buildTreeNode = (code, depth, visited = new Set()) => {
+          // Cycle / runaway-depth guard: chart-of-accounts data sometimes carries
+          // circular SumAccountCode chains (A → B → A) that would otherwise
+          // recurse forever.
+          if (visited.has(code) || depth > 25) {
+            return {
+              AccountCode: code,
+              AccountName: gaMap.get(code)?.AccountName ?? "",
+              children: [],
+              IsSumAccount: false,
+            };
+          }
+          const nextVisited = new Set(visited);
+          nextVisited.add(code);
+          const ga = gaMap.get(code);
+          const kids = (childrenIdx.get(code) || []).map(c => buildTreeNode(c, depth + 1, nextVisited));
+          return {
+            AccountCode: code,
+            AccountName: ga?.AccountName ?? "",
+            children: kids,
+            IsSumAccount: !!ga?.IsSumAccount,
+          };
+        };
+
+if (mappingForSt?.rows && mappingForSt?.sections) {
+          const filterFn = viewLevel === "summary"
+            ? (info => info.showInSummary)
+            : (info => info.isSum);
+          const orderedEntries = [...mappingForSt.rows.entries()]
+            .filter(([, info]) => filterFn(info))
+            .sort(([, a], [, b]) => a.sortOrder - b.sortOrder);
+
+          // Normalize levels: some standards are 1-based, others 0-based.
+          const minLevel = orderedEntries.reduce(
+            (m, [, info]) => Math.min(m, info.level ?? 0),
+            Infinity
+          );
+
+          // Palette matches in-app dividerMap (primary / secondary / tertiary)
+          const inAppPalette = [
+            toArgbHex(colors.primary),
+            toArgbHex(colors.secondary),
+            toArgbHex(colors.tertiary),
+          ];
+
+          // Emit one row per entry (no tree recursion) with outlineLevel set by
+          // its depth in the standard hierarchy. Insert a breaker whenever the
+          // section changes vs the previous emitted row.
+          let lastSection = null;
+          let sectionIdx = 0;
+          orderedEntries.forEach(([code, info]) => {
+            if (!stCodes.has(code)) return;
+            if (info.section && info.section !== "null" && info.section !== lastSection && showBreakers) {
+              const sec = mappingForSt.sections.get(info.section);
+              if (sec?.label) {
+const barColor = sec.color
+                  ? toArgbHex(sec.color)
+                  : inAppPalette[sectionIdx % inAppPalette.length];
+                renderSectionBar(sec.label, barColor);
+                sectionIdx++;
+              }
+              lastSection = info.section;
+            }
+            // Build a single-node "tree" so renderRow emits exactly this row
+            // (no children) at the proper outlineLevel.
+            const ga = gaMap.get(code);
+            const singleNode = {
+              id: code,
+              code,
+              name: ga?.AccountName ?? code,
+              dims: null,
+              isSum: !!info.isSum,
+              children: [],
+            };
+const depth = Math.max(0, (info.level ?? 0) - minLevel);
+            // drilldown OFF = informe resumido: solo el nivel superior.
+            if (!drilldown && depth > 0) return;
+            renderRow(singleNode, depth, "tree");
+          });
+        } else {
+          // Truly nothing to lean on — just top-level codes
+          const topCodes = [...stCodes].filter(code => {
+            const p = gaMap.get(code).SumAccountCode;
+            return !p || !stCodes.has(p);
+          }).sort();
+          topCodes.forEach(code => renderRow(treeAsLit(buildTreeNode(code, 0), 0), 0, "tree"));
+        }
+      }
+
+      if (drilldown) {
+        ws.properties.outlineLevelRow = Math.min(7, Math.max(1, maxDepth));
+        ws.properties.summaryBelow = true;
+      }
+
+      ws.getColumn(1).width = 44;
+      if (sheetCompare) {
+        for (let i = 0; i < visibleDims.length; i++) {
+          ws.getColumn(2 + i * 4).width     = 15;
+          ws.getColumn(2 + i * 4 + 1).width = 14;
+          ws.getColumn(2 + i * 4 + 2).width = 12;
+          ws.getColumn(2 + i * 4 + 3).width = 10;
+        }
+      } else {
+        for (let i = 0; i < visibleDims.length; i++) ws.getColumn(2 + i).width = 18;
+        if (showTotals) ws.getColumn(2 + visibleDims.length).width = 18;
+      }
+    };
+
+const safeWriteSheet = (st, viewLevel = null) => {
+      const label = viewLevel ? `${st} ${viewLevel}` : st;
+      try {
+        writeSheetForStatement(st, viewLevel);
+} catch (e) {
+        console.error(`[export] FAILED writing sheet "${label}":`, e);
+        alert(`${T("export_sheet_failed_alert")} (${label.toUpperCase()}):\n\n${e?.message ?? e}`);
+      }
+    };
+
+    const dispatchStatement = (st) => {
+      const lit = st === "pl" ? plLiteral : bsLiteral;
+      if (lit && lit.length > 0) {
+        // Custom mapping active → single sheet using the literal structure
+        safeWriteSheet(st, null);
+      } else {
+        // No custom mapping → mirror on-screen Summary + Detailed views
+        safeWriteSheet(st, "summary");
+        safeWriteSheet(st, "detailed");
+      }
+    };
+
+if (includePL) dispatchStatement("pl");
+    if (includeBS) dispatchStatement("bs");
+
+if (wb.worksheets.length === 0) {
+      alert(T("export_no_sheets_alert"));
+      return;
+    }
+
+    let buffer;
+    try {
+      buffer = await wb.xlsx.writeBuffer();
+    } catch (e) {
+      console.error("[export] writeBuffer threw:", e);
+      throw new Error(`writeBuffer failed: ${e?.message ?? e}`);
+    }
+
+    let repaired;
+    try {
+      repaired = await repairDimXlsx(buffer);
+    } catch (e) {
+      console.error("[export] repairDimXlsx threw:", e);
+      repaired = buffer;
+    }
+
+saveAs(new Blob([repaired], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+`Konsolidator_ConsDimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.xlsx`);
+  }, [T, data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterTopParent, selGroups, selDims, cmp2Source, cmp2Structure, cmp2Month, cmp2Year, cmp2TopParent, plMapping, bsMapping, groupAccounts, nodeDimMatchesKey, colors]);
+
+const handleExportPdf = useCallback((opts = {}) => {
+    const includePL = opts.statements?.pl ?? (statementType === "pl");
+    const includeBS = opts.statements?.bs ?? (statementType === "bs");
+if (!includePL && !includeBS) { alert(T("export_select_statement_alert")); return; }
+    const includeCompareOpt = (opts.includeCompare !== false) && cmpVisible;
+
+// Palette
+    const NAVY     = [26, 47, 138];
+    const NAVYMID  = [40, 64, 168];
+    const NAVYDK   = [10, 20, 70];
+    // Helper: "#1a2f8a" → [26, 47, 138]
+    const hexToRgb = (hex) => {
+      const h = String(hex ?? "").replace("#", "").padStart(6, "0");
+      return [
+        parseInt(h.slice(0, 2), 16),
+        parseInt(h.slice(2, 4), 16),
+        parseInt(h.slice(4, 6), 16),
+      ];
+    };
+    const INAPP_PALETTE = [
+      hexToRgb(colors.primary),
+      hexToRgb(colors.secondary),
+      hexToRgb(colors.tertiary),
+    ];
+    const RED      = [207, 48, 93];
+    const REDDK    = [160, 30, 65];
+    const GRN      = [16, 185, 129];
+    const GRNDK    = [4, 120, 87];
+    const LIGHT    = [238, 241, 251];
+    const WHITE    = [255, 255, 255];
+    const OFFWHITE = [250, 251, 255];
+    const GRAY     = [140, 150, 175];
+    const GRAYLT   = [210, 215, 230];
+    const TEXTDK   = [20, 35, 80];
+
+    const allDims = orderedDimCols;
+    const TARGET_DIMS_PER_PAGE = 4;
+
+    // When comparing, split dims into balanced chunks of ~4 dims/page.
+    // Each page renders A | B | Diff | Diff% side-by-side for its dims.
+    const dimChunks = includeCompareOpt && allDims.length > TARGET_DIMS_PER_PAGE
+      ? (() => {
+          const nPages = Math.ceil(allDims.length / TARGET_DIMS_PER_PAGE);
+          const perPage = Math.ceil(allDims.length / nPages);
+          const out = [];
+          for (let i = 0; i < allDims.length; i += perPage) {
+            out.push({
+              dims: allDims.slice(i, i + perPage),
+              startIdx: i,
+              endIdx: Math.min(i + perPage, allDims.length) - 1,
+            });
+          }
+          return out;
+        })()
+      : [{ dims: allDims, startIdx: 0, endIdx: allDims.length - 1 }];
+
+    // Widest layout: compare → 4 sub-cols × chunk size + Account. Single → dims + Account + Total.
+    const widestPerPage = includeCompareOpt
+      ? Math.max(...dimChunks.map(c => c.dims.length * 4 + 1))
+      : allDims.length + 2;
+    const useA3 = widestPerPage > 11;
+
+    const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: useA3 ? "a3" : "a4" });
+    const W = doc.internal.pageSize.getWidth();
+    const H = doc.internal.pageSize.getHeight();
+// Page 1 is reserved for the index (drawn last). Content starts at page 2,
+    // so pageNum is pre-set to 1 — first drawPageHeader call adds page 2 and
+    // increments pageNum to match the physical jsPDF page.
+    let pageNum = 1;
+    const pageManifest = []; // { displayedPage, title }
+    const monthLabel = masterMonth ? T(`month_${parseInt(masterMonth)}`) : masterMonth;
+
+    const buildSimplePivot = (rows, stType) => {
+      const p = new Map();
+      rows.forEach(r => {
+        const role = r.CompanyRole ?? r.companyRole ?? "";
+        if (role !== "Parent" && role !== "Contribution") return;
+        const ac = r.AccountCode ?? r.accountCode ?? "";
+        const acType = r.AccountType ?? r.accountType ?? "";
+        const targetType = stType === "bs" ? "B/S" : "P/L";
+        if (!ac || (acType && acType !== targetType)) return;
+        const pairs = parseDimensions(r.Dimensions);
+        const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? 0);
+        if (pairs.length === 0) {
+          if (!p.has(ac)) p.set(ac, new Map());
+          p.get(ac).set("__none__", (p.get(ac).get("__none__") ?? 0) + amt);
+          return;
+        }
+        for (const [grp, code] of pairs) {
+          if (selGroups.size > 0 && !selGroups.has(grp)) continue;
+          if (selDims.size > 0 && !selDims.has(code)) continue;
+          if (!p.has(ac)) p.set(ac, new Map());
+          p.get(ac).set(code, (p.get(ac).get(code) ?? 0) + amt);
+        }
+      });
+      return p;
+    };
+
+const drawPageHeader = (isFirst, stType, level, chunkInfo) => {
+      // Always add a page — first content page lands at page 2 (page 1 is TOC).
+      doc.addPage();
+      pageNum++;
+// Record this page in the manifest so the index can list it.
+      const lvlTxt  = level === "summary" ? T("file_level_summary") : level === "detailed" ? T("file_level_detailed") : T("file_level_mapped");
+      const stTxt   = stType === "pl" ? T("badge_pl_short") : T("page_bs_full");
+      const partTxt = chunkInfo && chunkInfo.totalChunks > 1
+        ? ` — ${T("badge_part")} ${chunkInfo.idx + 1}/${chunkInfo.totalChunks}`
+        : "";
+      pageManifest.push({
+        displayedPage: pageNum,
+        title: `${stTxt} · ${lvlTxt}${partTxt}`,
+      });
+      doc.setFillColor(...NAVY); doc.rect(0, 0, W, 38, "F");
+      doc.setFillColor(...RED);  doc.rect(0, 0, 5, 38, "F");
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(17);
+      doc.setTextColor(...WHITE);
+      doc.text(stType === "pl" ? T("file_dimensions_pl_upper") : T("file_dimensions_bs_upper"), 12, 14);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8.5);
+      doc.setTextColor(180, 200, 255);
+      const sub = [`${monthLabel} ${masterYear}`, masterSource, masterStructure, masterTopParent].filter(Boolean).join("  ·  ");
+      doc.text(sub, 12, 22);
+
+      doc.setFontSize(7);
+      doc.setTextColor(160, 180, 235);
+const filterBits = [
+        `${T("file_field_groups")}: ${selGroups.size > 0 ? [...selGroups].join(", ") : T("all")}`,
+        `${T("file_field_dims")}: ${selDims.size > 0 ? [...selDims].join(", ") : T("all")}`,
+      ];
+      doc.text(filterBits.join("    ·    "), 12, 29);
+
+if (includeCompareOpt && cmp2Year && cmp2Month) {
+        const cmpMo = T(`month_${parseInt(cmp2Month)}`);
+        const cmpSub = [`${T("file_b_prefix")}: ${cmpMo} ${cmp2Year}`, cmp2Source, cmp2Structure, cmp2TopParent].filter(Boolean).join("  ·  ");
+        doc.setFillColor(...REDDK);
+        doc.roundedRect(12, 32, Math.min(W - 24, 220), 5.5, 1, 1, "F");
+        doc.setFontSize(7);
+        doc.setTextColor(...WHITE);
+        doc.text(cmpSub, 14, 35.7);
+      }
+
+      // Top-right badges (right-to-left)
+      let curX = W - 8;
+      const placeBadge = (label, fill, textColor) => {
+        const w = Math.max(22, doc.getTextWidth(label) + 8);
+        doc.setFillColor(...fill);
+        doc.roundedRect(curX - w, 6, w, 9, 2, 2, "F");
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(7.5);
+        doc.setTextColor(...textColor);
+        doc.text(label, curX - w / 2, 11.8, { align: "center" });
+        curX -= (w + 3);
+      };
+
+const lvlLabel = level === "summary" ? T("badge_summary") : level === "detailed" ? T("badge_detailed") : T("badge_mapped");
+      placeBadge(lvlLabel, RED, WHITE);
+      placeBadge(stType === "pl" ? T("badge_pl_short") : T("badge_bs_short"), NAVYDK, [160, 185, 255]);
+      if (includeCompareOpt) {
+        if (chunkInfo && chunkInfo.totalChunks > 1) {
+          placeBadge(`${T("badge_part")} ${chunkInfo.idx + 1}/${chunkInfo.totalChunks}`, REDDK, WHITE);
+        } else {
+          placeBadge(T("badge_compare"), REDDK, WHITE);
+        }
+      }
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(6);
+      doc.setTextColor(...GRAY);
+      doc.text(`${T("file_generated")} ${new Date().toLocaleDateString()}`, W - 8, 22, { align: "right" });
+
+      doc.setDrawColor(...NAVYMID);
+      doc.setLineWidth(0.4);
+      doc.line(0, 38, W, 38);
+
+      return 42;
+    };
+
+    const drawFooter = (stType, level, chunkInfo) => {
+      doc.setFillColor(...LIGHT);
+      doc.rect(0, H - 10, W, 10, "F");
+      doc.setDrawColor(...GRAYLT);
+      doc.setLineWidth(0.3);
+      doc.line(0, H - 10, W, H - 10);
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(6.5);
+      doc.setTextColor(...NAVY);
+doc.text(stType === "pl" ? T("file_dimensions_pl_upper") : T("file_dimensions_bs_upper"), 10, H - 4.5);
+
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(...GRAY);
+      const lvl = level === "summary" ? T("file_level_summary") : level === "detailed" ? T("file_level_detailed") : T("file_level_mapped");
+      const chunkPart = chunkInfo && chunkInfo.totalChunks > 1 ? ` · ${T("badge_part")} ${chunkInfo.idx + 1}/${chunkInfo.totalChunks}` : "";
+      doc.text(`${lvl}  ·  ${monthLabel} ${masterYear}  ·  ${masterSource}${chunkPart}`, 56, H - 4.5);
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(7);
+      doc.setTextColor(...NAVY);
+      doc.text(`${pageNum}`, W - 10, H - 4.5, { align: "right" });
+    };
+
+    const writePageForStatement = (stType, viewLevel, dimSlice, chunkInfo, isFirst) => {
+      const isCompare = includeCompareOpt;
+      const showTotals = (opts.includeTotals !== false) && !isCompare;
+      const showBreakers = opts.includeBreakers !== false;
+
+      const subCols = isCompare ? 4 : 1;
+      const valueColCount = dimSlice.length * subCols + (showTotals ? 1 : 0);
+      const totalColCount = 1 + valueColCount;
+
+      const bodyFont = totalColCount <= 8  ? 8
+                     : totalColCount <= 12 ? 7.5
+                     : totalColCount <= 18 ? 7
+                     : 6.5;
+      const headFont = Math.max(6, bodyFont - 0.5);
+
+      const isActive   = stType === statementType;
+      const literal    = stType === "pl" ? plLiteral : bsLiteral;
+      const useLiteral = viewLevel === null;
+      const sign       = stType === "pl" ? -1 : 1;
+
+const pivotMain = isActive ? pivot : buildSimplePivot(data, stType);
+      // Guard: empty current period → empty prev pivot (no phantom negatives).
+      const prevMain  = (pivotMain.size === 0) ? new Map() : (isActive ? prevPivotMain : new Map());
+      const pivotCmp  = isCompare ? (isActive ? pivot2 : buildSimplePivot(cmp2Data, stType)) : new Map();
+      const prevCmp   = (pivotCmp.size === 0) ? new Map() : (isActive ? prevPivot2 : new Map());
+      const sheetView = isActive ? viewMode : "ytd";
+
+      const sumPivotFor = (p, code, dk) => {
+        if (!p || p.size === 0) return 0;
+        let total = 0;
+        p.forEach((dimMap, ac) => {
+          if (ac === code) { total += (dimMap.get(dk) ?? 0) * sign; return; }
+          let cur = parentOf.get(ac); let hops = 0;
+          while (cur && hops < 25) {
+            if (cur === code) { total += (dimMap.get(dk) ?? 0) * sign; break; }
+            cur = parentOf.get(cur); hops++;
+          }
+        });
+        return total;
+      };
+      const valFor = (code, dk) => {
+        const ytd = sumPivotFor(pivotMain, code, dk);
+        if (sheetView === "ytd") return ytd;
+        return ytd - sumPivotFor(prevMain, code, dk);
+      };
+      const cmpValFor = (code, dk) => {
+        const ytd = sumPivotFor(pivotCmp, code, dk);
+        if (sheetView === "ytd") return ytd;
+        return ytd - sumPivotFor(prevCmp, code, dk);
+      };
+      const flatVal = (code, dk) => {
+        const ytd = (pivotMain.get(code)?.get(dk) ?? 0) * sign;
+        if (sheetView === "ytd") return ytd;
+        return ytd - (prevMain.get(code)?.get(dk) ?? 0) * sign;
+      };
+      const flatCmpVal = (code, dk) => {
+        const ytd = (pivotCmp.get(code)?.get(dk) ?? 0) * sign;
+        if (sheetView === "ytd") return ytd;
+        return ytd - (prevCmp.get(code)?.get(dk) ?? 0) * sign;
+      };
+      const sumTreeForDim = (n, dk, depth = 0) => {
+        if (depth > 25) return 0;
+        if (n.children && n.children.length > 0) {
+          const cs = n.children.reduce((s, c) => s + sumTreeForDim(c, dk, depth + 1), 0);
+          if (cs !== 0) return cs;
+        }
+        return flatVal(n.code, dk);
+      };
+      const sumTreeCmpForDim = (n, dk, depth = 0) => {
+        if (depth > 25) return 0;
+        if (n.children && n.children.length > 0) {
+          const cs = n.children.reduce((s, c) => s + sumTreeCmpForDim(c, dk, depth + 1), 0);
+          if (cs !== 0) return cs;
+        }
+return flatCmpVal(n.code, dk);
+      };
+      const leafVal = (n, dimKey) => {
+        if (n.dims && n.dims.length > 0) {
+          if (!nodeDimMatchesKey(n.dims, dimKey)) return 0;
+        }
+        return valFor(n.code, dimKey);
+      };
+      const leafCmpVal = (n, dimKey) => {
+        if (n.dims && n.dims.length > 0) {
+          if (!nodeDimMatchesKey(n.dims, dimKey)) return 0;
+        }
+        return cmpValFor(n.code, dimKey);
+      };
+      const sumLitForDim = (n, dimKey, depth = 0) => {
+        if (depth > 50) return 0;
+        if (n.isSum && n.children && n.children.length > 0) {
+          return n.children.reduce((s, c) => s + sumLitForDim(c, dimKey, depth + 1), 0);
+        }
+        return leafVal(n, dimKey);
+      };
+      const sumLitCmpForDim = (n, dimKey, depth = 0) => {
+        if (depth > 50) return 0;
+        if (n.isSum && n.children && n.children.length > 0) {
+          return n.children.reduce((s, c) => s + sumLitCmpForDim(c, dimKey, depth + 1), 0);
+        }
+        return leafCmpVal(n, dimKey);
+      };
+
+      const rows = [];
+      const renderRow = (node, depth, mode, excludeCodes = null) => {
+        if (depth > 50 || !node) return;
+        const mainSum = mode === "tree" ? sumTreeForDim : sumLitForDim;
+        const cmpSum  = mode === "tree" ? sumTreeCmpForDim : sumLitCmpForDim;
+        const values    = dimSlice.map(d => mainSum(node, d.code ?? "__none__"));
+        const cmpValues = isCompare ? dimSlice.map(d => cmpSum(node, d.code ?? "__none__")) : [];
+        const total = values.reduce((s, v) => s + v, 0);
+        rows.push({ code: node.code, name: node.name || node.code || "", values, cmpValues, total, isSum: !!node.isSum, depth });
+        if (node.children && node.children.length > 0) {
+          node.children.forEach(c => {
+            if (excludeCodes && excludeCodes.has(String(c.code ?? c.AccountCode ?? ""))) return;
+            renderRow(c, depth + 1, mode, excludeCodes);
+          });
+        }
+      };
+
+      const treeAsLit = (n, depth, visited = new WeakSet()) => {
+        if (!n || depth > 50 || visited.has(n)) {
+          return { code: String(n?.AccountCode ?? ""), name: n?.AccountName ?? "", dims: null, isSum: false, depth, children: [] };
+        }
+        visited.add(n);
+        return {
+          code: String(n.AccountCode), name: n.AccountName ?? "",
+          dims: null, isSum: (n.children?.length ?? 0) > 0, depth,
+          children: (n.children || []).map(c => treeAsLit(c, depth + 1, visited)),
+        };
+      };
+
+      if (useLiteral && literal && literal.length > 0) {
+        literal.forEach(section => {
+if (section.label && showBreakers) rows.push({ isBreaker: true, label: section.label, color: section.color, sectionIdx: rows.filter(r => r.isBreaker).length });
+          section.nodes.forEach(n => renderRow(n, 0, "literal"));
+        });
+      } else {
+        const mappingForSt = stType === "pl" ? plMapping : bsMapping;
+        const gaMap = new Map();
+        (groupAccounts || []).forEach(a => {
+          const code = String(a.AccountCode ?? a.accountCode ?? "");
+          if (!code) return;
+          gaMap.set(code, {
+            AccountCode: code,
+            AccountName: a.AccountName ?? a.accountName ?? "",
+            SumAccountCode: String(a.SumAccountCode ?? a.sumAccountCode ?? ""),
+            AccountType: a.AccountType ?? a.accountType ?? "",
+          });
+        });
+        const targetType = stType === "bs" ? "B/S" : "P/L";
+        const stCodes = new Set();
+        gaMap.forEach((ga, code) => { if (!ga.AccountType || ga.AccountType === targetType) stCodes.add(code); });
+        const childrenIdx = new Map();
+        stCodes.forEach(code => {
+          const parent = gaMap.get(code).SumAccountCode;
+          if (parent && stCodes.has(parent) && parent !== code) {
+            if (!childrenIdx.has(parent)) childrenIdx.set(parent, []);
+            childrenIdx.get(parent).push(code);
+          }
+        });
+        const buildTreeNode = (code, depth, visited = new Set()) => {
+          if (visited.has(code) || depth > 25) {
+            return { AccountCode: code, AccountName: gaMap.get(code)?.AccountName ?? "", children: [] };
+          }
+          const next = new Set(visited); next.add(code);
+          const kids = (childrenIdx.get(code) || []).map(c => buildTreeNode(c, depth + 1, next));
+          return { AccountCode: code, AccountName: gaMap.get(code)?.AccountName ?? "", children: kids };
+        };
+
+        if (mappingForSt?.rows && mappingForSt?.sections) {
+          const filterFn = viewLevel === "summary" ? (info => info.showInSummary) : (info => info.isSum);
+          const orderedEntries = [...mappingForSt.rows.entries()]
+            .filter(([, info]) => filterFn(info))
+            .sort(([, a], [, b]) => a.sortOrder - b.sortOrder);
+          const topLevelCodes = new Set(orderedEntries.map(([code]) => String(code)));
+const seenSections = new Set();
+          let pdfSectionIdx = 0;
+          orderedEntries.forEach(([code, info]) => {
+            if (!stCodes.has(code)) return;
+            if (!seenSections.has(info.section) && showBreakers) {
+              const sec = mappingForSt.sections.get(info.section);
+             if (sec?.label) rows.push({ isBreaker: true, label: sec.label, color: sec.color, sectionIdx: pdfSectionIdx });
+              pdfSectionIdx++;
+              seenSections.add(info.section);
+            }
+            renderRow(treeAsLit(buildTreeNode(code, 0), 0), 0, "tree", topLevelCodes);
+          });
+        } else {
+          const topCodes = [...stCodes].filter(code => {
+            const p = gaMap.get(code).SumAccountCode;
+            return !p || !stCodes.has(p);
+          }).sort();
+          topCodes.forEach(code => renderRow(treeAsLit(buildTreeNode(code, 0), 0), 0, "tree"));
+        }
+      }
+
+      const startY = drawPageHeader(isFirst, stType, viewLevel, chunkInfo);
+      const fmt = v => (v == null || v === 0 || !Number.isFinite(v))
+        ? "—"
+        : v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const fmtPct = v => v == null || !Number.isFinite(v)
+        ? "—"
+        : `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+
+      // Header
+      let head;
+if (isCompare) {
+        const top = [{ content: T("file_col_account"), rowSpan: 2, styles: { halign: "left", fillColor: NAVYDK, valign: "middle" } }];
+        const bot = [];
+        dimSlice.forEach(d => {
+          top.push({ content: d.name ?? d.code ?? "—", colSpan: 4, styles: { halign: "center", fillColor: NAVY } });
+        });
+dimSlice.forEach(() => {
+          // A = actual (navy). B / Diff / Diff% are all comparison-side, so
+          // share the red palette for visual grouping.
+          bot.push({ content: T("file_col_a"),        styles: { halign: "right", fillColor: NAVYMID } });
+          bot.push({ content: T("file_col_b"),        styles: { halign: "right", fillColor: REDDK } });
+          bot.push({ content: T("file_col_diff"),     styles: { halign: "right", fillColor: REDDK } });
+          bot.push({ content: T("file_col_diff_pct"), styles: { halign: "right", fillColor: REDDK } });
+        });
+        head = [top, bot];
+      } else {
+        const top = [T("file_col_account"), ...dimSlice.map(d => d.name ?? d.code ?? "—")];
+        if (showTotals) top.push(T("file_col_total"));
+        head = [top];
+      }
+
+      const body = rows.map(r => {
+if (r.isBreaker) {
+          const barColor = r.color
+            ? hexToRgb(r.color)
+            : (INAPP_PALETTE[(r.sectionIdx ?? 0) % INAPP_PALETTE.length] ?? NAVYDK);
+          return [{
+            content: r.label.toUpperCase(),
+            colSpan: totalColCount,
+            styles: { fillColor: barColor, textColor: WHITE, fontStyle: "bold", halign: "left", fontSize: bodyFont + 0.5 },
+          }];
+        }
+        const indent = "  ".repeat(Math.min(r.depth, 6));
+        const name = `${indent}${r.code ? r.code + "  " : ""}${r.name}`;
+        const cells = [{ content: name, styles: { fontStyle: r.isSum ? "bold" : "normal" } }];
+
+        if (isCompare) {
+          r.values.forEach((a, i) => {
+            const b = r.cmpValues[i] ?? 0;
+            const delta = (Number.isFinite(a) && Number.isFinite(b)) ? a - b : null;
+            const deltaPct = (Number.isFinite(a) && Number.isFinite(b) && Math.abs(b) > 1e-9)
+              ? ((a - b) / Math.abs(b)) * 100 : null;
+            const dColor = (delta == null || delta === 0) ? GRAY : (delta > 0 ? GRN : RED);
+            cells.push({ content: fmt(a),        styles: { fontStyle: r.isSum ? "bold" : "normal" } });
+            cells.push({ content: fmt(b),        styles: { fontStyle: r.isSum ? "bold" : "normal", textColor: RED } });
+            cells.push({ content: fmt(delta),    styles: { fontStyle: r.isSum ? "bold" : "normal", textColor: dColor } });
+            cells.push({ content: fmtPct(deltaPct), styles: { fontStyle: r.isSum ? "bold" : "normal", textColor: dColor } });
+          });
+        } else {
+          r.values.forEach(v => cells.push({ content: fmt(v), styles: { fontStyle: r.isSum ? "bold" : "normal" } }));
+          if (showTotals) cells.push({ content: fmt(r.total), styles: { fontStyle: "bold", fillColor: LIGHT } });
+        }
+        return cells;
+      });
+
+      // Column widths
+      const usable = W - 16;
+      const nameW  = usable * (totalColCount > 16 ? 0.18 : totalColCount > 10 ? 0.22 : 0.28);
+      const remaining = usable - nameW;
+
+      const columnStyles = { 0: { halign: "left", cellWidth: nameW } };
+      if (isCompare) {
+        // Per dim: A | B | Diff | Diff%   split 30 / 30 / 25 / 15
+        const dimBlock = remaining / dimSlice.length;
+        const wA = dimBlock * 0.30;
+        const wB = dimBlock * 0.30;
+        const wD = dimBlock * 0.25;
+        const wP = dimBlock * 0.15;
+        for (let i = 0; i < dimSlice.length; i++) {
+          columnStyles[1 + i * 4]     = { halign: "right", cellWidth: wA };
+          columnStyles[1 + i * 4 + 1] = { halign: "right", cellWidth: wB };
+          columnStyles[1 + i * 4 + 2] = { halign: "right", cellWidth: wD };
+          columnStyles[1 + i * 4 + 3] = { halign: "right", cellWidth: wP };
+        }
+      } else {
+        const colW = remaining / Math.max(1, valueColCount);
+        for (let i = 0; i < valueColCount; i++) columnStyles[i + 1] = { halign: "right", cellWidth: colW };
+        if (showTotals) columnStyles[valueColCount] = { halign: "right", cellWidth: colW, fillColor: LIGHT, fontStyle: "bold" };
+      }
+
+      autoTable(doc, {
+        startY,
+        head,
+        body,
+        margin: { left: 8, right: 8, bottom: 14 },
+        tableWidth: usable,
+        styles: {
+          fontSize: bodyFont,
+          cellPadding: { top: 1.8, bottom: 1.8, left: 2.5, right: 2.5 },
+          overflow: "linebreak",
+          font: "helvetica",
+          textColor: TEXTDK,
+          lineColor: GRAYLT,
+          lineWidth: 0.12,
+          valign: "middle",
+        },
+        headStyles: {
+          fillColor: NAVY, textColor: WHITE, fontStyle: "bold", fontSize: headFont,
+          cellPadding: { top: 2.5, bottom: 2.5, left: 2.5, right: 2.5 },
+          halign: "right", lineWidth: 0,
+          overflow: "linebreak",
+          valign: "middle",
+        },
+        columnStyles,
+        alternateRowStyles: { fillColor: OFFWHITE },
+        didParseCell: d => {
+          if (d.section === "head" && d.column.index === 0) {
+            d.cell.styles.fillColor = NAVYDK; d.cell.styles.halign = "left";
+          }
+        },
+        didDrawPage: () => drawFooter(stType, viewLevel, chunkInfo),
+      });
+    };
+
+    const dispatchStatement = (stType, isFirstRef) => {
+      const lit = stType === "pl" ? plLiteral : bsLiteral;
+      const levels = lit && lit.length > 0 ? [null] : ["summary", "detailed"];
+      for (const level of levels) {
+        for (let ci = 0; ci < dimChunks.length; ci++) {
+          const chunkInfo = { idx: ci, totalChunks: dimChunks.length };
+          writePageForStatement(stType, level, dimChunks[ci].dims, chunkInfo, isFirstRef.first);
+          isFirstRef.first = false;
+        }
+      }
+    };
+
+const isFirstRef = { first: true };
+    if (includePL) dispatchStatement("pl", isFirstRef);
+    if (includeBS) dispatchStatement("bs", isFirstRef);
+
+// ── Render the index on page 1 (reserved at doc creation) ───────────────
+    doc.setPage(1);
+
+    // Navy banner header (matches content pages)
+    doc.setFillColor(...NAVY); doc.rect(0, 0, W, 50, "F");
+    doc.setFillColor(...RED);  doc.rect(0, 0, 5, 50, "F");
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(22);
+    doc.setTextColor(...WHITE);
+    doc.text(T("file_dimensions_report"), 12, 22);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(180, 200, 255);
+    const tocSub = [`${monthLabel} ${masterYear}`, masterSource, masterStructure, masterTopParent].filter(Boolean).join("  ·  ");
+    doc.text(tocSub, 12, 33);
+
+    doc.setFontSize(8);
+    doc.setTextColor(160, 180, 235);
+doc.text(
+      `${includeCompareOpt ? T("file_compare_on") : T("file_single_period")}  ·  ${T("file_generated")} ${new Date().toLocaleDateString()}  ·  ${pageManifest.length} ${pageManifest.length === 1 ? T("file_content_page_one") : T("file_content_page_many")}`,
+      12, 42,
+    );
+
+    // CONTENTS heading
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.setTextColor(...NAVY);
+    doc.text(T("file_contents"), 12, 70);
+    doc.setDrawColor(...NAVY);
+    doc.setLineWidth(0.5);
+    doc.line(12, 73, W - 12, 73);
+
+    // Entries
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    const lineH = 9;
+    let tocY = 84;
+    const tocBottom = H - 16;
+
+    pageManifest.forEach((entry, i) => {
+      if (tocY > tocBottom) return; // hard cap — drop overflow rather than spill
+
+      // Alternating subtle row band
+      if (i % 2 === 0) {
+        doc.setFillColor(248, 249, 255);
+        doc.rect(10, tocY - 6, W - 20, lineH, "F");
+      }
+
+      doc.setTextColor(...TEXTDK);
+      doc.setFont("helvetica", "normal");
+      doc.text(entry.title, 16, tocY);
+
+      // Dotted leader
+      const titleW = doc.getTextWidth(entry.title);
+      const pgStr  = String(entry.displayedPage);
+      const pgW    = doc.getTextWidth(pgStr);
+      const dotsStart = 16 + titleW + 4;
+      const dotsEnd   = W - 16 - pgW - 4;
+      if (dotsEnd > dotsStart) {
+        doc.setTextColor(...GRAY);
+        doc.setFontSize(8);
+        let dotStr = "";
+        const dotW = doc.getTextWidth(". ");
+        const dotCount = Math.max(0, Math.floor((dotsEnd - dotsStart) / dotW));
+        for (let j = 0; j < dotCount; j++) dotStr += ". ";
+        doc.text(dotStr, dotsStart, tocY);
+        doc.setFontSize(11);
+      }
+
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(...NAVY);
+      doc.text(pgStr, W - 16, tocY, { align: "right" });
+
+      tocY += lineH;
+    });
+
+    // Footer on the index page
+    doc.setFillColor(...LIGHT);
+    doc.rect(0, H - 10, W, 10, "F");
+    doc.setDrawColor(...GRAYLT);
+    doc.setLineWidth(0.3);
+    doc.line(0, H - 10, W, H - 10);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(6.5);
+    doc.setTextColor(...NAVY);
+doc.text(T("file_dimensions_report"), 10, H - 4.5);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(...GRAY);
+    doc.text(`${T("file_index")}  ·  ${monthLabel} ${masterYear}  ·  ${masterSource}`, 56, H - 4.5);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(7);
+    doc.setTextColor(...NAVY);
+    doc.text("1", W - 10, H - 4.5, { align: "right" });
+
+doc.save(`Konsolidator_ConsDimensions_${masterYear}_${String(masterMonth).padStart(2, "0")}.pdf`);
+}, [T, data, cmp2Data, statementType, cmpVisible, orderedDimCols, plLiteral, bsLiteral, plMapping, bsMapping, pivot, prevPivotMain, pivot2, prevPivot2, parentOf, viewMode, masterYear, masterMonth, masterSource, masterStructure, masterTopParent, selGroups, selDims, cmp2Year, cmp2Month, cmp2Source, cmp2Structure, cmp2TopParent, groupAccounts, nodeDimMatchesKey, colors.primary, colors.secondary, colors.tertiary]);
+
+  // Wire export functions to the ref so DimensionesPage FAB can call them
+  useEffect(() => {
+    if (!exportRef) return;
+    exportRef.current.xlsx = handleExportXlsx;
+    exportRef.current.pdf  = handleExportPdf;
+  }, [exportRef, handleExportXlsx, handleExportPdf]);
+  // ── End export helpers ───────────────────────────────────────────────────
+const getCmpVal = useCallback((ac, dk) => {
+    const ytd = (pivot2.get(ac)?.get(dk) ?? 0) * sign;
+    if (viewMode === "ytd") return ytd;
+    if (pivot2.size === 0) return ytd; // compare has no data → no phantom negative
+    const prevYtd = (prevPivot2.get(ac)?.get(dk) ?? 0) * sign;
+    return ytd - prevYtd;
+  }, [pivot2, prevPivot2, sign, viewMode]);
+
+  // Count-up fires on anything that changes a displayed number. getVal/getCmpVal
+  // are useCallbacks whose deps already cover pivot, prevPivot, sign, viewMode;
+  // cmpVisible covers the compare-toggle case.
+// Trigger animation flag at render when any of the data-shaping deps change.
+  const [prevAnimDeps, setPrevAnimDeps] = useState({ getVal, getCmpVal, cmpVisible });
+  if (
+    prevAnimDeps.getVal !== getVal ||
+    prevAnimDeps.getCmpVal !== getCmpVal ||
+    prevAnimDeps.cmpVisible !== cmpVisible
+  ) {
+    setPrevAnimDeps({ getVal, getCmpVal, cmpVisible });
+    setIsAnimatingData(true);
+  }
+  useEffect(() => {
+    if (!isAnimatingData) return;
+    const t = setTimeout(() => setIsAnimatingData(false), 1100);
+    return () => clearTimeout(t);
+  }, [isAnimatingData]);
+
+return (
+    <div className={`flex flex-col gap-3 flex-1 min-h-0 ${dimCss.root}`} style={{ "--dim-primary": colors.primary }}>
+<style>{`
+        @keyframes plRowSlideIn {
+          0%   { opacity: 0; transform: translateY(8px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+@keyframes cmpBarIn {
+          0%   { opacity: 0; transform: translateY(-14px) scale(0.98); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @keyframes cmpBarOut {
+          0%   { opacity: 1; transform: translateY(0) scale(1); }
+          100% { opacity: 0; transform: translateY(-14px) scale(0.98); }
+        }
+        @keyframes cmpCellIn {
+          0%   { opacity: 0; transform: translateX(-12px); }
+          100% { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes cmpCellOut {
+          0%   { opacity: 1; transform: translateX(0); }
+          100% { opacity: 0; transform: translateX(12px); }
+        }
+@keyframes totalColOut {
+          0%   { opacity: 1; max-width: 150px; }
+          100% { opacity: 0; max-width: 0; overflow: hidden; }
+        }
+@keyframes iconMorph {
+          0%   { opacity: 0; transform: scale(0.6) rotate(-45deg); }
+          60%  { opacity: 1; }
+          100% { opacity: 1; transform: scale(1) rotate(0); }
+        }
+table td, table th { vertical-align: middle; }
+        tbody tr { content-visibility: auto; contain-intrinsic-size: 44px; }
+`}</style>
+
+
+{cmpVisible && (
+        <CmpReveal leaving={cmpExiting}>
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex items-stretch gap-0" style={{ minHeight: 64, padding: "0 18px" }}>
+          <div className="flex items-center gap-2.5 pr-4"><CmpPeriodTag /></div>
+          <div className="flex items-center gap-1 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
+{cmpSources.length > 0    && <HeaderFilterPill label={T("filter_source")}    value={cmp2Source}    onChange={setCmp2Source}    options={cmpSources} />}
+            {cmpYears.length > 0      && <HeaderFilterPill label={T("filter_year")}      value={cmp2Year}      onChange={setCmp2Year}      options={cmpYears} />}
+            {cmpMonths.length > 0     && <HeaderFilterPill label={T("filter_month")}     value={cmp2Month}     onChange={setCmp2Month}     options={cmpMonths} />}
+{cmpStructures.length > 0 && <HeaderFilterPill label={T("filter_structure")} value={cmp2Structure} onChange={setCmp2Structure} options={cmpStructures} />}
+</div>
+        </div>
+        </CmpReveal>
+      )}
+
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex-1 min-h-0 overflow-hidden flex flex-col">
+
+        {/* Synced header */}
+       <div ref={headerRef} style={{ overflowX: "auto", overflowY: "scroll", scrollbarGutter: "stable", flexShrink: 0, scrollbarWidth: "none", msOverflowStyle: "none", boxShadow: "0 4px 12px -4px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)",contain: "layout style" }} onScroll={onHeaderScroll}>
+<table className={cmpTableCls} style={{ borderCollapse: "collapse", minWidth: totalWidth, width: "100%", tableLayout: "fixed" }}>
+<colgroup>
+              <col ref={accColHeadRef} style={{ width: ACOL, minWidth: ACOL }} />
+{orderedDimCols.map((_, i) => (
+                <React.Fragment key={i}>
+                  <col style={{ width: dimColWidths[i], minWidth: dimColWidths[i] }} />
+                  {cmpVisible && <><col style={{ width: CMP_COL, minWidth: CMP_COL }} /><col style={{ width: DELTA_COL, minWidth: DELTA_COL }} /><col style={{ width: PCT_COL, minWidth: PCT_COL }} /></>}
+</React.Fragment>
+              ))}
+              {!cmpVisible && <col style={{ width: TCOL, minWidth: TCOL }} />}
+            </colgroup>
+        <thead>
+
+<tr style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", boxShadow: "0 4px 24px -8px rgba(26,47,138,0.10), 0 1px 3px rgba(0,0,0,0.04)" }}>
+                  <th ref={accThRef} className="sticky left-0 z-30 text-left px-6" style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", height: "64px", boxShadow: "0 4px 12px -4px rgba(26,47,138,0.08)" }}>
+<div className="flex items-center gap-3" style={{ minWidth: ACOL }}>
+                      <div className="flex items-center gap-2.5">
+                        <button onClick={() => setSearchActive(a => !a)}
+                          className="flex items-center justify-center"
+                          style={{ background: "transparent", color: searchActive ? colors.primary : "#94a3b8", padding: 0, transition: "color 240ms" }}
+                          onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+onMouseLeave={e => { e.currentTarget.style.color = searchActive ? colors.primary : "#94a3b8"; }}
+                          title={T("dim_search_tooltip")}>
+                          <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+                            <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.6"/>
+                            <path d="M9.5 9.5L12.5 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+                          </svg>
+                        </button>
+                        {searchActive ? (
+                          <>
+                            <input
+                              ref={searchInputRef}
+                              autoFocus
+                              type="text"
+                              value={searchQuery}
+                              onChange={e => setSearchQuery(e.target.value)}
+                              onKeyDown={e => { if (e.key === "Escape") { setSearchActive(false); setSearchQuery(""); } }}
+                              placeholder={T("pivot_account_search_placeholder")}
+                              style={{ fontSize: 16, fontWeight: 700, color: colors.primary, border: "none", outline: "none", background: "transparent", width: 240, padding: 0, letterSpacing: "-0.02em" }}
+                            />
+                            <button onClick={() => { setSearchActive(false); setSearchQuery(""); }}
+                              className="flex items-center justify-center ml-1"
+                              style={{ background: "transparent", color: "#94a3b8", padding: 2, transition: "color 200ms" }}
+                              onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+                              onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
+                              title={T("dim_close_search")}>
+                              <X size={14} />
+                            </button>
+                          </>
+                        ) : (
+                          <>
+<span onClick={() => setSearchActive(true)} className="font-black tracking-tight"
+                              style={{ color: colors.primary, fontSize: 18, letterSpacing: "-0.02em", cursor: "pointer" }}>
+                              {T("col_account")}
+                            </span>
+                            <span className="font-black uppercase tracking-[0.22em]" style={{ color: `${colors.primary}80`, fontSize: 10 }}>
+                              {statementType === "pl" ? T("tab_pl") : T("tab_bs_short")}
+                            </span>
+                            {multiPeriods?.length ? <DimMultiBadge periods={multiPeriods} /> : null}
+                          </>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+<button onClick={() => expandedSet.size > 0 ? collapseAll() : expandAll()}
+                          className="flex items-center justify-center"
+                          style={{ background: "transparent", color: "#94a3b8", padding: 4, transition: "color 240ms cubic-bezier(0.4, 0, 0.2, 1)" }}
+                          onMouseEnter={e => { e.currentTarget.style.color = colors.primary; }}
+                          onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8"; }}
+                          title={expandedSet.size > 0 ? T("btn_collapse_all") : T("btn_expand_all")}>
+                          <span key={expandedSet.size > 0 ? "collapse" : "expand"} className="inline-flex"
+                            style={{ animation: "iconMorph 360ms cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
+                            {expandedSet.size > 0
+                              ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 3L6 6M3 3L6 6M9 9L6 6M3 9L6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                              : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 4L6 2L10 4M2 8L6 10L10 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                            }
+                          </span>
+                        </button>
+
+                      </div>
+                    </div>
+                  </th>
+{orderedDimCols.map((dim) => (
+                    <React.Fragment key={dim.code ?? "__none__"}>
+<th
+                        className="text-center px-4 py-3 whitespace-nowrap select-none"
+                        draggable
+                        onDragStart={() => setDraggingCol(dim.code ?? "__none__")}
+                        onDragOver={e => { e.preventDefault(); setDragOverCol(dim.code ?? "__none__"); }}
+                        onDragLeave={() => setDragOverCol(null)}
+                        onDrop={e => {
+                          e.preventDefault();
+                          if (!draggingCol || draggingCol === (dim.code ?? "__none__")) { setDraggingCol(null); setDragOverCol(null); return; }
+                          const cols = (colOrder ?? orderedDimCols.map(d => d.code ?? "__none__"));
+                          const from = cols.indexOf(draggingCol);
+                          const to = cols.indexOf(dim.code ?? "__none__");
+                          if (from === -1 || to === -1) { setDraggingCol(null); setDragOverCol(null); return; }
+                          const next = [...cols];
+                          next.splice(from, 1);
+                          next.splice(to, 0, draggingCol);
+                          setColOrder(next);
+                          setDraggingCol(null);
+                          setDragOverCol(null);
+                        }}
+                        onDragEnd={() => { setDraggingCol(null); setDragOverCol(null); }}
+                        style={{
+                          background: dragOverCol === (dim.code ?? "__none__") ? `${colors.primary}15` : "rgba(255,255,255,0.95)",
+                          cursor: "grab",
+                          outline: dragOverCol === (dim.code ?? "__none__") ? `2px solid ${colors.primary}` : "none",
+                          transition: "background 150ms ease, outline 150ms ease",
+                          opacity: draggingCol === (dim.code ?? "__none__") ? 0.4 : 1,
+                        }}>
+                        <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{String(dim.name ?? "").replace(/^\d+\s*[-:.]?\s*/, "")}</span>
+                      </th>
+{cmpVisible && <>
+<th className="text-center px-4 py-2 whitespace-nowrap" data-ccol="h">
+                         <span className={dimCss.cmpHead}>{T("pivot_col_sigma_cmp")}</span>
+                        </th>
+                        <th className="text-center px-2 py-2 whitespace-nowrap" data-ccol="h">
+                          <span className={`${dimCss.cmpHead} ${dimCss.cmpHeadDev}`}>{T("pivot_col_delta_amt")}</span>
+                        </th>
+                        <th className="text-center px-2 py-2 whitespace-nowrap" data-ccol="h">
+                          <span className={`${dimCss.cmpHead} ${dimCss.cmpHeadDev}`}>{T("pivot_col_delta_pct")}</span>
+                        </th>
+                      </>}
+                    </React.Fragment>
+                  ))}
+{!cmpVisible && <th data-tcol="" className="sticky right-0 z-10 text-center px-4 py-2" style={{ background: "rgba(255,255,255,0.95)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}>
+                    <span className="font-black tracking-tight" style={{ color: colors.primary, fontSize: 14, letterSpacing: "-0.02em" }}>{T("pivot_col_total")}</span>
+                  </th>}
+</tr>
+            </thead>
+          </table>
+        </div>
+
+        {/* Synced body */}
+       <div ref={bodyRef} className="scrollbar-hide" style={{ flex: 1, minHeight: 0, overflowX: "auto", overflowY: "scroll", scrollbarGutter: "stable", contain: "layout style" }} onScroll={onBodyScroll}>
+          <table className={cmpTableCls} style={{ borderCollapse: "collapse", minWidth: totalWidth, width: "100%", tableLayout: "fixed" }}>
+<colgroup>
+              <col ref={accColBodyRef} style={{ width: ACOL, minWidth: ACOL }} />
+{orderedDimCols.map((_, i) => (
+                <React.Fragment key={i}>
+                  <col style={{ width: dimColWidths[i], minWidth: dimColWidths[i] }} />
+                  {cmpVisible && <><col style={{ width: CMP_COL, minWidth: CMP_COL }} /><col style={{ width: DELTA_COL, minWidth: DELTA_COL }} /><col style={{ width: PCT_COL, minWidth: PCT_COL }} /></>}
+                </React.Fragment>
+              ))}
+{!cmpVisible && <col style={{ width: TCOL, minWidth: TCOL }} />}
+            </colgroup>
+<tbody>
+              {(() => {
+                // ── SAVED-MAPPING LITERAL RENDER PATH ────────────────────────
+                // Mirrors AccountsDashboard's PLStatement/BalanceSheet rendering:
+                // walks the literal tree (with breakers, sum nodes, dim filters),
+                // indents by tree depth, and rolls up via own + descendants.
+const literal = statementType === "pl" ? plLiteral : bsLiteral;
+                if (literal && literal.length > 0) {
+                  const ROW_H = 44;
+                  const BUFFER = 10;
+
+// Factory: given a value-getter (code, dimKey) → number, produce the
+                  // exact same memoized literal-walk used by the parent row. Used twice:
+                  // - With getValWithDescendants → produces the parent row's value.
+                  // - With a per-topParent getter → produces each drill sub-row's value.
+                  // This guarantees the drill math is byte-identical to the parent's.
+const makeSumLit = (getValFn) => {
+                    const cache = new Map();
+                    const leaf = (n, dk) => {
+                      if (n.dims && n.dims.length > 0) {
+                        if (!nodeDimMatchesKey(n.dims, dk)) return 0;
+                      }
+                      return getValFn(n.code, dk);
+                    };
+                    const sum = (n, dk) => {
+                      const k = `${n.id}|${dk}`;
+                      const c = cache.get(k);
+                      if (c !== undefined) return c;
+                      const v = (n.isSum && n.children && n.children.length > 0)
+                        ? n.children.reduce((s, c2) => s + sum(c2, dk), 0)
+                        : leaf(n, dk);
+                      cache.set(k, v);
+                      return v;
+                    };
+                    return sum;
+                  };
+                  const sumLitForDim = makeSumLit(getValWithDescendants);
+                  const sumLitCmpForDim = makeSumLit(getCmpValWithDescendants);
+
+                  // PASS 1: build a flat list of descriptors for every visible row.
+                  // No JSX yet — just data. Cheap.
+                  const descriptors = [];
+                  const walkLit = (node, depth, parentPath, secIdx) => {
+                    const rowKey = `litrow-${secIdx}-${parentPath}-${node.id}`;
+                    const hasKids = node.children && node.children.length > 0;
+                    const expanded = expandedSet.has(rowKey) || (searchExpansionSet?.has(rowKey) ?? false);
+                    descriptors.push({ kind: "row", rowKey, node, depth, hasKids, expanded });
+                    if (expanded && hasKids) {
+                      node.children.forEach(c => walkLit(c, depth + 1, `${parentPath}-${node.id}`, secIdx));
+                    }
+                  };
+                  literal.forEach((section, secIdx) => {
+                    if (section.label) descriptors.push({ kind: "section", secIdx, section });
+                    section.nodes.forEach(n => walkLit(n, 0, "root", secIdx));
+                  });
+
+                  // PASS 2: window — only build JSX for visible slice + buffer.
+                  const totalRows = descriptors.length;
+                  const firstVisible = Math.max(0, Math.floor(scrollTop / ROW_H) - BUFFER);
+                  const lastVisible  = Math.min(totalRows, Math.ceil((scrollTop + bodyHeight) / ROW_H) + BUFFER);
+                  const topPad    = firstVisible * ROW_H;
+                  const bottomPad = (totalRows - lastVisible) * ROW_H;
+
+                  const out = [];
+                  if (topPad > 0) {
+                    out.push(<tr key="__top_pad" style={{ height: topPad }}><td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 1 : 2)} /></tr>);
+                  }
+
+                  const q = debouncedQuery.trim().toLowerCase();
+                  for (let i = firstVisible; i < lastVisible; i++) {
+                    const d = descriptors[i];
+                    if (d.kind === "section") {
+                      out.push(
+                        <DimBreakerRow key={`litsec-${d.secIdx}`} label={d.section.label} color={d.section.color} span={1 + (cmpVisible ? orderedDimCols.length * 4 : orderedDimCols.length + 1)} />
+                      );
+                      continue;
+                    }
+                    const { node, depth, hasKids, expanded, rowKey } = d;
+                    const rowStyle = depth === 0 ? body1Style : body2Style;
+const rowTotal = orderedDimCols.reduce((s, dim) => s + sumLitForDim(node, dim.code ?? "__none__"), 0);
+                    const isMatch = !!q && (String(node.code ?? "").toLowerCase().includes(q) || String(node.name ?? "").toLowerCase().includes(q));
+                    if (String(node.code) === "B.PL" || String(node.code) === "A.PL") {
+                      const dimDump = {};
+                      orderedDimCols.forEach(dim => { dimDump[dim.code ?? "__none__"] = sumLitForDim(node, dim.code ?? "__none__"); });
+                    }
+const rowAnim = tableJustLoaded && i < 25
+                      ? { animation: `plRowSlideIn 400ms cubic-bezier(0.34,1.56,0.64,1) ${Math.min(i, 25) * 35 + 50}ms both` }
+                      : null;
+                    out.push(
+                      <tr key={rowKey} className={`border-b border-gray-100 ${isMatch ? "bg-[#fef3c7]" : "bg-white hover:bg-[#eef1fb]/60"}`}
+                          onClick={hasKids ? () => toggleExpand(rowKey) : undefined}
+                          style={{ cursor: hasKids ? "pointer" : "default", ...(rowAnim ?? {}) }}>
+<td className={`py-2.5 sticky left-0 z-10 border-r border-gray-100 ${isMatch ? "bg-[#fef3c7]" : "bg-white"}`}
+                            style={{ paddingLeft: `${16 + depth * INDENT}px`, minWidth: 480 }}>
+<div className="flex items-center group/row">
+                            {hasKids
+                              ? <span className="flex-shrink-0 mr-2" style={{ color: colors.primary }}>
+                                  {expanded ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
+                                </span>
+                              : <span className="inline-block mr-2" style={{ width: 12 }} />}
+                            {node.code && <span className="flex-shrink-0 mr-2 font-mono" style={subbody2Style}>{node.code}</span>}
+                            <span className="truncate max-w-[280px]" style={rowStyle}>{node.name || node.code}</span>
+{node.code && !compareMode && (() => {
+                              const isDrilled = drillExpanded.has(node.code);
+                              return (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); onToggleDrillAccount({ code: node.code, name: node.name || node.code }); }}
+                                  className={dimDrillBtnClass(isDrilled)}
+                                  title={isDrilled ? "Cerrar contribución por filial" : "Ver contribución por filial"}
+                                >
+                                  <DimDrillBtnInner kind="sub" />
+                                </button>
+                              );
+                            })()}
+                          </div>
+                        </td>
+{orderedDimCols.map(dim => {
+                          const dk = dim.code ?? "__none__";
+                          const val = sumLitForDim(node, dk);
+                          if (!cmpVisible) return <DimAmountCell key={dk} value={val} typoStyle={rowStyle} animate={isAnimatingData} />;
+                          const cmpVal = sumLitCmpForDim(node, dk);
+                          const diff = val - cmpVal;
+                          const pct = cmpVal !== 0 ? (diff / Math.abs(cmpVal)) * 100 : null;
+                          const devColor = diff === 0 ? "#D1D5DB" : diff > 0 ? "#059669" : "#EF4444";
+                          return (
+                            <React.Fragment key={dk}>
+                              <DimAmountCell value={val} typoStyle={rowStyle} animate={isAnimatingData} />
+<DimAmountCell value={cmpVal} typoStyle={rowStyle} animate={isAnimatingData} ccol="c" />
+                              <DimDiffCell value={diff} animate={isAnimatingData} color={devColor} width={110} />
+                              <DimPctCell value={pct} animate={isAnimatingData} color={devColor} width={90} />
+                            </React.Fragment>
+                          );
+                        })}
+{!cmpVisible && <DimAmountCell value={rowTotal} typoStyle={rowStyle} animate={isAnimatingData} bgColor="#fafafa" extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
+                      </tr>
+                    );
+
+// Drill-by-topParent sub-rows for THIS literal row
+                    if (node.code && drillExpanded.has(node.code)) {
+                      const drillRows = drillCache.get(node.code);
+                      const isLoading = drillLoadingSet.has(node.code);
+                      if (isLoading || !drillRows) {
+                        out.push(
+                          <DimDrillLoading key={`${rowKey}__drill_loading`} span={orderedDimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 1 : 2)} kind="sub" pad={16 + (depth + 1) * INDENT + 22} leaving={drillLeaving.has(node.code)} />
+                        );
+                      } else {
+                        // CRITICAL: in literal-mapping mode, the clicked code (e.g. "A.03")
+                        // same target AccountType, same LocalAccountCode filter, same
+                        // dim group/code filters. We DON'T apply `sign` here — that gets
+                        // multiplied later by getValWithDescendants/sumLitForDim, exactly
+                        // like the parent path. This is the key to making numbers match.
+const targetType = statementType === "bs" ? "B/S" : "P/L";
+
+// Build per-topParent pivots replicating the MASTER useMemo EXACTLY
+                        // (the one that builds `pivot` from `data`). Same row-level filter,
+                        // same pivot loop, same field-name precedence. Only difference: we
+                        // partition by CompanyShortName. NO LocalAccountCode filter — master
+                        // doesn't apply it in its pivot loop either.
+const perCompanyPivots = new Map();
+                        const perCompanyPrevPivots = new Map();
+
+                        // Helper: accumulate one rowset into the given target map.
+                        const accumIntoPivots = (rows, target) => {
+                          const filtered = selGroups.size === 0
+                            ? rows
+                            : rows.filter(r => {
+                                const pairs = parseDimensions(r.Dimensions);
+                                if (pairs.length === 0) return true;
+                                return pairs.some(([group, code]) => {
+                                  if (!selGroups.has(group)) return false;
+                                  if (selDims.size > 0 && !selDims.has(code)) return false;
+                                  return true;
+                                });
+                              });
+                          filtered.forEach(r => {
+                            const role = r.CompanyRole ?? r.companyRole ?? "";
+                            if (role !== "Parent" && role !== "Contribution") return;
+                            const ac  = r.AccountCode ?? r.accountCode ?? "";
+                            const amt = parseAmt(r.AmountYTD ?? r.amountYTD ?? r.AmountPeriod ?? r.amountPeriod ?? 0);
+                            const acType = r.AccountType ?? r.accountType ?? "";
+                            if (!ac) return;
+                            if (acType && acType !== targetType) return;
+                            const co  = r.CompanyShortName ?? r.companyShortName ?? "—";
+                            const coN = r.CompanyLegalName ?? r.companyLegalName ?? co;
+                            if (!target.has(co)) target.set(co, { name: coN, pivot: new Map() });
+                            const p = target.get(co).pivot;
+                            const pairs = parseDimensions(r.Dimensions);
+                            if (pairs.length === 0) {
+                              if (!p.has(ac)) p.set(ac, new Map());
+                              p.get(ac).set("__none__", (p.get(ac).get("__none__") ?? 0) + amt);
+                              return;
+                            }
+                            for (const [group, code] of pairs) {
+                              if (selGroups.size > 0 && !selGroups.has(group)) continue;
+                              if (selDims.size > 0 && !selDims.has(code)) continue;
+                              if (!p.has(ac)) p.set(ac, new Map());
+                              p.get(ac).set(code, (p.get(ac).get(code) ?? 0) + amt);
+                            }
+                          });
+                        };
+
+                        accumIntoPivots(drillRows, perCompanyPivots);
+                        // Build prev-month per-topParent pivots for monthly subtraction.
+                        if (viewMode === "monthly") {
+                          accumIntoPivots(drillPrevRows || [], perCompanyPrevPivots);
+                        }
+
+// Per-topParent rolled pivots — SAME rollup as the master `rolledPivot`
+                        // (using the SAME parentOf), just one per topParent instead of global.
+                        const rollUp = (src) => {
+                          const r = new Map();
+                          if (!src || src.size === 0) return r;
+                          src.forEach((dimMap, ac) => {
+                            dimMap.forEach((val, dk) => {
+                              let m = r.get(ac);
+                              if (!m) { m = new Map(); r.set(ac, m); }
+                              m.set(dk, (m.get(dk) ?? 0) + val);
+                              let cur = parentOf.get(ac); let hops = 0;
+                              while (cur && hops < 25) {
+                                let am = r.get(cur);
+                                if (!am) { am = new Map(); r.set(cur, am); }
+                                am.set(dk, (am.get(dk) ?? 0) + val);
+                                cur = parentOf.get(cur); hops++;
+                              }
+                            });
+                          });
+                          return r;
+                        };
+
+                        // For each topParent: build coRolled, build a getter that is a copy
+                        // BYTE-FOR-BYTE of getValWithDescendants (sign multiplier, viewMode
+                        // ytd vs monthly), and feed it to makeSumLit — the SAME factory the
+                        // parent uses. Result: sumLitCo(node, dk) is computed via the EXACT
+                        // same code path as the parent's sumLitForDim(node, dk), guaranteed.
+                        const companyRows = [];
+                        perCompanyPivots.forEach((info, co) => {
+                          // For the master-filtered topParent, reuse the master rolled pivots
+                          // directly so the sub-row matches the parent byte-for-byte AND
+                          // respects monthly/YTD toggle. For other companies, roll up their
+                          // own partitioned pivots (current + previous month).
+                          const useMaster = String(co) === String(masterTopParent);
+                          const coRolled = useMaster ? rolledPivot : rollUp(info.pivot);
+                          const coRolledPrev = useMaster
+                            ? rolledPrevPivot
+                            : rollUp(perCompanyPrevPivots.get(co)?.pivot ?? new Map());
+const getValCo = (code, dk) => {
+                            const ytd = (coRolled.get(code)?.get(dk) ?? 0) * sign;
+                            if (viewMode === "ytd") return ytd;
+                            if (coRolled.size === 0) return ytd; // no data → no phantom negative
+                            const prevYtd = (coRolledPrev.get(code)?.get(dk) ?? 0) * sign;
+                            return ytd - prevYtd;
+                          };
+                          const sumLitCo = makeSumLit(getValCo);
+
+                          const dims = new Map();
+                          let anyNonZero = false;
+                          orderedDimCols.forEach(d2 => {
+                            const dk = d2.code ?? "__none__";
+                            const v = sumLitCo(node, dk);
+                            dims.set(dk, v);
+                            if (v !== 0) anyNonZero = true;
+                          });
+                          if (anyNonZero) companyRows.push([co, { name: info.name, dims }]);
+                        });
+                        companyRows.sort((a, b) => a[1].name.localeCompare(b[1].name));
+                        if (companyRows.length === 0) {
+                          out.push(
+                            <DimDrillEmpty key={`${rowKey}__drill_empty`} span={orderedDimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 1 : 2)} label={"Ninguna filial con contribución"} pad={16 + (depth + 1) * INDENT + 22} leaving={drillLeaving.has(node.code)} />
+                          );
+                        } else {
+                          out.push(<DimDrillHead key={`${rowKey}__drill_head`} span={1 + orderedDimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 0 : 1)} count={companyRows.length} kind="sub" pad={16 + (depth + 1) * INDENT + 22} leaving={drillLeaving.has(node.code)} />);
+                          companyRows.forEach(([co, info], j) => {
+                            const rowTotalCo = orderedDimCols.reduce((s, d2) => s + (info.dims.get(d2.code ?? "__none__") ?? 0), 0);
+                            out.push(
+                              <tr key={`${rowKey}__drill_${co}`} className={dimDrillRowClass(drillLeaving.has(node.code))} style={{ "--i": Math.min(j, 12), "--co-tone": DIM_CO_TONES[j % DIM_CO_TONES.length] }}>
+<DimCompanyCell co={co} name={info.name} index={j} pad={16 + (depth + 1) * INDENT + 22} />
+                                {orderedDimCols.map(d2 => {
+                                  const dk = d2.code ?? "__none__";
+                                  const v = info.dims.get(dk) ?? 0;
+                                  if (!cmpVisible) return <DimAmountCell key={dk} value={v} typoStyle={body2Style} animate={isAnimatingData} />;
+                                  return (
+                                    <React.Fragment key={dk}>
+                                      <DimAmountCell value={v} typoStyle={body2Style} animate={isAnimatingData} />
+                                      <td data-ccol="c" />
+                                      <td data-ccol="c" />
+                                      <td data-ccol="c" />
+                                    </React.Fragment>
+                                  );
+                                })}
+                                {!cmpVisible && <DimAmountCell value={rowTotalCo} typoStyle={body2Style} animate={isAnimatingData} extraStyle={{ position: "sticky", right: 0, zIndex: 10, borderLeft: "1px solid #f3f4f6", minWidth: 150 }} />}
+                              </tr>
+                            );
+                          });
+                        }
+                      }
+                    }
+                  }
+
+                  if (bottomPad > 0) {
+                    out.push(<tr key="__bot_pad" style={{ height: bottomPad }}><td colSpan={orderedDimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 1 : 2)} /></tr>);
+                  }
+                  return out;
+                }
+
+                // ── DEFAULT FLAT RENDER PATH (no literal) ───────────────────
+                // Codes already rendered as flat siblings — drill-down expansion
+                // should skip them to avoid duplicate rows.
+                const flatCodes = new Set(orderedRows.map(n => String(n.AccountCode)));
+                // Per-code indent level from the active mapping. Falls back to 0
+                // when no mapping is active (default tree rendering).
+// Only honor mapping `level` for indent when a CUSTOM saved mapping is active.
+// Default standard mappings (PGC / Danish / Spanish IFRS from Supabase) carry
+// level values intended for a different renderer and produce wrong indent here.
+const levelByCode = (hasCustomMapping && activeMapping?.rows)
+                  ? new Map([...activeMapping.rows.entries()].map(([code, info]) => [String(code), info.level ?? 0]))
+                  : null;                         
+return orderedRows.map((node, idx) => {
+                  const divider = dividerMap[String(node._instanceId ?? node.AccountCode)];
+                  const depth = levelByCode?.get(String(node.AccountCode)) ?? 0;
+                  return (
+                    <React.Fragment key={node._instanceId ?? node.AccountCode}>
+                      {divider && <DimBreakerRow label={divider.label} color={divider.color} span={1 + dimCols.length * (cmpVisible ? 4 : 1) + (cmpVisible ? 0 : 1)} />}
+<DimensionRow node={node} depth={depth}
+                        expandedSet={expandedSet} onToggle={toggleExpand}
+                        dimCols={orderedDimCols} getVal={getVal} getCmpVal={compareMode ? getCmpVal : null}
+                        compareMode={compareMode} cmpVisible={cmpVisible} cmpExiting={cmpExiting}
+                        body1Style={body1Style} body2Style={body2Style}
+                        header2Style={header2Style} colors={colors}
+                        excludeCodes={flatCodes} rowIndex={idx}
+                        searchQuery={debouncedQuery} searchExpansionSet={searchExpansionSet}
+                        valCache={valCache} cmpCache={cmpCache}
+                        isAnimatingData={isAnimatingData} tableJustLoaded={tableJustLoaded} cmpRecentlyToggled={cmpRecentlyToggled}
+drillExpanded={drillExpanded} drillCache={drillCache} drillLoadingSet={drillLoadingSet} drillLeaving={drillLeaving}
+                        onToggleDrillAccount={onToggleDrillAccount} statementType={statementType}
+                        selGroups={selGroups} selDims={selDims} sign={sign} groupAccounts={groupAccounts}
+                        masterTopParent={masterTopParent} computeDrillCompanyRows={computeDrillCompanyRows} />
+                    </React.Fragment>
+                  );
+                });
+              })()}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Main ─────────────────────────────────────────────────── */
+/* ── Main ─────────────────────────────────────────────────── */
+export default function ConsolidatedDimensionesPage({ token, onNavigate, sources = [], structures = [], companies = [], dimensions = [], activeStandardKey = null }) {
+const { colors, locale } = useSettings();
+const T = useCallback((k, fb) => t(locale, k, fb), [locale]);
+const { getLatestPeriod, setLatestPeriod } = useLatestPeriod();
+
+  const [year,      setYear]      = useState("");
+  const [month,     setMonth]     = useState("");
+  const [metaReady, setMetaReady] = useState(false);
+const [source,    setSource]    = useState("");
+  const [structure, setStructure] = useState("");
+  const [topParent,   setTopParent]   = useState("");
+const [consolidations, setConsolidations] = useState([]);
+const [groupStructure, setGroupStructure] = useState([]);
+
+// Fetch consolidations + group-structure for Perspective dropdown derivation
+useEffect(() => {
+  if (!token) return;
+  const h = { Authorization: `Bearer ${token}`, Accept: "application/json" };
+  Promise.all([
+    fetch(`${BASE_URL}/v2/consolidations`,  { headers: h }).then(r => r.json()).then(d => d.value ?? d ?? []).catch(() => []),
+    fetch(`${BASE_URL}/v2/group-structure`, { headers: h }).then(r => r.json()).then(d => d.value ?? d ?? []).catch(() => []),
+  ]).then(([cons, gs]) => {
+    setConsolidations(Array.isArray(cons) ? cons : []);
+    setGroupStructure(Array.isArray(gs) ? gs : []);
+  });
+}, [token]);
+
+// Derive holding options + root parent for the active period/source/structure.
+const { holdingOptions, rootParent } = useMemo(() => {
+  const gsRows = (groupStructure || []).map(g => ({
+    company:   g.companyShortName ?? g.CompanyShortName ?? "",
+    parent:    g.parentShortName  ?? g.ParentShortName  ?? "",
+    structure: g.groupStructure   ?? g.GroupStructure   ?? "",
+    hasChild:  g.hasChild         ?? g.HasChild         ?? false,
+    detached:  g.detached         ?? g.Detached         ?? false,
+  })).filter(g => !g.detached && (!g.structure || g.structure === structure));
+  const root = gsRows.find(g => !g.parent)?.company || "";
+  const consolidatedGroups = new Set(
+    (consolidations || [])
+      .filter(c =>
+        String(c.Year ?? c.year) === String(year) &&
+        String(c.Month ?? c.month) === String(month) &&
+        (c.Source ?? c.source) === source &&
+        (c.GroupStructure ?? c.groupStructure) === structure
+      )
+      .map(c => c.GroupShortName ?? c.groupShortName)
+      .filter(Boolean)
+  );
+  const candidates = gsRows.filter(g => g.hasChild || g.company === root).map(g => g.company);
+  const holdings = consolidatedGroups.size > 0
+    ? candidates.filter(c => consolidatedGroups.has(c))
+    : candidates;
+  const opts = holdings
+    .map(h => {
+      const legal = (companies || []).find(c => (c.companyShortName ?? c.CompanyShortName) === h);
+      const label = legal?.companyLegalName ?? legal?.CompanyLegalName ?? h;
+      return { value: h, label };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label, "es", { sensitivity: "base" }));
+  return { holdingOptions: opts, rootParent: root };
+}, [groupStructure, structure, consolidations, year, month, source, companies]);
+
+// Auto-pick a sensible Perspective when the holding list changes. Done at
+// render time (React's "adjust state on prop change" pattern) to avoid the
+// cascading-render warning from set-state-in-effect.
+const holdingOptionsKey = holdingOptions.map(h => h.value).join("|");
+const [prevHoldingOptionsKey, setPrevHoldingOptionsKey] = useState(null);
+if (prevHoldingOptionsKey !== holdingOptionsKey) {
+  setPrevHoldingOptionsKey(holdingOptionsKey);
+  if (holdingOptions.length > 0 && !holdingOptions.some(h => h.value === topParent)) {
+    const fallback = holdingOptions.some(h => h.value === rootParent) ? rootParent : holdingOptions[0].value;
+    setTopParent(fallback);
+  }
+}
+
+const [showAccounts, setShowAccounts] = useState(false);
+const [selGroups, setSelGroups] = useState(new Set());
+const [selDims, setSelDims] = useState(new Set());
+const [compareMode, setCompareMode] = useState(false);
+// ── Multiperiodo (P&G): varios meses y años sumados, como en Individuales ──
+// [{ year: "2026", months: [7, 8, 9] }, …]; con un solo mes la página funciona como siempre
+const [multiPeriods, setMultiPeriods] = useState([]);
+// Drill-by-topParent: each opened account caches its cross-topParent breakdown
+// here. Multiple accounts can be drilled simultaneously (independent of the
+// normal hierarchy expansion).
+const [drillExpanded, setDrillExpanded] = useState(() => new Set()); // Set<accountCode>
+const [drillCache, setDrillCache] = useState(() => new Map()); // accountCode -> rows[]
+const [drillLoadingSet, setDrillLoadingSet] = useState(() => new Set()); // accountCode currently fetching
+// Las filas del desglose no desaparecen de golpe: se marcan como "saliendo",
+// se pliegan con su animación y después se quitan.
+const [drillLeaving, setDrillLeaving] = useState(() => new Set()); // Set<accountCode>
+const drillLeaveTimers = useRef(new Map());
+useEffect(() => {
+  const timers = drillLeaveTimers.current;
+  return () => timers.forEach(clearTimeout);
+}, []);
+// El reloj de salida arranca cuando la animación ya está en pantalla
+// (después del render), así la fila termina de plegarse antes de quitarla.
+useEffect(() => {
+  const timers = drillLeaveTimers.current;
+  timers.forEach((tm, code) => { if (!drillLeaving.has(code)) { clearTimeout(tm); timers.delete(code); } });
+  drillLeaving.forEach(code => {
+    if (timers.has(code)) return;
+    timers.set(code, setTimeout(() => {
+      timers.delete(code);
+      setDrillExpanded(prev => { if (!prev.has(code)) return prev; const n = new Set(prev); n.delete(code); return n; });
+      setDrillLeaving(prev => { if (!prev.has(code)) return prev; const n = new Set(prev); n.delete(code); return n; });
+    }, DRILL_OUT_MS + 20));
+  });
+}, [drillLeaving]);
+const toggleDrillAccount = useCallback((acc) => {
+  if (!acc?.code) return;
+  const isOpen = drillExpanded.has(acc.code) && !drillLeaving.has(acc.code);
+  // Varias cuentas a la vez: solo se cierra la pulsada.
+  const closing = isOpen ? [acc.code] : [];
+  if (closing.length) setDrillLeaving(prev => new Set([...prev, ...closing]));
+  if (!isOpen) {
+    // Reabrir una cuenta que se estaba cerrando cancela su salida
+    clearTimeout(drillLeaveTimers.current.get(acc.code));
+    drillLeaveTimers.current.delete(acc.code);
+    setDrillLeaving(prev => { if (!prev.has(acc.code)) return prev; const n = new Set(prev); n.delete(acc.code); return n; });
+    setDrillExpanded(prev => (prev.has(acc.code) ? prev : new Set([...prev, acc.code])));
+  }
+}, [drillExpanded, drillLeaving]);
+const [ytdOnly, setYtdOnly] = useState(false);
+  const viewMode = ytdOnly ? "ytd" : "monthly";
+  // P&L / B/S statement type — lifted from PivotTab to drive PageHeader tabs
+  const [statementType, setStatementType] = useState("pl");
+const [activeMapping, setActiveMapping] = useState(null);
+const [exporting, setExporting] = useState(false);
+  const pivotExportRef = useRef({ xlsx: null, pdf: null });
+const [exportModal, setExportModal] = useState(false);
+const [exportOpts, setExportOpts] = useState({
+    statements: { pl: true, bs: true },
+    includeBreakers: true,
+    includeTotals: true,
+    includeCompare: true,
+    drilldown: true,
+    format: "xlsx",
+  });
+// Keep the statement toggle in sync with the active tab so the user's current
+  // view defaults to on. Done during render (React's recommended pattern for
+  // adjusting state on prop change).
+  const [prevStatementType, setPrevStatementType] = useState(statementType);
+  if (prevStatementType !== statementType) {
+    setPrevStatementType(statementType);
+    setExportOpts(o => ({
+      ...o,
+      statements: { ...o.statements, [statementType]: true },
+    }));
+  }
+
+const runExport = useCallback(async () => {
+    setExportModal(false);
+    setExporting(true);
+    try {
+      const fn = exportOpts.format === "pdf" ? pivotExportRef.current.pdf : pivotExportRef.current.xlsx;
+if (!fn) {
+        alert(T("export_not_ready_alert"));
+        return;
+      }
+      await fn(exportOpts);
+} catch (e) {
+      console.error("[export] Export failed:", e);
+      alert(`${T("export_failed_alert")}: ${e?.message ?? e}`);
+    } finally {
+      setExporting(false);
+    }
+}, [exportOpts, T]);
+
+const handleApplyMapping = useCallback((m, kind = "structure") => {
+    setActiveMapping({
+      mapping_id:  m.mapping_id,
+      kind,
+      name:        m.name,
+      standard:    m.standard,
+      plConverted: convertSavedMappingTree(m.pl_tree),
+      bsConverted: convertSavedMappingTree(m.bs_tree),
+      plSections:  extractSectionsFromTree(m.pl_tree),
+      bsSections:  extractSectionsFromTree(m.bs_tree),
+      plLiteral:   buildSavedMappingLiteral(m.pl_tree),
+bsLiteral:   buildSavedMappingLiteral(m.bs_tree),
+      is_hidden:   !!m.is_hidden,
+    });
+}, []);
+
+  // Auto-apply the user's saved standard mapping once per page load. Mirrors
+  // the same flow used by AccountsDashboard / KpiIndividualesPage so jumping
+  // between tabs doesn't lose your default view.
+const autoMappingAppliedRef = useRef(false);
+  const initialMappingRef = useRef(null); // estructura custom aplicada al abrir; a ella se vuelve al limpiar
+  useEffect(() => {
+    if (autoMappingAppliedRef.current) return;
+    autoMappingAppliedRef.current = true;
+    (async () => {
+      try {
+        const { supabase } = await import("../../lib/supabaseClient");
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) return;
+        const { data: settingsData } = await supabase
+          .from("user_settings")
+          .select("preferences")
+          .eq("user_id", uid)
+          .single();
+        const mid = settingsData?.preferences?.standard_mapping_id;
+        if (!mid) return;
+        const { listMappings, getMapping, getActiveCompanyId } = await import("../../lib/mappingsApi");
+        const cid = await getActiveCompanyId(uid);
+        if (!cid) return;
+        const allMappings = await listMappings({ companyId: cid, includeHidden: true });
+        const match = (allMappings || []).find(m => String(m.mapping_id) === String(mid));
+        if (!match) return;
+// Fetch the full mapping (with pl_tree / bs_tree) — list endpoint omits them
+        const full = await getMapping(match.mapping_id);
+initialMappingRef.current = full ?? match;
+        handleApplyMapping(full ?? match, "structure");
+      } catch (err) { console.error("[auto-mapping] error:", err); }
+    })();
+  }, [handleApplyMapping]);
+
+  // The "clear mapping" button must drop the user's mapping and return to the
+  // custom-no-user default (the hidden override, flagged is_hidden), NOT re-apply the
+  // user's preferred default (initialMappingRef) — otherwise the default can't be removed.
+  const clearToHiddenOverride = useCallback(async () => {
+    try {
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) { setActiveMapping(null); return; }
+      const { listMappings, getMapping, getActiveCompanyId } = await import("../../lib/mappingsApi");
+      const cid = await getActiveCompanyId(uid);
+      if (!cid) { setActiveMapping(null); return; }
+      const allMappings = await listMappings({ companyId: cid, includeHidden: true });
+      const hidden = (allMappings || []).find(m => !!m.is_hidden);
+      if (!hidden) { setActiveMapping(null); return; }
+      const full = await getMapping(hidden.mapping_id);
+      handleApplyMapping(full ?? hidden, "structure");
+    } catch (err) { console.error("[clearToHiddenOverride] error:", err); setActiveMapping(null); }
+  }, [handleApplyMapping]);
+
+  // Recent mappings for the PageHeader hover-dropdown quick-access
+  const [recentMappings, setRecentMappings] = useState([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const { supabase } = await import("../../lib/supabaseClient");
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) return;
+        const { listMappings, getActiveCompanyId } = await import("../../lib/mappingsApi");
+        const { listMappings: listReportMappings } = await import("../../lib/reportMappingsApi");
+        const cid = await getActiveCompanyId(uid);
+        if (!cid) return;
+        const [structRows, reportRows] = await Promise.all([
+          listMappings({ companyId: cid }).catch(() => []),
+          listReportMappings({ companyId: cid }).catch(() => []),
+        ]);
+        const combined = [
+          ...(structRows || []).map(r => ({ id: r.mapping_id, name: r.name, kind: "structure", updated_at: r.updated_at, raw: r })),
+          ...(reportRows  || []).map(r => ({ id: r.mapping_id, name: r.name, kind: "report",    updated_at: r.updated_at, raw: r })),
+        ];
+        setRecentMappings(combined);
+      } catch (err) { console.error("[recent-mappings] error:", err); }
+    })();
+  }, []);
+
+// Inline mappings library (mirrors AccountsDashboard's viewsMode pattern)
+  const [viewsMode, setViewsMode] = useState(null); // null | "landing" | "structure" | "report"
+  const [savedMappings, setSavedMappings]           = useState([]);
+  const [savedMappingsLoading, setSavedMappingsLoading] = useState(false);
+  const [savedMappingsError, setSavedMappingsError] = useState(null);
+  const [reportMappings, setReportMappings]         = useState([]);
+  const [reportMappingsLoading, setReportMappingsLoading] = useState(false);
+  const [reportMappingsError, setReportMappingsError] = useState(null);
+
+  const fetchSavedMappings = useCallback(async () => {
+    setSavedMappingsLoading(true); setSavedMappingsError(null);
+    try {
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) throw new Error("Not authenticated");
+      const { listMappings, getActiveCompanyId } = await import("../../lib/mappingsApi");
+      const cid = await getActiveCompanyId(uid);
+      if (!cid) throw new Error("No active topParent");
+      const rows = await listMappings({ companyId: cid });
+      setSavedMappings(Array.isArray(rows) ? rows : []);
+    } catch (e) { setSavedMappingsError(e.message); setSavedMappings([]); }
+    finally { setSavedMappingsLoading(false); }
+  }, []);
+
+  const fetchReportMappings = useCallback(async () => {
+    setReportMappingsLoading(true); setReportMappingsError(null);
+    try {
+      const { supabase } = await import("../../lib/supabaseClient");
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) throw new Error("Not authenticated");
+      const { listMappings: listRpt, getActiveCompanyId } = await import("../../lib/reportMappingsApi");
+      const cid = await getActiveCompanyId(uid);
+      if (!cid) throw new Error("No active topParent");
+      const rows = await listRpt({ companyId: cid });
+      setReportMappings(Array.isArray(rows) ? rows : []);
+    } catch (e) { setReportMappingsError(e.message); setReportMappings([]); }
+    finally { setReportMappingsLoading(false); }
+  }, []);
+
+// Fetch-on-mode-change: the called fns setState internally for loading/data,
+  // which is the canonical async pattern. No TanStack Query / SWR in this codebase.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { if (viewsMode === "structure") fetchSavedMappings(); }, [viewsMode, fetchSavedMappings]);
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { if (viewsMode === "report") fetchReportMappings(); }, [viewsMode, fetchReportMappings]);
+
+const [rawData, setRawData] = useState([]);
+  const [probeFinished, setProbeFinished] = useState(false);
+  // `loading` / `hasCompletedFetch` / `error` are all derived from a fetch-key.
+  // The fetch effect only writes state inside async callbacks (post-await),
+  // which the lint doesn't flag.
+  const [fetchedKey, setFetchedKey] = useState(null);
+  const [errorState, setErrorState] = useState({ key: null, msg: null });
+  const authHeaders = useCallback(() => ({
+    Authorization: `Bearer ${token}`,
+    Accept: "application/json",
+    "Cache-Control": "no-cache",
+  }), [token]);
+
+const probedRef = useRef({ source: "", structure: "", topParent: "" });
+// Load group accounts hierarchy (needed for drill-down tree)
+const [rawGroupAccounts, setRawGroupAccounts] = useState([]);
+  const [customStdRows, setCustomStdRows] = useState([]); // Rows from standard_statement_rows for CUSTOM std
+  useEffect(() => {
+    if (!token) return;
+    fetch(`${BASE_URL}/v2/group-accounts`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return;
+        const rows = d.value ?? (Array.isArray(d) ? d : []);
+        setRawGroupAccounts(rows);
+      })
+      .catch(e => console.error("group-accounts fetch failed:", e));
+  }, [token]);
+
+  // Fetch CUSTOM standard rows (paginated) when activeStandardKey is CUSTOM-*.
+  // The rows are then merged into groupAccounts derivatively via useMemo below.
+useEffect(() => {
+    const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+    if (!isCustom) return;
+    let cancelled = false;
+    const SUPABASE_URL = "https://gmcawsapzkzmgrtiqebv.supabase.co/rest/v1";
+    const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
+    const sbHeaders = { apikey: SUPABASE_APIKEY, Authorization: `Bearer ${SUPABASE_APIKEY}` };
+
+    const fetchAllRows = async () => {
+      const all = [];
+      const PAGE = 1000;
+      let offset = 0;
+      while (true) {
+        const url = `${SUPABASE_URL}/standard_statement_rows?select=account_code,parent_code,section_code,statement,account_name` +
+          `&standard_key=eq.${encodeURIComponent(activeStandardKey)}` +
+          `&statement=in.(PL,BS,CF)` +
+          `&order=sort_order.asc&limit=${PAGE}&offset=${offset}`;
+        const r = await fetch(url, { headers: sbHeaders });
+        if (!r.ok) break;
+        const batch = await r.json();
+        if (!Array.isArray(batch) || batch.length === 0) break;
+        all.push(...batch);
+        if (batch.length < PAGE) break;
+        offset += PAGE;
+        if (offset > 20000) break;
+      }
+      return all;
+    };
+
+    fetchAllRows()
+      .then(rows => { if (!cancelled) setCustomStdRows(rows); })
+      .catch(() => { if (!cancelled) setCustomStdRows([]); });
+
+    return () => { cancelled = true; };
+  }, [activeStandardKey]);
+
+  // Derive groupAccountsLocal from raw group accounts + optional CUSTOM std rows.
+  // No useState needed → no cascading render lint warning.
+const groupAccountsLocal = useMemo(() => {
+    if (!rawGroupAccounts.length) return [];
+    const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+    if (!isCustom || customStdRows.length === 0) return rawGroupAccounts;
+
+    const parentByCode = new Map();
+    customStdRows.forEach(r => {
+      if (r.parent_code) parentByCode.set(String(r.account_code), String(r.parent_code));
+    });
+    // Override with activeMapping (hidden override) - it takes precedence
+    if (activeMapping?.plConverted?.rows) {
+      activeMapping.plConverted.rows.forEach((info, code) => {
+        if (info.parent_code) parentByCode.set(String(code), String(info.parent_code));
+      });
+    }
+    if (activeMapping?.bsConverted?.rows) {
+      activeMapping.bsConverted.rows.forEach((info, code) => {
+        if (info.parent_code) parentByCode.set(String(code), String(info.parent_code));
+      });
+    }
+    const existingCodes = new Set(rawGroupAccounts.map(g => String(g.AccountCode ?? g.accountCode ?? "")));
+    const STMT_TO_TYPE = { PL: "P/L", BS: "B/S", CF: "C/F" };
+    const synth = customStdRows
+      .filter(r => !existingCodes.has(String(r.account_code)))
+      .map(r => {
+        const overrideParent = parentByCode.get(String(r.account_code));
+        return {
+          AccountCode: String(r.account_code),
+          AccountName: r.account_name ?? String(r.account_code),
+          AccountType: STMT_TO_TYPE[r.statement] ?? "P/L",
+          SumAccountCode: overrideParent ?? r.parent_code ?? "",
+          IsSumAccount: true,
+        };
+      });
+    const overridden = rawGroupAccounts.map(g => {
+      const code = String(g.AccountCode ?? g.accountCode ?? "");
+      const overrideParent = parentByCode.get(code);
+      if (overrideParent !== undefined) return { ...g, SumAccountCode: overrideParent };
+      return g;
+    });
+    return [...overridden, ...synth];
+  }, [rawGroupAccounts, customStdRows, activeStandardKey, activeMapping]);
+
+// Resolve KPIs against the current accounting standard
+  const {
+    kpiList,
+    ccTagToCodes: defaultCcTagToCodes,
+    resolveCcTag: defaultResolveCcTag,
+  } = useKpiResolver(groupAccountsLocal);
+
+  // Load Supabase row/section mappings for breakers (PGC / Danish / Spanish IFRS-ES)
+  const [pgcPlMapping, setPgcPlMapping] = useState(null);
+  const [pgcBsMapping, setPgcBsMapping] = useState(null);
+  const [danishPlMapping, setDanishPlMapping] = useState(null);
+  const [danishBsMapping, setDanishBsMapping] = useState(null);
+  const [spIfrsEsPlMapping, setSpIfrsEsPlMapping] = useState(null);
+  const [spIfrsEsBsMapping, setSpIfrsEsBsMapping] = useState(null);
+
+useEffect(() => {
+    if (!groupAccountsLocal.length) return;
+    const codes = groupAccountsLocal.map(g => String(g.AccountCode ?? g.accountCode ?? ""));
+    const isCustom = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+    const isPGC = !isCustom && codes.some(c => /[a-zA-Z]/.test(c) && c.endsWith(".S"));
+    const isSpEs = !isCustom && !isPGC && codes.some(c => /\.PL$/.test(c));
+    const isDan = !isCustom && !isPGC && !isSpEs && codes.some(c => /^\d{5,6}$/.test(c));
+
+    const loadMapping = async (rowsTable, sectionsTable, setter) => {
+      try {
+        const [rowsArr, secsArr] = await Promise.all([
+          sbGet(`${rowsTable}?select=*&order=sort_order.asc`),
+          sbGet(`${sectionsTable}?select=*&order=sort_order.asc`),
+        ]);
+        if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
+        const rows = new Map();
+        rowsArr.forEach(r => rows.set(String(r.account_code), {
+          section: String(r.section_code),
+          sortOrder: Number(r.sort_order),
+          isSum: !!r.is_sum,
+          showInSummary: !!r.show_in_summary,
+          level: Number(r.level ?? 0),
+        }));
+        const sections = new Map();
+        secsArr.forEach(s => sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) }));
+        setter({ rows, sections });
+      } catch { setter(null); }
+    };
+
+    // Custom loader: unified standard_statement_rows + standard_statement_sections
+    // filtered by standard_key + statement. Paginated to handle 1000+ row limit.
+    const loadCustomMapping = async (statement, setter) => {
+      try {
+        const fetchAllRows = async (table, extraFilters) => {
+          const all = [];
+          const PAGE = 1000;
+          let offset = 0;
+          while (true) {
+            const url = `${table}?select=*&standard_key=eq.${encodeURIComponent(activeStandardKey)}` +
+              `&statement=eq.${statement}&order=sort_order.asc&limit=${PAGE}&offset=${offset}${extraFilters ?? ""}`;
+            const batch = await sbGet(url);
+            if (!Array.isArray(batch) || batch.length === 0) break;
+            all.push(...batch);
+            if (batch.length < PAGE) break;
+            offset += PAGE;
+            if (offset > 20000) break;
+          }
+          return all;
+        };
+        const [rowsArr, secsArr] = await Promise.all([
+          fetchAllRows("standard_statement_rows"),
+          fetchAllRows("standard_statement_sections"),
+        ]);
+        if (!Array.isArray(rowsArr) || !Array.isArray(secsArr)) return;
+        const rows = new Map();
+        rowsArr.forEach(r => rows.set(String(r.account_code), {
+          section: String(r.section_code),
+          sortOrder: Number(r.sort_order),
+          isSum: !!r.is_sum,
+          showInSummary: !!r.show_in_summary,
+          level: Number(r.level ?? 0),
+          parent_code: r.parent_code ? String(r.parent_code) : "",
+          account_name: r.account_name ?? "",
+        }));
+        const sections = new Map();
+        secsArr.forEach(s => sections.set(String(s.section_code), { label: String(s.label), color: String(s.color) }));
+        setter({ rows, sections });
+      } catch { setter(null); }
+    };
+
+    if (isCustom) {
+      // CUSTOM std populates pgc slot so downstream fallback (pgc → danish → spEs) picks it up.
+      loadCustomMapping("PL", setPgcPlMapping);
+      loadCustomMapping("BS", setPgcBsMapping);
+    } else if (isPGC) {
+      loadMapping("pgc_pl_rows", "pgc_pl_sections", setPgcPlMapping);
+      loadMapping("pgc_bs_rows", "pgc_bs_sections", setPgcBsMapping);
+    } else if (isDan) {
+      loadMapping("danish_ifrs_pl_rows", "danish_ifrs_pl_sections", setDanishPlMapping);
+      loadMapping("danish_ifrs_bs_rows", "danish_ifrs_bs_sections", setDanishBsMapping);
+    } else if (isSpEs) {
+      loadMapping("spanish_ifrs_es_pl_rows", "spanish_ifrs_es_pl_sections", setSpIfrsEsPlMapping);
+      loadMapping("spanish_ifrs_es_bs_rows", "spanish_ifrs_es_bs_sections", setSpIfrsEsBsMapping);
+    }
+  }, [groupAccountsLocal, activeStandardKey]);
+
+const defaultPlMapping = pgcPlMapping ?? danishPlMapping ?? spIfrsEsPlMapping;
+  const defaultBsMapping = pgcBsMapping ?? danishBsMapping ?? spIfrsEsBsMapping;
+
+  // When a custom mapping is applied, its converted tree takes over for row
+  // ordering and section breakers.
+const mergeMappings = (override, base) => {
+    if (!override) return base;
+    if (!base) return override;
+    const rows = new Map(base.rows);
+    override.rows.forEach((info, code) => { rows.set(code, { ...(base.rows.get(code) ?? {}), ...info }); });
+    const sections = new Map(base.sections);
+    override.sections.forEach((s, code) => sections.set(code, s));
+    return { ...override, rows, sections, instances: override.instances ?? [] };
+  };
+  const isCustomStd = activeStandardKey && activeStandardKey.startsWith("CUSTOM-");
+  const plMapping = isCustomStd
+    ? mergeMappings(activeMapping?.plConverted, defaultPlMapping)
+    : (activeMapping?.plConverted ?? defaultPlMapping);
+  const bsMapping = isCustomStd
+    ? mergeMappings(activeMapping?.bsConverted, defaultBsMapping)
+    : (activeMapping?.bsConverted ?? defaultBsMapping);
+
+  // Effective ccTagToCodes + resolveCcTag. When a mapping is active:
+  //   - Each section label is fuzzy-matched against cc_tag synonyms; matches
+  //     override the default codes for that tag.
+  //   - resolveCcTag is wrapped so any code the user has placed in the
+  //     mapping (matched OR unmatched) doesn't get auto-resolved via the
+  //     standard taxonomy — that would double-count.
+const { ccTagToCodes, resolveCcTag } = useMemo(() => {
+    if (!activeMapping) {
+      return {
+        ccTagToCodes:     defaultCcTagToCodes,
+        resolveCcTag:     defaultResolveCcTag,
+        mappingMatched:   [],
+        mappingUnmatched: [],
+      };
+    }
+    const override = new Map(defaultCcTagToCodes);
+    const matched = [];
+    const unmatched = [];
+    const mappedCodes = new Set();
+    const allSections = new Map([
+      ...(activeMapping.plSections || new Map()),
+      ...(activeMapping.bsSections || new Map()),
+    ]);
+    allSections.forEach((codes, label) => {
+      if (!codes || codes.length === 0) return;
+      codes.forEach(c => mappedCodes.add(String(c)));
+      const norm = normalizeLabel(label);
+      let foundTag = null;
+      for (const [ccTag, synonyms] of Object.entries(CC_TAG_SYNONYMS)) {
+        if (synonyms.some(syn => norm.includes(normalizeLabel(syn)))) {
+          foundTag = ccTag;
+          break;
+        }
+      }
+      if (foundTag) {
+        override.set(foundTag, codes);
+        matched.push({ ccTag: foundTag, label, codeCount: codes.length });
+      } else {
+        unmatched.push({ label, codeCount: codes.length });
+      }
+    });
+    const wrappedResolve = (code) => {
+      if (mappedCodes.has(String(code))) return null;
+      return defaultResolveCcTag(code);
+    };
+    return {
+      ccTagToCodes:     override,
+      resolveCcTag:     wrappedResolve,
+      mappingMatched:   matched,
+      mappingUnmatched: unmatched,
+    };
+  }, [activeMapping, defaultCcTagToCodes, defaultResolveCcTag]);
+
+// metaReady gates downstream effects; we mark it true as soon as token is present.
+  const [prevTokenForReady, setPrevTokenForReady] = useState(null);
+  if (token && prevTokenForReady !== token) {
+    setPrevTokenForReady(token);
+    setMetaReady(true);
+  }
+
+// Cache-hit + probe-reset live at render time (React's "adjust state on prop
+  // change" pattern). The async probe itself stays in the effect below — its
+  // setStates run inside async callbacks, which the rule doesn't flag.
+  const probeKey = (source && structure && topParent) ? `${source}|${structure}|${topParent}` : null;
+  const [prevProbeKey, setPrevProbeKey] = useState(null);
+if (probeKey && prevProbeKey !== probeKey) {
+    setPrevProbeKey(probeKey);
+    const cached = getLatestPeriod(source, structure, topParent);
+    if (cached?.year && cached?.month) {
+      setYear(String(cached.year));
+      setMonth(String(cached.month));
+      setProbeFinished(true);
+    } else {
+      setProbeFinished(false); // about to probe asynchronously
+    }
+  }
+
+  useEffect(() => {
+    if (!source || !structure || !topParent) return;
+    const key = `${source}|${structure}|${topParent}`;
+    if (probedRef.current.key === key) return;
+    probedRef.current.key = key;
+
+    // Cache hit was already handled at render time above; this effect only
+    // runs the FALLBACK probe when the cache missed.
+    const cached = getLatestPeriod(source, structure, topParent);
+    if (cached?.year && cached?.month) return;
+    (async () => {
+      const now = new Date();
+      let y = now.getFullYear();
+      let m = now.getMonth() + 1;
+      for (let i = 0; i < 60; i++) {
+        try {
+          const filter = `Year eq ${y} and Month eq ${m} and Source eq '${source}' and GroupStructure eq '${structure}' and GroupShortName eq '${topParent}'`;
+          const res = await fetch(
+            `${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(filter)}&$top=1`,
+            { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }
+          );
+          if (res.ok) {
+            const json = await res.json();
+            const rows = json.value ?? (Array.isArray(json) ? json : []);
+            if (rows.length > 0) {
+              setYear(String(y));
+              setMonth(String(m));
+              setLatestPeriod(source, structure, topParent, y, m);
+              setProbeFinished(true);
+              return;
+            }
+          }
+        } catch { /* keep probing */ }
+        m -= 1;
+        if (m < 1) { m = 12; y -= 1; }
+      }
+      // Nothing found in 5 years — give up and show current date so user can
+      // pick manually. Don't leave year/month at some stale future value.
+      probedRef.current.key = "";
+      setYear(String(now.getFullYear()));
+      setMonth(String(now.getMonth() + 1));
+      setProbeFinished(true);
+})();
+  }, [metaReady, source, structure, topParent, token, getLatestPeriod, setLatestPeriod]);
+
+// Default each filter to the first available option. Done during render —
+  // the guards (`!source` etc.) self-disable after the first set, so no loop.
+  if (sources.length > 0 && !source) {
+    const s = sources[0];
+    setSource(typeof s === "object" ? (s.source ?? s.Source ?? "") : String(s));
+  }
+  if (structures.length > 0 && !structure) {
+    const s = structures[0];
+    setStructure(typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s));
+  }
+  
+// Build a key representing the current request. `loading` is true whenever
+  // this key doesn't match the last completed fetch; `hasCompletedFetch` is
+  // true once any fetch has finished. Both are pure derivations of state.
+  const fetchKey = (metaReady && year && month && source && structure && topParent)
+    ? `${year}|${month}|${source}|${structure}|${topParent}`
+    : null;
+  const loading = !!fetchKey && fetchedKey !== fetchKey;
+  const hasCompletedFetch = fetchedKey !== null;
+  const error = errorState.key === fetchKey ? errorState.msg : null;
+
+  useEffect(() => {
+    if (!fetchKey) return;
+    const ctrl = new AbortController();
+    (async () => {
+      try {
+        const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}' and GroupShortName eq '${topParent}'`;
+        const res = await fetch(
+          `${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(filter)}`,
+          { headers: authHeaders(), signal: ctrl.signal }
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        if (ctrl.signal.aborted) return;
+        setRawData(json.value ?? (Array.isArray(json) ? json : []));
+        setErrorState({ key: fetchKey, msg: null });
+        setFetchedKey(fetchKey);
+      } catch (e) {
+        if (ctrl.signal.aborted || e.name === "AbortError") return;
+        setErrorState({ key: fetchKey, msg: e.message });
+        setFetchedKey(fetchKey); // mark as complete even on error
+      }
+    })();
+    return () => ctrl.abort();
+  }, [fetchKey, year, month, source, structure, topParent, authHeaders]);
+
+// Multiperiodo: se leen solo los cierres frontera de cada tramo y se suman
+// (YTD del último mes − YTD del mes anterior al primero), igual que Individuales.
+const multiOn = statementType === "pl" && isMultiSelection(multiPeriods);
+const multiKey = (multiOn && source && structure && topParent) ? `${periodsKey(multiPeriods)}|${source}|${structure}|${topParent}` : null;
+const [multiResult, setMultiResult] = useState({ key: null, rows: [] });
+const [multiProgress, setMultiProgress] = useState({ key: null, done: 0, total: 0 });
+const multiLoading = !!multiKey && multiResult.key !== multiKey;
+useEffect(() => {
+  if (!multiKey) return undefined;
+  let alive = true;
+  const fetchMonth = (y, m) => {
+    const filter = `Year eq ${y} and Month eq ${m} and Source eq '${source}' and GroupStructure eq '${structure}' and GroupShortName eq '${topParent}'`;
+    return fetch(`${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(filter)}`, { headers: authHeaders() })
+      .then(r => (r.ok ? r.json() : { value: [] }))
+      .then(j => j.value ?? (Array.isArray(j) ? j : []))
+      .catch(() => []);
+  };
+  sumPeriodRows(multiPeriods, fetchMonth, (done, total) => { if (alive) setMultiProgress({ key: multiKey, done, total }); })
+    .then(rows => { if (alive) setMultiResult({ key: multiKey, rows }); })
+    .catch(() => { if (alive) setMultiResult({ key: multiKey, rows: [] }); });
+  return () => { alive = false; };
+}, [multiKey, multiPeriods, source, structure, topParent, authHeaders]);
+const multiRows = multiResult.key === multiKey ? multiResult.rows : [];
+const multiProg = multiProgress.key === multiKey ? multiProgress : { done: 0, total: 0 };
+// El comparativo trabaja sobre un único periodo: al sumar varios se apaga
+if (multiOn && compareMode) setCompareMode(false);
+
+// Drill-by-topParent fetch: ONE shared fetch per period (drops the topParent
+// filter so the response covers every topParent). Each drilled account reads
+// from the same cached rowset. The fetch is keyed by period — opening a new
+// account during the same period reuses the in-flight promise; no second
+// network call. We track which accounts are "loading" in a ref (not state)
+// to avoid the loading→effect-rerun→still-loading cascade.
+const drillContextKey = `${multiOn ? periodsKey(multiPeriods) : `${year}|${month}`}|${source}|${structure}`;
+const drillFetchRef = useRef({ key: null, promise: null });
+const drillPrevFetchRef = useRef({ key: null, promise: null });
+const drillLoadingRef = useRef(new Set()); // accountCodes whose load we've already kicked off
+const [drillPrevRows, setDrillPrevRows] = useState([]);
+
+useEffect(() => {
+  if (drillExpanded.size === 0 || !year || !month || !source || !structure || !token) return;
+  const pending = [...drillExpanded].filter(c => !drillCache.has(c) && !drillLoadingRef.current.has(c));
+  if (pending.length === 0) return;
+
+  // Mark as in flight (ref — doesn't re-trigger this effect).
+  pending.forEach(c => drillLoadingRef.current.add(c));
+  // Mirror into state so the UI shows the spinner.
+  setDrillLoadingSet(prev => {
+    const next = new Set(prev);
+    pending.forEach(c => next.add(c));
+    return next;
+  });
+
+// Reuse the same fetch for the whole period. NO topParent filter — the drill
+  // exists precisely to show every topParent's contribution to the clicked
+  // account. Parent row stays filtered by master topParent; sub-rows are a
+  // comparative cross-topParent view (they do NOT sum to the parent).
+if (drillFetchRef.current.key !== drillContextKey) {
+    const filter = `Year eq ${year} and Month eq ${month} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+    // Multiperiodo: la misma suma de periodos, para todas las empresas
+    const drillMonth = (y, m) => fetch(
+      `${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(`Year eq ${y} and Month eq ${m} and Source eq '${source}' and GroupStructure eq '${structure}'`)}`,
+      { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Cache-Control": "no-cache" } }
+    ).then(r => (r.ok ? r.json() : { value: [] })).then(j => j.value ?? (Array.isArray(j) ? j : [])).catch(() => []);
+    drillFetchRef.current = {
+      key: drillContextKey,
+      promise: multiOn ? sumPeriodRows(multiPeriods, drillMonth) : fetch(
+        `${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(filter)}`,
+        { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Cache-Control": "no-cache" } }
+      )
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+        .then(j => j.value ?? (Array.isArray(j) ? j : [])),
+    };
+
+    // Also fetch the previous month — needed for monthly mode (master subtracts
+    // prev YTD from current YTD; we must do the same per-topParent in the drill).
+    const moN = Number(month);
+    const yrN = Number(year);
+    const prevMo = moN === 1 ? 12 : moN - 1;
+    const prevYr = moN === 1 ? yrN - 1 : yrN;
+    const prevFilter = `Year eq ${prevYr} and Month eq ${prevMo} and Source eq '${source}' and GroupStructure eq '${structure}'`;
+    drillPrevFetchRef.current = {
+      key: drillContextKey,
+      promise: multiOn ? Promise.resolve([]).then(rows => { setDrillPrevRows(rows); return rows; }) : fetch(
+        `${BASE_URL}/v2/reports/consolidated-accounts?$filter=${encodeURIComponent(prevFilter)}`,
+        { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Cache-Control": "no-cache" } }
+      )
+        .then(r => r.ok ? r.json() : { value: [] })
+        .then(j => j.value ?? (Array.isArray(j) ? j : []))
+        .then(rows => { setDrillPrevRows(rows); return rows; })
+        .catch(() => { setDrillPrevRows([]); return []; }),
+    };
+  }
+
+const myFetch = drillFetchRef.current.promise;
+  myFetch
+    .then(rows => {
+      // Only apply if the context hasn't moved on under us.
+      if (drillFetchRef.current.promise !== myFetch) return;
+      setDrillCache(prev => {
+        const next = new Map(prev);
+        pending.forEach(c => next.set(c, rows));
+        return next;
+      });
+      setDrillLoadingSet(prev => {
+        const next = new Set(prev);
+        pending.forEach(c => next.delete(c));
+        return next;
+      });
+      pending.forEach(c => drillLoadingRef.current.delete(c));
+    })
+    .catch(e => {
+      if (e.name === "AbortError") return;
+      console.error("[drill fetch]", e);
+      setDrillLoadingSet(prev => {
+        const next = new Set(prev);
+        pending.forEach(c => next.delete(c));
+        return next;
+      });
+      pending.forEach(c => drillLoadingRef.current.delete(c));
+    });
+  // No dep on drillCache/drillLoadingSet — refs handle the bookkeeping so we
+  // don't loop. Effect re-runs only when the user opens a new drill or the
+  // period changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [drillExpanded, drillContextKey]);
+
+const drillResetKey = `${multiOn ? periodsKey(multiPeriods) : `${year}|${month}`}|${source}|${structure}|${statementType}`;
+const [prevDrillResetKey, setPrevDrillResetKey] = useState(drillResetKey);
+if (prevDrillResetKey !== drillResetKey) {
+  setPrevDrillResetKey(drillResetKey);
+  setDrillExpanded(new Set());
+  setDrillCache(new Map());
+  setDrillLoadingSet(new Set());
+  setDrillLeaving(new Set());
+  setDrillPrevRows([]);
+}
+// Reset the fetch refs in an effect (mutating refs during render is not
+// allowed by the new React lint). Keyed off drillResetKey so it fires exactly
+// when the state above resets.
+useEffect(() => {
+  drillFetchRef.current = { key: null, promise: null };
+  drillPrevFetchRef.current = { key: null, promise: null };
+  drillLoadingRef.current = new Set();
+}, [drillResetKey]);
+
+// Derive dim groups from the journal's `Dimensions` field — more reliable
+// than the /v2/dimensions endpoint because we know the data is there if we
+// see it here.
+const dimGroups = useMemo(() => {
+    const seen = new Set();
+    rawData.forEach(r => {
+      const role = r.CompanyRole ?? r.companyRole ?? "";
+      if (role !== "Parent" && role !== "Contribution") return;
+      const pairs = parseDimensions(r.Dimensions);
+      pairs.forEach(([group]) => { if (group) seen.add(group); });
+    });
+    return [...seen].sort();
+  }, [rawData]);
+
+const allDimsForGroups = useMemo(() => {
+    // Opciones = TODAS las dimensiones siempre. Así, al desactivar un grupo,
+    // sus dimensiones quedan visibles pero desmarcadas (no desaparecen).
+    const seen = new Set();
+    rawData.forEach(r => {
+      parseDimensions(r.Dimensions).forEach(([, code]) => { if (code) seen.add(code); });
+    });
+    const dimNameLookup = new Map();
+    (dimensions || []).forEach(d => {
+      const code = d.code ?? d.Code ?? d.dimensionCode ?? d.DimensionCode ?? "";
+      const name = d.name ?? d.Name ?? d.dimensionName ?? d.DimensionName ?? code;
+      if (code) dimNameLookup.set(String(code), name);
+    });
+    return [...seen].sort().map(code => ({ value: code, label: dimNameLookup.get(code) ?? code }));
+  }, [rawData, dimensions]);
+
+  // Mapa grupo → set de códigos de dimensión (para acoplar ambos filtros).
+  const groupToDims = useMemo(() => {
+    const m = new Map();
+    rawData.forEach(r => {
+      parseDimensions(r.Dimensions).forEach(([grp, code]) => {
+        if (!grp || !code) return;
+        if (!m.has(grp)) m.set(grp, new Set());
+        m.get(grp).add(code);
+      });
+    });
+    return m;
+  }, [rawData]);
+
+  // Total de dimensiones (para saber cuándo "todas" = selDims vacío).
+  const totalDimCount = useMemo(() => {
+    const all = new Set();
+    groupToDims.forEach(s => s.forEach(c => all.add(c)));
+    return all.size;
+  }, [groupToDims]);
+
+  // Estado MARCADO del pill de grupo, DERIVADO de las dimensiones activas: un
+  // grupo aparece activo solo si conserva ≥1 dimensión activa (selDims vacío =
+  // todas). null = todos activos. Así, al apagar todas las dims de un grupo,
+  // el grupo se muestra desactivado.
+  const activeGroupsDisplay = useMemo(() => {
+    if (dimGroups.length === 0) return null;
+    const dimActive = (code) => selDims.size === 0 || selDims.has(code);
+    const active = dimGroups.filter(g => {
+      const dims = groupToDims.get(g);
+      if (!dims || dims.size === 0) return true;
+      return [...dims].some(dimActive);
+    });
+    return active.length === dimGroups.length ? null : active;
+  }, [dimGroups, groupToDims, selDims]);
+
+// Fases reales de la carga para el cargador común (el mismo de la Home)
+const dimTx = useDimText();
+const dimLoadSteps = (() => {
+    const done = [
+      !!(metaReady && year && month),
+      sources.length > 0 && structures.length > 0,
+      groupAccountsLocal.length > 0,
+      hasCompletedFetch,
+    ];
+    // Cuentas de grupo y datos se piden a la vez: las dos van "en curso" juntas
+    const ready = done[0] && done[1];
+    return ["period", "filters", "accounts", "data"].map((key, i) => ({
+      key, label: dimTx[key], weight: [2, 2, 3, 5][i],
+      state: done[i] ? "done" : (i < 2 ? (done.indexOf(false) === i ? "active" : "pending") : (ready ? "active" : "pending")),
+    }));
+  })();
+// Only ready once we actually have data. The previous fallback condition
+  // (hasCompletedFetch && probeFinished && !loading) could briefly flip true
+  // between the probe finishing and the real fetch kicking off, causing the
+  // "no data" panel to flash for one frame.
+void probeFinished; // referenced by progress effects elsewhere; suppress unused warning
+const dimDashReady = hasCompletedFetch;
+
+  const sourceOpts    = [...new Set(sources.map(s  => typeof s === "object" ? (s.source    ?? s.Source    ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
+  const structureOpts = [...new Set(structures.map(s => typeof s === "object" ? (s.groupStructure ?? s.GroupStructure ?? "") : String(s)).filter(Boolean))].map(v => ({ value: v, label: v }));
+const companyOpts = holdingOptions;
+
+  return (
+    <div className="flex flex-col gap-4 h-full min-h-0">
+
+{/* Header */}
+<PageHeader
+kicker={viewsMode ? T("dim_kicker_views_consolidated", "Consolidated · Views") : T("dim_kicker_consolidated", "Consolidated")}
+        title={
+          viewsMode === "landing"   ? T("mappings")
+          : viewsMode === "structure" ? T("views_structure_mappings")
+          : viewsMode === "report"    ? T("views_report_mappings")
+          : (statementType === "pl" ? T("tab_pl") : T("tab_bs_short"))
+        }
+        tabs={viewsMode ? [] : [
+          { id: "pl", label: T("tab_pl"),       icon: TrendingUp },
+          { id: "bs", label: T("tab_bs_short"), icon: BarChart2 },
+        ]}
+        activeTab={viewsMode ? null : statementType}
+        onTabChange={setStatementType}
+        onBack={viewsMode ? () => { if (viewsMode === "landing") setViewsMode(null); else setViewsMode("landing"); } : undefined}
+        filters={viewsMode ? [] : [
+...(YEARS.length > 0
+            ? [statementType === "pl" ? {
+                // P&G: varios años a la vez (los meses se eligen en "Mes")
+                label: T("filter_year"), multiselect: true,
+                values: multiPeriods.length ? multiPeriods.map(p => p.year) : (year ? [String(year)] : []),
+                onChange: (vs) => {
+                  const years = (vs && vs.length) ? vs.map(String) : [];
+                  setMultiPeriods(prev => {
+                    const base = prev.length ? prev : (year ? [{ year: String(year), months: month ? [Number(month)] : [] }] : []);
+                    const byYear = new Map(base.map(p => [p.year, p]));
+                    return years.map(y => byYear.get(y) ?? { year: y, months: [] }).sort((a, b) => Number(a.year) - Number(b.year));
+                  });
+                  if (years.length === 1) setYear(years[0]);
+                },
+                options: (() => {
+                  const base = YEARS.map(y => String(y));
+                  // Include the currently selected year even if it's outside the
+                  // rolling 6-year window — otherwise the FilterPill renders "—"
+                  // and the filter looks "empty" to the user.
+                  if (year && !base.includes(String(year))) base.unshift(String(year));
+                  return base.map(y => ({ value: y, label: y }));
+                })(),
+              } : { label: T("filter_year"), value: year, onChange: setYear,
+                options: (() => {
+                  const base = YEARS.map(y => String(y));
+                  // Include the currently selected year even if it's outside the
+                  // rolling 6-year window — otherwise the FilterPill renders "—"
+                  // and the filter looks "empty" to the user.
+                  if (year && !base.includes(String(year))) base.unshift(String(year));
+                  return base.map(y => ({ value: y, label: y }));
+                })() }]
+            : []),
+...(MONTHS.length > 0
+            ? [statementType === "pl" ? {
+                label: T("filter_month"),
+                render: () => (
+                  <DimMonthsPill periods={multiPeriods} singleYear={year} singleMonth={month}
+                    onChange={(next) => {
+                      setMultiPeriods(next);
+                      // Un solo mes de un solo año: la página vuelve al modo normal
+                      const withMonths = next.filter(p => p.months?.length);
+                      if (!isMultiSelection(next) && withMonths.length === 1) {
+                        setYear(withMonths[0].year);
+                        setMonth(String(withMonths[0].months[0]));
+                      }
+                    }} />
+                ),
+              } : { label: T("filter_month"), value: month, onChange: setMonth,
+                options: MONTHS.map(m => ({ value: String(m.value), label: T(`month_${m.value}`) })) }]
+            : []),
+          ...(sourceOpts.length > 0
+            ? [{ label: T("filter_source"), value: source, onChange: setSource, options: sourceOpts }]
+            : []),
+          ...(structureOpts.length > 0
+            ? [{ label: T("filter_structure"), value: structure, onChange: setStructure, options: structureOpts }]
+            : []),
+...(companyOpts.length > 0
+            ? [{ label: T("filter_perspective", "Perspective"), value: topParent, onChange: setTopParent, options: companyOpts }]
+            : []),
+...(dimGroups.length > 0
+            ? [{ label: T("filter_dim_group"), multiselect: true, values: activeGroupsDisplay, onChange: (next) => {
+                // Togglear un grupo enciende/apaga sus dimensiones. Fuente de
+                // verdad = selDims; selGroups solo espeja el scope.
+                const chosen = next && next.length ? new Set(next) : new Set(dimGroups); // null/vacío = todos
+                const allChosen = chosen.size === dimGroups.length;
+                setSelGroups(allChosen ? new Set() : new Set(chosen));
+                if (allChosen) { setSelDims(new Set()); return; }
+                const wasActive = (code) => selDims.size === 0 || selDims.has(code);
+                const groupWasActive = (g) => {
+                  const dims = groupToDims.get(g) || new Set();
+                  if (dims.size === 0) return true;
+                  return [...dims].some(wasActive);
+                };
+                const nextDims = new Set();
+                dimGroups.forEach(g => {
+                  if (!chosen.has(g)) return;            // grupo off → sus dims fuera
+                  const dims = groupToDims.get(g) || new Set();
+                  if (!groupWasActive(g)) {
+                    // transición off→on: enciende TODAS sus dims
+                    dims.forEach(c => nextDims.add(c));
+                  } else {
+                    // seguía on: conserva las deselecciones por-dimensión previas
+                    dims.forEach(c => { if (wasActive(c)) nextDims.add(c); });
+                  }
+                });
+                setSelDims(nextDims.size === totalDimCount ? new Set() : nextDims);
+              }, options: dimGroups.map(g => ({ value: g, label: g })) }]
+            : []),
+...(allDimsForGroups.length > 0
+            ? [{ label: T("filter_dimension"), multiselect: true, values: selDims.size === 0 ? null : [...selDims], onChange: (next) => {
+                setSelDims(next ? new Set(next) : new Set());
+              }, options: allDimsForGroups }]
+            : []),
+        ]}
+periodToggle={(viewsMode || statementType === "bs" || multiOn) ? null : {
+          value: ytdOnly ? "ytd" : "monthly",
+          onChange: (next) => setYtdOnly(next === "ytd"),
+        }}
+compareToggle={(viewsMode || drillExpanded.size > 0 || multiOn) ? null : {
+          active: compareMode,
+          onChange: setCompareMode,
+        }}
+        onMappingsClick={viewsMode ? undefined : () => setViewsMode("landing")}
+        mappingsQuickAccess={viewsMode ? [] : recentMappings}
+  onQuickApplyMapping={async (m) => {
+          try {
+            const mod = await import(m.kind === "report" ? "../../lib/reportMappingsApi" : "../../lib/mappingsApi");
+            const full = await mod.getMapping(m.id);
+            handleApplyMapping(full ?? m.raw, m.kind);
+          } catch (err) {
+            console.error("[quick apply mapping]", err);
+          }
+        }}
+onExportXlsx={(viewsMode || drillExpanded.size > 0) ? undefined : () => {
+          setExportOpts(o => ({ ...o, format: "xlsx" }));
+          setExportModal(true);
+        }}
+        onExportPdf={(viewsMode || drillExpanded.size > 0) ? undefined : () => {
+          setExportOpts(o => ({ ...o, format: "pdf" }));
+          setExportModal(true);
+        }}
+      />
+
+{activeMapping && !activeMapping.is_hidden && (
+        <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 shadow-sm flex-shrink-0">
+          <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
+<span className="text-xs text-emerald-700 font-medium">
+            {T("mapping_active")}: <strong className="font-black">{activeMapping.name}</strong>
+            <span className="text-emerald-500/70 ml-2">· {activeMapping.standard}</span>
+          </span>
+          <button
+            onClick={() => {
+              try {
+                sessionStorage.setItem("mappings:openForEdit", JSON.stringify({
+                  mapping_id: activeMapping.mapping_id,
+                  kind: activeMapping.kind ?? "structure",
+                }));
+              } catch { /* ignore quota errors */ }
+              onNavigate?.("mappings");
+            }}
+            className="ml-auto flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
+title={T("edit_mapping_title")}
+          >
+            <Pencil size={11} />
+            {T("btn_edit")}
+          </button>
+          <button
+onClick={() => { clearToHiddenOverride(); }}
+            className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-widest transition-colors"
+title={T("clear_mapping_title")}
+          >
+            <X size={11} />
+            {T("btn_clear")}
+          </button>
+        </div>
+      )}
+
+
+{/* Inline mappings library (replaces dimensions content when active) */}
+      {viewsMode ? (
+        <div className="flex-1 flex flex-col min-h-0">
+          <style>{`
+            @keyframes floatOrb1 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(20px,-30px) scale(1.1); } }
+            @keyframes floatOrb2 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-15px,20px) scale(0.95); } }
+          `}</style>
+
+          {/* Landing: Structure vs Report cards */}
+          {viewsMode === "landing" && (
+            <div className="flex-1 grid grid-cols-2 gap-4 min-h-0">
+              <button onClick={() => setViewsMode("structure")}
+                className="relative text-left rounded-2xl border-2 border-gray-100 overflow-hidden transition-all group hover:border-[#1a2f8a] flex flex-col"
+                style={{ background: "linear-gradient(135deg, #ffffff 0%, #f4f6ff 40%, #eef1fb 100%)", boxShadow: "0 8px 32px -8px rgba(26,47,138,0.18)" }}>
+                <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                  <div className="absolute" style={{ top: "15%", right: "10%", width: 150, height: 150, borderRadius: "50%", background: "radial-gradient(circle, #1a2f8a18 0%, transparent 70%)", animation: "floatOrb1 8s ease-in-out infinite" }} />
+                  <div className="absolute inset-0" style={{ backgroundImage: "radial-gradient(#1a2f8a0d 1px, transparent 1px)", backgroundSize: "24px 24px" }} />
+                </div>
+                <div className="relative z-10 flex flex-col h-full p-8">
+                  <div className="mb-auto">
+                    <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-6"
+                      style={{ background: "linear-gradient(145deg, #1a2f8a 0%, #3b54b8 100%)" }}>
+                      <Layers size={26} className="text-white" strokeWidth={1.8} />
+                    </div>
+<p className="font-black text-xl text-gray-800 mb-2">{T("views_structure_mappings")}</p>
+                    <p className="text-xs text-gray-500 leading-relaxed max-w-xs">{T("mappings_landing_structure_desc")}</p>
+                  </div>
+                </div>
+              </button>
+
+              <button onClick={() => setViewsMode("report")}
+                className="relative text-left rounded-2xl border-2 border-gray-100 overflow-hidden transition-all group hover:border-[#CF305D] flex flex-col"
+                style={{ background: "linear-gradient(135deg, #ffffff 0%, #fff4f7 40%, #fef1f5 100%)", boxShadow: "0 8px 32px -8px rgba(207,48,93,0.18)" }}>
+                <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                  <div className="absolute" style={{ top: "15%", right: "10%", width: 150, height: 150, borderRadius: "50%", background: "radial-gradient(circle, #CF305D18 0%, transparent 70%)", animation: "floatOrb2 9s ease-in-out infinite" }} />
+                  <div className="absolute inset-0" style={{ backgroundImage: "radial-gradient(#CF305D0d 1px, transparent 1px)", backgroundSize: "24px 24px" }} />
+                </div>
+                <div className="relative z-10 flex flex-col h-full p-8">
+                  <div className="mb-auto">
+                    <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-6"
+                      style={{ background: "linear-gradient(145deg, #CF305D 0%, #e05585 100%)" }}>
+                      <FileText size={26} className="text-white" strokeWidth={1.8} />
+                    </div>
+<p className="font-black text-xl text-gray-800 mb-2">{T("views_report_mappings")}</p>
+                    <p className="text-xs text-gray-500 leading-relaxed max-w-xs">{T("mappings_landing_report_desc")}</p>
+                  </div>
+                </div>
+              </button>
+            </div>
+          )}
+
+          {/* Structure library */}
+          {viewsMode === "structure" && (
+            <div className="flex-1 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col min-h-0">
+              <div className="px-5 py-3 border-b border-gray-100 flex-shrink-0">
+<p className="text-[9px] font-black uppercase tracking-widest text-gray-400">{T("views_library")}</p>
+                <p className="font-black text-xs text-gray-700">{T("views_saved_mappings")}</p>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {savedMappingsLoading && <div className="py-16 text-center"><Loader2 size={24} className="text-[#1a2f8a] animate-spin mx-auto mb-2" /><p className="text-gray-400 text-xs">{T("views_loading_mappings")}</p></div>}
+                {savedMappingsError && !savedMappingsLoading && <div className="py-12 text-center"><p className="text-red-500 text-xs font-bold">{savedMappingsError}</p></div>}
+                {!savedMappingsLoading && !savedMappingsError && savedMappings.length === 0 && <div className="py-16 text-center"><Library size={24} className="text-[#1a2f8a] mx-auto mb-2" /><p className="text-gray-700 font-black text-sm">{T("views_no_mappings")}</p></div>}
+                {!savedMappingsLoading && !savedMappingsError && savedMappings.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+{savedMappings.map(m => {
+                      const isActive = activeMapping?.mapping_id === m.mapping_id;
+                      return (
+                        <button key={m.mapping_id}
+                          onClick={async () => {
+                            try {
+                              const { getMapping } = await import("../../lib/mappingsApi");
+                              const full = await getMapping(m.mapping_id);
+                              handleApplyMapping(full ?? m, "structure");
+                              setViewsMode(null);
+                            } catch (err) {
+                              console.error("[apply structure mapping]", err);
+                            }
+                          }}
+                          className="text-left bg-white rounded-xl border-2 p-4 transition-all hover:shadow-md group flex flex-col"
+                          style={{ borderColor: isActive ? colors.primary : "#f3f4f6", background: isActive ? `${colors.primary}06` : "white" }}>
+                          <div className="flex items-start gap-2.5 mb-3">
+                            <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: isActive ? colors.primary : "#eef1fb" }}>
+                              <Layers size={14} style={{ color: isActive ? "white" : colors.primary }} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+<p className="font-black text-xs text-gray-800 truncate">{m.name ?? T("untitled")}</p>
+                              <p className="text-[9px] font-bold uppercase tracking-widest mt-0.5" style={{ color: colors.primary }}>{m.standard ?? "—"}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-50 mt-auto">
+                            <span className="text-[9px] text-gray-400">{T("updated")} {m.updated_at ? new Date(m.updated_at).toLocaleDateString() : "—"}</span>
+                            <span className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-widest bg-emerald-500 group-hover:bg-emerald-600 text-white"><CheckCircle2 size={9} />{T("btn_apply")}</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Report library */}
+          {viewsMode === "report" && (
+            <div className="flex-1 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col min-h-0">
+              <div className="px-5 py-3 border-b border-gray-100 flex-shrink-0">
+<p className="text-[9px] font-black uppercase tracking-widest text-gray-400">{T("views_library")}</p>
+                <p className="font-black text-xs text-gray-700">{T("views_saved_report_mappings")}</p>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+{reportMappingsLoading && <div className="py-16 text-center"><Loader2 size={24} className="text-[#CF305D] animate-spin mx-auto mb-2" /><p className="text-gray-400 text-xs">{T("views_loading_report_mappings")}</p></div>}
+                {reportMappingsError && !reportMappingsLoading && <div className="py-12 text-center"><p className="text-red-500 text-xs font-bold">{reportMappingsError}</p></div>}
+                {!reportMappingsLoading && !reportMappingsError && reportMappings.length === 0 && <div className="py-16 text-center"><FileText size={24} className="text-[#CF305D] mx-auto mb-2" /><p className="text-gray-700 font-black text-sm">{T("views_no_report_mappings")}</p></div>}
+                {!reportMappingsLoading && !reportMappingsError && reportMappings.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+{reportMappings.map(m => {
+                      const isActive = activeMapping?.mapping_id === m.mapping_id;
+                      return (
+                        <button key={m.mapping_id}
+                          onClick={async () => {
+                            try {
+                              const { getMapping } = await import("../../lib/reportMappingsApi");
+                              const full = await getMapping(m.mapping_id);
+                              handleApplyMapping(full ?? m, "report");
+                              setViewsMode(null);
+                            } catch (err) {
+                              console.error("[apply report mapping]", err);
+                            }
+                          }}
+                          className="text-left bg-white rounded-xl border-2 p-4 transition-all hover:shadow-md group flex flex-col"
+                          style={{ borderColor: isActive ? "#CF305D" : "#f3f4f6", background: isActive ? "#CF305D06" : "white" }}>
+                          <div className="flex items-start gap-2.5 mb-3">
+                            <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: isActive ? "#CF305D" : "#fef1f5" }}>
+                              <FileText size={14} style={{ color: isActive ? "white" : "#CF305D" }} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+<p className="font-black text-xs text-gray-800 truncate">{m.name ?? T("untitled")}</p>
+                              <p className="text-[9px] font-bold uppercase tracking-widest mt-0.5" style={{ color: "#CF305D" }}>{m.standard ?? "—"}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-50 mt-auto">
+                            <span className="text-[9px] text-gray-400">{T("updated")} {m.updated_at ? new Date(m.updated_at).toLocaleDateString() : "—"}</span>
+                            <span className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-widest bg-emerald-500 group-hover:bg-emerald-600 text-white"><CheckCircle2 size={9} />{T("btn_apply")}</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : !dimDashReady ? (
+        <DimPageLoader
+          title={!metaReady
+                ? T("dim_loading_finding_period")
+                : sources.length === 0 || structures.length === 0
+                  ? T("dim_loading_filter_options")
+                  : groupAccountsLocal.length === 0
+                    ? T("dim_loading_group_accs")
+                    : loading
+                      ? T("dim_loading_data")
+                      : T("dim_loading_finalizing")}
+          subtitle={T("dim_loading_setup")}
+          steps={dimLoadSteps}
+        />
+      ) : error ? (
+        <div className="flex items-center justify-center flex-1">
+          <p className="text-sm text-red-400 font-medium">{error}</p>
+        </div>
+) : hasCompletedFetch && rawData.length === 0 ? (
+        <div className="flex items-center justify-center flex-1">
+          <div className="text-center">
+            <div className="w-14 h-14 bg-[#eef1fb] rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <RefreshCw size={20} className="text-[#1a2f8a]" />
+            </div>
+<p className="text-sm font-bold text-gray-400">{T("no_data")}</p>
+            <p className="text-xs text-gray-300 mt-1">{T("no_data_hint")}</p>
+          </div>
+        </div>
+) : (
+<DimCompaniesContext.Provider value={companies}>
+<div className={`${dimCss.multiWrap} ${multiLoading ? dimCss.multiBusy : ""}`}>
+{multiLoading && <DimMultiLoader periods={multiPeriods} progress={multiProg} />}
+<PivotTab data={multiOn ? (multiLoading && !multiRows.length ? rawData : multiRows) : rawData} multiPeriods={multiOn ? multiPeriods : null} dimensions={dimensions} groupAccounts={groupAccountsLocal} onShowAccounts={() => setShowAccounts(true)} selGroups={selGroups} selDims={selDims} onSelGroupsChange={setSelGroups} onSelDimsChange={setSelDims} dimGroups={dimGroups}compareMode={compareMode} statementType={statementType} externalViewMode={(statementType === "bs" || multiOn) ? "ytd" : (ytdOnly ? "ytd" : "monthly")} sources={sources} structures={structures} companies={companies} token={token} masterYear={year} masterMonth={month} masterSource={source} masterStructure={structure} masterTopParent={topParent} kpiList={kpiList} ccTagToCodes={ccTagToCodes} resolveCcTag={resolveCcTag}plMapping={plMapping} bsMapping={bsMapping}
+plLiteral={activeMapping?.plLiteral ?? null}
+bsLiteral={activeMapping?.bsLiteral ?? null}
+exportRef={pivotExportRef} hasCustomMapping={!!activeMapping}
+drillExpanded={drillExpanded} drillCache={drillCache} drillLoadingSet={drillLoadingSet} drillLeaving={drillLeaving} drillPrevRows={drillPrevRows}
+onToggleDrillAccount={toggleDrillAccount} />
+</div>
+</DimCompaniesContext.Provider>
+
+      )}
+
+
+{exportModal && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
+          style={{ background: "rgba(15,23,42,0.55)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", animation: "kBadgesPop 280ms cubic-bezier(0.34,1.56,0.64,1)" }}
+          onClick={() => setExportModal(false)}>
+          <div className="relative bg-white w-full max-w-xl overflow-hidden max-h-[92vh] flex flex-col"
+            style={{ borderRadius: 28, boxShadow: `0 30px 80px -12px ${colors.primary}40, 0 12px 24px -6px rgba(0,0,0,0.12)` }}
+            onClick={e => e.stopPropagation()}>
+
+            {/* Header */}
+            <div className="relative px-7 pt-7 pb-5 flex-shrink-0">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0"
+                    style={{ background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.primary}dd 100%)`, boxShadow: `0 8px 20px -6px ${colors.primary}60` }}>
+                    <Download size={17} className="text-white" strokeWidth={2.5} />
+                  </div>
+                  <div>
+                    <p className="font-black text-[20px] tracking-tight" style={{ color: colors.primary, letterSpacing: "-0.02em" }}>{T("export_dimensions_title")}</p>
+                    <div className="flex items-center gap-1.5 mt-1">
+<span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
+                        style={{ background: `${colors.primary}10`, color: colors.primary }}>
+                        {exportOpts.format === "pdf" ? T("badge_pdf") : T("badge_excel")}
+                      </span>
+                      {compareMode && (
+                        <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
+                          style={{ background: "#CF305D15", color: "#CF305D" }}>{T("badge_compare")}</span>
+                      )}
+                      {activeMapping && (
+                        <span className="text-[9px] font-black uppercase tracking-[0.22em] px-2 py-0.5 rounded-md"
+                          style={{ background: "#10B98115", color: "#10B981" }}>{T("badge_mapped")}</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <button onClick={() => setExportModal(false)}
+                  className="w-9 h-9 rounded-xl flex items-center justify-center transition-all duration-200 hover:scale-[1.05]"
+                  style={{ background: "#f3f4f6", color: "#6b7280" }}>
+                  <X size={14} strokeWidth={2.5} />
+                </button>
+              </div>
+            </div>
+
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto px-7 pb-5 space-y-6 no-scrollbar">
+
+              {/* Statements */}
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">{T("export_statements_to_include")}</p>
+                  <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  {[
+["pl", T("tab_pl"),         T("export_pl_subtitle"), colors.primary],
+                    ["bs", T("page_bs_full"),   T("export_bs_subtitle"), "#dc7533"],
+                  ].map(([k, label, sub, accent]) => {
+                    const checked = !!exportOpts.statements[k];
+                    return (
+                      <label key={k} className="flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all hover:bg-gray-50"
+                        style={{ borderColor: checked ? `${accent}40` : "#f3f4f6", background: checked ? `${accent}06` : "white" }}
+                        onClick={() => setExportOpts(o => ({ ...o, statements: { ...o.statements, [k]: !o.statements[k] } }))}>
+                        <div className="w-4 h-4 mt-0.5 rounded border-2 flex items-center justify-center transition-all flex-shrink-0"
+                          style={{ background: checked ? accent : "transparent", borderColor: checked ? accent : "#d1d5db" }}>
+                          {checked && <svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg>}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-black text-gray-800">{label}</p>
+                          <p className="text-[10px] text-gray-500 mt-0.5">{sub}</p>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Options */}
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                 <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">{T("export_layout_options")}</p>
+                  <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+["includeBreakers", T("export_opt_section_headers")],
+                    ["drilldown",       T("export_opt_drilldown")],
+                    ["includeTotals",   T("export_opt_row_totals")],
+                    ["includeCompare",  T("export_opt_compare_columns")],
+                  ].map(([k, label]) => {
+                    const checked = !!exportOpts[k];
+                    const disabled = (k === "includeCompare" && !compareMode) || (k === "includeTotals" && compareMode);
+                    return (
+                      <label key={k}
+                        className={`flex items-center gap-2 p-2.5 rounded-xl border transition-all ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer hover:bg-gray-50"}`}
+                        style={{ borderColor: checked && !disabled ? `${colors.primary}40` : "#f3f4f6", background: checked && !disabled ? `${colors.primary}06` : "white" }}
+                        onClick={() => { if (!disabled) setExportOpts(o => ({ ...o, [k]: !o[k] })); }}>
+                        <div className="w-4 h-4 rounded border-2 flex items-center justify-center transition-all flex-shrink-0"
+                          style={{ background: checked && !disabled ? colors.primary : "transparent", borderColor: checked && !disabled ? colors.primary : "#d1d5db" }}>
+                          {checked && !disabled && <svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg>}
+                        </div>
+                        <span className="text-xs font-bold text-gray-700">{label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Current filters preview */}
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-[9px] font-black uppercase tracking-[0.22em] text-gray-400">{T("export_current_filters")}</p>
+                  <div className="h-px flex-1" style={{ background: "linear-gradient(to right, #e5e7eb, transparent)" }} />
+                </div>
+                <div className="rounded-xl p-4 text-xs text-gray-600 leading-relaxed space-y-0.5"
+                  style={{ background: "#f8f9ff", border: "1px solid #e8eaf0" }}>
+<div><span className="font-bold text-gray-500">{T("export_filter_period")}:</span> {month && year ? `${T(`month_${parseInt(month)}`)} ${year}` : "—"}</div>
+                  <div><span className="font-bold text-gray-500">{T("export_filter_source_structure")}:</span> {source} · {structure}</div>
+                  <div><span className="font-bold text-gray-500">{T("export_filter_company")}:</span> {topParent}</div>
+                  <div><span className="font-bold text-gray-500">{T("export_filter_view")}:</span> {viewMode === "ytd" ? T("mode_ytd") : T("mode_monthly")}</div>
+                  <div><span className="font-bold text-gray-500">{T("export_filter_dim_groups")}:</span> {selGroups.size > 0 ? [...selGroups].join(", ") : <span className="italic text-gray-400">{T("all")}</span>}</div>
+                  <div><span className="font-bold text-gray-500">{T("export_filter_dims")}:</span> {selDims.size > 0 ? [...selDims].join(", ") : <span className="italic text-gray-400">{T("all")}</span>}</div>
+                  <div><span className="font-bold text-gray-500">{T("export_filter_compare")}:</span> {compareMode ? T("export_compare_on") : <span className="italic text-gray-400">{T("export_compare_off")}</span>}</div>
+                  {activeMapping && <div><span className="font-bold text-gray-500">{T("export_filter_mapping")}:</span> {activeMapping.name}</div>}
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-7 py-5 flex items-center gap-3 flex-shrink-0"
+              style={{ background: "linear-gradient(180deg, transparent 0%, #f9fafb 100%)" }}>
+              <div className="relative flex items-center p-1 rounded-xl" style={{ background: "#f3f4f6" }}>
+                {[["xlsx", T("export_excel")], ["pdf", T("export_pdf")]].map(([f, l]) => (
+                  <button key={f} onClick={() => setExportOpts(o => ({ ...o, format: f }))}
+                    className="relative z-10 px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all duration-200"
+                    style={{
+                      background: exportOpts.format === f ? "white" : "transparent",
+                      color: exportOpts.format === f ? colors.primary : "#9ca3af",
+                      boxShadow: exportOpts.format === f ? "0 2px 6px rgba(0,0,0,0.06)" : "none",
+                    }}>{l}</button>
+                ))}
+              </div>
+              <button
+                onClick={runExport}
+                disabled={exporting || (!exportOpts.statements.pl && !exportOpts.statements.bs)}
+                className="ml-auto flex items-center gap-2 px-5 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all duration-200 hover:scale-[1.03] disabled:opacity-40 disabled:hover:scale-100 disabled:cursor-not-allowed"
+                style={{
+                  background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.primary}e6 100%)`,
+                  color: "white",
+                  boxShadow: `0 8px 20px -6px ${colors.primary}80, 0 2px 6px -2px ${colors.primary}40`,
+                }}>
+{exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} strokeWidth={2.5} />}
+                {exporting ? T("export_downloading") : T("btn_download")}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {showAccounts && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setShowAccounts(false)}>
+          <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" />
+          <div className="relative bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-[95vw] h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="bg-[#1a2f8a] px-5 py-4 flex items-center justify-between flex-shrink-0">
+              <p className="text-white font-black text-sm">{T("dim_consolidated_accounts", "Consolidated rows")} · {rawData.length} {T("table_records")}</p>
+              <button onClick={() => setShowAccounts(false)} className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center">
+                <X size={13} className="text-white/70" />
+              </button>
+            </div>
+<div className="flex-1 min-h-0 overflow-hidden flex flex-col p-4 gap-3">
+              <AccountsTab data={rawData} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

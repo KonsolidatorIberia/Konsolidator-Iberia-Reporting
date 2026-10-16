@@ -65,6 +65,23 @@ export async function upsertUserResourceAccess(rows) {
   return res.json();
 }
 
+// ─── Páginas que han cambiado de clave ──────────────────────────────
+// Las notas de la memoria vivían en Individual y Consolidado; ahora son
+// "presentations-memory" (Presentaciones › Notas de memoria). Si un usuario no
+// tiene fila para la clave nueva, manda lo que tuviera en las antiguas.
+export const PAGE_ALIASES = {
+  "presentations-memory": ["individual-memory-notes", "consolidated-notes"],
+};
+
+// ¿Página permitida? Sin fila = permitida (como siempre).
+export function pageAllowed(perms, key) {
+  if (!perms) return true;
+  if (key in perms) return perms[key] !== false;
+  const old = (PAGE_ALIASES[key] ?? []).filter(k => k in perms);
+  if (old.length) return old.some(k => perms[k] !== false);
+  return true;
+}
+
 // ─── Current user page permissions hook ─────────────────────────────
 
 export function useCurrentUserPermissions() {
@@ -98,8 +115,7 @@ export function useCurrentUserPermissions() {
 
 const can = (pageKey) => {
     if (pagePerms === null) return true;
-    if (pageKey in pagePerms) return pagePerms[pageKey];
-    return true;
+    return pageAllowed(pagePerms, pageKey);
   };
 
   return { can, loaded };

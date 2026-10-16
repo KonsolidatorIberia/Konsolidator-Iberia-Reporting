@@ -1,4 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
+// Cuenta el tráfico de cada petición para el coste por cliente (centro de control → Actividad)
+import { trackedFetch, setUsageCompany } from "./usageFetch.js";
 
 const SUPABASE_URL    = "https://gmcawsapzkzmgrtiqebv.supabase.co";
 const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
@@ -10,6 +12,7 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_APIKEY, {
     detectSessionInUrl: false,
   },
   db: { schema: "public" },
+  global: { fetch: trackedFetch },
 });
 
 export const sbAccounts = supabase.schema("accounts");
@@ -164,6 +167,8 @@ if (userErr || !userRow) {
     }
 
     const company = defaultLink.company;
+    // Desde aquí, cada petición a Supabase va marcada con la empresa
+    setUsageCompany(company.id);
 
     // 5. Trial expirado?
     if (company.is_trial && company.trial_ends_at) {

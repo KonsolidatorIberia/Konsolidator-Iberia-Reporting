@@ -1,0 +1,137 @@
+/* ProgressLoader — mismo lenguaje que la carga de la Home */
+.root {
+  --pl-ink: #0f172a;
+  --pl-mute: #8a93a8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(246, 248, 252, 0.82);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  font-family: var(--font-body1-family, Inter, system-ui, sans-serif);
+  opacity: 1;
+  transition: opacity 420ms ease;
+}
+.fixed { position: fixed; inset: 0; z-index: 300; }
+.inline { position: absolute; inset: 0; z-index: 30; border-radius: inherit; }
+.gone { opacity: 0; pointer-events: none; }
+
+.card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 100%;
+  min-width: min(340px, 100%);
+  padding: 30px 44px 26px;
+  border-radius: 28px;
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.05);
+  box-shadow: 0 30px 80px -30px color-mix(in srgb, var(--pl-primary) 40%, transparent);
+  animation: plPop 420ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  transition: transform 420ms ease;
+}
+.gone .card { transform: scale(0.97); }
+
+.hub { position: relative; width: 168px; height: 168px; flex-shrink: 0; }
+.hub svg { position: absolute; inset: 0; overflow: visible; }
+.core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 92px;
+  height: 92px;
+  margin: -46px 0 0 -46px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #fff;
+  box-shadow: 0 12px 30px -12px color-mix(in srgb, var(--pl-primary) 45%, transparent),
+              inset 0 0 0 1px rgba(15, 23, 42, 0.05);
+}
+.core img { width: 48px; height: 48px; object-fit: contain; }
+
+.pct {
+  margin: 14px 0 0;
+  font-size: 26px;
+  font-weight: 900;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.pct small { font-size: 13px; opacity: 0.45; margin-left: 1px; }
+.title { margin: 10px 0 0; font-size: 14px; font-weight: 800; color: var(--pl-ink); text-align: center; }
+.sub { margin: 4px 0 0; font-size: 12px; font-weight: 600; color: var(--pl-mute); text-align: center; }
+
+/* Fases */
+.steps {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 5px;
+  border-radius: 999px;
+  background: #f4f6fa;
+  color: #a3abbd;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  transition: background-color 260ms ease, color 260ms ease;
+}
+.stepDot {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1.5px solid #d5dbe6;
+  color: #fff;
+  transition: background-color 260ms ease, border-color 260ms ease;
+}
+.step[data-state="active"] {
+  background: color-mix(in srgb, var(--pl-primary) 9%, #fff);
+  color: var(--pl-primary);
+}
+.step[data-state="active"] .stepDot {
+  border-color: color-mix(in srgb, var(--pl-primary) 25%, transparent);
+  border-top-color: var(--pl-primary);
+  animation: plRot 0.9s linear infinite;
+}
+.step[data-state="done"] { background: color-mix(in srgb, #0f9f6e 9%, #fff); color: #0f9f6e; }
+.step[data-state="done"] .stepDot { background: #0f9f6e; border-color: #0f9f6e; animation: plTick 360ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+.detail {
+  margin: 12px 0 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--pl-mute);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.spinSlow { animation: plRot 30s linear infinite; transform-origin: 0 0; }
+.spinFast { animation: plRot 1.4s linear infinite; transform-origin: 0 0; }
+
+@keyframes plPop { from { opacity: 0; transform: scale(0.94); } to { opacity: 1; transform: none; } }
+@keyframes plRot { to { transform: rotate(360deg); } }
+@keyframes plTick { from { transform: scale(0.4); } to { transform: none; } }
+
+@media (max-width: 420px) {
+  .card { padding: 24px 20px 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card, .spinSlow, .spinFast, .step[data-state="active"] .stepDot, .step[data-state="done"] .stepDot { animation: none !important; }
+}
+
+/* Recoge el testigo de otro cargador: sin la animación de entrada */
+.relayed { animation: none; }

@@ -1,0 +1,527 @@
+/* ══════════════════════════════════════════════════════════════════════
+   Dimensiones (individual y consolidado) — nuevo look
+   Mismo lenguaje que Individuales, la sábana de consolidación, el cash
+   flow y el contributivo:
+     · separadores de sección con degradado animado
+     · filas que reaccionan al ratón (fondo suave + barra de acento)
+     · códigos de cuenta en chip
+     · importes en píldora que se ilumina bajo el cursor
+     · desviaciones con fondo verde / rojo suave
+     · comparativo que entra y sale en ola
+     · desglose por empresa con su cabecera, color por empresa y cascada
+   --dim-primary llega de la página (color principal de Ajustes).
+   ══════════════════════════════════════════════════════════════════════ */
+.root {
+  --dim-primary: #1a2f8a;
+  --dim-cmp: #cf305d;
+  --dim-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --dim-ease: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dim-hover: color-mix(in srgb, var(--dim-primary) 4%, #fff);
+  --dim-line: #f0f2f7;
+  --dim-up: #0f9f6e;
+  --dim-down: #d9365b;
+  --dim-drill-bg: color-mix(in srgb, var(--dim-primary) 2.5%, #fff);
+}
+
+/* ── Cabecera de la tabla ────────────────────────────────────────────── */
+.root table > thead > tr > th {
+  box-shadow: inset 0 -1px 0 #e8ecf4;
+}
+.root table > thead > tr > th[data-ccol] {
+  background: color-mix(in srgb, var(--dim-cmp) 3%, #fff) !important;
+}
+.root table > thead > tr > th[data-tcol] {
+  background: color-mix(in srgb, var(--dim-primary) 4%, #fff) !important;
+  box-shadow: inset 1px 0 0 #e8ecf4, inset 0 -1px 0 #e8ecf4;
+}
+.cmpHead {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim-cmp);
+}
+.cmpHead::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 16%, transparent);
+}
+.cmpHeadDev { color: #7c879c; }
+.cmpHeadDev::before { background: linear-gradient(135deg, var(--dim-up), var(--dim-down)); box-shadow: none; }
+
+/* ── Filas ───────────────────────────────────────────────────────────── */
+.root table > tbody > tr:not(.bk) {
+  transition: background-color 220ms var(--dim-soft);
+}
+.root table > tbody > tr:not(.bk) > td {
+  border-color: var(--dim-line) !important;
+  transition: background-color 220ms var(--dim-soft), color 180ms ease;
+}
+/* Fondo bajo el cursor (la primera columna fija también) */
+.root table > tbody > tr:not(.bk):not(.drillHead):not(.drillLoad):hover {
+  background-color: var(--dim-hover) !important;
+}
+.root table > tbody > tr:not(.bk):not(.drillHead):not(.drillLoad):hover > td:global(.left-0) {
+  background-color: var(--dim-hover) !important;
+}
+/* Las coincidencias de la búsqueda siguen marcadas aunque pases el ratón */
+.root table > tbody > tr[class*="fef3c7"]:hover,
+.root table > tbody > tr[class*="fef3c7"]:hover > td:global(.left-0) { background-color: #fdedb5 !important; }
+
+/* Barra de acento a la izquierda de la fila bajo el cursor */
+.root table > tbody > tr > td:global(.left-0)::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 50%;
+  width: 4px;
+  height: 0;
+  border-radius: 4px;
+  background: var(--dim-primary);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--dim-primary) 55%, transparent);
+  transform: translateY(-50%);
+  transition: height 320ms var(--dim-ease);
+  pointer-events: none;
+}
+.root table > tbody > tr:not(.bk):hover > td:global(.left-0)::before { height: 22px; }
+.root table > tbody > tr > td:global(.left-0) > div { transition: transform 280ms var(--dim-soft); }
+.root table > tbody > tr:not(.bk):not(.drillHead):not(.drillLoad):hover > td:global(.left-0) > div { transform: translateX(3px); }
+
+/* Código de cuenta en chip */
+.root table td:global(.left-0) span:global(.font-mono) {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 7px;
+  background: #f3f5fa;
+  color: #7c879c !important;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace !important;
+  font-size: 10.5px !important;
+  font-weight: 600 !important;
+  line-height: 1.5;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+.root table tr:hover td:global(.left-0) span:global(.font-mono) {
+  background: color-mix(in srgb, var(--dim-primary) 10%, #fff);
+  color: var(--dim-primary) !important;
+}
+
+/* ── Importes ────────────────────────────────────────────────────────── */
+.amt { font-variant-numeric: tabular-nums; }
+.val {
+  display: inline-block;
+  padding: 4px 10px;
+  margin: -4px 0;          /* la píldora no hace la fila más alta */
+  border-radius: 999px;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 220ms var(--dim-soft), color 180ms ease, transform 260ms var(--dim-ease), box-shadow 220ms ease;
+}
+.amt:hover > .val:not(.zero) {
+  background: #fff;
+  color: var(--dim-primary);
+  transform: scale(1.06);
+  box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--dim-primary) 55%, transparent),
+              0 0 0 1px color-mix(in srgb, var(--dim-primary) 14%, transparent);
+}
+.amt:hover > .val.neg { color: var(--dim-down); }
+.zero { color: #cfd5e1 !important; font-weight: 500 !important; }
+.neg { color: #e11d48; }
+
+/* Columna TOTAL: fija a la derecha, con su propio tono */
+.root table td[data-tcol] {
+  background: color-mix(in srgb, var(--dim-primary) 3%, #fff) !important;
+  box-shadow: inset 1px 0 0 #e8ecf4;
+  font-weight: 800 !important;
+}
+.root table tr:not(.bk):hover > td[data-tcol] { background: color-mix(in srgb, var(--dim-primary) 6%, #fff) !important; }
+
+/* Desviaciones: píldora con fondo suave */
+.dev {
+  display: inline-block;
+  padding: 3px 9px;
+  margin: -3px 0;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  transition: transform 240ms var(--dim-ease);
+}
+.devPct { font-size: 0.92em; }
+.devUp { color: var(--dim-up) !important; background: color-mix(in srgb, var(--dim-up) 9%, transparent); }
+.devDown { color: var(--dim-down) !important; background: color-mix(in srgb, var(--dim-down) 8%, transparent); }
+.dev.zero { background: none; }
+.amt:hover > .dev:not(.zero) { transform: scale(1.06); }
+
+/* Columnas del periodo B: un tinte muy suave para leerlas como bloque */
+.root table td[data-ccol="c"] { background: color-mix(in srgb, var(--dim-cmp) 2.2%, #fff); }
+.root table td[data-ccol="d"],
+.root table td[data-ccol="p"] { background: #fafbfe; }
+
+/* ── Separadores de sección ──────────────────────────────────────────── */
+.root table > tbody > tr.bk > td {
+  padding: 8px 0 6px !important;
+  background: #fff;
+  border: 0;
+}
+.bkCell { overflow: visible; }
+.bkBar {
+  position: sticky;
+  left: 0;
+  width: var(--dim-view-w, 100%);
+  max-width: 100%;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  border-radius: 9px;
+  background: linear-gradient(90deg,
+    var(--sec) 0%,
+    color-mix(in srgb, var(--sec) 92%, #fff) 22%,
+    color-mix(in srgb, var(--sec) 55%, #fff) 52%,
+    color-mix(in srgb, var(--sec) 14%, #fff) 82%,
+    color-mix(in srgb, var(--sec) 4%, #fff) 100%);
+  background-size: 125% 100%;
+  transform-origin: left center;
+  animation: bkGrow 700ms var(--dim-soft) both, bkFlow 9s ease-in-out 700ms infinite alternate;
+}
+.bkBar::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 30%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transform: translateX(-120%);
+  animation: bkShine 4.8s ease-in-out 1s infinite;
+  pointer-events: none;
+}
+.bkTitle {
+  position: relative;
+  z-index: 1;
+  padding-left: 22px;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+@keyframes bkGrow { from { transform: scaleX(0.04); opacity: 0.4; } to { transform: scaleX(1); opacity: 1; } }
+@keyframes bkFlow { from { background-position: 0% 0; } to { background-position: 100% 0; } }
+@keyframes bkShine { 0% { transform: translateX(-120%); } 45%, 100% { transform: translateX(420%); } }
+
+/* ── Comparativo: entrada y salida ──────────────────────────────────── */
+/* Columnas del periodo B: la cabecera aparece y después el valor, la Δ y la Δ% */
+.cmpIn [data-ccol] { animation: cmpIn 460ms var(--dim-soft) both; }
+.cmpIn th[data-ccol] { animation-name: cmpHeadIn; }
+.cmpIn [data-ccol="d"] { animation-delay: 60ms; }
+.cmpIn [data-ccol="p"] { animation-delay: 120ms; }
+/* Al cerrar, todas se van a la vez mientras el panel se pliega */
+.cmpOut [data-ccol] { animation: cmpOut 300ms cubic-bezier(0.4, 0, 0.2, 1) forwards !important; }
+/* La columna TOTAL vuelve con un fundido al terminar */
+.totIn [data-tcol] { animation: totIn 420ms var(--dim-soft) both; }
+
+@keyframes cmpIn {
+  from { opacity: 0; transform: translateX(14px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes cmpHeadIn {
+  from { opacity: 0; transform: translateY(-6px) scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes cmpOut {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translateX(10px); }
+}
+@keyframes totIn {
+  from { opacity: 0; transform: translateX(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Etiqueta "B · Periodo B" del panel */
+.cmpTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 6px;
+}
+.cmpTag i {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 900;
+  color: #fff;
+  background: linear-gradient(135deg, #cf305d 0%, #e0558d 100%);
+  box-shadow: 0 6px 16px -6px rgba(207, 48, 93, 0.6);
+}
+.cmpTag b {
+  font-size: 9.5px;
+  font-weight: 900;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #cf305d;
+  white-space: nowrap;
+}
+
+/* ── Desglose por empresa ────────────────────────────────────────────── */
+/* Botón de cada cuenta: aparece al pasar por la fila; se despliega con el
+   texto al apuntarlo y se queda encendido mientras el desglose está abierto */
+.drillBtn {
+  margin-left: auto;
+  margin-right: 8px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 0;
+  color: var(--dim-primary);
+  background: color-mix(in srgb, var(--dim-primary) 8%, #fff);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dim-primary) 14%, transparent);
+  opacity: 0;
+  transform: scale(0.85);
+  cursor: pointer;
+  transition: opacity 200ms ease, transform 280ms var(--dim-ease), background-color 200ms ease,
+              color 200ms ease, box-shadow 220ms ease, gap 260ms var(--dim-soft), padding 260ms var(--dim-soft);
+}
+.drillBtnLabel {
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  transition: max-width 320ms var(--dim-soft);
+}
+.root tr:hover .drillBtn,
+.drillBtn:focus-visible { opacity: 1; transform: none; }
+.drillBtn:hover { gap: 5px; padding: 0 9px; background: color-mix(in srgb, var(--dim-primary) 12%, #fff); }
+.drillBtn:hover .drillBtnLabel { max-width: 90px; }
+.drillBtnOn {
+  opacity: 1;
+  transform: none;
+  gap: 5px;
+  padding: 0 9px;
+  color: #fff;
+  background: var(--dim-primary);
+  box-shadow: 0 6px 16px -6px color-mix(in srgb, var(--dim-primary) 70%, transparent);
+}
+.drillBtnOn .drillBtnLabel { max-width: 90px; }
+.drillBtnOn:hover { background: color-mix(in srgb, var(--dim-primary) 88%, #000); }
+
+/* Filas del desglose: fondo propio, línea guía a la izquierda y cascada */
+.root table > tbody > tr.drillRow > td { background-color: var(--dim-drill-bg); }
+.root table > tbody > tr.drillRow > td[data-tcol] { background: color-mix(in srgb, var(--dim-primary) 5%, #fff) !important; }
+.drillRow {
+  animation: drillIn 380ms var(--dim-soft) both;
+  animation-delay: calc(var(--i, 0) * 45ms + 60ms);
+}
+/* Al abrir, cada fila se despliega desde altura cero (las de debajo bajan
+   suavemente, sin salto); al cerrar se pliega igual */
+.drillRow > td,
+.drillHead > td,
+.drillLoad > td { animation: drillTdIn 320ms var(--dim-soft) backwards; animation-delay: inherit; }
+.drillRow > td > *,
+.drillHead > td > *,
+.drillLoad > td > * { animation: drillKidIn 320ms var(--dim-soft) backwards; animation-delay: inherit; overflow: hidden; }
+.drillRow > td { animation-delay: calc(var(--i, 0) * 45ms + 60ms); }
+.drillRow > td > * { animation-delay: calc(var(--i, 0) * 45ms + 60ms); }
+.drillRow > td:global(.left-0) { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--co-tone, var(--dim-primary)) 55%, transparent); }
+.coCell { background-color: var(--dim-drill-bg); }
+.coWrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  /* Margen interior para el anillo del punto: la fila recorta lo que se sale
+     (lo necesita para plegarse), así el círculo entra entero sin moverse */
+  padding: 4px 0 4px 5px;
+  margin: -4px 0 -4px -5px;
+}
+.coDot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--co-tone);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--co-tone) 18%, transparent);
+}
+.coCode {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 7px;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: var(--co-tone);
+  background: color-mix(in srgb, var(--co-tone) 9%, #fff);
+}
+.coName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #334155;
+}
+
+/* Cabecera del desglose y estados (cargando / sin datos) */
+.root table > tbody > tr.drillHead > td,
+.root table > tbody > tr.drillLoad > td {
+  padding: 0 !important;
+  background: var(--dim-drill-bg);
+  border: 0 !important;
+}
+.drillHead { animation: drillIn 320ms var(--dim-soft) both; }
+.drillHeadInner,
+.drillLoadInner {
+  position: sticky;
+  left: 0;
+  width: var(--dim-view-w, 100%);
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  box-sizing: border-box;
+  color: var(--dim-primary);
+}
+.drillHeadInner b {
+  font-size: 9.5px;
+  font-weight: 900;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+.drillCount {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--dim-primary);
+  background: color-mix(in srgb, var(--dim-primary) 9%, #fff);
+}
+.drillLoad { animation: drillIn 280ms var(--dim-soft) both; }
+.drillLoadInner { height: 40px; }
+.drillLoadInner b { font-size: 11px; font-weight: 800; color: #64748b; }
+.drillEmpty { font-size: 11px; font-weight: 700; font-style: italic; color: #94a3b8; }
+.drillPulse { display: inline-flex; gap: 3px; }
+.drillPulse i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--dim-primary);
+  animation: drillDot 1s ease-in-out infinite;
+}
+.drillPulse i:nth-child(2) { animation-delay: 140ms; }
+.drillPulse i:nth-child(3) { animation-delay: 280ms; }
+.drillSkel { display: inline-flex; gap: 10px; margin-left: 12px; }
+.drillSkel i {
+  width: 90px;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #eef1f8 0%, #f8f9fd 50%, #eef1f8 100%);
+  background-size: 200% 100%;
+  animation: drillShimmer 1.2s linear infinite;
+}
+.drillSkel i:nth-child(2) { width: 70px; animation-delay: 120ms; }
+.drillSkel i:nth-child(3) { width: 110px; animation-delay: 240ms; }
+
+/* Al cerrar: se pliega y se desvanece */
+.drillOut { animation: drillOut 240ms cubic-bezier(0.4, 0, 0.2, 1) forwards !important; pointer-events: none; }
+.drillOut > td { animation: drillTdOut 240ms cubic-bezier(0.4, 0, 0.2, 1) forwards !important; }
+.drillOut > td > * { animation: drillKidOut 240ms cubic-bezier(0.4, 0, 0.2, 1) forwards !important; overflow: hidden; }
+
+@keyframes drillIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes drillOut {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translateY(-4px); }
+}
+@keyframes drillTdIn { from { padding-top: 0; padding-bottom: 0; line-height: 0; } }
+@keyframes drillKidIn { from { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; } to { max-height: 44px; opacity: 1; } }
+@keyframes drillTdOut { to { padding-top: 0; padding-bottom: 0; line-height: 0; border-top-width: 0; border-bottom-width: 0; } }
+@keyframes drillKidOut { from { max-height: 44px; } to { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; margin-top: 0; margin-bottom: 0; } }
+@keyframes drillDot {
+  0%, 100% { transform: translateY(0); opacity: 0.35; }
+  50%      { transform: translateY(-3px); opacity: 1; }
+}
+@keyframes drillShimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+/* ── Cargador de la página ───────────────────────────────────────────── */
+.pageLoader { z-index: 40 !important; border-radius: 16px; background: rgba(248, 250, 253, 0.6) !important; }
+
+/* ── Multiperiodo ─────────────────────────────────────────────────────── */
+/* Qué se está sumando: junto al título de la columna Cuenta */
+.multiBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 4px;
+  white-space: nowrap;
+  animation: multiIn 360ms var(--dim-soft) both;
+}
+.multiCount {
+  display: inline-flex;
+  align-items: center;
+  height: 19px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dim-primary) 10%, #fff);
+  color: var(--dim-primary);
+  font-size: 9.5px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.multiLine { display: inline-flex; gap: 5px; font-size: 10.5px; font-weight: 600; color: #7c879c; }
+.multiLine b { font-weight: 800; color: #4b5568; }
+.multiMore { font-size: 10px; font-weight: 800; color: #9aa3b5; }
+@keyframes multiIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+/* Mientras se calcula: la tabla se queda atrás atenuada y el cargador encima */
+.multiWrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.multiBusy table { opacity: 0.35; filter: saturate(0.4); transition: opacity 260ms ease, filter 260ms ease; }
+.multiLoader {
+  z-index: 40 !important;
+  border-radius: 16px;
+  background: rgba(248, 250, 253, 0.55) !important;
+  backdrop-filter: blur(3px) !important;
+}
+
+/* Menú de meses */
+.monthsMenu {
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(26, 47, 138, 0.08);
+  box-shadow: 0 20px 50px -12px rgba(26, 47, 138, 0.18);
+  animation: multiIn 220ms var(--dim-soft) both;
+}
+.monthsItem { transition: background-color 160ms ease; }
+.monthsItem:hover { background: rgba(26, 47, 138, 0.07); }
+
+/* ── Menos movimiento si el sistema lo pide ──────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .bkBar, .bkBar::after { animation: none; }
+  .val, .dev { transition: none; }
+  .cmpIn [data-ccol], .cmpOut [data-ccol], .totIn [data-tcol] { animation: none !important; }
+  .drillRow, .drillHead, .drillLoad, .drillOut,
+  .drillRow > td, .drillRow > td > *, .drillHead > td, .drillHead > td > *,
+  .drillLoad > td, .drillLoad > td > *, .drillOut > td, .drillOut > td > * { animation: none !important; }
+  .drillPulse i, .drillSkel i { animation: none; }
+  .multiBadge, .monthsMenu { animation: none; }
+  .multiBusy table { transition: none; }
+}

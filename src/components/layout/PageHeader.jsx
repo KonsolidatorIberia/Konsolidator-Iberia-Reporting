@@ -1281,7 +1281,7 @@ onMouseLeave={() => {
               {compareToggle && (
                 <button
 onClick={() => { if (!compareToggle.disabled) compareToggle.onChange(!compareToggle.active); }}
-                  title={compareToggle.disabled ? t("disable_history_first") : compareToggle.active ? `${t("btn_compare")} ✕` : t("btn_compare_with")}
+                  title={compareToggle.disabled ? (compareToggle.disabledReason ?? t("disable_history_first")) : compareToggle.active ? `${t("btn_compare")} ✕` : t("btn_compare_with")}
                   className="flex items-center gap-1.5 px-3 h-9 rounded-full flex-shrink-0"
                   style={{
                     background: compareToggle.disabled ? "rgba(26,47,138,0.03)" : compareToggle.active ? colors.primary : "rgba(26,47,138,0.06)",

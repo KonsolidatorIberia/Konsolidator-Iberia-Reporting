@@ -110,11 +110,15 @@ groupAccounts.forEach(ga => {
   });
   const numSort = (a, b) => String(getField(a, "accountCode") ?? "").localeCompare(String(getField(b, "accountCode") ?? ""), undefined, { numeric: true });
   childrenOf.forEach(arr => arr.sort(numSort)); roots.sort(numSort);
-function makeNode(ga) {
+// "path" = cuentas ya abiertas en esta rama: si una cuenta vuelve a aparecer
+  // (ciclo en SumAccountCode) se corta ahí en lugar de recursar sin fin.
+  function makeNode(ga, path = new Set()) {
     const nodeCode = String(getField(ga, "accountCode") ?? "");
-    return { code: nodeCode, name: String(getField(ga, "accountName") ?? ""), accountType: String(getField(ga, "accountType") ?? ""), isSumAccount: !!getField(ga, "isSumAccount"), level: Number(getField(ga, "level") ?? 0), children: (childrenOf.get(nodeCode) || []).map(makeNode) };
+    const nextPath = new Set(path).add(nodeCode);
+    const kids = (childrenOf.get(nodeCode) || []).filter(k => !nextPath.has(String(getField(k, "accountCode") ?? "")));
+    return { code: nodeCode, name: String(getField(ga, "accountName") ?? ""), accountType: String(getField(ga, "accountType") ?? ""), isSumAccount: !!getField(ga, "isSumAccount"), level: Number(getField(ga, "level") ?? 0), children: kids.map(k => makeNode(k, nextPath)) };
   }
-  return roots.map(makeNode);
+  return roots.map(r => makeNode(r));
 }
 function buildTemplateTree(rows, sections = []) {
   if (!rows?.length) return [];
@@ -125,15 +129,31 @@ function buildTemplateTree(rows, sections = []) {
     const childrenOf = new Map(), localRoots = [];
 subsetRows.forEach(r => {
       const parent = normalize(r.parent_code);
-      if (!parent || !subsetCodes.has(parent)) localRoots.push(r);
+      // Una fila cuyo padre es ella misma (p. ej. "100" con padre "100.0")
+      // se trata como raíz: si no, el árbol se llama a sí mismo sin fin.
+      if (!parent || !subsetCodes.has(parent) || parent === normalize(r.account_code)) localRoots.push(r);
       else { if (!childrenOf.has(parent)) childrenOf.set(parent, []); childrenOf.get(parent).push(r); }
     });
     childrenOf.forEach(arr => arr.sort(soSort)); localRoots.sort(soSort);
-    function makeNode(r) {
+    // "path" = códigos ya abiertos en esta rama: si un código reaparece
+    // (ciclo A → B → A, o códigos repetidos), se corta ahí.
+    function makeNode(r, path = new Set()) {
       const code = String(r.account_code);
-      return { kind: "row", code, name: r.account_name, isSum: !!r.is_sum_account, showInSummary: !!r.show_in_summary, sectionCode: r.section_code, level: Number(r.level ?? 0), sortOrder: Number(r.sort_order ?? 0), children: (childrenOf.get(normalize(code)) || []).map(makeNode) };
+      const nextPath = new Set(path).add(normalize(code));
+      const kids = (childrenOf.get(normalize(code)) || []).filter(k => !nextPath.has(normalize(k.account_code)));
+      return { kind: "row", code, name: r.account_name, isSum: !!r.is_sum_account, showInSummary: !!r.show_in_summary, sectionCode: r.section_code, level: Number(r.level ?? 0), sortOrder: Number(r.sort_order ?? 0), children: kids.map(k => makeNode(k, nextPath)) };
     }
-    return localRoots.map(makeNode);
+    // Filas que solo forman un ciclo entre ellas no tienen raíz: se añaden
+    // como raíces para que no desaparezcan de la plantilla.
+    const reached = new Set();
+    const mark = (nodes) => nodes.forEach(n => { reached.add(normalize(n.code)); mark(n.children); });
+    const tree = localRoots.map(r => makeNode(r));
+    mark(tree);
+    subsetRows.forEach(r => {
+      const c = normalize(r.account_code);
+      if (!reached.has(c)) { const n = makeNode(r); tree.push(n); mark([n]); }
+    });
+    return tree;
   }
   if (!sections.length) return buildHierarchy(rows);
   const sortedSections = [...sections].sort((a, b) => Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0));

@@ -1,5 +1,5 @@
 import { useState, useRef, useLayoutEffect } from "react";
-import Sidebar from "./Sidebar.jsx";
+import Sidebar from "../sidebar/index.js";
 
 function UserPage({ user, onLogout }) {
   return (

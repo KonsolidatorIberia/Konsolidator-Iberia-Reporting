@@ -6,7 +6,7 @@ import {
 Edit3, Trash2, AlertTriangle,
 } from "lucide-react";
 import {
-  AreaChart, Area, BarChart, Bar,
+  AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from "recharts";
 import { useSettings, useTypo, useSettingsControls, useT } from "./SettingsContext.jsx";
@@ -32,10 +32,14 @@ const SUPABASE_APIKEY = "sb_publishable_ijxYPrnd3VplVOFEDv_W8g_3GckzIVA";
 
 // Grab the user's live JWT so RLS policies see auth.uid() correctly.
 // Falls back to the publishable key when no session (safe for public tables).
+// Se lee la clave exacta de ESTE proyecto: en localhost el localStorage lo
+// comparten todas las apps que se arrancan en el mismo puerto, y buscar
+// cualquier clave con "auth-token" podía coger la sesión de otro proyecto o la
+// clave "-code-verifier", dejando la Home sin permisos y los KPIs a cero.
+const SB_AUTH_KEY = "sb-gmcawsapzkzmgrtiqebv-auth-token";
 function getSbAuthToken() {
   try {
-    const key = Object.keys(localStorage).find(k => k.includes("auth-token"));
-    if (!key) return null;
+    const key = SB_AUTH_KEY;
     const parsed = JSON.parse(localStorage.getItem(key));
     return parsed?.access_token ?? parsed?.data?.session?.access_token ?? null;
   } catch { return null; }
@@ -643,114 +647,436 @@ function ConsolidationBackground({ primary }) {
   );
 }
 
+// Gráfica de evolución, memorizada: así pasar el ratón por otras zonas de la
+// Home (que re-renderiza la página) no vuelve a animar las líneas desde cero.
+const TrendChart = React.memo(function TrendChart({ data, slotColors, labels, hidden }) {
+  return (
+                <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                    <defs>
+                      {slotColors.map((sc, i) => (
+                        <linearGradient key={i} id={`areaSlot${i}`} x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor={sc.color} stopOpacity={0.22} />
+                          <stop offset="100%" stopColor={sc.color} stopOpacity={0} />
+                        </linearGradient>
+                      ))}
+                    </defs>
+                    <CartesianGrid stroke="#eef1f6" vertical={false} />
+                    <XAxis dataKey="label"
+                      tick={{ fontSize: 11, fill: "#94a3b8", fontWeight: 700 }}
+                      axisLine={false} tickLine={false} tickMargin={8}
+                      interval={data.length <= 12 ? 0 : Math.floor(data.length / 12)} />
+                    <YAxis
+                      tick={{ fontSize: 11, fill: "#94a3b8", fontWeight: 600 }}
+                      axisLine={false} tickLine={false}
+                      tickFormatter={fmtBig}
+                      width={52} tickCount={5} />
+                    <Tooltip
+                      cursor={{ stroke: "#cbd5e1", strokeWidth: 1, strokeDasharray: "4 4" }}
+                      content={<TrendTooltip slotLabels={labels} />} />
+                    {slotColors.map((sc, i) => (
+                      <Area
+                        key={i}
+                        className={`hpArea hpArea${i}`}
+                        type="monotone"
+                        dataKey={`slot${i}`}
+                        name={labels[i]}
+                        hide={hidden.has(i)}
+                        stroke={sc.color}
+                        strokeWidth={2}
+                        fill={`url(#areaSlot${i})`}
+                        isAnimationActive
+                        animationDuration={700}
+                        connectNulls={false}
+                        dot={false}
+                        activeDot={{ r: 4.5, fill: "#fff", stroke: sc.color, strokeWidth: 2.5 }}
+                      />
+                    ))}
+                  </AreaChart>
+                </ResponsiveContainer>
+  );
+});
+
 /* ═══════════════════════════════════════════════════════════════
-   KPI HERO CARD
+   KPI HERO CARD — tarjeta de color
 ═══════════════════════════════════════════════════════════════ */
-function HeroKPI({ label, value, prevValue, trend, color, accent, icon: Icon, delay = 0, loading, noData = false }) {
+const HeroKPI = React.memo(function HeroKPI({ label, value, prevValue, trend, color, icon: Icon, delay = 0, loading, noData = false }) {
   const t = useT();
   const change = (!noData && prevValue && prevValue !== 0) ? ((value - prevValue) / Math.abs(prevValue)) * 100 : null;
   const isPositive = change != null ? change >= 0 : null;
   const sparklineData = useMemo(() => (trend ?? []).map((v, i) => ({ x: i, y: v })), [trend]);
+  const gradId = `hpSpark-${String(label).replace(/[^a-zA-Z0-9]/g, "")}`;
 
   return (
-    <div
-      className="relative overflow-hidden rounded-2xl p-4 transition-all duration-500 hover:scale-[1.015] hover:shadow-2xl group h-full flex flex-col"
-style={{
-        background: `linear-gradient(135deg, ${color}f0 0%, ${color} 70%, ${accent ?? color} 100%)`,
-        boxShadow: `0 16px 40px -8px ${color}90, 0 6px 16px -4px ${color}60, inset 0 1px 0 rgba(255,255,255,0.2)`,
-        animation: `kCardEntry 0.6s cubic-bezier(0.4,0,0.2,1) ${delay}s both`,
-      }}
-    >
-      <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-700 pointer-events-none"
-        style={{
-          background: "linear-gradient(105deg, transparent 30%, rgba(255,255,255,0.22) 50%, transparent 70%)",
-          backgroundSize: "200% 100%",
-          animation: "kShimmer 1.5s ease-in-out infinite",
-        }} />
-      <div className="absolute -top-10 -right-10 w-32 h-32 rounded-full opacity-20 blur-2xl"
-        style={{ background: "rgba(255,255,255,0.5)" }} />
+    <div className="hpKpi" style={{ "--kc": color, animationDelay: `${delay}s` }}>
+      <span className="hpKpiOrb" aria-hidden="true" />
+      <span className="hpKpiSheen" aria-hidden="true" />
 
-<div className="relative z-10 flex flex-col h-full">
-        <div className="flex items-start justify-between mb-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="w-8 h-8 rounded-lg bg-white/15 backdrop-blur-sm flex items-center justify-center border border-white/20 flex-shrink-0">
-              {Icon && <Icon size={14} className="text-white" />}
-            </div>
-<div className="min-w-0">
-              <p className="text-[9px] font-black text-white/75 uppercase tracking-[0.18em] truncate">{label}</p>
-            </div>
-          </div>
-          {change != null && (
-            <div className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-black flex-shrink-0 ${
-              isPositive ? "bg-emerald-400/30 text-emerald-50" : "bg-red-400/30 text-red-50"
-            } border ${isPositive ? "border-emerald-300/40" : "border-red-300/40"}`}>
-              {isPositive ? <ArrowUp size={8} /> : <ArrowDown size={8} />}
-              {Math.abs(change).toFixed(1)}%
-            </div>
-          )}
+      <div className="hpKpiTop">
+        <span className="hpKpiIco">{Icon && <Icon size={14} strokeWidth={2.4} />}</span>
+        <span className="hpKpiLabel" title={label}>{label}</span>
+      </div>
+
+      <div className="hpKpiRow">
+        {loading ? (
+          <span className="hpSkel" />
+        ) : noData ? (
+          <span className="hpKpiValue isEmpty">—</span>
+        ) : (
+          <span className="hpKpiValue"><AnimatedNumber value={value} duration={900} /></span>
+        )}
+        {change != null && !loading && (
+          <span className={`hpDelta ${isPositive ? "isUp" : "isDown"}`}>
+            {isPositive ? <ArrowUp size={10} strokeWidth={3} /> : <ArrowDown size={10} strokeWidth={3} />}
+            {Math.abs(change).toFixed(1)}%
+          </span>
+        )}
+      </div>
+
+      <p className="hpKpiSub">
+        {noData && !loading
+          ? t("home_period_no_data")
+          : (prevValue != null && prevValue !== 0) ? `${t("hero_vs")} ${fmtBig(prevValue)}` : " "}
+      </p>
+
+      {sparklineData.length > 1 && (
+        <div className="hpKpiSpark">
+          <ResponsiveContainer width="100%" height={42}>
+            <AreaChart data={sparklineData} margin={{ top: 6, right: 10, bottom: 0, left: 0 }}>
+              <defs>
+                <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#ffffff" stopOpacity={0.42} />
+                  <stop offset="100%" stopColor="#ffffff" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <Area type="monotone" dataKey="y" stroke="#ffffff" strokeWidth={1.8}
+                fill={`url(#${gradId})`} isAnimationActive animationDuration={900}
+                dot={(p) => p.index === sparklineData.length - 1
+                  ? <circle key="end" cx={p.cx} cy={p.cy} r={3.2} fill="#fff" stroke="rgba(255,255,255,0.45)" strokeWidth={5} />
+                  : null} />
+            </AreaChart>
+          </ResponsiveContainer>
         </div>
+      )}
+    </div>
+  );
+});
 
-        <div className="mb-2 flex-shrink-0">
-{loading ? (
-            <div className="h-8 w-28 bg-white/15 rounded animate-pulse" />
-          ) : noData ? (
-            <p className="text-2xl font-black text-white/50 tracking-tight">—</p>
-          ) : (
-            <p className="text-2xl font-black text-white tracking-tight" style={{ textShadow: "0 2px 12px rgba(0,0,0,0.15)" }}>
-              {fmtBig(value)}
-            </p>
-          )}
-{!noData && prevValue != null && prevValue !== 0 && (
-            <p className="text-[12px] text-white/65 mt-1 font-semibold">{t("hero_vs")} {fmtBig(prevValue)}</p>
-          )}
-{noData && !loading && (
-            <p className="text-[11px] text-white/55 mt-1 font-semibold">{t("home_period_no_data")}</p>
-          )}
-        </div>
+// Tarjetas de recuento (sociedades, perímetros, dimensiones, fuentes)
+function MiniTile({ label, value, icon: Icon, color, delay = 0, onClick }) { // eslint-disable-line no-unused-vars
+  return (
+    <button type="button" onClick={onClick} className="hpTile" style={{ "--tc": color, animationDelay: `${delay}s` }}>
+      <span className="hpTileIco"><Icon size={15} strokeWidth={2.2} /></span>
+      <span className="hpTileText">
+        <span className="hpTileLabel">{label}</span>
+        <span className="hpTileValue">{value}</span>
+      </span>
+      <ChevronRight size={15} className="hpTileGo" />
+    </button>
+  );
+}
 
-{sparklineData.length > 1 && (
-          <div className="flex-1 -mx-1" style={{ minHeight: 36, height: 36, width: "100%" }}>
-            <ResponsiveContainer width="100%" height={36}>
-              <AreaChart data={sparklineData} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
-                <defs>
-                  <linearGradient id={`spark-${label}`} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="white" stopOpacity={0.5} />
-                    <stop offset="100%" stopColor="white" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <Area type="monotone" dataKey="y" stroke="white" strokeWidth={1.4}
-                  fill={`url(#spark-${label})`} dot={false} isAnimationActive />
-              </AreaChart>
-            </ResponsiveContainer>
+// Pantalla de carga de la Home (clara, con el anillo de progreso)
+function HomeBootOverlay({ visible, progress: rawProgress, label, sub, primary = "#1a2f8a", secondary = "#CF305D" }) {
+  const R = 64, C = 2 * Math.PI * R;
+  // El % mostrado nunca baja, pase lo que pase con los datos por debajo
+  const [progress, setProgress] = useState(rawProgress);
+  if (rawProgress > progress) setProgress(rawProgress);
+  return (
+    <div className={`hpBoot ${visible ? "" : "isGone"}`} aria-hidden={!visible} role="status" aria-live="polite">
+      <div className="hpBootCard">
+        <div className="hpBootHub">
+          <svg width="168" height="168" viewBox="-84 -84 168 168" aria-hidden="true">
+            <defs>
+              <linearGradient id="hpBootGrad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor={primary} />
+                <stop offset="100%" stopColor={secondary} />
+              </linearGradient>
+            </defs>
+            <circle r="78" fill="none" stroke="#e8ecf5" strokeDasharray="2 6" className="hpSpinSlow" />
+            <circle r={R} fill="none" stroke="#eef1f7" strokeWidth="8" />
+            <circle r={R} fill="none" stroke="url(#hpBootGrad)" strokeWidth="8" strokeLinecap="round"
+              strokeDasharray={`${C * Math.max(0.02, Math.min(1, progress / 100))} ${C}`} transform="rotate(-90)"
+              style={{ transition: "stroke-dasharray 500ms cubic-bezier(0.22,1,0.36,1)" }} />
+            <g className="hpSpinFast">
+              <circle r="52" fill="none" stroke={primary} strokeOpacity="0.35" strokeWidth="2" strokeLinecap="round"
+                strokeDasharray={`${2 * Math.PI * 52 * 0.14} ${2 * Math.PI * 52}`} />
+            </g>
+          </svg>
+          <div className="hpBootCore">
+            <img src="/favicon.svg" alt="" draggable={false} />
           </div>
+        </div>
+        <p className="hpBootPct" style={{ color: primary }}>{Math.round(progress)}<small>%</small></p>
+        <p className="hpBootTitle">{label}</p>
+        <p className="hpBootSub">{sub}</p>
+      </div>
+    </div>
+  );
+}
+
+// Donut de la estructura de costes, con el total (o el segmento señalado) en el centro
+function BreakdownDonut({ items, total, hover, onHover, onPick, centerLabel }) {
+  const data = items.map(it => ({ ...it, v: Math.abs(it.value) || 0.0001 }));
+  const h = hover != null ? items[hover] : null;
+  const absTot = Math.abs(total) || 1;
+  return (
+    <div className="hpDonut">
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart>
+          <Pie data={data} dataKey="v" nameKey="name" innerRadius="70%" outerRadius="100%" paddingAngle={2}
+            cornerRadius={4} stroke="#fff" strokeWidth={2} startAngle={90} endAngle={-270}
+            isAnimationActive={false}
+            onMouseEnter={(_, i) => onHover(i)} onMouseLeave={() => onHover(null)}
+            onClick={(_, i) => onPick(i)}>
+            {data.map((d, i) => (
+              <Cell key={d.tag ?? i} fill={d.color} style={{ cursor: "pointer", transition: "opacity 200ms ease" }}
+                opacity={hover == null || hover === i ? 1 : 0.28} />
+            ))}
+          </Pie>
+        </PieChart>
+      </ResponsiveContainer>
+      <div className="hpDonutCenter">
+        {h ? (
+          <>
+            <b>{((Math.abs(h.value) / absTot) * 100).toFixed(1)}%</b>
+            <span title={h.name}>{h.name}</span>
+          </>
+        ) : (
+          <>
+            <b>{fmtBig(total)}</b>
+            <span>{centerLabel}</span>
+          </>
         )}
       </div>
     </div>
   );
 }
 
-function MiniTile({ label, value, icon: Icon, color, delay = 0, onClick }) { // eslint-disable-line no-unused-vars
+// Tooltip de la evolución
+function TrendTooltip({ active, payload, slotLabels }) {
+  if (!active || !payload?.length) return null;
+  const fullLabel = payload[0]?.payload?.fullLabel ?? "";
+  const rows = payload.filter(p => p.value != null).sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
   return (
-    <button
-      onClick={onClick}
-      className="relative overflow-hidden rounded-xl p-3 bg-white/95 backdrop-blur-sm border border-gray-100/80 hover:shadow-md hover:scale-[1.02] hover:border-gray-200 transition-all duration-300 group text-left w-full cursor-pointer"
-style={{ animation: `kCardEntry 0.6s cubic-bezier(0.4,0,0.2,1) ${delay}s both`, boxShadow: "0 8px 24px -8px rgba(26,47,138,0.15), 0 2px 8px -2px rgba(0,0,0,0.06)" }}
-    >
-      <div className="absolute -top-4 -right-4 w-16 h-16 rounded-full opacity-10 blur-xl group-hover:opacity-20 transition-opacity"
-        style={{ background: color }} />
-      <div className="relative flex items-center gap-2.5">
-        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-          style={{ background: `${color}15`, border: `1px solid ${color}25` }}>
-          <Icon size={13} style={{ color }} />
-        </div>
-        <div className="min-w-0">
-          <p className="text-[8px] font-black uppercase tracking-[0.16em] text-gray-400 truncate">{label}</p>
-          <p className="text-base font-black text-gray-800">{value}</p>
-</div>
-      </div>
-    </button>
+    <div className="hpTip">
+      <p className="hpTipHead">{fullLabel}</p>
+      {rows.map(p => {
+        const idx = Number(String(p.dataKey).replace("slot", ""));
+        return (
+          <div key={p.dataKey} className="hpTipRow">
+            <i style={{ background: p.color }} />
+            <span>{slotLabels[idx] ?? p.name}</span>
+            <b>{fmtBig(p.value)}</b>
+          </div>
+        );
+      })}
+    </div>
   );
 }
+
+const HOME_CSS = `
+.hpRoot, .hpBoot { --hp-ink: #0f172a; --hp-mute: #8a93a8; --hp-line: #eef1f6; }
+
+/* ── KPI de color ── */
+.hpKpi { position: relative; height: 100%; min-height: 148px; display: flex; flex-direction: column; padding: 14px 16px 0; border-radius: 22px; overflow: hidden; color: #fff; isolation: isolate;
+  background:
+    radial-gradient(120% 90% at 100% 0%, color-mix(in srgb, var(--kc) 55%, white) 0%, transparent 55%),
+    linear-gradient(150deg, color-mix(in srgb, var(--kc) 82%, white) 0%, var(--kc) 48%, color-mix(in srgb, var(--kc) 80%, black) 100%);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.28) inset, 0 22px 40px -22px color-mix(in srgb, var(--kc) 85%, transparent), 0 8px 16px -10px color-mix(in srgb, var(--kc) 60%, transparent);
+  transition: transform 420ms cubic-bezier(0.34,1.56,0.64,1), box-shadow 300ms ease;
+  animation: hpRise 640ms cubic-bezier(0.22,1,0.36,1) backwards; }
+.group\\/kpislot:hover .hpKpi { transform: translateY(-4px);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.3) inset, 0 30px 50px -22px color-mix(in srgb, var(--kc) 95%, transparent), 0 10px 20px -10px color-mix(in srgb, var(--kc) 70%, transparent); }
+.hpKpiOrb { position: absolute; z-index: -1; width: 190px; height: 190px; right: -70px; bottom: -90px; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.16); box-shadow: 0 0 0 26px rgba(255,255,255,0.05), 0 0 0 56px rgba(255,255,255,0.035); }
+.hpKpiSheen { position: absolute; inset: 0; z-index: -1; background: linear-gradient(105deg, transparent 35%, rgba(255,255,255,0.22) 50%, transparent 65%);
+  background-size: 250% 100%; background-position: 120% 0; opacity: 0; transition: opacity 300ms ease; }
+.group\\/kpislot:hover .hpKpiSheen { opacity: 1; animation: hpSheen 1.2s ease-out both; }
+.hpKpiTop { display: flex; align-items: center; gap: 9px; padding-right: 30px; }
+.hpKpiIco { width: 28px; height: 28px; border-radius: 10px; display: grid; place-items: center; flex-shrink: 0;
+  background: rgba(255,255,255,0.18); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.28); backdrop-filter: blur(6px); }
+.hpKpiLabel { font-size: 13px; font-weight: 800; letter-spacing: -0.01em; color: rgba(255,255,255,0.92); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hpKpiRow { display: flex; align-items: center; gap: 10px; margin-top: 14px; min-height: 34px; }
+.hpKpiValue { font-size: 30px; font-weight: 900; letter-spacing: -0.045em; line-height: 1; font-variant-numeric: tabular-nums; text-shadow: 0 6px 22px rgba(0,0,0,0.18); }
+.hpKpiValue.isEmpty { opacity: 0.5; }
+.hpDelta { display: inline-flex; align-items: center; gap: 2px; padding: 3px 8px 3px 6px; border-radius: 999px; font-size: 11px; font-weight: 900; font-variant-numeric: tabular-nums;
+  background: rgba(255,255,255,0.2); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.3); backdrop-filter: blur(6px); }
+.hpDelta.isUp svg { color: #bbf7d0; } .hpDelta.isDown svg { color: #fecaca; }
+.hpKpiSub { margin: 6px 0 0; font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.72); font-variant-numeric: tabular-nums; }
+.hpKpiSpark { margin: auto -16px 0; height: 42px; }
+.hpSkel { width: 120px; height: 26px; border-radius: 9px; background: linear-gradient(90deg, rgba(255,255,255,0.15) 20%, rgba(255,255,255,0.38) 50%, rgba(255,255,255,0.15) 80%);
+  background-size: 220% 100%; animation: hpShimmer 1.3s linear infinite; }
+
+/* ── Tarjetas blancas ── */
+.hpCard { position: relative; background: #fff; border-radius: 22px; border: 1px solid rgba(15,23,42,0.05);
+  box-shadow: 0 1px 2px rgba(15,23,42,0.04), 0 20px 44px -30px rgba(26,47,138,0.35);
+  animation: hpRise 640ms cubic-bezier(0.22,1,0.36,1) backwards; }
+.hpTitle { margin: 0; font-size: 15px; font-weight: 900; letter-spacing: -0.02em; color: var(--hp-ink); white-space: nowrap; }
+.hpMeta { margin: 0; font-size: 12px; font-weight: 600; color: var(--hp-mute); }
+.hpSegm { display: inline-flex; padding: 3px; gap: 2px; border-radius: 12px; background: #f2f4f9; }
+.hpSegm button { border: 0; background: transparent; cursor: pointer; font: inherit; font-size: 11.5px; font-weight: 800; color: #64748b; padding: 5px 10px; border-radius: 9px;
+  transition: background 180ms ease, color 180ms ease, box-shadow 180ms ease; white-space: nowrap; }
+.hpSegm button:hover { color: var(--hp-ink); }
+.hpSegm button.on { background: #fff; color: var(--hp-p); box-shadow: 0 1px 2px rgba(15,23,42,0.08), 0 4px 10px -6px rgba(26,47,138,0.35); }
+.hpBack { display: inline-flex; align-items: center; gap: 4px; padding: 5px 11px 5px 7px; border-radius: 999px; border: 0; cursor: pointer; font: inherit;
+  font-size: 11.5px; font-weight: 800; color: #475569; background: #f2f4f9; transition: background 160ms ease; }
+.hpBack:hover { background: #e6eaf3; }
+.hpIconBtn { width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; border: 0; cursor: pointer; flex-shrink: 0;
+  transition: opacity 200ms ease, background 200ms ease, color 200ms ease; background: #f2f4f9; color: #64748b; }
+.hpIconBtn:hover, .hpIconBtn.isOpen { background: var(--hp-p); color: #fff; }
+.hpLink { display: inline-flex; align-items: center; gap: 3px; border: 0; background: transparent; cursor: pointer; font: inherit; font-size: 12px; font-weight: 800; color: var(--hp-p);
+  padding: 5px 8px; border-radius: 9px; transition: background 160ms ease; }
+.hpLink:hover { background: color-mix(in srgb, var(--hp-p) 8%, white); }
+
+/* Evolución: tooltip */
+.hpTip { min-width: 190px; padding: 10px 12px; border-radius: 14px; background: rgba(255,255,255,0.97); backdrop-filter: blur(10px);
+  border: 1px solid rgba(15,23,42,0.06); box-shadow: 0 18px 40px -16px rgba(15,23,42,0.3); }
+.hpTipHead { margin: 0 0 6px; font-size: 12px; font-weight: 900; color: var(--hp-ink); }
+.hpTipRow { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; }
+.hpTipRow i { width: 8px; height: 8px; border-radius: 3px; flex-shrink: 0; }
+.hpTipRow span { flex: 1; color: #64748b; font-weight: 600; }
+.hpTipRow b { color: var(--hp-ink); font-weight: 900; font-variant-numeric: tabular-nums; }
+
+/* Desglose */
+.hpDonut { position: relative; height: 136px; flex-shrink: 0; margin: 6px 0 8px; animation: hpDonutIn 700ms cubic-bezier(0.34,1.56,0.64,1) 0.3s backwards; }
+@keyframes hpDonutIn { from { opacity: 0; transform: scale(0.85) rotate(-40deg); } to { opacity: 1; transform: none; } }
+.hpDonutCenter { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; text-align: center; padding: 0 30%; }
+.hpDonutCenter b { font-size: 19px; font-weight: 900; letter-spacing: -0.03em; color: var(--hp-ink); font-variant-numeric: tabular-nums; line-height: 1.1; }
+.hpDonutCenter span { margin-top: 2px; font-size: 11px; font-weight: 700; color: var(--hp-mute); max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hpBdRow { display: grid; grid-template-columns: 10px minmax(0,1fr) auto; align-items: center; column-gap: 10px; row-gap: 0; padding: 6px 10px; margin: 0 -10px; border-radius: 12px; cursor: pointer;
+  transition: background 160ms ease, opacity 200ms ease; animation: hpRise 520ms cubic-bezier(0.22,1,0.36,1) backwards; }
+.hpBdRow:hover, .hpBdRow.isHover { background: #f6f7fb; }
+.hpBdRow.isDim { opacity: 0.5; }
+.hpBdRow.isActive { background: color-mix(in srgb, var(--bc) 10%, white); }
+.hpBdSw { width: 10px; height: 10px; border-radius: 4px; background: var(--bc); grid-row: span 2; }
+.hpBdName { font-size: 12.5px; font-weight: 700; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hpBdVal { font-size: 12.5px; font-weight: 900; color: var(--hp-ink); text-align: right; font-variant-numeric: tabular-nums; }
+.hpBdPct { font-size: 11px; font-weight: 600; color: var(--hp-mute); font-variant-numeric: tabular-nums; }
+.hpChg { justify-self: end; display: inline-flex; align-items: center; gap: 1px; font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.hpChg.isGood { color: #0f9b67; } .hpChg.isBad { color: #d0344f; }
+
+/* Ranking */
+.hpPodium { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; flex: 1; min-height: 0; }
+.hpPod { position: relative; display: flex; flex-direction: column; justify-content: space-between; min-width: 0; padding: 11px 13px; border-radius: 16px; border: 1px solid var(--hp-line);
+  background: linear-gradient(180deg, #fff, #fafbfe); overflow: hidden; transition: transform 320ms cubic-bezier(0.34,1.56,0.64,1), box-shadow 200ms ease, border-color 200ms ease;
+  animation: hpRise 520ms cubic-bezier(0.22,1,0.36,1) backwards; }
+.hpPod:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--hp-p) 20%, white); box-shadow: 0 14px 28px -20px rgba(26,47,138,0.5); }
+.hpPod.isFirst { border-color: color-mix(in srgb, var(--hp-p) 22%, white); background: linear-gradient(160deg, color-mix(in srgb, var(--hp-p) 7%, white), #fff 60%); }
+.hpPodTop { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.hpRankN { width: 22px; height: 22px; border-radius: 8px; display: grid; place-items: center; flex-shrink: 0; font-size: 11px; font-weight: 900; font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--hp-p) 9%, white); color: var(--hp-p); }
+.hpRankN.isFirst { background: var(--hp-p); color: #fff; box-shadow: 0 6px 14px -6px var(--hp-p); }
+.hpRankN.isMuted { background: #f1f3f8; color: #94a3b8; }
+.hpPodName { font-size: 12.5px; font-weight: 800; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hpPodVal { font-size: 20px; font-weight: 900; letter-spacing: -0.035em; color: var(--hp-ink); font-variant-numeric: tabular-nums; line-height: 1; }
+.hpPodFoot { display: flex; align-items: center; gap: 8px; }
+.hpPodFoot span { font-size: 11px; font-weight: 700; color: var(--hp-mute); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.hpTrack { position: relative; flex: 1; height: 6px; border-radius: 999px; background: #eef1f8; overflow: hidden; }
+.hpTrack > span { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: linear-gradient(90deg, color-mix(in srgb, var(--hp-p) 50%, #8fb0ff), color-mix(in srgb, var(--hp-p) 18%, #b7ccff));
+  transition: width 900ms cubic-bezier(0.22,1,0.36,1); animation: hpGrow 900ms cubic-bezier(0.22,1,0.36,1) backwards; transform-origin: left; }
+.hpRankHead, .hpRankRow { display: grid; grid-template-columns: 26px 34px minmax(140px, 1.2fr) minmax(0, 3fr) 70px 90px; align-items: center; column-gap: 12px; }
+.hpRankHead { padding: 0 10px 8px; font-size: 11px; font-weight: 700; color: var(--hp-mute); border-bottom: 1px solid var(--hp-line); margin-bottom: 4px; }
+.hpRankRow { padding: 7px 10px; border-radius: 12px; transition: background 160ms ease; animation: hpRise 480ms cubic-bezier(0.22,1,0.36,1) backwards; }
+.hpRankRow:hover { background: #f6f7fb; }
+.hpAvatarCo { width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; font-size: 10.5px; font-weight: 900; color: var(--hp-p);
+  background: color-mix(in srgb, var(--hp-p) 8%, white); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--hp-p) 14%, white); }
+.hpRankName { font-size: 13px; font-weight: 800; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hpRankShare { font-size: 12px; font-weight: 700; color: #64748b; text-align: right; font-variant-numeric: tabular-nums; }
+.hpRankVal { font-size: 13px; font-weight: 900; color: var(--hp-ink); text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Ranking ampliado */
+.hpRkStats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.hpRkStat { position: relative; display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 10px 13px; border-radius: 14px; background: #f7f8fc; border: 1px solid var(--hp-line);
+  animation: hpRise 520ms cubic-bezier(0.22,1,0.36,1) backwards; }
+.hpRkStat > span { font-size: 11.5px; font-weight: 700; color: var(--hp-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hpRkStat > b { font-size: 19px; font-weight: 900; letter-spacing: -0.03em; color: var(--hp-ink); line-height: 1.1; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 54px; }
+.hpRkStat > em { position: absolute; right: 12px; bottom: 11px; display: inline-flex; align-items: center; gap: 1px; padding: 2px 7px 2px 5px; border-radius: 999px; font-style: normal; font-size: 11px; font-weight: 900; font-variant-numeric: tabular-nums; }
+.hpRkStat > em.isUp { background: #e6f7ef; color: #0f9b67; } .hpRkStat > em.isDown { background: #fdecef; color: #d0344f; }
+.hpRkStat > em.isNeutral { background: color-mix(in srgb, var(--hp-p) 9%, white); color: var(--hp-p); padding: 2px 7px; }
+.hpRkMini { position: absolute; right: 12px; bottom: 16px; width: 46px; height: 5px; border-radius: 999px; background: #e7eaf3; overflow: hidden; }
+.hpRkMini span { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: color-mix(in srgb, var(--hp-p) 45%, #8fb0ff); }
+.hpRkStrip { display: flex; gap: 2px; height: 12px; margin-bottom: 12px; border-radius: 999px; overflow: hidden; animation: hpGrow 900ms cubic-bezier(0.22,1,0.36,1) 0.15s backwards; transform-origin: left; }
+.hpRkStrip span { flex-basis: 0; min-width: 3px; transition: opacity 200ms ease; cursor: default; }
+.hpRkHead, .hpRkRow { display: grid; grid-template-columns: 24px minmax(170px, 1.3fr) minmax(0, 2.6fr) 64px 104px 84px; align-items: center; column-gap: 14px; }
+.hpRkHead { padding: 0 10px 7px; font-size: 11px; font-weight: 700; color: var(--hp-mute); border-bottom: 1px solid var(--hp-line); margin-bottom: 4px; }
+.hpRkHead span:nth-child(n+4) { text-align: right; }
+.hpRkHead span:nth-child(3) { display: inline-flex; align-items: center; gap: 6px; }
+.hpRkAvgKey { display: inline-block; width: 2px; height: 11px; margin-left: 0; border-radius: 2px; background: #94a3b8; }
+.hpRkRow { padding: var(--rk-pad, 7px) 10px; border-radius: 12px; transition: background 160ms ease, opacity 200ms ease; animation: hpRise 480ms cubic-bezier(0.22,1,0.36,1) backwards; }
+.hpRkRow.isHover { background: #f5f7fc; }
+.hpRkRow.isDim { opacity: 0.55; }
+.hpRkWho { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.hpRkLegal { margin: 1px 0 0; font-size: 11px; font-weight: 600; color: var(--hp-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hpRkBar { position: relative; }
+.hpRkAvg { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; border-radius: 2px; background: #94a3b8; opacity: 0.7; }
+.hpRkDelta { display: flex; justify-content: flex-end; }
+.hpRkRow .hpRankShare, .hpRkRow .hpRankVal { text-align: right; }
+
+/* Recuentos */
+.hpTile { position: relative; display: flex; align-items: center; gap: 9px; min-width: 0; width: 100%; padding: 11px; border-radius: 18px; cursor: pointer; font: inherit; text-align: left;
+  background: #fff; border: 1px solid rgba(15,23,42,0.05); box-shadow: 0 1px 2px rgba(15,23,42,0.04), 0 16px 34px -26px rgba(26,47,138,0.35);
+  transition: transform 320ms cubic-bezier(0.34,1.56,0.64,1), box-shadow 200ms ease, border-color 200ms ease; animation: hpRise 600ms cubic-bezier(0.22,1,0.36,1) backwards; }
+.hpTile:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--tc) 25%, white); box-shadow: 0 18px 34px -20px color-mix(in srgb, var(--tc) 60%, transparent); }
+.hpTile:focus-visible { outline: 2px solid var(--tc); outline-offset: 2px; }
+.hpTileIco { width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; flex-shrink: 0; color: var(--tc);
+  background: color-mix(in srgb, var(--tc) 10%, white); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tc) 18%, white); }
+.hpTileText { display: flex; flex-direction: column; min-width: 0; }
+.hpTileLabel { font-size: 11.5px; font-weight: 700; color: var(--hp-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hpTileValue { font-size: 20px; font-weight: 900; letter-spacing: -0.03em; color: var(--hp-ink); line-height: 1.1; font-variant-numeric: tabular-nums; }
+.hpTileGo { position: absolute; right: 10px; top: 50%; margin-top: -7.5px; color: #cbd5e1; opacity: 0; transform: translateX(-4px); transition: opacity 200ms ease, transform 200ms ease; }
+.hpTile:hover .hpTileGo { opacity: 1; transform: none; }
+
+/* Carga inicial (clara) */
+.hpBoot { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center;
+  background: rgba(246,248,252,0.82); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  transition: opacity 420ms ease, visibility 0s linear 0s; }
+.hpBoot.isGone { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 420ms ease, visibility 0s linear 420ms; }
+.hpBootCard { display: flex; flex-direction: column; align-items: center; padding: 30px 44px 28px; border-radius: 28px; background: #fff; min-width: 340px;
+  border: 1px solid rgba(15,23,42,0.05); box-shadow: 0 30px 80px -30px rgba(26,47,138,0.4); animation: hpPop 420ms cubic-bezier(0.34,1.56,0.64,1) both; }
+.hpBoot.isGone .hpBootCard { transform: scale(0.97); transition: transform 420ms ease; }
+.hpBootHub { position: relative; width: 168px; height: 168px; }
+.hpBootHub svg { position: absolute; inset: 0; overflow: visible; }
+.hpBootCore { position: absolute; left: 50%; top: 50%; width: 92px; height: 92px; margin: -46px 0 0 -46px; border-radius: 50%; display: grid; place-items: center;
+  background: #fff; box-shadow: 0 12px 30px -12px rgba(26,47,138,0.45), inset 0 0 0 1px rgba(15,23,42,0.05); }
+.hpBootCore img { width: 48px; height: 48px; object-fit: contain; }
+.hpBootPct { margin: 14px 0 0; font-size: 26px; font-weight: 900; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; line-height: 1; }
+.hpBootPct small { font-size: 13px; opacity: 0.45; margin-left: 1px; }
+.hpBootTitle { margin: 10px 0 0; font-size: 14px; font-weight: 800; color: var(--hp-ink); text-align: center; }
+.hpBootSub { margin: 4px 0 0; font-size: 12px; font-weight: 600; color: var(--hp-mute); text-align: center; }
+.hpSpinSlow { animation: hpRot 30s linear infinite; transform-origin: 0 0; }
+.hpSpinFast { animation: hpRot 1.4s linear infinite; transform-origin: 0 0; }
+
+/* Resaltado de series sin re-animar la gráfica */
+.hpChartWrap .hpArea .recharts-area-curve { transition: stroke-opacity 220ms ease, stroke-width 220ms ease; }
+.hpChartWrap .hpArea .recharts-area-area { fill-opacity: 0; transition: fill-opacity 260ms ease; }
+.hpChartWrap[data-fill="0"]:not([data-focus="0"]):not([data-focus="1"]):not([data-focus="2"]):not([data-focus="3"]) .hpArea0 .recharts-area-area { fill-opacity: 1; }
+.hpChartWrap[data-focus="0"] .hpArea:not(.hpArea0) .recharts-area-curve { stroke-opacity: 0.16; }
+.hpChartWrap[data-focus="0"] .hpArea0 .recharts-area-curve { stroke-width: 2.8px; }
+.hpChartWrap[data-focus="0"] .hpArea0 .recharts-area-area { fill-opacity: 1; }
+.hpChartWrap[data-fill="1"]:not([data-focus="0"]):not([data-focus="1"]):not([data-focus="2"]):not([data-focus="3"]) .hpArea1 .recharts-area-area { fill-opacity: 1; }
+.hpChartWrap[data-focus="1"] .hpArea:not(.hpArea1) .recharts-area-curve { stroke-opacity: 0.16; }
+.hpChartWrap[data-focus="1"] .hpArea1 .recharts-area-curve { stroke-width: 2.8px; }
+.hpChartWrap[data-focus="1"] .hpArea1 .recharts-area-area { fill-opacity: 1; }
+.hpChartWrap[data-fill="2"]:not([data-focus="0"]):not([data-focus="1"]):not([data-focus="2"]):not([data-focus="3"]) .hpArea2 .recharts-area-area { fill-opacity: 1; }
+.hpChartWrap[data-focus="2"] .hpArea:not(.hpArea2) .recharts-area-curve { stroke-opacity: 0.16; }
+.hpChartWrap[data-focus="2"] .hpArea2 .recharts-area-curve { stroke-width: 2.8px; }
+.hpChartWrap[data-focus="2"] .hpArea2 .recharts-area-area { fill-opacity: 1; }
+.hpChartWrap[data-fill="3"]:not([data-focus="0"]):not([data-focus="1"]):not([data-focus="2"]):not([data-focus="3"]) .hpArea3 .recharts-area-area { fill-opacity: 1; }
+.hpChartWrap[data-focus="3"] .hpArea:not(.hpArea3) .recharts-area-curve { stroke-opacity: 0.16; }
+.hpChartWrap[data-focus="3"] .hpArea3 .recharts-area-curve { stroke-width: 2.8px; }
+.hpChartWrap[data-focus="3"] .hpArea3 .recharts-area-area { fill-opacity: 1; }
+
+@keyframes hpRise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes hpPop { from { opacity: 0; transform: scale(0.94); } to { opacity: 1; transform: none; } }
+@keyframes hpShimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+@keyframes hpSheen { from { background-position: 120% 0; } to { background-position: -60% 0; } }
+@keyframes hpGrow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes hpRot { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .hpKpi, .hpCard, .hpTile, .hpBdRow, .hpRankRow, .hpPod, .hpTrack > span, .hpSpinSlow, .hpSpinFast, .hpSkel, .hpBootCard { animation: none !important; }
+}
+`;
 
 function AnimatedNumber({ value, format = fmtBig, duration = 600 }) {
   const [display, setDisplay] = useState(value);
@@ -2018,6 +2344,20 @@ const { setDetectedLocale } = useSettingsControls();
   const setKpiSlots = viewScope === "consolidated" ? setSlotsConsolidated : setSlotsIndividual;
  const [editingSlot, setEditingSlot]     = useState(null);   // 0-3 | null
   const [trendWindow, setTrendWindow]     = useState(24);      // 12 | 24 | 36 | 48 months
+  const [trendHidden]                     = useState(() => new Set()); // series ocultas en la evolución
+  const [trendFocus, setTrendFocus]       = useState(null);    // serie resaltada al pasar el ratón
+  const [bdHover, setBdHover]             = useState(null);    // segmento del desglose señalado
+  // true cuando se han leído las preferencias guardadas (ventana, intervalo,
+  // modo, ámbito, KPIs). Antes el histórico se pedía y se pintaba con los
+  // valores por defecto y, al llegar las preferencias, se volvía a pedir y a
+  // dibujar con otros: por eso la gráfica salía distinta cada vez.
+  const [prefsReady, setPrefsReady]       = useState(false);
+  // Si las preferencias no llegan (sin usuario, sin red), no bloquear: tras
+  // unos segundos se sigue con los valores por defecto.
+  useEffect(() => {
+    const id = setTimeout(() => setPrefsReady(true), 4000);
+    return () => clearTimeout(id);
+  }, []);
   const [trendInterval, setTrendInterval] = useState("monthly"); // monthly | 6months | yearly
   const [trendChipOpen, setTrendChipOpen] = useState(null);   // "interval" | "window" | null
   const trendHeaderRef = useRef(null);
@@ -2039,12 +2379,15 @@ const { setDetectedLocale } = useSettingsControls();
   useEffect(() => {
     if (!userId) return;
     (async () => {
-      const { data } = await supabase
-        .from("user_settings")
-        .select("preferences")
-        .eq("user_id", userId)
-        .single();
-      const prefs = data?.preferences ?? {};
+      let prefs = {};
+      try {
+        const { data } = await supabase
+          .from("user_settings")
+          .select("preferences")
+          .eq("user_id", userId)
+          .single();
+        prefs = data?.preferences ?? {};
+      } catch { /* sin preferencias: valores por defecto */ }
       const legacy = Array.isArray(prefs.home_kpi_slots) && prefs.home_kpi_slots.length === 4
         ? prefs.home_kpi_slots : null;
       const ind = Array.isArray(prefs.home_kpi_slots_individual)   && prefs.home_kpi_slots_individual.length   === 4
@@ -2074,6 +2417,9 @@ const con = Array.isArray(prefs.home_kpi_slots_consolidated) && prefs.home_kpi_s
 if (typeof prefs.home_company === "string" && prefs.home_company) {
         setSavedCompany(prefs.home_company);
       }
+      // A partir de aquí la ventana, el intervalo, el modo y los KPIs del
+      // histórico son los definitivos (ver prefsReady).
+      setPrefsReady(true);
     })();
   }, [userId]);  // DEFAULT_SLOTS is a module-level constant (stable), not needed here
 const saveKpiSlots = useCallback(async (slots, scope) => {
@@ -2431,11 +2777,22 @@ let pm = m - 1, py = y;
 
   const [currentRows, setCurrentRows]     = useState(prefetch?.current ?? []);
   const [prevRows, setPrevRows]           = useState(prefetch?.prev ?? []);
-  const [trendRows, setTrendRows]         = useState(prefetch?.trend ?? []);
+  const [trendRows, setTrendRows]         = useState([]);
 const [allCoCurrentRows, setAllCoCurrentRows] = useState(prefetch?.allCoCurrentRows ?? []);
   const [loading, setLoading]             = useState(false);
   const [trendLoading, setTrendLoading]   = useState(false);
+  // Progreso del histórico (meses cargados / total) para el cargador de la gráfica
+  const [trendProgress, setTrendProgress] = useState({ done: 0, total: 0 });
   const [allCoLoading, setAllCoLoading]   = useState(false);
+  // Hitos de la carga inicial: solo pueden pasar de "no" a "sí", así la barra
+  // de la pantalla de carga nunca retrocede (antes contaba "no está cargando"
+  // como hecho y arrancaba en 55 % para luego bajar).
+  const [bootMarks, setBootMarks] = useState(() => ({
+    period: false,
+    resolver: false,
+    current: !!prefetch?.current?.length,
+    allCo: !!prefetch?.allCoCurrentRows?.length,
+  }));
   const [probing, setProbing]             = useState(false);
 
 
@@ -2466,6 +2823,35 @@ const trendCacheRef = useRef(new Map());
       const json = await res.json();
       return json.value ?? (Array.isArray(json) ? json : []);
     } catch { return []; }
+  }, [headers]);
+
+  // Para el histórico: igual que fetchPeriod pero SIN tragarse los errores.
+  // Reintenta (hasta 3 intentos con espera creciente) y, si aun así falla,
+  // devuelve null. Antes un fallo puntual (límite de peticiones, red) se
+  // trataba como "mes sin datos" y dibujaba un cero distinto en cada visita.
+  const fetchPeriodStrict = useCallback(async (y, m, src, str, co) => {
+    const yNum = Number(y), mNum = Number(m);
+    if (!Number.isFinite(yNum) || !Number.isFinite(mNum) || yNum < 1900 || mNum < 1 || mNum > 12) return [];
+    if (!src || !str || !co) return [];
+    const filter = `Year eq ${yNum} and Month eq ${mNum} and Source eq '${src}' and GroupStructure eq '${str}' and CompanyShortName eq '${co}'`;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 30000);
+        const res = await fetch(
+          `${BASE_URL}/v2/reports/uploaded-accounts?$filter=${encodeURIComponent(filter)}`,
+          { headers: headers(), signal: ctrl.signal }
+        );
+        clearTimeout(timer);
+        if (res.ok) {
+          const json = await res.json();
+          return json.value ?? (Array.isArray(json) ? json : []);
+        }
+        if (res.status === 401 || res.status === 403) return null;
+      } catch { /* reintento */ }
+      await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
+    }
+    return null;
   }, [headers]);
 
   const fetchPeriodAllCompanies = useCallback(async (y, m, src, str) => {
@@ -2505,7 +2891,9 @@ const cacheKey = `home_latest_period_${source}_${structure}_${company}`;
             setYear(String(p.year));
             setMonth(String(p.month));
           });
-          return () => { cancelled = true; };
+          // Si el efecto se re-ejecuta antes de aplicar el periodo (p. ej. la
+          // empresa por defecto cambia al cargar la estructura), volver a probar.
+          return () => { cancelled = true; probedRef.current = false; };
         }
         sessionStorage.removeItem(cacheKey);
       } catch { sessionStorage.removeItem(cacheKey); }
@@ -2544,7 +2932,15 @@ const found = probes.find(Boolean);
       }
       if (!cancelled) setProbing(false);
     })();
-    return () => { cancelled = true; };
+    // Si se cancela a medias (la empresa por defecto cambia al llegar la
+    // estructura del grupo, o StrictMode monta dos veces), permitir que la
+    // siguiente ejecución vuelva a buscar el periodo; si no, se quedaba sin
+    // año/mes y la Home aparecía vacía tras el login.
+    return () => {
+      cancelled = true;
+      probedRef.current = false;
+      setProbing(false);
+    };
   }, [source, structure, company, token, year, month, headers]);
 
 // Fetch current (anchor period)
@@ -2562,6 +2958,7 @@ if (initialFetchSkippedRef.current) { initialFetchSkippedRef.current = false; re
       if (cancelled) return;
       setCurrentRows(cur);
       setLoading(false);
+      setBootMarks(m => (m.current ? m : { ...m, current: true }));
     })();
     return () => { cancelled = true; };
   }, [year, month, source, structure, company, fetchPeriod]);
@@ -2589,7 +2986,7 @@ if (initialFetchSkippedRef.current) { initialFetchSkippedRef.current = false; re
   // month (December of anchorYear−2) for the monthly delta of the first
   // visible point. Each item is { year, month, rows }.
   useEffect(() => {
-    if (!year || !month || !source || !structure || !company) return;
+    if (!prefsReady || !year || !month || !source || !structure || !company) return;
     const cacheKey = `${source}|${structure}|${company}|${year}|${month}|${trendWindow}|jan-anchored`;
     const cached = trendCacheRef.current.get(cacheKey);
     if (cached) { setTrendRows(cached); return; }
@@ -2611,30 +3008,44 @@ const anchorY = Number(year), anchorM = Number(month);
         m++; if (m > 12) { m = 1; y++; }
       }
 
+      // Se piden todos los meses y la gráfica se actualiza UNA vez, al final.
+      // Antes se iba repintando por tandas de 8 meses (series a medias que
+      // cambiaban de forma mientras cargaba).
       const results = [];
-      for (let i = 0; i < months.length; i += 8) {
-        const batch = months.slice(i, i + 8);
+      setTrendProgress({ done: 0, total: months.length });
+      for (let i = 0; i < months.length; i += 6) {
+        const batch = months.slice(i, i + 6);
         const batchResults = await Promise.all(
-          batch.map(({ y, m }) => fetchPeriod(y, String(m), source, structure, company)
-            .then(rows => ({ year: y, month: m, rows })))
+          batch.map(({ y, m }) => fetchPeriodStrict(y, String(m), source, structure, company)
+            .then(rows => {
+              // cada mes que llega avanza el cargador de la gráfica
+              if (!cancelled) setTrendProgress(p => ({ ...p, done: Math.min(p.total, p.done + 1) }));
+              return { year: y, month: m, rows: rows ?? [], failed: rows === null };
+            }))
         );
         if (cancelled) return;
         results.push(...batchResults);
-        setTrendRows([...results]);
       }
       if (cancelled) return;
-      trendCacheRef.current.set(cacheKey, results);
+      // Solo se guarda en caché si no falló ningún mes (si no, se reintenta
+      // la próxima vez en lugar de dejar el hueco fijado).
+      if (!results.some(r => r.failed)) trendCacheRef.current.set(cacheKey, results);
+      setTrendRows(results);
       setTrendLoading(false);
     })();
     return () => { cancelled = true; };
-}, [year, month, source, structure, company, fetchPeriod, trendWindow]);
+}, [prefsReady, year, month, source, structure, company, fetchPeriodStrict, trendWindow]);
 
 // Fetch all-companies YTD for ranking (current)
   useEffect(() => {
     if (!year || !month || !source || !structure) return;
     const cacheKey = `${source}|${structure}|${year}|${month}|ytd-allco`;
     const cached = allCoCacheRef.current.get(cacheKey);
-    if (cached) { setAllCoCurrentRows(cached); return; }
+    if (cached) {
+      setAllCoCurrentRows(cached);
+      setBootMarks(m => (m.allCo ? m : { ...m, allCo: true }));
+      return;
+    }
     let cancelled = false;
     setAllCoLoading(true);
     (async () => {
@@ -2643,6 +3054,7 @@ const anchorY = Number(year), anchorM = Number(month);
       allCoCacheRef.current.set(cacheKey, rows);
       setAllCoCurrentRows(rows);
       setAllCoLoading(false);
+      setBootMarks(m => (m.allCo ? m : { ...m, allCo: true }));
     })();
   }, [year, month, source, structure, fetchPeriodAllCompanies]);
 
@@ -2837,9 +3249,11 @@ const wrap = (src) => {
     // reported rows — an empty fetch means "not reported", NOT "zero balance".
     const pivotsByKey = new Map();
     const hasDataByKey = new Map();
-    trendRows.forEach(({ year: y, month: m, rows }) => {
+    const failedByKey = new Set();
+    trendRows.forEach(({ year: y, month: m, rows, failed }) => {
       pivotsByKey.set(`${y}-${m}`, buildPivotFromRows(rows, sumAccountCodes));
       hasDataByKey.set(`${y}-${m}`, Array.isArray(rows) && rows.length > 0);
+      if (failed) failedByKey.add(`${y}-${m}`);
     });
 
     const sorted = [...trendRows]
@@ -2907,8 +3321,12 @@ const entry = {
         label: `${MONTHS_ABBR[m - 1]} ${String(y).slice(-2)}`,
         fullLabel: `${MONTHS_ABBR[m - 1]} ${y}`,
       };
+      // Mes que no se pudo cargar (o cuyo mes anterior falló, en mensual):
+      // sin valor → la línea deja un hueco en lugar de caer a cero.
+      const unknown = failedByKey.has(`${y}-${m}`)
+        || (valueMode !== "ytd" && m !== 1 && failedByKey.has(`${y}-${m - 1}`));
       kpiSlots.forEach((id, si) => {
-        entry[`slot${si}`] = computeKpiById(id, monthlyPivot, kpiList, ccTagToCodes, sectionCodes, cache);
+        entry[`slot${si}`] = unknown ? null : computeKpiById(id, monthlyPivot, kpiList, ccTagToCodes, sectionCodes, cache);
       });
       out.push(entry);
     }
@@ -3050,66 +3468,52 @@ const trendSeriesDisplay = useMemo(() => {
   const topByRevenue = useMemo(() => {
     if (kpiList.length === 0) return [];
     const m = Number(month);
+    const cm = compareMonth ? Number(compareMonth) : null;
+
+    // Pivote del periodo (YTD o mensual = YTD − YTD del mes anterior),
+    // la MISMA cadena que usan las tarjetas de arriba.
+    const periodPivot = (ytdRows, beforeRows, mm) => {
+      const ytd = buildPivotFromRows(ytdRows, sumAccountCodes);
+      if (valueMode === "ytd" || mm === 1) return ytd;
+      const before = buildPivotFromRows(beforeRows ?? [], sumAccountCodes);
+      const out = new Map();
+      new Set([...ytd.keys(), ...before.keys()]).forEach(ac => out.set(ac, (ytd.get(ac) ?? 0) - (before.get(ac) ?? 0)));
+      const diff = (a, b) => {
+        const r = new Map();
+        new Set([...a.keys(), ...b.keys()]).forEach(k => r.set(k, (a.get(k) ?? 0) - (b.get(k) ?? 0)));
+        return r;
+      };
+      out.__dimPivot = diff(ytd.__dimPivot ?? new Map(), before.__dimPivot ?? new Map());
+      out.__sumPivot = diff(ytd.__sumPivot ?? new Map(), before.__sumPivot ?? new Map());
+      return out;
+    };
+    const kpiOf = (pivot, entity) => {
+      let p = pivot;
+      if (viewScope === "individual" && company) {
+        p = new Map(pivot);
+        p.__dimPivot = pivot.__dimPivot;
+        p.__sumPivot = pivot.__sumPivot;
+        p.__variationScope = { kind: "company", key: entity };
+      }
+      const v = computeKpiById(rankingKpiId, p, kpiList, ccTagToCodes, sectionCodes, new Map());
+      return (v === null || isNaN(v)) ? null : v;
+    };
+
     const out = [];
     rankingEntities.forEach(entity => {
       const data = rankingDataByEntity[entity];
       if (!data || !data.curRows?.length) return;
-
-// SAME as hero: currentYtdPivot
-      const curYtdPivot = buildPivotFromRows(data.curRows, sumAccountCodes);
-
-// SAME as hero: currentMonthlyPivot
-      let monthlyPivot;
-      if (valueMode === "ytd") {
-        monthlyPivot = curYtdPivot;
-      } else if (m === 1) {
-        monthlyPivot = curYtdPivot;
-      } else {
-        const beforeYtd = buildPivotFromRows(data.monthBeforeCurRows ?? [], sumAccountCodes);
-        monthlyPivot = new Map();
-        const allCodes = new Set([...curYtdPivot.keys(), ...beforeYtd.keys()]);
-        allCodes.forEach(ac => {
-          monthlyPivot.set(ac, (curYtdPivot.get(ac) ?? 0) - (beforeYtd.get(ac) ?? 0));
-        });
-        const mdp = new Map();
-        const cDP = curYtdPivot.__dimPivot ?? new Map();
-        const pDP = beforeYtd.__dimPivot ?? new Map();
-        new Set([...cDP.keys(), ...pDP.keys()]).forEach(k => {
-          mdp.set(k, (cDP.get(k) ?? 0) - (pDP.get(k) ?? 0));
-        });
-        monthlyPivot.__dimPivot = mdp;
-        const msp = new Map();
-        const cSP = curYtdPivot.__sumPivot ?? new Map();
-        const pSP = beforeYtd.__sumPivot ?? new Map();
-        new Set([...cSP.keys(), ...pSP.keys()]).forEach(k => {
-          msp.set(k, (cSP.get(k) ?? 0) - (pSP.get(k) ?? 0));
-        });
-        monthlyPivot.__sumPivot = msp;
-      }
-      if (viewScope === "individual" && company) {
-        const wrapped = new Map(monthlyPivot);
-        wrapped.__dimPivot = monthlyPivot.__dimPivot;
-        wrapped.__sumPivot = monthlyPivot.__sumPivot;
-        wrapped.__variationScope = { kind: "company", key: entity };
-        monthlyPivot = wrapped;
-      }
-
-// SAME as hero: computeKpiById on monthlyPivot
-      const cache = new Map();
-      let v = computeKpiById(rankingKpiId, monthlyPivot, kpiList, ccTagToCodes, sectionCodes, cache);
-      if (v === null || isNaN(v)) return;
-
-// NO FX conversion. The API returns each holding's data already
-      // consolidated in that holding's own reporting currency — exactly
-      // what the hero card displays. Re-converting would double-count.
-      // For mixed-currency comparisons across holdings, the user can
-      // toggle the period picker; values stay in each holding's native
-      // currency just like the hero does.
-
-      out.push({ name: entity, value: v });
+      // Sin conversión de divisa: cada holding viene ya en su moneda de
+      // reporte, igual que las tarjetas de arriba.
+      const v = kpiOf(periodPivot(data.curRows, data.monthBeforeCurRows, m), entity);
+      if (v === null) return;
+      const prev = (cm && data.cmpRows?.length)
+        ? kpiOf(periodPivot(data.cmpRows, data.monthBeforeCmpRows, cm), entity)
+        : null;
+      out.push({ name: entity, value: v, prev });
     });
     return out.sort((a, b) => b.value - a.value);
-}, [rankingEntities, rankingDataByEntity, kpiList, ccTagToCodes, sectionCodes, sumAccountCodes, month, valueMode, rankingKpiId, viewScope, company]);
+}, [rankingEntities, rankingDataByEntity, kpiList, ccTagToCodes, sectionCodes, sumAccountCodes, month, compareMonth, valueMode, rankingKpiId, viewScope, company]);
 
   const periodLabel = useMemo(() => {
    if (!year || !month) return probing ? t("loading_searching") : "—";
@@ -3131,15 +3535,21 @@ const _anyLoading = loading || trendLoading || probing || allCoLoading || !resol
   // result, so an empty currentRows/trendRows/allCoCurrentRows must still
   // advance the bar to 100%. Otherwise selecting an empty month leaves the
   // loader stuck (~60%) and its overlay blocks the whole page forever.
+  // El histórico de 24 meses NO cuenta aquí: es lo más lento y ya no bloquea
+  // la página. Cuando lo demás está listo el cargador general desaparece y la
+  // evolución sigue cargando dentro de su propia gráfica (TrendBuildingLoader).
+  // Hitos derivados (patrón "estado a partir del render anterior" de React)
+  if (!bootMarks.period && year && month) setBootMarks(m => ({ ...m, period: true }));
+  if (!bootMarks.resolver && resolverReady) setBootMarks(m => ({ ...m, resolver: true }));
+
   const loadProgress = useMemo(() => {
     let pct = 0;
-    if (year && month)                        pct += 15;
-    if (resolverReady && kpiList.length > 0)  pct += 25;
-    if (!loading)                             pct += 25;   // anchor fetch done (even if empty)
-    if (!trendLoading)                        pct += 20;   // trend fetch done (even if empty)
-    if (!allCoLoading)                        pct += 15;   // all-companies fetch done (even if empty)
+    if (bootMarks.period)   pct += 15;   // periodo detectado
+    if (bootMarks.resolver) pct += 30;   // estándar y KPIs resueltos
+    if (bootMarks.current)  pct += 30;   // datos del periodo descargados (aunque vengan vacíos)
+    if (bootMarks.allCo)    pct += 25;   // datos de todas las sociedades descargados
     return Math.min(100, pct);
-  }, [year, month, resolverReady, kpiList.length, loading, trendLoading, allCoLoading]);
+  }, [bootMarks]);
 
   // Smoothly animate the displayed value between progress changes
   const animatedLoadProgress = useAnimatedNumber(loadProgress, 700);
@@ -3599,81 +4009,49 @@ const drillTimeSeries = useMemo(() => {
     return k?.label ?? rankingKpiId;
   }, [kpiList, rankingKpiId]);
 
+  // Nombre largo de cada sociedad / holding para el ranking ampliado
+  const entityLegalName = useMemo(() => {
+    const m = new Map();
+    (companies ?? []).forEach(c => {
+      if (typeof c !== "object") return;
+      const sn = c.companyShortName ?? c.CompanyShortName;
+      const ln = c.CompanyLegalName ?? c.companyLegalName;
+      if (sn && ln) m.set(sn, ln);
+    });
+    (holdings ?? []).forEach(h => { if (h.shortName && h.legalName) m.set(h.shortName, h.legalName); });
+    return m;
+  }, [companies, holdings]);
+  const [rankHover, setRankHover] = useState(null);
+
+  const trendLabels = useMemo(
+    () => SLOT_COLORS.map((_, i) => slottedKpis?.[i]?.label ?? kpiSlots[i]),
+    [SLOT_COLORS, slottedKpis, kpiSlots]
+  );
+
 const costColors = useMemo(() => {
     return [colors.primary ?? "#1a2f8a", "#3b54b8", "#7c5fcc", "#b370cc", "#cf6595", "#cf5070", "#cf3940"];
   }, [colors]);
 
 return (
 <>
-    {loadProgress < 100 && (
-      <div
-        className="fixed inset-0 z-[300] flex items-center justify-center"
-        style={{
-          background: "rgba(255,255,255,0.78)",
-          backdropFilter: "blur(8px)",
-          WebkitBackdropFilter: "blur(8px)",
-          animation: "hpOverlayFadeIn 200ms ease-out",
-        }}
-      >
-        <div
-          className="relative rounded-3xl bg-white border border-gray-100 p-10 flex flex-col items-center"
-          style={{
-            width: 380,
-            boxShadow: "0 24px 80px -12px rgba(26,47,138,0.25), 0 8px 24px -8px rgba(0,0,0,0.08)",
-            animation: "hpPopIn 320ms cubic-bezier(0.34,1.56,0.64,1)",
-          }}
-        >
-{/* Circular progress */}
-          <div className="relative" style={{ width: 140, height: 140 }}>
-            <svg width="140" height="140" viewBox="0 0 140 140">
-              <circle cx="70" cy="70" r="60" fill="none" stroke="#f3f4f6" strokeWidth="10" />
-              <circle
-                cx="70" cy="70" r="60" fill="none"
-                stroke={`url(#hpProgGrad)`}
-                strokeWidth="10"
-                strokeLinecap="round"
-                strokeDasharray={2 * Math.PI * 60}
-                strokeDashoffset={2 * Math.PI * 60 * (1 - animatedLoadProgress / 100)}
-                style={{
-                  transform: "rotate(-90deg)",
-                  transformOrigin: "70px 70px",
-                }}
-              />
-              <defs>
-                <linearGradient id="hpProgGrad" x1="0" y1="0" x2="1" y2="1">
-                  <stop offset="0%" stopColor={colors.primary ?? "#1a2f8a"} />
-                  <stop offset="100%" stopColor={colors.secondary ?? "#CF305D"} />
-                </linearGradient>
-              </defs>
-            </svg>
-            <div className="absolute inset-0 flex flex-col items-center justify-center">
-<span className="text-3xl font-black tabular-nums" style={{ color: colors.primary }}>
-                {Math.round(animatedLoadProgress)}<span className="text-base text-gray-300">%</span>
-              </span>
-            </div>
-          </div>
-
-          {/* Label + sub-step */}
-          <p className="text-sm font-black text-gray-800 mt-6 tracking-wide">
-{probing
-              ? t("loading_overlay_period")
-              : !resolverReady
-                ? t("loading_overlay_kpi")
-                : currentRows.length === 0
-                  ? t("loading_overlay_current")
-                  : trendRows.length < 6
-                    ? t("loading_overlay_trend")
-                    : allCoCurrentRows.length === 0
-                      ? t("loading_overlay_multico")
-                      : t("loading_overlay_finish")}
-          </p>
-          <p className="text-[10px] text-gray-300 mt-1.5 uppercase tracking-widest font-bold">
-            {t("loading_overlay_subtitle")}
-          </p>
-        </div>
-      </div>
-    )}
-    <div className="relative h-full flex flex-col">
+    <style>{HOME_CSS}</style>
+    <HomeBootOverlay
+      visible={loadProgress < 100 || animatedLoadProgress < 99.5}
+      progress={animatedLoadProgress}
+      label={probing
+        ? t("loading_overlay_period")
+        : !resolverReady
+          ? t("loading_overlay_kpi")
+          : currentRows.length === 0
+            ? t("loading_overlay_current")
+            : allCoCurrentRows.length === 0
+              ? t("loading_overlay_multico")
+              : t("loading_overlay_finish")}
+      sub={t("loading_overlay_subtitle")}
+      primary={colors.primary ?? "#1a2f8a"}
+      secondary={colors.secondary ?? "#CF305D"}
+    />
+    <div className="hpRoot relative h-full flex flex-col" style={{ "--hp-p": colors.primary ?? "#1a2f8a" }}>
       <style>{`
         @keyframes hpOverlayFadeIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes hpPopIn {
@@ -3765,7 +4143,7 @@ return (
 
 
 {/* LEFT — greeting + name + divider + company + badges */}
-          <div className="flex items-center gap-4 pl-2">
+          <div className="flex items-center gap-4 pl-2 min-w-0">
             {/* Initials avatar */}
             <div
               className="w-9 h-9 rounded-xl flex items-center justify-center text-white text-[11px] font-black flex-shrink-0 select-none"
@@ -3776,7 +4154,7 @@ return (
               }}>
               {(displayName || "?").split(" ").slice(0, 2).map(w => w[0] ?? "").join("").toUpperCase()}
             </div>
-<div className="flex items-baseline gap-2">
+<div className="flex items-baseline gap-2 whitespace-nowrap flex-shrink-0">
               <span style={{
                 ...headerStyle,
                 lineHeight: 1,
@@ -3808,9 +4186,9 @@ return (
             }} />
 
             {/* Company + badges */}
-            <div className="flex items-center gap-2" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.4,0,0.2,1) 0.18s both" }}>
+            <div className="flex items-center gap-2 min-w-0" style={{ animation: "kBadgesPop 0.4s cubic-bezier(0.4,0,0.2,1) 0.18s both" }}>
               {companyMeta?.name && (
-                <span className="text-[12px] font-semibold text-gray-500">{companyMeta.name}</span>
+                <span className="text-[12px] font-semibold text-gray-500 truncate">{companyMeta.name}</span>
               )}
               {companyMeta?.tier && (
                 <span className="px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-wider"
@@ -3833,7 +4211,7 @@ return (
             <div className="relative" ref={pickerRef}>
 <button
                 onClick={() => setPickerOpen(o => !o)}
-                className="flex items-center gap-2 px-3.5 py-2 rounded-xl border hover:shadow-md"
+                className="flex items-center gap-2 px-3.5 py-2 rounded-xl border hover:shadow-md whitespace-nowrap"
                 style={{
                   background: pickerOpen ? colors.primary : "#f9fafb",
                   borderColor: pickerOpen ? colors.primary : "#f3f4f6",
@@ -3961,7 +4339,8 @@ selectedCompany={company}
               const vals = kpiValues[idx];
               const sc   = SLOT_COLORS[idx];
               return (
-                <div key={`slot-${idx}`} className="relative group/kpislot h-full">
+                <div key={`slot-${idx}`} className="relative group/kpislot h-full"
+                  onMouseEnter={() => setTrendFocus(idx)} onMouseLeave={() => setTrendFocus(null)}>
 <HeroKPI
                     label={kpi?.label ?? slotId}
                     value={vals?.current ?? 0}
@@ -4029,76 +4408,159 @@ color={sc.color}
 
 {/* MIDDLE */}
         <div className={`grid grid-cols-1 lg:grid-cols-4 gap-3 min-h-0 transition-all duration-300 ${middleCardView === "ranking" ? "flex-1" : "flex-1"}`}>
-<div className="lg:col-span-3 relative overflow-hidden rounded-2xl bg-white/95 backdrop-blur-sm border border-gray-100 p-4 flex flex-col"
-            style={{ boxShadow: "0 8px 32px -8px rgba(26,47,138,0.18), 0 2px 8px -2px rgba(0,0,0,0.08)", animation: "kCardEntry 0.6s ease-out 0.25s both" }}>
-            {middleCardView === "ranking" ? (
+<div className="hpCard lg:col-span-3 overflow-hidden px-5 pt-4 pb-3 flex flex-col" style={{ animationDelay: "0.18s" }}>
+            {middleCardView === "ranking" ? (() => {
+              const rows = topByRevenue;
+              const max = Math.max(0, ...rows.map(r => r.value));
+              const sum = rows.reduce((acc, r) => acc + Math.max(0, r.value), 0);
+              const avg = rows.length ? rows.reduce((acc, r) => acc + r.value, 0) / rows.length : 0;
+              const top3 = rows.slice(0, 3).reduce((acc, r) => acc + Math.max(0, r.value), 0);
+              const leader = rows[0];
+              const prevSum = rows.every(r => r.prev != null) ? rows.reduce((acc, r) => acc + (r.prev ?? 0), 0) : null;
+              const sumDelta = prevSum && Math.abs(prevSum) > 0.005 ? ((sum - prevSum) / Math.abs(prevSum)) * 100 : null;
+              const shade = (i) => `color-mix(in srgb, var(--hp-p) ${Math.max(8, 52 - i * (rows.length > 1 ? 44 / (rows.length - 1) : 0))}%, #a9c2ff)`;
+              const avgPct = max > 0 ? Math.max(0, Math.min(100, (avg / max) * 100)) : 0;
+              const RANK_IDS = ["revenue", "gross_profit", "ebitda", "ebit", "net_result"];
+              const rankKpis = RANK_IDS.map(id => kpiList.find(k => k.id === id)).filter(Boolean);
+              if (!RANK_IDS.includes(rankingKpiId)) {
+                const cur = kpiList.find(k => k.id === rankingKpiId);
+                if (cur) rankKpis.push(cur);
+              }
+              const initialsOf = (name) => String(name).replace(/[^A-Za-zÀ-ÿ0-9 ]/g, " ").trim().split(/\s+/).slice(0, 2).map(w => w[0] ?? "").join("").toUpperCase();
+              return (
               <>
-                <div className="mb-2.5 flex-shrink-0 flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <button
-                      onClick={() => setMiddleCardView("trend")}
-                      className="flex items-center gap-1 px-2 py-1 rounded-lg transition-colors hover:bg-gray-100"
-                      style={{ color: "#6b7280" }}
-                    >
-                      <ChevronRight size={12} style={{ transform: "rotate(180deg)" }} />
-                      <span className="text-[10px] font-black uppercase tracking-wider">{t("back")}</span>
+                {/* Cabecera */}
+                <div className="mb-3 flex-shrink-0 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <button type="button" onClick={() => setMiddleCardView("trend")} className="hpBack">
+                      <ChevronRight size={13} style={{ transform: "rotate(180deg)" }} />
+                      {t("back")}
                     </button>
-                    <span className="h-px w-3 bg-gray-200 flex-shrink-0" />
-<p className="text-[12px] font-black uppercase tracking-widest text-gray-500 flex-shrink-0">{t("home_ranking")}</p>
-                    <span className="h-px w-3 bg-gray-200 flex-shrink-0" />
-                    <p className="text-[11px] text-gray-400 truncate">{t("rank_all")} {topByRevenue.length} {t("rank_by")} {rankingKpiLabel}</p>
+                    <div className="min-w-0">
+                      <h3 className="hpTitle">{t("home_ranking")}</h3>
+                      <p className="hpMeta truncate">
+                        {rows.length} {rows.length === 1 ? t("rank_entry") : t("rank_entries")} · {periodLabel}
+                        {compareLabel && compareLabel !== "—" ? ` vs ${compareLabel}` : ""}
+                      </p>
+                    </div>
                   </div>
-
-
+                  {rankKpis.length > 1 && (
+                    <div className="hpSegm flex-shrink-0" role="tablist" aria-label={t("rank_by")}>
+                      {rankKpis.map(k => (
+                        <button key={k.id} type="button" role="tab" aria-selected={k.id === rankingKpiId}
+                          className={k.id === rankingKpiId ? "on" : ""}
+                          onClick={() => setRankingKpiId(k.id)}>
+                          {k.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <div className="flex-1 min-h-0 overflow-y-auto pr-1 hide-scrollbar space-y-1.5">
-                  {topByRevenue.map((c, i) => {
-                    const max = topByRevenue[0].value;
-                    const pct = max > 0 ? (c.value / max) * 100 : 0;
+
+                {/* Cifras clave */}
+                <div className="hpRkStats flex-shrink-0">
+                  <div className="hpRkStat">
+                    <span>{t("rank_group_total", "Total del grupo")}</span>
+                    <b>{fmtBig(sum)}</b>
+                    {sumDelta != null && (
+                      <em className={sumDelta >= 0 ? "isUp" : "isDown"}>
+                        {sumDelta >= 0 ? <ArrowUp size={10} strokeWidth={3} /> : <ArrowDown size={10} strokeWidth={3} />}
+                        {Math.abs(sumDelta).toFixed(1)}%
+                      </em>
+                    )}
+                  </div>
+                  <div className="hpRkStat">
+                    <span>{t("rank_leader", "Líder")}</span>
+                    <b className="truncate" title={leader ? (entityLegalName.get(leader.name) ?? leader.name) : ""}>{leader?.name ?? "—"}</b>
+                    {leader && sum > 0 && <em className="isNeutral">{((Math.max(0, leader.value) / sum) * 100).toFixed(1)}%</em>}
+                  </div>
+                  <div className="hpRkStat">
+                    <span>{t("rank_top3_share", "Concentración top 3")}</span>
+                    <b>{sum > 0 ? `${((top3 / sum) * 100).toFixed(0)}%` : "—"}</b>
+                    <i className="hpRkMini"><span style={{ width: `${sum > 0 ? (top3 / sum) * 100 : 0}%` }} /></i>
+                  </div>
+                  <div className="hpRkStat">
+                    <span>{t("rank_average", "Media por sociedad")}</span>
+                    <b>{fmtBig(avg)}</b>
+                  </div>
+                </div>
+
+                {/* Cuota de cada sociedad en una sola barra */}
+                {sum > 0 && (
+                  <div className="hpRkStrip flex-shrink-0" onMouseLeave={() => setRankHover(null)}>
+                    {rows.map((r, i) => r.value > 0 && (
+                      <span key={r.name} style={{ flexGrow: r.value, background: shade(i), opacity: rankHover == null || rankHover === i ? 1 : 0.3 }}
+                        title={`${r.name} · ${((r.value / sum) * 100).toFixed(1)}%`}
+                        onMouseEnter={() => setRankHover(i)} />
+                    ))}
+                  </div>
+                )}
+
+                {/* Lista */}
+                <div className="hpRkHead flex-shrink-0">
+                  <span>#</span>
+                  <span>{t("rank_entity", "Sociedad")}</span>
+                  <span><i className="hpRkAvgKey" />{t("rank_avg_marker", "Media")}</span>
+                  <span>{t("rank_share", "Cuota")}</span>
+                  <span>{t("rank_vs_compare", "vs comparativo")}</span>
+                  <span>{rankingKpiLabel}</span>
+                </div>
+                <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar -mx-2 px-2" onMouseLeave={() => setRankHover(null)}
+                  style={{ "--rk-pad": rows.length <= 6 ? "12px" : rows.length <= 10 ? "8px" : "6px" }}>
+                  {rows.map((c, i) => {
+                    const pct = max > 0 ? Math.max(0, (c.value / max) * 100) : 0;
+                    const share = sum > 0 ? (Math.max(0, c.value) / sum) * 100 : 0;
+                    const delta = c.prev != null && Math.abs(c.prev) > 0.005 ? ((c.value - c.prev) / Math.abs(c.prev)) * 100 : null;
+                    const legal = entityLegalName.get(c.name);
                     return (
-                      <div key={c.name}
-                        className="grid items-center gap-3 px-2 py-1.5 rounded-lg hover:bg-gray-50/60 transition-colors"
-                        style={{
-                          gridTemplateColumns: "32px 200px 1fr 100px",
-                          animation: `kCardEntry 0.3s ease-out ${Math.min(i, 10) * 0.03}s both`,
-                        }}>
-                        <span className="text-[11px] font-black tabular-nums text-center" style={{ color: i === 0 ? colors.primary : i < 3 ? colors.primary : "#9ca3af" }}>
-                          {i + 1}
-                        </span>
-                        <span className="text-[12px] font-bold text-gray-800 truncate" title={c.name}>{c.name}</span>
-                        <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
-                          <div className="h-full rounded-full transition-all duration-700"
-                            style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${colors.primary}cc 0%, ${colors.primary} 100%)` }} />
+                      <div key={c.name} className={`hpRkRow ${rankHover === i ? "isHover" : rankHover != null ? "isDim" : ""}`}
+                        style={{ animationDelay: `${Math.min(i, 14) * 0.035}s` }}
+                        onMouseEnter={() => setRankHover(i)}>
+                        <span className={`hpRankN ${i === 0 ? "isFirst" : i < 3 ? "" : "isMuted"}`}>{i + 1}</span>
+                        <div className="hpRkWho">
+                          <span className="hpAvatarCo">{initialsOf(c.name)}</span>
+                          <div className="min-w-0">
+                            <p className="hpRankName" title={legal ?? c.name}>{c.name}</p>
+                            {legal && legal !== c.name && <p className="hpRkLegal" title={legal}>{legal}</p>}
+                          </div>
                         </div>
-                        <span className="text-[12px] font-mono font-black text-right" style={{ color: colors.primary }}>{fmtBig(c.value)}</span>
+                        <div className="hpRkBar">
+                          <div className="hpTrack" style={{ height: 10 }}>
+                            <span style={{ width: `${pct}%`, background: shade(i), animationDelay: `${0.1 + Math.min(i, 14) * 0.035}s` }} />
+                          </div>
+                          <i className="hpRkAvg" style={{ left: `${avgPct}%` }} />
+                        </div>
+                        <span className="hpRankShare">{share.toFixed(1)}%</span>
+                        <span className="hpRkDelta">
+                          {delta != null ? (
+                            <span className={`hpChg ${delta >= 0 ? "isGood" : "isBad"}`}>
+                              {delta >= 0 ? <ArrowUp size={10} strokeWidth={3} /> : <ArrowDown size={10} strokeWidth={3} />}
+                              {Math.abs(delta).toFixed(1)}%
+                            </span>
+                          ) : <span className="hpMeta">—</span>}
+                        </span>
+                        <span className="hpRankVal">{fmtBig(c.value)}</span>
                       </div>
                     );
                   })}
-</div>
+                </div>
               </>
-            ) : middleCardView === "tag_drill" && drillTag ? (
+              );
+            })() : middleCardView === "tag_drill" && drillTag ? (
               <>
                 <div className="mb-3 flex-shrink-0 flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
-                    <button
-                      onClick={() => { setMiddleCardView("trend"); setDrillTag(null); }}
-                      className="flex items-center gap-1 px-2 py-1 rounded-lg transition-colors hover:bg-gray-100"
-                      style={{ color: "#6b7280" }}
-                    >
-<ChevronRight size={12} style={{ transform: "rotate(180deg)" }} />
-                      <span className="text-[10px] font-black uppercase tracking-wider">{t("drill_back")}</span>
+                    <button type="button" onClick={() => { setMiddleCardView("trend"); setDrillTag(null); }} className="hpBack">
+                      <ChevronRight size={13} style={{ transform: "rotate(180deg)" }} />
+                      {t("drill_back")}
                     </button>
-                    <span className="h-px w-3 bg-gray-200 flex-shrink-0" />
-                    <p className="text-[12px] font-black uppercase tracking-widest text-gray-500 flex-shrink-0">
-                      {drillStats?.label ?? drillTag}
-                    </p>
-                    <span className="h-px w-3 bg-gray-200 flex-shrink-0" />
-                    <p className="text-[11px] text-gray-400">{drillAccountBreakdown.length} {t("drill_accounts")}</p>
+                    <h3 className="hpTitle truncate">{drillStats?.label ?? drillTag}</h3>
+                    <p className="hpMeta whitespace-nowrap">{drillAccountBreakdown.length} {t("drill_accounts")}</p>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
 <div className="flex flex-col items-end">
-<span className="text-[8px] font-black uppercase tracking-wider text-gray-400">{t("drill_monthly")}</span>
-                      <span className="text-[13px] font-mono font-black text-gray-800">
+<span className="text-[11px] font-bold text-gray-400">{t("drill_monthly")}</span>
+                      <span className="text-[15px] font-black text-gray-900 tabular-nums tracking-tight">
                         <AnimatedNumber value={drillStats?.monthlyValue ?? 0} />
                       </span>
                     </div>
@@ -4114,8 +4576,8 @@ color={sc.color}
                     )}
                     <div style={{ width: 1, height: 24, background: "rgba(0,0,0,0.08)" }} />
 <div className="flex flex-col items-end">
-<span className="text-[8px] font-black uppercase tracking-wider text-gray-400">{t("drill_ytd_vs_py")}</span>
-                      <span className="text-[13px] font-mono font-black text-gray-800">
+<span className="text-[11px] font-bold text-gray-400">{t("drill_ytd_vs_py")}</span>
+                      <span className="text-[15px] font-black text-gray-900 tabular-nums tracking-tight">
                         <AnimatedNumber value={drillStats?.ytdCurrent ?? 0} />
                       </span>
                     </div>
@@ -4135,7 +4597,7 @@ color={sc.color}
 <div key={`drill-${drillTag}`} className="flex-1 min-h-0 grid grid-cols-5 gap-4" style={{ animation: "drillFadeIn 0.4s cubic-bezier(0.4,0,0.2,1) both" }}>
                   <div className="col-span-3 min-h-0 flex flex-col">
                     <div className="flex items-center justify-between mb-1">
-<p className="text-[9px] font-black uppercase tracking-[0.18em] text-gray-400">
+<p className="text-[12px] font-extrabold text-gray-500">
                         {t("drill_monthly_evolution")}
                       </p>
                       <div className="flex items-center gap-2.5">
@@ -4256,7 +4718,7 @@ return (
                   </div>
 <div className="col-span-2 min-h-0 flex flex-col">
                     <div className="flex items-center justify-between mb-1.5">
-<p className="text-[9px] font-black uppercase tracking-[0.18em] text-gray-400">
+<p className="text-[12px] font-extrabold text-gray-500">
                         {t("drill_top_accounts")}
                       </p>
 <span className="text-[8px] font-bold text-gray-300">
@@ -4290,7 +4752,7 @@ const maxAbs = Math.max(...drillAccountBreakdown.map(r => Math.abs(r.value)));
                                   <span className="text-[8px] font-mono text-gray-400">{row.code}</span>
                                 </div>
                                 <div className="flex items-center gap-1.5 flex-shrink-0">
-                                  <span className="font-mono font-black text-gray-800 group-hover/acct:scale-110 transition-transform inline-block origin-right">{fmtBig(row.value)}</span>
+                                  <span className="font-black text-gray-900 tabular-nums group-hover/acct:scale-110 transition-transform inline-block origin-right">{fmtBig(row.value)}</span>
                                   {row.change != null && (
                                     <span className={`font-black tabular-nums ${changeColor}`} style={{ fontSize: 9 }}>
                                       {row.change > 0 ? "+" : ""}{row.change.toFixed(0)}%
@@ -4321,7 +4783,7 @@ const maxAbs = Math.max(...drillAccountBreakdown.map(r => Math.abs(r.value)));
                           <div className="mt-2 pt-2 border-t border-gray-100"
                             style={{ animation: "acctSlide 0.6s ease-out 0.5s both" }}>
                             <div className="flex items-center justify-between text-[9px]">
-                              <span className="text-gray-400 font-bold uppercase tracking-wider">{t("drill_top3_concentration")}</span>
+                              <span className="text-gray-500 font-bold">{t("drill_top3_concentration")}</span>
                               <span className="font-black tabular-nums" style={{ color: drillStats?.isIncome ? (colors.tertiary ?? "#57aa78") : (colors.primary ?? "#1a2f8a") }}>
                                 {concentration.toFixed(0)}%
                               </span>
@@ -4343,144 +4805,55 @@ const maxAbs = Math.max(...drillAccountBreakdown.map(r => Math.abs(r.value)));
               </>
             ) : (
               <>
-<div ref={trendHeaderRef} className="flex items-center justify-between mb-2 flex-shrink-0 gap-4">
-              {/* LEFT — title + interactive chips */}
-              <div className="flex items-center gap-3 min-w-0">
-                <h3 className="text-sm font-black text-gray-800 flex-shrink-0">{t("home_kpi_evolution")}</h3>
-
-                <div className="flex items-center gap-1.5">
-{/* Interval chip */}
-                  <div className="relative">
-                    <button
-                      onClick={() => setTrendChipOpen(trendChipOpen === "interval" ? null : "interval")}
-                      className="flex items-center gap-1 px-2 py-1 rounded-lg transition-colors"
-                      style={{ background: `${colors.primary}12`, color: colors.primary }}
-                    >
-<span className="text-[10px] font-black uppercase tracking-wider">
-                        {{ monthly: t("trend_monthly"), "6months": t("trend_6months"), yearly: t("trend_yearly") }[trendInterval]}
-                      </span>
-                      <ChevronDown size={8} />
+<div ref={trendHeaderRef} className="flex items-center justify-between mb-3 flex-shrink-0 gap-4">
+              <div className="min-w-0">
+                <h3 className="hpTitle">{t("home_kpi_evolution")}</h3>
+                <p className="hpMeta mt-0.5 truncate">
+                  {trendSeriesDisplay.length > 1
+                    ? `${trendSeriesDisplay[0]?.fullLabel ?? ""} – ${trendSeriesDisplay[trendSeriesDisplay.length - 1]?.fullLabel ?? ""}`
+                    : `${t("trend_from_jan")} ${trendFromYear ?? "…"}`}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <div className="hpSegm" role="tablist" aria-label={t("trend_monthly")}>
+                  {[
+                    { value: "monthly",  label: t("trend_monthly") },
+                    { value: "6months",  label: t("trend_6months") },
+                    { value: "yearly",   label: t("trend_yearly") },
+                  ].map(opt => (
+                    <button key={opt.value} type="button" role="tab" aria-selected={trendInterval === opt.value}
+                      className={trendInterval === opt.value ? "on" : ""}
+                      onClick={() => setTrendInterval(opt.value)}>
+                      {opt.label}
                     </button>
-                    {trendChipOpen === "interval" && (
-                      <div className="absolute top-full left-0 mt-1.5 z-50 bg-white rounded-xl border border-gray-100 py-1 min-w-[140px]"
-                        style={{ boxShadow: "0 12px 32px -8px rgba(26,47,138,0.2)" }}>
-                        {[
-                          { value: "monthly",  label: t("trend_monthly") },
-                          { value: "6months",  label: t("trend_6months_long") },
-                          { value: "yearly",   label: t("trend_yearly") },
-                        ].map(opt => (
-                          <button key={opt.value}
-                            onClick={() => { setTrendInterval(opt.value); setTrendChipOpen(null); }}
-                            className="w-full text-left px-3 py-1.5 text-xs font-bold transition-colors hover:bg-gray-50"
-                            style={{ color: trendInterval === opt.value ? colors.primary : "#6b7280" }}>
-                            {opt.label}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  <span className="text-gray-300 text-[10px]">·</span>
-
-                  {/* Window chip */}
-                  <div className="relative">
-<button
-                      onClick={() => setTrendChipOpen(trendChipOpen === "window" ? null : "window")}
-                      className="flex items-center gap-1 px-2 py-1 rounded-lg transition-colors"
-                      style={{ background: `${colors.primary}12`, color: colors.primary }}
-                    >
-<span className="text-[10px] font-black uppercase tracking-wider">
-                        {t("trend_from_jan")} {trendFromYear ?? "…"}
-                      </span>
-                      <ChevronDown size={8} />
+                  ))}
+                </div>
+                <div className="hpSegm" role="tablist" aria-label={t("trend_months")}>
+                  {[12, 24, 36, 48].map(w => (
+                    <button key={w} type="button" role="tab" aria-selected={trendWindow === w}
+                      className={trendWindow === w ? "on" : ""} title={`${w} ${t("trend_months")}`}
+                      onClick={() => setTrendWindow(w)}>
+                      {w}M
                     </button>
-                    {trendChipOpen === "window" && (
-                      <div className="absolute top-full left-0 mt-1.5 z-50 bg-white rounded-xl border border-gray-100 py-1 min-w-[130px]"
-                        style={{ boxShadow: "0 12px 32px -8px rgba(26,47,138,0.2)" }}>
-{[12, 24, 36, 48].map(w => (
-                          <button key={w}
-                            onClick={() => { setTrendWindow(w); setTrendChipOpen(null); }}
-                            className="w-full text-left px-3 py-1.5 text-xs font-bold transition-colors hover:bg-gray-50"
-                            style={{ color: trendWindow === w ? colors.primary : "#6b7280" }}>
-                            {w} {t("trend_months")}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  ))}
                 </div>
               </div>
-
-              {/* RIGHT — legend */}
-<div className="flex items-center gap-3 flex-wrap flex-shrink-0">
-                {SLOT_COLORS.map((sc, i) => (
-                  <div key={i} className="flex items-center gap-1.5">
-                    <div className="w-2 h-2 rounded-full" style={{ background: sc.color }} />
-                    <span className="text-[11px] font-bold text-gray-600">
-                      {slottedKpis?.[i]?.label ?? kpiSlots[i]}
-                    </span>
-                  </div>
-                ))}
-              </div>
             </div>
-<div className="flex-1" style={{ minHeight: 200, width: "100%" }}>
-{trendSeriesDisplay.length > 1 ? (
-                <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={trendSeriesDisplay} margin={{ top: 5, right: 20, bottom: 0, left: 20 }}>
-<defs>
-                      {SLOT_COLORS.map((sc, i) => (
-                        <linearGradient key={i} id={`areaSlot${i}`} x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor={sc.color} stopOpacity={i === 0 ? 0.35 : 0.25} />
-                          <stop offset="100%" stopColor={sc.color} stopOpacity={0.02} />
-                        </linearGradient>
-                      ))}
-                    </defs>
-                    <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb" vertical={false} />
-<XAxis dataKey="label"
-                      tick={{ fontSize: 11, fill: "#6b7280", fontWeight: 700 }}
-                      axisLine={false} tickLine={false}
-interval={trendSeriesDisplay.length <= 12 ? 0 : Math.floor(trendSeriesDisplay.length / 12)} />
-<YAxis
-                      tick={{ fontSize: 10, fill: "#9ca3af", fontWeight: 600, dx: 30 }}
-                      axisLine={false} tickLine={false}
-                      tickFormatter={fmtBig}
-                      width={0}
-                      mirror />
-                    <Tooltip content={({ active, payload }) => {
-                      if (!active || !payload?.length) return null;
-                      const fullLabel = payload[0]?.payload?.fullLabel ?? "";
-                      return (
-                        <div className="bg-white/95 backdrop-blur-md border border-gray-100 rounded-xl shadow-xl px-3 py-2 text-xs">
-                          <p className="font-black text-gray-700 mb-1">{fullLabel}</p>
-                          {payload.map((p, i) => (
-                            <div key={i} className="flex items-center gap-2 py-0.5">
-                              <div className="w-2 h-2 rounded-full" style={{ background: p.color }} />
-                              <span className="text-gray-500 font-medium">{p.name}:</span>
-                              <span className="font-black text-gray-700">{fmtBig(p.value)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      );
-                    }} />
-{SLOT_COLORS.map((sc, i) => (
-                    <Area
-                      key={i}
-                      type="monotone"
-                      dataKey={`slot${i}`}
-                      name={slottedKpis?.[i]?.label ?? kpiSlots[i]}
-                      stroke={sc.color}
-                      strokeWidth={i === 0 ? 2 : 1.6}
-                      fill={`url(#areaSlot${i})`}
-                      isAnimationActive
-                      dot={false}
-                    />
-                  ))}
-                  </AreaChart>
-                </ResponsiveContainer>
+
+<div className="flex-1 hpChartWrap" style={{ minHeight: 200, width: "100%", position: "relative" }}
+              data-focus={trendFocus ?? ""} data-fill={SLOT_COLORS.findIndex((_, k) => !trendHidden.has(k))}>
+{/* Recargando con una gráfica ya pintada (otro periodo): aviso discreto encima */}
+{trendLoading && prefsReady && trendSeriesDisplay.length > 1 && (
+  <TrendRefreshBadge done={trendProgress.done} total={trendProgress.total} primary={colors.primary ?? "#1a2f8a"} secondary={colors.secondary ?? "#CF305D"} t={t} />
+)}
+{prefsReady && trendSeriesDisplay.length > 1 ? (
+                <TrendChart data={trendSeriesDisplay} slotColors={SLOT_COLORS} labels={trendLabels} hidden={trendHidden} />
 ) : (
                 <div className="flex flex-col items-center justify-center h-full gap-2 text-center px-6">
-                  {trendLoading ? (
-                    <Loader2 size={20} className="animate-spin text-gray-300" />
+                  {trendLoading || !prefsReady ? (
+                    <TrendBuildingLoader done={trendProgress.done} total={trendProgress.total}
+                      year={year} month={month} window={trendWindow} monthsAbbr={MONTHS_ABBR}
+                      primary={colors.primary ?? "#1a2f8a"} secondary={colors.secondary ?? "#CF305D"} t={t} />
                   ) : (year && month) ? (
                     <>
                       <AlertTriangle size={20} className="text-amber-400" />
@@ -4497,80 +4870,68 @@ interval={trendSeriesDisplay.length <= 12 ? 0 : Math.floor(trendSeriesDisplay.le
             )}
           </div>
 
-          <div className="relative rounded-2xl bg-white/95 backdrop-blur-sm border border-gray-100 p-4 flex flex-col group/breakdown overflow-hidden"
-            style={{ animation: "kCardEntry 0.6s ease-out 0.35s both", boxShadow: "0 8px 32px -8px rgba(26,47,138,0.12), 0 2px 8px -2px rgba(0,0,0,0.06)" }}>
+          <div className="hpCard px-5 pt-4 pb-3 flex flex-col group/breakdown min-h-0" style={{ animationDelay: "0.26s" }}>
 
             {/* Header */}
-            <div className="mb-3 flex-shrink-0 flex items-start justify-between gap-2">
-<div>
-<p className="text-[12px] font-black uppercase tracking-widest text-gray-400">
-                {activeCustomStructure
+            <div className="flex-shrink-0 flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <h3 className="hpTitle truncate">
+                  {activeCustomStructure
                     ? (/^__.*__$/.test(String(activeCustomStructure.name ?? "").trim())
                         ? t("breakdown_standard_mapping", "Standard mapping")
                         : activeCustomStructure.name)
                     : activeView.label}
-                </p>
-                <p className="text-[11px] text-gray-400 mt-0.5">
+                </h3>
+                <p className="hpMeta mt-0.5 truncate">
                   {activeCustomStructure ? (activeCustomStructure.description || "Custom breakdown") : activeView.description}
                 </p>
               </div>
-           <div className="relative flex-shrink-0" ref={breakdownSettingsRef} style={{ overflow: "visible", zIndex: 10 }}>
-<button
+              <div className="relative flex-shrink-0" ref={breakdownSettingsRef} style={{ overflow: "visible", zIndex: 10 }}>
+                <button type="button"
                   onClick={() => setBreakdownSettingsOpen(o => !o)}
-                  className="w-7 h-7 rounded-xl flex items-center justify-center transition-all duration-200 opacity-0 group-hover/breakdown:opacity-100"
-                  style={{
-                    background: breakdownSettingsOpen ? colors.primary : `${colors.primary}12`,
-                    color: breakdownSettingsOpen ? "#fff" : colors.primary,
-                    opacity: breakdownSettingsOpen ? 1 : undefined,
-                  }}
+                  className={`hpIconBtn ${breakdownSettingsOpen ? "isOpen" : ""}`}
+                  aria-label={t("breakdown_view_label")}
                 >
-                  <Settings size={12} />
+                  <Settings size={14} />
                 </button>
-{breakdownSettingsOpen && (
+                {breakdownSettingsOpen && (
                   <div
-className="absolute right-0 top-full mt-2 z-[500] rounded-2xl p-2 flex flex-col gap-1"
+                    className="absolute right-0 top-full mt-2 z-[500] rounded-2xl p-2 flex flex-col gap-1"
                     style={{
-                      width: 220,
-                      background: "rgba(255,255,255,0.99)",
-                      backdropFilter: "blur(24px)",
-                      border: "1px solid rgba(26,47,138,0.08)",
-                      boxShadow: "0 20px 50px -12px rgba(26,47,138,0.22)",
-                     animation: "pickerFoldDown 320ms cubic-bezier(0.34,1.56,0.64,1)",
-        transformOrigin: "top center",
+                      width: 250,
+                      background: "#fff",
+                      border: "1px solid rgba(15,23,42,0.06)",
+                      boxShadow: "0 24px 50px -18px rgba(26,47,138,0.35)",
+                      animation: "pickerFoldDown 320ms cubic-bezier(0.34,1.56,0.64,1)",
+                      transformOrigin: "top center",
                     }}
-
                     onClick={e => e.stopPropagation()}
                   >
-<p className="text-[8px] font-black uppercase tracking-[0.2em] text-gray-400 px-2 pt-1 pb-0.5">{t("breakdown_view_label")}</p>
-                    {BREAKDOWN_VIEWS.map((v, vi) => {
+                    <p className="text-[11px] font-bold text-gray-400 px-2 pt-1 pb-0.5">{t("breakdown_view_label")}</p>
+                    {BREAKDOWN_VIEWS.map((v) => {
                       const active = v.id === activeBreakdownView;
                       return (
-                        <button key={v.id}
+                        <button key={v.id} type="button"
                           onClick={() => { setActiveBreakdownView(v.id); setBreakdownSettingsOpen(false); }}
-                          className="flex items-center gap-3 px-2.5 py-2 rounded-xl text-left transition-all duration-150 w-full"
-                          style={{ background: active ? colors.primary : "transparent", animation: `kCardEntry 0.3s ease-out ${vi * 0.05}s both` }}>
+                          className="flex items-center gap-3 px-2.5 py-2 rounded-xl text-left transition-colors w-full hover:bg-gray-50"
+                          style={{ background: active ? colors.primary : undefined }}>
                           <span className="text-base leading-none">{v.icon}</span>
                           <div className="min-w-0">
-                            <p className="text-xs font-black truncate" style={{ color: active ? "#fff" : "#374151" }}>{v.label}</p>
-                            <p className="text-[9px] truncate mt-0.5" style={{ color: active ? "rgba(255,255,255,0.65)" : "#9ca3af" }}>{v.description}</p>
+                            <p className="text-xs font-black truncate" style={{ color: active ? "#fff" : "#1e293b" }}>{v.label}</p>
+                            <p className="text-[10.5px] truncate mt-0.5" style={{ color: active ? "rgba(255,255,255,0.7)" : "#94a3b8" }}>{v.description}</p>
                           </div>
-                          {active && <div className="w-1.5 h-1.5 rounded-full bg-white/70 flex-shrink-0 ml-auto" />}
                         </button>
                       );
                     })}
-
-{/* Library entry point */}
                     <div className="mt-1 pt-1 border-t border-gray-100">
-                      <button
+                      <button type="button"
                         onClick={() => { setBreakdownLibraryOpen(true); setBreakdownSettingsOpen(false); }}
-                        className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl transition-all hover:bg-gray-50">
-                        <div className="w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0"
-                          style={{ background: `${colors.primary}15`, color: colors.primary }}>
-                          <Layers size={10} />
+                        className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl transition-colors hover:bg-gray-50">
+                        <div className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0"
+                          style={{ background: `${colors.primary}14`, color: colors.primary }}>
+                          <Layers size={12} />
                         </div>
-<p className="text-xs font-black" style={{ color: colors.primary }}>
-                          {t("breakdown_custom_label")}
-                        </p>
+                        <p className="text-xs font-black" style={{ color: colors.primary }}>{t("breakdown_custom_label")}</p>
                       </button>
                     </div>
                   </div>
@@ -4578,83 +4939,70 @@ className="absolute right-0 top-full mt-2 z-[500] rounded-2xl p-2 flex flex-col 
               </div>
             </div>
 
-            {/* Rows */}
-            {costBreakdown.length > 0 ? (
-<div className="flex-1 min-h-0 overflow-y-auto space-y-2.5 pr-1 hide-scrollbar">
-{costBreakdown.length === 0 && noPeriodData ? (
-                  <div className="flex flex-col items-center justify-center h-full gap-2 text-center px-6">
-                    <AlertTriangle size={20} className="text-amber-400" />
-                    <p className="text-xs font-black text-gray-400">{t("home_period_no_data")}</p>
-                    <p className="text-[10px] text-gray-300">{t("home_period_no_data_sub")}</p>
-                  </div>
-                ) : costBreakdown.map((c, i) => {
-const absTot = Math.abs(totalCosts);
-                  const pct = absTot > 0 ? (Math.abs(c.value) / absTot) * 100 : 0;
-                  const barColor = activeCustomStructure
-                    ? (c.groupColor ?? colors.primary)
-                    : c.isIncome ? (colors.tertiary ?? "#57aa78") : costColors[i % costColors.length];
-                  const changeIsGood = c.isIncome ? c.change > 0 : c.change < 0;
-                  const changeColor = c.change == null ? "text-gray-300" : changeIsGood ? "text-emerald-500" : "text-red-500";
-                  const isActive = drillTag === c.tag && middleCardView === "tag_drill";
-                  return (
-                    <div key={`${activeBreakdownView}-${c.tag}`}
-                      onClick={() => {
-                        if (isActive) { setMiddleCardView("trend"); setDrillTag(null); }
-                        else          { setDrillTag(c.tag); setMiddleCardView("tag_drill"); }
-                      }}
-                      className="flex flex-col gap-1 cursor-pointer px-2 -mx-2 py-1 -my-1 rounded-lg transition-colors"
-                      style={{
-                        animation: `kCardEntry 0.4s ease-out ${i * 0.04}s both`,
-                        background: isActive ? `${barColor}12` : "transparent",
-                      }}
-                      onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = "rgba(0,0,0,0.025)"; }}
-                      onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
-                    > 
-<div className="flex items-center justify-between gap-2 text-[10px]">
-<div className="flex items-center gap-1.5 min-w-0">
-                          {activeCustomStructure ? (
-                            <div className="w-2 h-2 rounded-full flex-shrink-0"
-                              style={{ background: (c.groupSign ?? "+") === "+" ? "#16a34a" : "#dc2626" }} />
-                          ) : (
-                            c.isIncome && <div className="w-2 h-2 rounded-full flex-shrink-0"
-                              style={{ background: colors.tertiary ?? "#57aa78" }} />
-                          )}
-                          <span className="font-bold text-gray-700 truncate" title={c.name}>{c.name}</span>
-                        </div>
-                        <div className="flex items-center gap-2 flex-shrink-0">
-                          <span className="font-mono font-black text-gray-800">{fmtBig(Math.abs(c.value))}</span>
-                          {c.change != null && (
-                            <span className={`flex items-center gap-0.5 font-black tabular-nums ${changeColor}`} style={{ fontSize: 11 }}>
-                              {c.change > 0 ? <ArrowUp size={10} /> : <ArrowDown size={10} />}
+            {costBreakdown.length > 0 ? (() => {
+              const absTot = Math.abs(totalCosts);
+              const items = costBreakdown.map((c, i) => ({
+                ...c,
+                color: activeCustomStructure
+                  ? (c.groupColor ?? colors.primary)
+                  : c.isIncome ? (colors.tertiary ?? "#57aa78") : costColors[i % costColors.length],
+              }));
+              const pick = (c) => {
+                const isActive = drillTag === c.tag && middleCardView === "tag_drill";
+                if (isActive) { setMiddleCardView("trend"); setDrillTag(null); }
+                else          { setDrillTag(c.tag); setMiddleCardView("tag_drill"); }
+              };
+              return (
+                <>
+                  <BreakdownDonut items={items} total={totalCosts} hover={bdHover} onHover={setBdHover}
+                    onPick={(i) => items[i] && pick(items[i])} centerLabel={t("cost_total")} />
+                  <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar px-2.5 -mx-2.5">
+                    {items.map((c, i) => {
+                      const pct = absTot > 0 ? (Math.abs(c.value) / absTot) * 100 : 0;
+                      const changeIsGood = c.isIncome ? c.change > 0 : c.change < 0;
+                      const isActive = drillTag === c.tag && middleCardView === "tag_drill";
+                      return (
+                        <div key={`${activeBreakdownView}-${c.tag}`}
+                          role="button" tabIndex={0}
+                          onClick={() => pick(c)}
+                          onKeyDown={e => { if (e.key === "Enter") pick(c); }}
+                          onMouseEnter={() => setBdHover(i)} onMouseLeave={() => setBdHover(null)}
+                          className={`hpBdRow ${isActive ? "isActive" : ""} ${bdHover === i ? "isHover" : bdHover != null ? "isDim" : ""}`}
+                          style={{ "--bc": c.color, animationDelay: `${0.3 + i * 0.04}s` }}
+                        >
+                          <span className="hpBdSw" />
+                          <span className="hpBdName" title={c.name}>{c.name}</span>
+                          <span className="hpBdVal">{fmtBig(Math.abs(c.value))}</span>
+                          <span className="hpBdPct">{pct.toFixed(1)}%</span>
+                          {c.change != null ? (
+                            <span className={`hpChg ${changeIsGood ? "isGood" : "isBad"}`}>
+                              {c.change > 0 ? <ArrowUp size={10} strokeWidth={3} /> : <ArrowDown size={10} strokeWidth={3} />}
                               {Math.abs(c.change).toFixed(1)}%
                             </span>
-                          )}
+                          ) : <span />}
                         </div>
-                      </div>
-                      <div className="h-1.5 rounded-full bg-gray-100 overflow-hidden">
-                        <div className="h-full rounded-full transition-all duration-700"
-                          style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${barColor} 0%, ${barColor}cc 100%)` }} />
-                      </div>
-                      <div className="text-[10px] text-gray-400 font-mono text-right">{pct.toFixed(1)}%</div>
-                    </div>
-                  );
-                })}
-<div className="pt-2 mt-2 border-t border-gray-100 flex items-center justify-between text-[12px]">
-<span className="font-black uppercase tracking-widest text-gray-600">{t("cost_total")}</span>
-                  <span className="font-mono font-black text-gray-900">{fmtBig(totalCosts)}</span>
-                </div>
-              </div>
-            ) : (
-<div className="flex flex-col items-center justify-center flex-1 gap-2 text-center px-4">
+                      );
+                    })}
+                  </div>
+                </>
+              );
+            })() : (
+              <div className="flex flex-col items-center justify-center flex-1 gap-2 text-center px-4">
                 {loading ? (
                   <Loader2 size={20} className="animate-spin text-gray-300" />
+                ) : noPeriodData ? (
+                  <>
+                    <AlertTriangle size={20} className="text-amber-400" />
+                    <p className="text-xs font-black text-gray-400">{t("home_period_no_data")}</p>
+                    <p className="text-[11px] text-gray-300">{t("home_period_no_data_sub")}</p>
+                  </>
                 ) : (
                   <>
                     <p className="text-xs font-black text-gray-400">
                       {activeCustomStructure ? t("breakdown_no_data") : t("home_no_costs")}
                     </p>
                     {activeCustomStructure && (
-<p className="text-[10px] text-gray-300 leading-relaxed">
+                      <p className="text-[11px] text-gray-300 leading-relaxed">
                         {t("breakdown_no_data_hint_1")} {periodLabel}. {t("breakdown_no_data_hint_2")}
                       </p>
                     )}
@@ -4680,33 +5028,33 @@ const absTot = Math.abs(totalCosts);
 <div
             onClick={() => !rankingSelectorOpen && topByRevenue.length > 0 && setMiddleCardView(v => v === "ranking" ? "trend" : "ranking")}
             ref={rankingSelectorRef}
-            className="lg:col-span-3 relative overflow-hidden rounded-2xl bg-white/95 backdrop-blur-sm border border-gray-100 p-4 flex flex-col text-left transition-all hover:border-gray-200 group/ranking"
+            className="hpCard lg:col-span-3 overflow-hidden px-5 pt-3.5 pb-3.5 flex flex-col text-left group/ranking"
             style={{
-              boxShadow: "0 8px 32px -8px rgba(26,47,138,0.18), 0 2px 8px -2px rgba(0,0,0,0.08)",
-              animation: "kCardEntry 0.6s ease-out 0.45s both",
+              animationDelay: "0.34s",
               cursor: !rankingSelectorOpen && topByRevenue.length > 0 ? "pointer" : "default",
             }}>
 {!rankingSelectorOpen && (
               <div className="mb-2.5 flex-shrink-0 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <p className="text-[12px] font-black uppercase tracking-widest text-gray-500 flex-shrink-0">{t("home_ranking")}</p>
-                  <span className="h-px w-3 bg-gray-200 flex-shrink-0" />
-<p className="text-[11px] text-gray-400 truncate">
-                    {t("rank_by")} {rankingKpiLabel} {topByRevenue.length > 3
-                      ? `· ${t("rank_top3_of")} ${topByRevenue.length} · ${t("rank_click_expand")}`
-                      : topByRevenue.length > 0
-                        ? `· ${topByRevenue.length} ${topByRevenue.length === 1 ? t("rank_entry") : t("rank_entries")} · ${t("rank_click_expand")}`
-                        : `· ${t("rank_no_data")}`}
+                <div className="flex items-baseline gap-3 min-w-0">
+                  <h3 className="hpTitle">{t("home_ranking")}</h3>
+                  <p className="hpMeta truncate">
+                    {t("rank_by")} {rankingKpiLabel}
+                    {topByRevenue.length === 0 ? ` · ${t("rank_no_data")}` : ""}
                   </p>
                 </div>
-<div className="flex items-center gap-2 flex-shrink-0">
-                 {allCoLoading && <Loader2 size={12} className="animate-spin text-gray-300" />}
-                  <button
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  {allCoLoading && <Loader2 size={13} className="animate-spin text-gray-300" />}
+                  {topByRevenue.length > 0 && (
+                    <span className="hpLink">
+                      {t("rank_click_expand")} <ChevronRight size={13} />
+                    </span>
+                  )}
+                  <button type="button"
                     onClick={(e) => { e.stopPropagation(); setRankingSelectorOpen(true); }}
-                    className="w-7 h-7 rounded-xl flex items-center justify-center transition-all duration-200 opacity-0 group-hover/ranking:opacity-100"
-                    style={{ background: `${colors.primary}12`, color: colors.primary }}
+                    className="hpIconBtn"
+                    aria-label={t("rank_by")}
                   >
-                    <Settings size={12} />
+                    <Settings size={14} />
                   </button>
                 </div>
               </div>
@@ -4791,30 +5139,29 @@ const absTot = Math.abs(totalCosts);
                 </div>
               </div>
             ) : (
-<div className="flex-1 min-h-0 flex flex-col justify-around gap-1.5 pb-1">
-               
-                {topByRevenue.length > 0 ? (
-                  topByRevenue.slice(0, 3).map((c, i) => {
-                    const max = topByRevenue[0].value;
+<div className="hpPodium">
+                {topByRevenue.length > 0 ? (() => {
+                  const max = topByRevenue[0].value;
+                  const sum = topByRevenue.reduce((acc, r) => acc + Math.max(0, r.value), 0);
+                  return topByRevenue.slice(0, 3).map((c, i) => {
                     const pct = max > 0 ? (c.value / max) * 100 : 0;
+                    const share = sum > 0 ? (Math.max(0, c.value) / sum) * 100 : 0;
                     return (
-                      <div key={c.name}
-                        className="grid items-center gap-3"
-                        style={{
-                          gridTemplateColumns: "120px 1fr 80px",
-                          animation: `kCardEntry 0.4s ease-out ${i * 0.05}s both`,
-                        }}>
-                        <span className="text-[12px] font-bold text-gray-800 truncate" title={c.name}>{c.name}</span>
-                        <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
-                          <div className="h-full rounded-full transition-all duration-700"
-                            style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${colors.primary}cc 0%, ${colors.primary} 100%)` }} />
+                      <div key={c.name} className={`hpPod ${i === 0 ? "isFirst" : ""}`} style={{ animationDelay: `${0.4 + i * 0.06}s` }}>
+                        <div className="hpPodTop">
+                          <span className={`hpRankN ${i === 0 ? "isFirst" : ""}`}>{i + 1}</span>
+                          <span className="hpPodName" title={c.name}>{c.name}</span>
                         </div>
-                        <span className="text-[12px] font-mono font-black text-right" style={{ color: colors.primary }}>{fmtBig(c.value)}</span>
+                        <span className="hpPodVal">{fmtBig(c.value)}</span>
+                        <div className="hpPodFoot">
+                          <div className="hpTrack"><span style={{ width: `${pct}%`, animationDelay: `${0.5 + i * 0.06}s` }} /></div>
+                          <span>{share.toFixed(0)}%</span>
+                        </div>
                       </div>
                     );
-                  })
-                ) : (
-                  <div className="flex items-center justify-center h-full text-gray-300 text-xs">
+                  });
+                })() : (
+                  <div className="col-span-3 flex items-center justify-center h-full text-gray-300 text-xs">
                     {allCoLoading ? <Loader2 size={20} className="animate-spin" /> : t("no_data")}
                   </div>
                 )}
@@ -4822,7 +5169,7 @@ const absTot = Math.abs(totalCosts);
             )}
           </div>
 
-<div className="grid grid-cols-2 gap-2">
+<div className="grid grid-cols-2 gap-3">
             <MiniTile label={t("mini_companies")}  value={companies.length}  icon={Building2} color={colors.primary}                delay={0.55} onClick={() => setOpenDetail("companies")}  />
             <MiniTile label={t("mini_perimeters")} value={structures.length} icon={Layers}    color={colors.secondary  ?? "#CF305D"} delay={0.6}  onClick={() => setOpenDetail("structures")} />
             <MiniTile label={t("mini_dimensions")} value={dimensions.length} icon={Network}   color={colors.tertiary   ?? "#57aa78"} delay={0.65} onClick={() => setOpenDetail("dimensions")} />
@@ -5066,5 +5413,342 @@ const { data: { session } } = await supabase.auth.getSession();
         trendSeries={trendSeries}
       />
     </>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Cargador de la evolución de KPIs (dentro de su propia gráfica).
+   El histórico es lo que más tarda: en vez de bloquear la página, la
+   gráfica se "construye" aquí mientras el resto ya se puede usar.
+   · Un esqueleto de columnas, una por mes del periodo que se va a pintar,
+     con los meses reales en el eje X.
+   · Cada mes que llega levanta su columna con un muelle y la línea avanza
+     suavemente hasta ella (cabeza luminosa que recorre la curva).
+   · Píldora de estado arriba a la izquierda con el % que cuenta hacia arriba.
+   ══════════════════════════════════════════════════════════════════════ */
+
+// Interpola un valor hacia su objetivo con requestAnimationFrame (ease-out).
+function useTween(target, ms = 700) {
+  const [value, setValue] = useState(target);
+  const valueRef = useRef(target);
+  useEffect(() => {
+    const from = valueRef.current;
+    if (from === target) return undefined;
+    const reduce = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const dur = reduce ? 1 : ms;
+    const t0 = performance.now();
+    let raf = 0;
+    const step = (now) => {
+      const k = Math.min(1, (now - t0) / dur);
+      const e = 1 - Math.pow(1 - k, 3);
+      const v = from + (target - from) * e;
+      valueRef.current = v;
+      setValue(v);
+      if (k < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [target, ms]);
+  return value;
+}
+
+// Tamaño real del contenedor (el SVG se dibuja en píxeles: nada deformado).
+function useBoxSize() {
+  const ref = useRef(null);
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return undefined;
+    const ro = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      setSize(s => (Math.abs(s.w - width) < 1 && Math.abs(s.h - height) < 1) ? s : { w: width, h: height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, size];
+}
+
+// Catmull-Rom → Bézier: tramos de control para una curva suave por los puntos.
+function tlSegments(pts) {
+  const segs = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] ?? pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] ?? p2;
+    segs.push([
+      p1,
+      { x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6 },
+      { x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6 },
+      p2,
+    ]);
+  }
+  return segs;
+}
+
+function tlBezier([a, b, c, d], t) {
+  const u = 1 - t;
+  return {
+    x: u * u * u * a.x + 3 * u * u * t * b.x + 3 * u * t * t * c.x + t * t * t * d.x,
+    y: u * u * u * a.y + 3 * u * u * t * b.y + 3 * u * t * t * c.y + t * t * t * d.y,
+  };
+}
+
+const TL_CSS = `
+.hpTl { position: absolute; inset: 0; overflow: hidden; animation: hpTlFade 420ms cubic-bezier(0.22,1,0.36,1) both; }
+.hpTl svg { position: absolute; inset: 0; display: block; }
+.hpTlGrid { stroke: #eef0f5; stroke-width: 1; stroke-dasharray: 2 4; }
+.hpTlSkel { animation: hpTlSkelIn 620ms cubic-bezier(0.22,1,0.36,1) both; transform-box: fill-box; transform-origin: 50% 100%; }
+.hpTlNext { animation: hpTlSkelIn 620ms cubic-bezier(0.22,1,0.36,1) both, hpTlBreathe 1.3s ease-in-out 620ms infinite; transform-box: fill-box; transform-origin: 50% 100%; }
+.hpTlBar { animation: hpTlGrow 760ms cubic-bezier(0.34,1.56,0.64,1) both; transform-box: fill-box; transform-origin: 50% 100%; }
+.hpTlCap { animation: hpTlCapIn 520ms cubic-bezier(0.22,1,0.36,1) 120ms both; }
+.hpTlShimmer { animation: hpTlSweep 1.9s cubic-bezier(0.45,0,0.55,1) infinite; }
+.hpTlRing { transform-box: fill-box; transform-origin: center; animation: hpTlPing 1.6s cubic-bezier(0,0,0.2,1) infinite; }
+.hpTlLabel { transition: fill 420ms ease; }
+.hpTlLine { filter: drop-shadow(0 6px 10px rgba(26,47,138,0.22)); }
+.hpTlCard { position: absolute; top: 10px; left: 16px; z-index: 2; display: flex; align-items: center; gap: 12px; padding: 9px 12px 11px 10px; border-radius: 16px; background: rgba(255,255,255,0.84); backdrop-filter: blur(12px) saturate(1.4); -webkit-backdrop-filter: blur(12px) saturate(1.4); box-shadow: 0 14px 34px -20px rgba(26,47,138,0.55), 0 0 0 1px rgba(26,47,138,0.07); overflow: hidden; animation: hpTlCardIn 560ms cubic-bezier(0.22,1,0.36,1) 80ms both; }
+.hpTlOrb { position: relative; width: 30px; height: 30px; flex-shrink: 0; border-radius: 999px; display: grid; place-items: center; }
+.hpTlOrb::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: conic-gradient(from 0deg, var(--tl-a), var(--tl-b), transparent 72%, var(--tl-a)); -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px)); mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px)); animation: hpTlSpin 1.1s linear infinite; }
+.hpTlOrb::after { content: ""; position: absolute; inset: 6px; border-radius: inherit; background: color-mix(in srgb, var(--tl-a) 10%, white); animation: hpTlBeat 1.3s ease-in-out infinite; }
+.hpTlOrb > svg { position: relative; z-index: 1; }
+.hpTlTitle { font-size: 12px; font-weight: 900; color: #1f2937; letter-spacing: -0.01em; line-height: 1.2; white-space: nowrap; }
+.hpTlSub { margin-top: 2px; font-size: 10px; font-weight: 700; color: #9ca3af; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.hpTlSub b { color: #4b5563; font-weight: 900; }
+.hpTlPct { margin-left: 4px; padding-left: 12px; border-left: 1px solid #eef0f5; font-size: 20px; font-weight: 900; letter-spacing: -0.03em; line-height: 1; font-variant-numeric: tabular-nums; }
+.hpTlPct small { font-size: 11px; font-weight: 900; margin-left: 1px; opacity: 0.55; }
+.hpTlTrack { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: #f1f3f8; }
+.hpTlTrack > span { position: absolute; inset: 0 auto 0 0; border-radius: 0 3px 3px 0; overflow: hidden; }
+.hpTlTrack > span::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.85), transparent); transform: translateX(-100%); animation: hpTlTrackShine 1.4s ease-in-out infinite; }
+.hpTlChip { position: absolute; top: 4px; right: 24px; z-index: 3; display: flex; align-items: center; gap: 8px; padding: 5px 11px 5px 6px; border-radius: 999px; background: rgba(255,255,255,0.88); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); box-shadow: 0 10px 24px -14px rgba(26,47,138,0.55), 0 0 0 1px rgba(26,47,138,0.07); font-size: 10px; font-weight: 800; color: #4b5563; white-space: nowrap; animation: hpTlCardIn 420ms cubic-bezier(0.22,1,0.36,1) both; font-variant-numeric: tabular-nums; }
+.hpTlChip .hpTlOrb { width: 18px; height: 18px; }
+.hpTlChip .hpTlOrb::before { -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px)); mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px)); }
+.hpTlChip .hpTlOrb::after { inset: 5px; background: var(--tl-a); opacity: 0.85; }
+@keyframes hpTlFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes hpTlSkelIn { from { opacity: 0; transform: scaleY(0.2); } to { opacity: 1; transform: scaleY(1); } }
+@keyframes hpTlGrow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@keyframes hpTlCapIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes hpTlBreathe { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
+@keyframes hpTlSweep { from { transform: translateX(-160px); } to { transform: translateX(var(--tl-w)); } }
+@keyframes hpTlPing { 0% { transform: scale(1); opacity: 0.55; } 80%,100% { transform: scale(3.2); opacity: 0; } }
+@keyframes hpTlSpin { to { transform: rotate(360deg); } }
+@keyframes hpTlBeat { 0%,100% { transform: scale(0.82); } 50% { transform: scale(1); } }
+@keyframes hpTlCardIn { from { opacity: 0; transform: translateY(-6px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes hpTlTrackShine { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) {
+  .hpTl, .hpTlSkel, .hpTlNext, .hpTlBar, .hpTlCap, .hpTlCard, .hpTlChip, .hpTlOrb::before, .hpTlOrb::after, .hpTlTrack > span::after { animation: none !important; }
+  .hpTlShimmer, .hpTlRing { display: none; }
+}
+`;
+
+function TrendBuildingLoader({
+  done = 0, total = 0, year, month, window: trendWindow = 24, monthsAbbr = [],
+  primary = "#1a2f8a", secondary = "#CF305D", t = (k, f) => f ?? k,
+}) {
+  const uid = React.useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const [boxRef, { w, h }] = useBoxSize();
+
+  // Meses que va a pintar la gráfica: de enero de (año − años + 1) al mes ancla.
+  const months = useMemo(() => {
+    const ay = Number(year), am = Number(month);
+    const n = Math.max(12, Number(trendWindow) || 24);
+    if (!ay || !am) return Array.from({ length: n }, (_, i) => ({ y: null, m: (i % 12) + 1 }));
+    const startY = ay - Math.ceil(n / 12) + 1;
+    const out = [];
+    let y = startY, m = 1;
+    while (y < ay || (y === ay && m <= am)) {
+      out.push({ y, m });
+      m += 1;
+      if (m > 12) { m = 1; y += 1; }
+    }
+    return out;
+  }, [year, month, trendWindow]);
+
+  const n = months.length;
+  const ratio = total ? Math.min(1, done / total) : 0;
+  const loaded = Math.min(n, Math.floor(ratio * n));
+  const pctTarget = Math.round(ratio * 100);
+  const pct = Math.round(useTween(pctTarget, 650));
+  const head = useTween(loaded, 760);
+
+  // Geometría en píxeles
+  const padL = 20, padR = 20, padT = Math.min(78, Math.max(56, h * 0.26)), padB = 28;
+  const plotW = Math.max(0, w - padL - padR), plotH = Math.max(0, h - padT - padB);
+  const step = n ? plotW / n : 0;
+  const barW = Math.max(4, Math.min(22, step * 0.56));
+  const baseY = padT + plotH;
+
+  // Alturas deterministas y suaves (forma de "serie" con tendencia al alza)
+  const pts = useMemo(() => months.map((_, i) => {
+    const k = n > 1 ? i / (n - 1) : 0;
+    const v = 0.36 + 0.3 * k + 0.13 * Math.sin(i / 2.1) + 0.06 * Math.sin(i / 0.9 + 1.3);
+    const hv = Math.max(0.16, Math.min(0.94, v));
+    return { x: padL + (i + 0.5) * step, y: baseY - hv * plotH, hv };
+  }), [months, n, padL, step, baseY, plotH]);
+
+  const segs = useMemo(() => tlSegments(pts), [pts]);
+  const linePath = useMemo(() => {
+    if (!pts.length) return "";
+    return `M${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}` + segs.map(([, b, c, d]) =>
+      ` C${b.x.toFixed(1)},${b.y.toFixed(1)} ${c.x.toFixed(1)},${c.y.toFixed(1)} ${d.x.toFixed(1)},${d.y.toFixed(1)}`).join("");
+  }, [pts, segs]);
+  const areaPath = pts.length ? `${linePath} L${pts[pts.length - 1].x.toFixed(1)},${baseY} L${pts[0].x.toFixed(1)},${baseY} Z` : "";
+
+  // Cabeza de la línea: recorre la curva de forma continua
+  const pos = Math.max(0, Math.min(n - 1, head - 1));
+  const segI = Math.min(Math.floor(pos), Math.max(0, segs.length - 1));
+  const headPt = !pts.length ? null : segs.length ? tlBezier(segs[segI], pos - segI) : pts[0];
+  const headOn = head > 0.35 && headPt;
+  const headOpacity = Math.max(0, Math.min(1, (head - 0.35) / 0.4));
+  const clipW = headOn ? Math.max(0, headPt.x - padL + 1) : 0;
+
+  // Etiquetas del eje X (sin amontonarse)
+  const every = Math.max(1, Math.ceil(n / 12), step ? Math.ceil(46 / step) : 1);
+  const labelOf = ({ y, m }) => `${monthsAbbr[m - 1] ?? m}${y ? ` ${String(y).slice(-2)}` : ""}`;
+  const first = months[0], last = months[n - 1];
+
+  const ready = w > 0 && h > 0 && plotH > 20;
+
+  return (
+    <div ref={boxRef} className="hpTl" role="status" aria-live="polite"
+      style={{ "--tl-a": primary, "--tl-b": secondary, "--tl-w": `${w + 160}px` }}>
+      <style>{TL_CSS}</style>
+
+      {ready && (
+        <svg width={w} height={h} aria-hidden="true">
+          <defs>
+            <linearGradient id={`${uid}stroke`} gradientUnits="userSpaceOnUse" x1={padL} y1="0" x2={padL + plotW} y2="0">
+              <stop offset="0%" stopColor={primary} />
+              <stop offset="100%" stopColor={secondary} />
+            </linearGradient>
+            <linearGradient id={`${uid}area`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={primary} stopOpacity="0.20" />
+              <stop offset="100%" stopColor={primary} stopOpacity="0" />
+            </linearGradient>
+            <linearGradient id={`${uid}bar`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={primary} stopOpacity="0.26" />
+              <stop offset="100%" stopColor={primary} stopOpacity="0.04" />
+            </linearGradient>
+            <linearGradient id={`${uid}guide`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={primary} stopOpacity="0.45" />
+              <stop offset="100%" stopColor={primary} stopOpacity="0" />
+            </linearGradient>
+            <linearGradient id={`${uid}shine`} x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stopColor="#fff" stopOpacity="0" />
+              <stop offset="50%" stopColor="#fff" stopOpacity="0.95" />
+              <stop offset="100%" stopColor="#fff" stopOpacity="0" />
+            </linearGradient>
+            <clipPath id={`${uid}reveal`}>
+              <rect x={padL - 2} y="0" width={clipW + 2} height={h} />
+            </clipPath>
+            <clipPath id={`${uid}pending`}>
+              {pts.map((p, i) => i >= loaded && (
+                <rect key={i} x={p.x - barW / 2} y={p.y} width={barW} height={baseY - p.y} rx={Math.min(barW / 2, 6)} />
+              ))}
+            </clipPath>
+          </defs>
+
+          {/* Rejilla */}
+          {[0, 1, 2, 3].map(k => {
+            const y = padT + (plotH * k) / 3;
+            return <line key={k} className="hpTlGrid" x1={padL} x2={padL + plotW} y1={y} y2={y} />;
+          })}
+
+          {/* Columnas: esqueleto pendiente / mes ya cargado */}
+          {pts.map((p, i) => {
+            const rx = Math.min(barW / 2, 6);
+            if (i < loaded) {
+              return (
+                <g key={`l${i}`}>
+                  <rect className="hpTlBar" x={p.x - barW / 2} y={p.y} width={barW} height={baseY - p.y} rx={rx}
+                    fill={`url(#${uid}bar)`} />
+                </g>
+              );
+            }
+            const next = i === loaded;
+            return (
+              <rect key={`s${i}`} className={next ? "hpTlNext" : "hpTlSkel"}
+                style={{ animationDelay: next ? undefined : `${Math.min(i, 40) * 18}ms` }}
+                x={p.x - barW / 2} y={p.y} width={barW} height={baseY - p.y} rx={rx}
+                fill={next ? `color-mix(in srgb, ${primary} 16%, #f2f4f9)` : "#f1f3f8"} />
+            );
+          })}
+
+          {/* Brillo que barre el esqueleto pendiente */}
+          {loaded < n && (
+            <g clipPath={`url(#${uid}pending)`}>
+              <rect className="hpTlShimmer" x="0" y={padT - 4} width="160" height={plotH + 8} fill={`url(#${uid}shine)`} />
+            </g>
+          )}
+
+          {/* Área + línea reveladas hasta la cabeza */}
+          <g clipPath={`url(#${uid}reveal)`}>
+            <path d={areaPath} fill={`url(#${uid}area)`} />
+            <path className="hpTlLine" d={linePath} fill="none" stroke={`url(#${uid}stroke)`}
+              strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+          </g>
+
+          {/* Cabeza luminosa + guía vertical */}
+          {headOn && (
+            <g style={{ opacity: headOpacity }}>
+              <line x1={headPt.x} x2={headPt.x} y1={headPt.y + 6} y2={baseY} stroke={`url(#${uid}guide)`}
+                strokeWidth="1.5" strokeDasharray="3 3" />
+              <circle className="hpTlRing" cx={headPt.x} cy={headPt.y} r="5" fill={primary} />
+              <circle cx={headPt.x} cy={headPt.y} r="9" fill={primary} opacity="0.12" />
+              <circle cx={headPt.x} cy={headPt.y} r="4.6" fill="#fff" stroke={primary} strokeWidth="2.6" />
+            </g>
+          )}
+
+          {/* Eje X con los meses reales */}
+          {months.map((mo, i) => {
+            if ((n - 1 - i) % every !== 0) return null;
+            return (
+              <text key={i} className="hpTlLabel" x={pts[i].x} y={h - 9} textAnchor="middle"
+                fontSize="11" fontWeight="700" fill={i < loaded ? "#6b7280" : "#d4d8e1"}>
+                {labelOf(mo)}
+              </text>
+            );
+          })}
+        </svg>
+      )}
+
+      {/* Estado */}
+      <div className="hpTlCard">
+        <span className="hpTlOrb" aria-hidden="true">
+          <TrendingUp size={13} strokeWidth={2.6} color={primary} />
+        </span>
+        <div>
+          <div className="hpTlTitle">{t("home_trend_building", "Construyendo la evolución de los KPIs")}</div>
+          <div className="hpTlSub">
+            {total ? (
+              <>
+                <b>{Math.min(loaded, n)}</b> / {n} {t("home_trend_months", "meses")}
+                {first?.y ? <> · {labelOf(first)} → {labelOf(last)}</> : null}
+              </>
+            ) : t("home_trend_preparing", "Preparando…")}
+          </div>
+        </div>
+        <div className="hpTlPct" style={{ color: primary }}>
+          {pct}<small>%</small>
+        </div>
+        <div className="hpTlTrack" aria-hidden="true">
+          <span style={{
+            width: `${Math.max(2, ratio * 100)}%`,
+            background: `linear-gradient(90deg, ${primary}, ${secondary})`,
+            transition: "width 650ms cubic-bezier(0.22,1,0.36,1)",
+          }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Recarga del histórico con la gráfica ya pintada: chip discreto en la esquina
+function TrendRefreshBadge({ done = 0, total = 0, primary = "#1a2f8a", secondary = "#CF305D", t = (k, f) => f ?? k }) {
+  const pct = Math.round(useTween(total ? Math.round((done / total) * 100) : 0, 650));
+  return (
+    <div className="hpTlChip" role="status" aria-live="polite" style={{ "--tl-a": primary, "--tl-b": secondary }}>
+      <style>{TL_CSS}</style>
+      <span className="hpTlOrb" aria-hidden="true" />
+      {t("home_trend_updating", "Actualizando evolución")}
+      <span style={{ color: primary, fontWeight: 900 }}>{pct}%</span>
+    </div>
   );
 }
